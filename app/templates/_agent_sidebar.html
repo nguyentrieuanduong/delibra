@@ -1,0 +1,45 @@
+<aside id="agent-sidebar" aria-label="Agents">
+  <h2>Agents</h2>
+  <details{% if not sessions %} open{% endif %}>
+    <summary>Create agent</summary>
+    <form
+      method="post"
+      action="/projects/{{ project.id }}/sessions"
+      hx-post="/projects/{{ project.id }}/sessions"
+      hx-target="#agent-sidebar"
+      hx-swap="outerHTML"
+      data-session-config-form
+      data-agent="claude"
+    >
+      <label>Name <input name="name" maxlength="200" required></label>
+      <label>Agent
+        <select name="agent" required data-agent-select>
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <label>Model <input name="model" maxlength="200" value="sonnet" required></label>
+      <label>Effort
+        <select name="effort" required data-effort-select>
+          {% for provider, levels in effort_levels.items() %}
+            <optgroup label="{{ provider|title }}" data-effort-agent="{{ provider }}"{% if provider != 'claude' %} disabled{% endif %}>
+              {% for level in levels %}<option value="{{ level }}"{% if provider == 'claude' and level == 'high' %} selected{% endif %}>{{ level }}</option>{% endfor %}
+            </optgroup>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Role instructions
+        <textarea name="role_instructions" maxlength="20000"></textarea>
+      </label>
+      <button type="submit">Create agent</button>
+    </form>
+  </details>
+  <div class="agent-cards">
+    {% for agent_view in agent_views %}
+      {% include "_agent_card.html" %}
+    {% else %}
+      <p>No agents yet. Create an agent to begin.</p>
+    {% endfor %}
+  </div>
+</aside>
+{% if composer_oob %}{% include "_composer.html" %}{% endif %}

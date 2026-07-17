@@ -16,21 +16,21 @@
   {% endif %}
   <details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md }}</div></details>
   <div class="markdown output">{{ round.output|md }}</div>
-  {% if round.record and round.record.status == 'complete' and sessions %}
+  {% if round.record and round.record.status == 'complete' and sessions and (not chat_view or sessions|length > 1) %}
     <details>
-      <summary>Pass to…</summary>
+      <summary>{% if chat_view %}Send to…{% else %}Pass to…{% endif %}</summary>
       <form
         method="post"
-        action="/projects/{{ project.id }}/sessions/{{ session_id }}/pass"
-        hx-post="/projects/{{ project.id }}/sessions/{{ session_id }}/pass"
-        hx-target=".rounds"
+        action="/projects/{{ project.id }}/sessions/{{ session_id }}/pass{% if chat_view %}?view=chat{% endif %}"
+        hx-post="/projects/{{ project.id }}/sessions/{{ session_id }}/pass{% if chat_view %}?view=chat{% endif %}"
+        hx-target="{{ '.chat-timeline' if chat_view else '.rounds' }}"
         hx-swap="beforeend"
       >
         <input type="hidden" name="source_round" value="{{ round.n }}">
         <label>Target session
           <select name="target_session_id" required>
             {% for target in sessions %}
-              <option value="{{ target.id }}">{{ target.name }}</option>
+              {% if not chat_view or target.id != session_id %}<option value="{{ target.id }}">{{ target.name }}</option>{% endif %}
             {% endfor %}
           </select>
         </label>

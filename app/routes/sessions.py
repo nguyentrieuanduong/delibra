@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import SessionConfig
+from app.routes.chat import sidebar_response
 from app.security import validate_field, validate_name
 from app.storage import ConflictError, NotFoundError, ProjectStore, utc_now
-from app.views import round_dom_id
+from app.views import round_views
 
 
 router = APIRouter()
@@ -86,6 +87,16 @@ async def create_session(
             rounds=[],
         )
         ProjectStore(project).create_session(config)
+    if request.headers.get("HX-Request") == "true":
+        return sidebar_response(
+            request,
+            project,
+            selected_id=session_id,
+            composer_oob=True,
+            headers={
+                "HX-Push-Url": f"/projects/{project_id}/chat?agent={session_id}"
+            },
+        )
     return RedirectResponse(
         f"/projects/{project_id}/sessions/{session_id}",
         status_code=303,
@@ -102,6 +113,7 @@ async def edit_session(
     model: str | None = Form(None),
     effort: str | None = Form(None),
     role_instructions: str | None = Form(None),
+    selected_agent: str | None = Query(None, alias="agent"),
 ):
     supplied_configuration = any(
         value is not None for value in (agent, model, effort, role_instructions)
@@ -152,6 +164,13 @@ async def edit_session(
             config.agent, config.model, config.effort, config.role_instructions = updated
         config.name = name
         store.save_session(config)
+    if request.headers.get("HX-Request") == "true":
+        return sidebar_response(
+            request,
+            project,
+            selected_id=selected_agent or session_id,
+            composer_oob=True,
+        )
     return RedirectResponse(
         f"/projects/{project_id}/sessions/{session_id}",
         status_code=303,
@@ -170,55 +189,6 @@ async def delete_session(
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-def _round_views(store: ProjectStore, session_id: str) -> list[dict]:
-    config = store.load_session(session_id)
-    rounds_dir = store.rounds_dir(session_id)
-    views: list[dict] = []
-    known = {record.n for record in config.rounds}
-    for record in sorted(config.rounds, key=lambda item: item.n):
-        prompt = rounds_dir / f"round-{record.n:02d}.prompt.md"
-        output = rounds_dir / f"round-{record.n:02d}.md"
-        partial = rounds_dir / f"round-{record.n:02d}.partial.md"
-        views.append(
-            {
-                "n": record.n,
-                "record": record,
-                "prompt": prompt.read_text(encoding="utf-8") if prompt.exists() else "",
-                "output": (
-                    output.read_text(encoding="utf-8")
-                    if output.exists()
-                    else partial.read_text(encoding="utf-8")
-                    if partial.exists()
-                    else ""
-                ),
-                "orphan": False,
-                "dom_id": round_dom_id(session_id, record.n),
-            }
-        )
-    scan = store.scan_round_files(session_id)
-    for number in sorted({item.n for item in scan.orphans} - known):
-        prompt = rounds_dir / f"round-{number:02d}.prompt.md"
-        output = rounds_dir / f"round-{number:02d}.md"
-        partial = rounds_dir / f"round-{number:02d}.partial.md"
-        views.append(
-            {
-                "n": number,
-                "record": None,
-                "prompt": prompt.read_text(encoding="utf-8") if prompt.exists() else "",
-                "output": (
-                    output.read_text(encoding="utf-8")
-                    if output.exists()
-                    else partial.read_text(encoding="utf-8")
-                    if partial.exists()
-                    else ""
-                ),
-                "orphan": True,
-                "dom_id": round_dom_id(session_id, number),
-            }
-        )
-    return sorted(views, key=lambda item: item["n"])
-
-
 @router.get("/projects/{project_id}/sessions/{session_id}")
 async def session_page(request: Request, project_id: str, session_id: str):
     project = request.app.state.registry.get(project_id)
@@ -232,7 +202,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
         context={
             "project": project,
             "session": session,
-            "rounds": _round_views(store, session_id),
+            "rounds": round_views(store, session_id),
             "sessions": sessions,
             "active_key": active_key,
             "health": request.app.state.health,
@@ -246,13 +216,14 @@ async def round_fragment(
     project_id: str,
     session_id: str,
     round_n: int,
+    display: str | None = Query(None, alias="view"),
 ):
     project = request.app.state.registry.get(project_id)
     store = ProjectStore(project)
     session = store.load_session(session_id)
     sessions = store.list_sessions()
     view = next(
-        (item for item in _round_views(store, session_id) if item["n"] == round_n),
+        (item for item in round_views(store, session_id) if item["n"] == round_n),
         None,
     )
     if view is None:
@@ -266,5 +237,6 @@ async def round_fragment(
             "session_id": session_id,
             "round": view,
             "sessions": sessions,
+            "chat_view": display == "chat",
         },
     )

@@ -15,3 +15,11 @@ textarea { min-height: 7rem; }
 .markdown pre { overflow-x: auto; padding: .75rem; background: #8882; }
 .error, .warning, .warnings { color: #c43b2f; }
 .health { font-size: .85rem; }
+.chat-layout { display: grid; gap: 1.5rem; grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr); }
+.chat-main { min-width: 0; }
+.agent-card { border: 1px solid #8885; border-radius: .5rem; margin: .75rem 0; padding: .75rem; }
+.agent-card.selected { border-color: #3b82c4; }
+.agent-preview { font-size: .9rem; overflow-wrap: anywhere; }
+.agent-preview.empty { opacity: .7; }
+.chat-errors { color: #c43b2f; min-height: 1.5rem; }
+@media (max-width: 720px) { .chat-layout { grid-template-columns: 1fr; } }
