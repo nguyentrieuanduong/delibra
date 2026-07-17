@@ -8,6 +8,7 @@ const {
   handleFocusDialogCancel,
   isDialogBackdropClick,
   openFocusDialog,
+  removeConversationEmptyState,
   renderChatError,
   shouldClearChatError,
 } = require("../../app/static/app.js");
@@ -117,6 +118,38 @@ test("focus dialog handles Escape as a cancel and restores focus", function () {
   assert.equal(prevented, 1);
   assert.equal(dialog.open, false);
   assert.equal(restored, 1);
+});
+
+test("first inserted conversation message removes the stale empty marker", () => {
+  let removed = 0;
+  const empty = {
+    remove() {
+      removed += 1;
+    },
+  };
+  const timeline = {
+    querySelector(selector) {
+      return selector === "[data-conversation-empty]" ? empty : {};
+    },
+  };
+  assert.equal(removeConversationEmptyState(timeline), true);
+  assert.equal(removed, 1);
+});
+
+test("empty marker stays until a conversation message exists", () => {
+  let removed = 0;
+  const empty = {
+    remove() {
+      removed += 1;
+    },
+  };
+  const timeline = {
+    querySelector(selector) {
+      return selector === "[data-conversation-empty]" ? empty : null;
+    },
+  };
+  assert.equal(removeConversationEmptyState(timeline), false);
+  assert.equal(removed, 0);
 });
 
 test("successful file fragments preserve the global chat error", function () {

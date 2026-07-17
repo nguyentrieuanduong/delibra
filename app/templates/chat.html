@@ -42,6 +42,9 @@
       </div>
       <div id="chat-errors" class="chat-errors" aria-live="polite"></div>
       <section class="chat-timeline" aria-label="Conversation">
+        <div class="timeline-heading">
+          <h2>Conversation</h2><span>Oldest → newest</span>
+        </div>
         {% set chat_view = true %}
         {% for item in timeline %}
           {% set session = item.session %}
@@ -55,7 +58,7 @@
             {% include "_round.html" %}
           {% endif %}
         {% else %}
-          <p>No conversation yet.</p>
+          <p data-conversation-empty>No conversation yet.</p>
         {% endfor %}
       </section>
     </section>

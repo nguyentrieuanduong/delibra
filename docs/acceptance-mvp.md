@@ -238,3 +238,13 @@ The adopted boundary is strict workspace-only agent writes plus app-owned Codex
 provider state. It does not provide read confidentiality from the local OS user.
 Exactly one Uvicorn worker is supported. Graceful shutdown is verified; a hard kill
 may orphan CLI processes because the MVP intentionally has no external watchdog.
+
+## M6 concise chat UI acceptance
+
+- Automated gate: the full Python suite and direct Node tests passed.
+- Chrome 1100×800: selector and composer remained side by side; the right agent
+  rail was narrower than the left file rail; the first live insertion removed
+  the empty marker; a completed message collapsed with Focus still visible and
+  its modal operable; two live panes retained distinct ids and kept updating.
+- Scope check: session history stayed expanded, and M6 changed no route,
+  storage, SSE, pagination, mobile, or authenticated-provider behavior.
