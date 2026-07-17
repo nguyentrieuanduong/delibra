@@ -205,6 +205,52 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
     assert "#file-browser-host, #file-reader { min-height: 0; overflow: auto; }" in stylesheet.text
 
 
+def test_chat_uses_compact_horizontal_controls_and_small_agent_rail(
+    tmp_path: Path,
+) -> None:
+    alpha = session("a" * 32, "Alpha", agent="claude")
+    app, project, _ = setup_project(tmp_path, [alpha])
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        css = client.get("/static/app.css")
+
+    assert response.status_code == 200
+    assert css.status_code == 200
+    controls = re.search(
+        r'<div class="conversation-controls">(?P<body>.*?)</div>\s*'
+        r'<div id="chat-errors"',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert controls is not None
+    assert 'id="chat-agent-select"' in controls["body"]
+    assert 'id="chat-composer"' in controls["body"]
+    assert "body.chat-page { padding-top: .5rem; }" in css.text
+    assert "body.chat-page > header { margin-bottom: .5rem; }" in css.text
+    assert (
+        ".workspace-topic h1, .workspace-topic p { margin: .1rem 0; }"
+        in css.text
+    )
+    assert (
+        "grid-template-columns: minmax(11rem, 1fr) minmax(22rem, 2fr)"
+        in css.text
+    )
+    assert (
+        "grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) "
+        "minmax(12rem, .7fr)" in css.text
+    )
+    assert (
+        "grid-template-rows: auto minmax(32rem, calc(100vh - 9rem))"
+        in css.text
+    )
+    assert ".conversation-controls textarea { min-height: 4rem; }" in css.text
+    assert ".workspace-agents { font-size: .85rem;" in css.text
+    assert (
+        ".workspace-agents :is(input, select, textarea, button) { font: inherit; }"
+        in css.text
+    )
+
+
 def test_file_browser_links_target_only_the_reader_for_display_errors(
     tmp_path: Path,
 ) -> None:
