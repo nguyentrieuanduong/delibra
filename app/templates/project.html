@@ -5,12 +5,61 @@
   <h1>{{ project.name }}</h1>
   <p><code>{{ project.path }}</code></p>
   <h2>Sessions</h2>
+  <details>
+    <summary>Create session</summary>
+    <form method="post" action="/projects/{{ project.id }}/sessions">
+      <label>Name <input name="name" maxlength="200" required></label>
+      <label>Agent
+        <select name="agent" required>
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <label>Model <input name="model" maxlength="200" value="sonnet" required></label>
+      <label>Effort
+        <select name="effort" required>
+          <option>minimal</option><option>low</option><option>medium</option>
+          <option selected>high</option><option>xhigh</option><option>max</option>
+        </select>
+      </label>
+      <label>Role instructions
+        <textarea name="role_instructions" maxlength="50000"></textarea>
+      </label>
+      <button type="submit">Create session</button>
+    </form>
+  </details>
   {% if sessions %}
-    <ul>
+    <div class="sessions">
       {% for session in sessions %}
-        <li><a href="/projects/{{ project.id }}/sessions/{{ session.id }}">{{ session.name }}</a> · {{ session.agent }} · {{ session.status }}</li>
+        <article class="session-card">
+          <h3><a href="/projects/{{ project.id }}/sessions/{{ session.id }}">{{ session.name }}</a></h3>
+          <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
+          <details>
+            <summary>Edit</summary>
+            <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/edit">
+              <label>Name <input name="name" maxlength="200" value="{{ session.name }}" required></label>
+              {% if not session.rounds %}
+                <label>Agent
+                  <select name="agent">
+                    <option value="claude"{% if session.agent == 'claude' %} selected{% endif %}>Claude</option>
+                    <option value="codex"{% if session.agent == 'codex' %} selected{% endif %}>Codex</option>
+                  </select>
+                </label>
+                <label>Model <input name="model" maxlength="200" value="{{ session.model }}" required></label>
+                <label>Effort <input name="effort" value="{{ session.effort }}" required></label>
+                <label>Role instructions
+                  <textarea name="role_instructions" maxlength="50000">{{ session.role_instructions }}</textarea>
+                </label>
+              {% endif %}
+              <button type="submit">Save</button>
+            </form>
+          </details>
+          <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/delete">
+            <button type="submit"{% if session.status == 'running' %} disabled{% endif %}>Delete</button>
+          </form>
+        </article>
       {% endfor %}
-    </ul>
+    </div>
   {% else %}
     <p>No sessions yet.</p>
   {% endif %}
