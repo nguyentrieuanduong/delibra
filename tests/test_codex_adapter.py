@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from app.agents.base import RunContext
+from app.agents.codex import CodexAdapter
+from app.models import SessionConfig
+
+
+FIXTURES = Path(__file__).resolve().parents[1] / "spike" / "fixtures"
+
+
+def config() -> SessionConfig:
+    return SessionConfig(
+        id="b" * 32,
+        name="critic",
+        agent="codex",
+        model="gpt-5.4",
+        effort="high",
+        role_instructions="Begin with ROLE-CODEX-OK.",
+        cli_session_id=None,
+        status="idle",
+        created_at="2026-07-17T00:00:00Z",
+        rounds=[],
+    )
+
+
+def parse_fixture(name: str) -> tuple[CodexAdapter, list]:
+    adapter = CodexAdapter(executable="/opt/homebrew/bin/codex")
+    events = []
+    for line in (FIXTURES / name).read_text(encoding="utf-8").splitlines():
+        events.extend(adapter.parse_line(line))
+    return adapter, events
+
+
+def context(
+    prompt: str,
+    *,
+    resume_id: str | None = None,
+    strategy: str = "native",
+) -> RunContext:
+    return RunContext(
+        user_prompt=prompt,
+        resume_id=resume_id,
+        resume_strategy=strategy,
+        staged_history=[],
+        staged_source=None,
+        workspace=Path("/session/workspace"),
+    )
+
+
+def test_fixture_extracts_thread_fixed_progress_and_final_message() -> None:
+    adapter, events = parse_fixture("codex_first.jsonl")
+    init = [event for event in events if event.kind == "init"]
+    assert len(init) == 1
+    assert init[0].cli_session_id == "00000000-0000-4000-8000-000000000002"
+
+    assert not [event for event in events if event.kind == "text_delta"]
+    progress = [event.text for event in events if event.kind == "progress"]
+    assert "Running a command" in progress
+    assert "Searching the web" in progress
+    assert "Codex is working" in progress
+    assert all("curl" not in label and "/" not in label for label in progress)
+
+    results = [event for event in events if event.kind == "result"]
+    assert len(results) == 1
+    assert results[0].text == adapter.final_text()
+    assert adapter.final_text().startswith("ROLE-CODEX-OK")
+
+
+def test_error_and_turn_failed_fixture_are_terminal_errors() -> None:
+    _, events = parse_fixture("codex_error.jsonl")
+    errors = [event.text for event in events if event.kind == "error"]
+    assert errors
+    assert any("not supported" in message for message in errors)
+    assert not [event for event in events if event.kind == "result"]
+
+
+def test_non_json_reasoning_and_unknown_provider_payloads_are_safe() -> None:
+    adapter = CodexAdapter()
+    assert adapter.parse_line("  ") == []
+    assert [(event.kind, event.text) for event in adapter.parse_line("bad-json")] == [
+        ("error", "Codex emitted malformed JSONL")
+    ]
+
+    canary = "PRIVATE-CODEX-REASONING-DO-NOT-LEAK"
+    assert adapter.parse_line(
+        json.dumps({"type": "item.completed", "item": {"type": "reasoning", "text": canary}})
+    ) == []
+    assert canary not in repr(adapter)
+
+
+def test_cumulative_agent_text_is_converted_to_append_only_deltas() -> None:
+    adapter = CodexAdapter()
+    first = adapter.parse_line(
+        json.dumps(
+            {"type": "item.updated", "item": {"type": "agent_message", "text": "Hello"}}
+        )
+    )
+    second = adapter.parse_line(
+        json.dumps(
+            {
+                "type": "item.updated",
+                "item": {"type": "agent_message", "text": "Hello world"},
+            }
+        )
+    )
+    assert [event.text for event in [*first, *second]] == ["Hello", " world"]
+
+
+def test_build_command_first_turn_matches_proven_spike_and_prepends_role() -> None:
+    command = CodexAdapter(executable="codex").build_command(
+        config(), context("Investigate this.")
+    )
+    assert command.argv == [
+        "codex",
+        "--model",
+        "gpt-5.4",
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "never",
+        "--search",
+        "--cd",
+        "/session/workspace",
+        "--config",
+        'model_reasoning_effort="high"',
+        "--config",
+        "project_root_markers=[]",
+        "--config",
+        "project_doc_max_bytes=0",
+        "--config",
+        "sandbox_workspace_write.exclude_slash_tmp=true",
+        "--config",
+        "sandbox_workspace_write.exclude_tmpdir_env_var=false",
+        "--config",
+        "sandbox_workspace_write.network_access=false",
+        "--config",
+        'shell_environment_policy.inherit="all"',
+        "--disable",
+        "hooks",
+        "--disable",
+        "plugins",
+        "--disable",
+        "apps",
+        "--disable",
+        "memories",
+        "--disable",
+        "goals",
+        "--disable",
+        "multi_agent",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--strict-config",
+        "-",
+    ]
+    assert command.stdin.startswith(
+        "<role_instructions>Begin with ROLE-CODEX-OK.</role_instructions>\n\n"
+    )
+    assert command.stdin.endswith("Investigate this.")
+
+
+def test_build_command_native_resume_retains_policy_without_repeating_role() -> None:
+    command = CodexAdapter(executable="codex").build_command(
+        config(), context("Continue.", resume_id="thread-id")
+    )
+    exec_index = command.argv.index("exec")
+    assert command.argv[exec_index:] == [
+        "exec",
+        "resume",
+        "--json",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--strict-config",
+        "thread-id",
+        "-",
+    ]
+    assert command.stdin == "Continue."
+    assert "--sandbox" in command.argv[:exec_index]
+    assert "--search" in command.argv[:exec_index]
+
+
+def test_build_command_stateless_reapplies_role_history_and_source() -> None:
+    run_context = context("Continue with evidence.", strategy="stateless")
+    run_context = RunContext(
+        user_prompt=run_context.user_prompt,
+        resume_id=None,
+        resume_strategy="stateless",
+        staged_history=[
+            Path("inputs/round-03/history/round-01.prompt.md"),
+            Path("inputs/round-03/history/round-01.md"),
+        ],
+        staged_source=Path("inputs/round-03/source.md"),
+        workspace=run_context.workspace,
+    )
+    command = CodexAdapter(executable="codex").build_command(config(), run_context)
+    assert "<role_instructions>Begin with ROLE-CODEX-OK.</role_instructions>" in command.stdin
+    assert "round-01.prompt.md" in command.stdin
+    assert "round-01.md" in command.stdin
+    assert "inputs/round-03/source.md" in command.stdin
+    assert command.stdin.endswith("Continue with evidence.")
+
+
+def test_effort_levels_match_installed_codex() -> None:
+    assert CodexAdapter.EFFORT_LEVELS == ["minimal", "low", "medium", "high", "xhigh"]
