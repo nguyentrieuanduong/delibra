@@ -104,16 +104,49 @@ function removeConversationEmptyState(timeline) {
   return true;
 }
 
+function conversationTimelineForSwap(detailTarget, swappedElement) {
+  if (detailTarget.classList.contains("chat-timeline")) {
+    return detailTarget;
+  }
+  if (!swappedElement || typeof swappedElement.closest !== "function") {
+    return null;
+  }
+  return swappedElement.closest(".chat-timeline");
+}
+
+function syncConversationDisclosure(timeline) {
+  const messages = Array.from(
+    timeline.querySelectorAll(".round, .live-round")
+  );
+  messages.forEach(function (message) {
+    const details = message.querySelector(".round-details");
+    if (details) {
+      details.open = false;
+    }
+  });
+  const lastMessage = messages[messages.length - 1];
+  const lastDetails = lastMessage
+    ? lastMessage.querySelector(".round-details")
+    : null;
+  if (!lastDetails) {
+    return false;
+  }
+  lastDetails.open = true;
+  return true;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     chatErrorMessage,
     closeFocusDialog,
+    conversationTimelineForSwap,
     handleFocusDialogCancel,
     isDialogBackdropClick,
     openFocusDialog,
     removeConversationEmptyState,
     renderChatError,
     shouldClearChatError,
+    syncConversationDisclosure,
   };
 }
 
@@ -172,8 +205,10 @@ if (typeof document !== "undefined") {
     if (!target) {
       return;
     }
-    if (target.classList.contains("chat-timeline")) {
-      removeConversationEmptyState(target);
+    const timeline = conversationTimelineForSwap(target, event.target);
+    if (timeline) {
+      removeConversationEmptyState(timeline);
+      syncConversationDisclosure(timeline);
     }
     if (target.id !== "focus-dialog-content") {
       return;

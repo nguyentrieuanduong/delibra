@@ -58,6 +58,7 @@
           {% set session_id = session.id %}
           {% set round = item.round %}
           {% set dom_id = round.dom_id %}
+          {% set round_expanded = loop.last %}
           {% if item.key %}
             {% set key = item.key %}
             {% include "_live.html" %}
