@@ -21,27 +21,29 @@ textarea { min-height: 7rem; }
 .chat-workspace {
   display: grid;
   gap: .65rem;
-  grid-template-areas:
-    "topic topic topic"
-    "files conversation agents";
+  grid-template-areas: "files conversation agents";
   grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) minmax(12rem, .7fr);
-  grid-template-rows: auto minmax(32rem, calc(100vh - 9rem));
+  grid-template-rows: minmax(32rem, calc(100vh - 4rem));
 }
 .workspace-topic {
-  align-items: center;
-  display: flex;
-  gap: 2rem;
-  grid-area: topic;
-  justify-content: space-between;
+  align-items: stretch;
+  display: grid;
+  gap: .35rem;
 }
 .workspace-topic h1, .workspace-topic p { margin: .1rem 0; }
 .project-path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
-.topic-health { display: flex; flex-direction: column; text-align: right; }
+.topic-health {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: .35rem;
+  text-align: left;
+}
 .workspace-files {
   display: grid;
   gap: .75rem;
   grid-area: files;
-  grid-template-rows: minmax(10rem, 2fr) minmax(12rem, 3fr);
+  grid-template-rows: auto minmax(10rem, 2fr) minmax(12rem, 3fr);
   min-height: 0;
 }
 #file-browser-host, #file-reader { min-height: 0; overflow: auto; }

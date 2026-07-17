@@ -265,7 +265,7 @@ def test_chat_uses_compact_horizontal_controls_and_small_agent_rail(
         "minmax(12rem, .7fr)" in css.text
     )
     assert (
-        "grid-template-rows: auto minmax(32rem, calc(100vh - 9rem))"
+        "grid-template-rows: minmax(32rem, calc(100vh - 4rem))"
         in css.text
     )
     assert ".conversation-controls textarea { min-height: 4rem; }" in css.text
@@ -274,6 +274,40 @@ def test_chat_uses_compact_horizontal_controls_and_small_agent_rail(
         ".workspace-agents :is(input, select, textarea, button) { font: inherit; }"
         in css.text
     )
+
+
+def test_chat_nests_topic_inside_full_height_file_rail(tmp_path: Path) -> None:
+    alpha = session("a" * 32, "Alpha", agent="claude")
+    app, project, _ = setup_project(tmp_path, [alpha])
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        css = client.get("/static/app.css")
+
+    assert response.status_code == 200
+    assert css.status_code == 200
+    files = re.search(
+        r'<aside\s+class="workspace-files"[^>]*>(?P<body>.*?)</aside>',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert files is not None
+    rail = files["body"]
+    assert 'data-workspace-region="topic"' in rail
+    assert rail.index('data-workspace-region="topic"') < rail.index(
+        'id="file-browser-host"'
+    )
+    assert rail.index('id="file-browser-host"') < rail.index('id="file-reader"')
+    assert response.text.count('data-workspace-region="topic"') == 1
+    assert response.text.count('id="file-browser-host"') == 1
+    assert response.text.count('id="file-reader"') == 1
+    assert '"files conversation agents";' in css.text
+    assert '"topic topic topic"' not in css.text
+    assert 'grid-template-rows: minmax(32rem, calc(100vh - 4rem))' in css.text
+    assert (
+        'grid-template-rows: auto minmax(10rem, 2fr) minmax(12rem, 3fr)'
+        in css.text
+    )
+    assert "grid-area: topic" not in css.text
 
 
 def test_file_browser_links_target_only_the_reader_for_display_errors(

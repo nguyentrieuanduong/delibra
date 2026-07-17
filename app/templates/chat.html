@@ -3,22 +3,29 @@
 {% block body_class %}chat-page{% endblock %}
 {% block content %}
   <div class="chat-workspace">
-    <section class="workspace-topic" data-workspace-region="topic" aria-label="Topic information">
-      <div>
-        <p><a href="/">Projects</a> · <a href="/projects/{{ project.id }}/settings">Manage</a></p>
-        <h1>{{ project.name }}</h1>
-        <p class="project-path">{{ project.path }}</p>
-      </div>
-      <div class="topic-health" aria-label="Provider health">
-        {% for provider in health %}
-          <span class="health {{ 'warning' if provider.checking or provider.warning else 'ok' }}">
-            {% if provider.checking %}Checking {{ provider.name|title }}…{% else %}{{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}{% endif %}
-          </span>
-        {% endfor %}
-      </div>
-    </section>
-
-    <aside class="workspace-files" data-workspace-region="files" aria-label="Project files">
+    <aside
+      class="workspace-files"
+      data-workspace-region="files"
+      aria-label="Project information and files"
+    >
+      <section
+        class="workspace-topic"
+        data-workspace-region="topic"
+        aria-label="Topic information"
+      >
+        <div>
+          <p><a href="/">Projects</a> · <a href="/projects/{{ project.id }}/settings">Manage</a></p>
+          <h1>{{ project.name }}</h1>
+          <p class="project-path">{{ project.path }}</p>
+        </div>
+        <div class="topic-health" aria-label="Provider health">
+          {% for provider in health %}
+            <span class="health {{ 'warning' if provider.checking or provider.warning else 'ok' }}">
+              {% if provider.checking %}Checking {{ provider.name|title }}…{% else %}{{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}{% endif %}
+            </span>
+          {% endfor %}
+        </div>
+      </section>
       <div
         id="file-browser-host"
         hx-get="/projects/{{ project.id }}/files"
