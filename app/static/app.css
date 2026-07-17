@@ -21,7 +21,7 @@ textarea { min-height: 7rem; }
 .chat-workspace {
   display: grid;
   gap: .65rem;
-  grid-template-areas: "files conversation agents";
+  grid-template-areas: "agents conversation files";
   grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) minmax(12rem, .7fr);
   grid-template-rows: minmax(32rem, calc(100vh - 4rem));
 }
@@ -43,8 +43,9 @@ textarea { min-height: 7rem; }
   display: grid;
   gap: .75rem;
   grid-area: files;
-  grid-template-rows: auto minmax(10rem, 2fr) minmax(12rem, 3fr);
+  grid-template-rows: minmax(10rem, 2fr) minmax(12rem, 3fr);
   min-height: 0;
+  min-width: 0;
 }
 #file-browser-host, #file-reader { min-height: 0; overflow: auto; }
 .workspace-conversation {
@@ -55,28 +56,32 @@ textarea { min-height: 7rem; }
   min-height: 0;
   min-width: 0;
 }
-.conversation-controls {
-  align-items: start;
-  display: grid;
-  gap: .75rem;
-  grid-template-columns: minmax(11rem, 1fr) minmax(22rem, 2fr);
-}
-.conversation-controls form { margin: 0; }
-.conversation-controls .chat-agent-select {
-  border-bottom: 0;
-  border-right: 1px solid #8885;
-  padding-bottom: 0;
-  padding-right: .75rem;
-}
-.conversation-controls textarea { min-height: 4rem; }
+#chat-composer { margin: 0; }
+#chat-composer textarea { min-height: 3rem; }
 .chat-timeline { min-height: 0; overflow: auto; }
-.workspace-agents { font-size: .85rem; grid-area: agents; min-height: 0; overflow: auto; }
+.workspace-agents {
+  display: grid;
+  font-size: .85rem;
+  gap: .75rem;
+  grid-area: agents;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+#agent-sidebar { min-height: 0; overflow: auto; }
 .workspace-agents :is(input, select, textarea, button) { font: inherit; }
 .workspace-agents form { gap: .45rem; margin: .5rem 0; }
 .workspace-agents textarea { min-height: 4rem; }
 .workspace-agents .agent-card { margin: .5rem 0; padding: .5rem; }
-.chat-agent-select { border-bottom: 1px solid #8885; padding-bottom: .75rem; }
-.chat-agent-select h2, .chat-agent-select h3, .chat-agent-select p { margin: .25rem 0; }
+.agent-card-heading {
+  align-items: baseline;
+  display: flex;
+  gap: .5rem;
+  justify-content: space-between;
+}
+.agent-card-heading h3 { margin: 0; }
+.agent-details > summary { cursor: pointer; }
 .agent-role { border-left: .2rem solid #8885; padding-left: .6rem; }
 .agent-role h4, .agent-role p { margin: .25rem 0; }
 .role-instructions { white-space: pre-wrap; }

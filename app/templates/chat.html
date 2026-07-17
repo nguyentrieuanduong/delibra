@@ -3,11 +3,7 @@
 {% block body_class %}chat-page{% endblock %}
 {% block content %}
   <div class="chat-workspace">
-    <aside
-      class="workspace-files"
-      data-workspace-region="files"
-      aria-label="Project information and files"
-    >
+    <section class="workspace-agents" data-workspace-region="agents">
       <section
         class="workspace-topic"
         data-workspace-region="topic"
@@ -26,27 +22,15 @@
           {% endfor %}
         </div>
       </section>
-      <div
-        id="file-browser-host"
-        hx-get="/projects/{{ project.id }}/files"
-        hx-trigger="load"
-        hx-target="this"
-        hx-swap="innerHTML"
-      >Loading files…</div>
-      <section id="file-reader" aria-label="File reader">
-        <p>Select a text file to read it here.</p>
-      </section>
-    </aside>
+      {% include "_agent_sidebar.html" %}
+    </section>
 
     <section
       class="workspace-conversation"
       data-workspace-region="conversation"
       aria-label="Conversation workspace"
     >
-      <div class="conversation-controls">
-        {% include "_chat_select.html" %}
-        {% include "_composer.html" %}
-      </div>
+      {% include "_composer.html" %}
       <div id="chat-errors" class="chat-errors" aria-live="polite"></div>
       <section class="chat-timeline" aria-label="Conversation">
         <div class="timeline-heading">
@@ -71,9 +55,22 @@
       </section>
     </section>
 
-    <section class="workspace-agents" data-workspace-region="agents">
-      {% include "_agent_sidebar.html" %}
-    </section>
+    <aside
+      class="workspace-files"
+      data-workspace-region="files"
+      aria-label="Project files"
+    >
+      <div
+        id="file-browser-host"
+        hx-get="/projects/{{ project.id }}/files"
+        hx-trigger="load"
+        hx-target="this"
+        hx-swap="innerHTML"
+      >Loading files…</div>
+      <section id="file-reader" aria-label="File reader" tabindex="-1">
+        <p class="file-reader-empty">Select a text file to read it here.</p>
+      </section>
+    </aside>
   </div>
   <dialog id="focus-dialog" class="focus-dialog" aria-label="Round focus">
     <div class="focus-dialog-shell">

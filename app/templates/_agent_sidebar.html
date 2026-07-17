@@ -2,7 +2,6 @@
 <aside
   id="agent-sidebar"
   aria-label="Agents"
-  {% if sidebar_oob %}hx-swap-oob="outerHTML:#agent-sidebar"{% endif %}
 >
   <h2>Agents</h2>
   <details{% if not sessions %} open{% endif %}>
@@ -43,5 +42,4 @@
     {% endfor %}
   </div>
 </aside>
-{% if chat_select_oob %}{% include "_chat_select.html" %}{% endif %}
 {% if composer_oob %}{% include "_composer.html" %}{% endif %}
