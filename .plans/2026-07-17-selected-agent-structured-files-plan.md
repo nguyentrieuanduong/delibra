@@ -251,7 +251,7 @@ Add one formatter test requiring two safe YAML documents to normalize without wa
 
 Restore `safe_load_all`/`safe_dump_all`, then run formatter, file-route, and complete Python suites.
 
-### [ ] Step 17: Commit Tasks 2-4
+### [x] Step 17: Commit Tasks 2-4
 
 Run the security pre-commit diff checks, then:
 
@@ -264,7 +264,7 @@ git commit -m "feat: pretty-print JSON and YAML project files"
 
 **Files:** Review all files changed above.
 
-### [ ] Step 1: Run the complete automated suite
+### [x] Step 1: Run the complete automated suite
 
 ```bash
 envs/bin/python -m pytest -q
@@ -274,7 +274,7 @@ envs/bin/pip check
 
 Expected: all Python and JavaScript tests pass and dependencies are consistent.
 
-### [ ] Step 2: Perform security and code review
+### [x] Step 2: Perform security and code review
 
 Confirm:
 
@@ -287,6 +287,6 @@ Confirm:
 
 Apply `code-craft:verification-before-completion`, then `code-craft:code-review`. Fix findings test-first and rerun the affected plus complete suites.
 
-### [ ] Step 3: Update the project milestone record if required by repository convention
+### [x] Step 3: Update the project milestone record if required by repository convention
 
 If `.plan/2026-07-16-MVP.md` tracks post-MVP tasks, add completed entries for selected-agent expansion and structured pretty viewing only after implementation and verification pass. Do not rewrite unrelated plan history.

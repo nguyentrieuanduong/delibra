@@ -199,6 +199,25 @@ def test_generated_structured_file_values_are_pretty_and_safe(
                 assert 'aria-label="Focused file"' in yaml_response.text
 
 
+def test_yml_extension_uses_the_yaml_pretty_view(tmp_path: Path) -> None:
+    app, project, project_path = setup_file_project(tmp_path)
+    (project_path / "value.yml").write_text(
+        "{items: [one, two]}\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"/projects/{project.id}/files/view",
+            params={"path": "value.yml"},
+        )
+
+    assert response.status_code == 200
+    rendered = structured_pre_text(response.text, "yaml")
+    assert yaml.safe_load(rendered) == {"items": ["one", "two"]}
+    assert rendered != "{items: [one, two]}\n"
+
+
 def test_invalid_structured_file_shows_escaped_source_and_warning(
     tmp_path: Path,
 ) -> None:
