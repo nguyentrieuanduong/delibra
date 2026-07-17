@@ -33,14 +33,14 @@ envs/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
-Claude or Codex agent from the project chat, and submit a prompt. The project chat
-merges every agent's recorded rounds into one timeline. Its workspace keeps project
-health at the top, a project-file browser and reader on the left, the selected agent
-and conversation in the center, and agent creation/editing on the right. Recorded
-rounds can be opened in a keyboard-accessible focus dialog without replacing live
-streams. **Manage** opens project and agent settings. The footer starts in a checking
-state, then reports missing CLIs and version drift without delaying or preventing the
-rest of the UI from loading.
+Claude or Codex agent, and submit a prompt. The project chat keeps project context
+and collapsed agent cards in the wider left rail, a compact composer and merged
+conversation in the center, and project-file browsing/reading in the narrower
+right rail. Select an agent name to route the composer and highlight that card.
+Recorded rounds and opened files use the shared keyboard-accessible focus dialog.
+**Manage** opens project and agent settings. The footer starts in a checking
+state, then reports missing CLIs and version drift without delaying or preventing
+the rest of the UI from loading.
 
 ## Workflow and storage
 

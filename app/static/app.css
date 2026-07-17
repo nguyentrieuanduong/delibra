@@ -48,6 +48,16 @@ textarea { min-height: 7rem; }
   min-width: 0;
 }
 #file-browser-host, #file-reader { min-height: 0; overflow: auto; }
+.file-reader-empty { opacity: .55; }
+.file-view-header {
+  align-items: baseline;
+  display: flex;
+  gap: .5rem;
+  justify-content: space-between;
+}
+.file-view-header h3 { margin-top: 0; overflow-wrap: anywhere; }
+.file-view-actions { display: flex; gap: .35rem; }
+.file-view pre { overflow: auto; white-space: pre-wrap; }
 .workspace-conversation {
   display: grid;
   gap: .75rem;

@@ -260,3 +260,17 @@ may orphan CLI processes because the MVP intentionally has no external watchdog.
   opened, with Focus/modal and live ids preserved.
 - Scope check: session history stayed expanded, and M7 changed no route,
   storage, SSE, ordering, focus, selection, pagination, or mobile behavior.
+
+## M8 sidebar selection and file focus acceptance
+
+- Automated gate: the full Python suite and direct Node tests passed.
+- Chrome 1100×800: project metadata and collapsed agent cards occupied the wider
+  left rail, conversation stayed centered with only the compact composer, and
+  file browsing/reading occupied the narrower right rail.
+- Selection gate: Claude/Codex card links updated the highlighted card, URL, and
+  composer session id without replacing concurrent live panes or the timeline.
+- File gate: a safe Markdown file opened in the reader, focused in the shared
+  modal with focus restoration, then closed to the dim placeholder; unsafe and
+  display-error paths retained the existing boundary.
+- Scope check: M8 changed no storage, SSE, ordering, disclosure, pass, provider,
+  authenticated-provider, pagination, or mobile behavior.

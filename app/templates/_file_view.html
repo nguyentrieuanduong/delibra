@@ -1,5 +1,24 @@
-<article class="file-view" aria-label="Opened file">
-  <h3>{{ path }}</h3>
+<article
+  class="file-view{% if focused %} focused{% endif %}"
+  {% if focused %}id="file-focus"{% endif %}
+  aria-label="{{ 'Focused file' if focused else 'Opened file' }}"
+>
+  <header class="file-view-header">
+    <h3>{{ path }}</h3>
+    {% if not focused %}
+      <div class="file-view-actions">
+        {% if not file_error %}
+          <button
+            type="button"
+            hx-get="{{ focus_url }}"
+            hx-target="#focus-dialog-content"
+            hx-swap="innerHTML"
+          >Focus</button>
+        {% endif %}
+        <button type="button" data-file-reader-close>Close</button>
+      </div>
+    {% endif %}
+  </header>
   {% if file_error %}
     <p class="file-error" role="status">{{ file_error }}</p>
   {% else %}

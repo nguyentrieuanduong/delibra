@@ -319,6 +319,10 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
     assert files["body"].index('id="file-browser-host"') < files["body"].index(
         'id="file-reader"'
     )
+    assert '<section id="file-reader" aria-label="File reader" tabindex="-1">' in files[
+        "body"
+    ]
+    assert '<p class="file-reader-empty">' in files["body"]
     assert 'id="chat-agent-select"' not in response.text
     assert "Choose agent" not in response.text
     beta_card = re.search(
@@ -369,6 +373,7 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
         flags=re.DOTALL,
     )
     assert "#chat-composer textarea { min-height: 3rem; }" in css.text
+    assert ".file-reader-empty { opacity: .55; }" in css.text
     assert ".conversation-controls" not in css.text
     assert ".chat-agent-select" not in css.text
 
@@ -434,7 +439,9 @@ def test_round_focus_fragment_is_static_and_keeps_complete_dom_ids_unique(
 
     assert page.status_code == 200
     assert 'id="focus-dialog"' in page.text
+    assert 'aria-label="Focused content"' in page.text
     assert 'id="focus-dialog-content"' in page.text
+    assert "Select Focus on a recorded round or opened file to inspect it." in page.text
     assert f'id="round-{beta.id}-1"' in page.text
     alpha_bubble = re.search(
         rf'<article[^>]+id="round-{alpha.id}-1".*?</article>',

@@ -119,6 +119,44 @@ def test_file_view_renders_markdown_safely_and_escapes_plain_text(
     assert "<pre>value = &#39;&lt;b&gt;literal&lt;/b&gt;&#39;</pre>" in plain.text
 
 
+def test_file_view_offers_close_and_descriptor_safe_focus(tmp_path: Path) -> None:
+    app, project, project_path = setup_file_project(tmp_path)
+    (project_path / "notes.md").write_text("# Focused note", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("DO-NOT-LEAK", encoding="utf-8")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        reader = client.get(
+            f"/projects/{project.id}/files/view", params={"path": "notes.md"}
+        )
+        focused = client.get(
+            f"/projects/{project.id}/files/focus", params={"path": "notes.md"}
+        )
+        traversal = client.get(
+            f"/projects/{project.id}/files/focus",
+            params={"path": "../outside.md"},
+        )
+
+    assert reader.status_code == 200
+    assert (
+        f'hx-get="/projects/{project.id}/files/focus?path=notes.md"'
+        in reader.text
+    )
+    assert 'hx-target="#focus-dialog-content"' in reader.text
+    assert 'hx-swap="innerHTML"' in reader.text
+    assert 'data-file-reader-close' in reader.text
+    assert focused.status_code == 200
+    assert focused.text.count('id="file-focus"') == 1
+    assert "<h1>Focused note</h1>" in focused.text
+    assert 'id="file-reader"' not in focused.text
+    assert 'data-file-reader-close' not in focused.text
+    assert 'hx-get=' not in focused.text
+    assert traversal.status_code == 422
+    assert traversal.json() == {"detail": "invalid project file path"}
+    assert "DO-NOT-LEAK" not in traversal.text
+    assert str(outside) not in traversal.text
+
+
 def test_file_view_bounds_the_descriptor_read_and_reports_display_warnings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -149,11 +187,21 @@ def test_file_view_bounds_the_descriptor_read_and_reports_display_warnings(
             f"/projects/{project.id}/files/view",
             params={"path": "invalid.txt"},
         )
+        focused = client.get(
+            f"/projects/{project.id}/files/focus",
+            params={"path": "invalid.txt"},
+        )
 
     assert response.status_code == 200
     assert "abc\ufffddefg" in response.text
     assert "File truncated at the view limit." in response.text
     assert "Invalid UTF-8 was replaced for display." in response.text
+    assert focused.status_code == 200
+    assert "abc\ufffddefg" in focused.text
+    assert "File truncated at the view limit." in focused.text
+    assert "Invalid UTF-8 was replaced for display." in focused.text
+    assert 'data-file-reader-close' not in focused.text
+    assert 'hx-get=' not in focused.text
 
 
 def test_file_routes_reject_traversal_absolute_and_symlink_paths_without_detail(
@@ -377,6 +425,10 @@ def test_file_browser_encodes_names_and_marks_symlinks_and_fifos_nonopenable(
     assert re.search(r'<span aria-disabled="true">events\.log</span>', listing.text)
     assert opened.status_code == 200
     assert "encoded path" in opened.text
+    assert (
+        f'hx-get="/projects/{project.id}/files/focus?path=notes+%231.md"'
+        in opened.text
+    )
     assert metadata.status_code == 200
     assert "manifest.json" in metadata.text
 
@@ -403,6 +455,10 @@ def test_displayability_failures_are_scoped_http_200_fragments_and_routes_are_ge
                 f"/projects/{project.id}/files/view",
                 params={"path": "binary.txt"},
             )
+            focused_binary = client.get(
+                f"/projects/{project.id}/files/focus",
+                params={"path": "binary.txt"},
+            )
             non_regular = client.get(
                 f"/projects/{project.id}/files/view",
                 params={"path": "blocked.log"},
@@ -418,6 +474,10 @@ def test_displayability_failures_are_scoped_http_200_fragments_and_routes_are_ge
             listing_markup = client.get(f"/projects/{project.id}/files")
             post_listing = client.post(f"/projects/{project.id}/files")
             post_view = client.post(f"/projects/{project.id}/files/view")
+            post_focus = client.post(
+                f"/projects/{project.id}/files/focus",
+                params={"path": "notes.md"},
+            )
     finally:
         unreadable_path.chmod(0o600)
 
@@ -425,6 +485,13 @@ def test_displayability_failures_are_scoped_http_200_fragments_and_routes_are_ge
         assert response.status_code == 200
         assert 'class="file-error" role="status"' in response.text
         assert 'id="chat-errors"' not in response.text
+        assert 'data-file-reader-close' in response.text
+        assert '/files/focus?' not in response.text
+    assert focused_binary.status_code == 200
+    assert 'class="file-error" role="status"' in focused_binary.text
+    assert "Binary files cannot be displayed." in focused_binary.text
+    assert 'data-file-reader-close' not in focused_binary.text
+    assert 'hx-get=' not in focused_binary.text
     assert missing_listing.status_code == 200
     assert 'id="file-browser-list"' in missing_listing.text
     assert 'class="file-error" role="status"' in missing_listing.text
@@ -432,3 +499,4 @@ def test_displayability_failures_are_scoped_http_200_fragments_and_routes_are_ge
     assert 'hx-target="#file-reader"' in listing_markup.text
     assert post_listing.status_code == 405
     assert post_view.status_code == 405
+    assert post_focus.status_code == 405
