@@ -31,6 +31,10 @@ from app.storage import (
 
 
 LOGGER = logging.getLogger(__name__)
+STATELESS_CONTINUATION_WARNING = (
+    "Native context was reset or unavailable; bounded staged history supplied "
+    "a stateless continuation."
+)
 
 
 class SessionBusy(ConflictError):
@@ -195,7 +199,11 @@ class RunManager:
                 n=round_n,
                 status="running",
                 error=None,
-                warnings=[],
+                warnings=(
+                    [STATELESS_CONTINUATION_WARNING]
+                    if round_n > 1 and strategy == "stateless"
+                    else []
+                ),
                 agent=config.agent,
                 model=config.model,
                 effort=config.effort,
@@ -228,6 +236,7 @@ class RunManager:
                 partial_path=partial_path,
                 output_path=output_path,
                 completion=completion,
+                warnings=list(record.warnings),
             )
             self._active[key] = active
             try:

@@ -17,6 +17,14 @@ from app.storage import ConflictError, NotFoundError, ProjectStore, utc_now
 router = APIRouter()
 
 
+def _resume_after_config_change(agent: str) -> bool:
+    capabilities = {
+        "claude": ClaudeAdapter.RESUME_AFTER_CONFIG_CHANGE,
+        "codex": CodexAdapter.RESUME_AFTER_CONFIG_CHANGE,
+    }
+    return capabilities[agent]
+
+
 def _validated_configuration(
     agent: str,
     model: str,
@@ -94,7 +102,6 @@ async def edit_session(
     effort: str | None = Form(None),
     role_instructions: str | None = Form(None),
 ):
-    name = validate_name(name)
     supplied_configuration = any(
         value is not None for value in (agent, model, effort, role_instructions)
     )
@@ -102,9 +109,35 @@ async def edit_session(
         project = request.app.state.registry.get(project_id)
         store = ProjectStore(project)
         config = store.load_session(session_id)
-        if config.rounds and supplied_configuration:
-            raise ConflictError("only the session name can change after the first round")
-        if not config.rounds and supplied_configuration:
+        if config.status == "running":
+            raise ConflictError("cannot edit a running session")
+        name = validate_name(name)
+        if config.rounds:
+            if agent is not None and agent != config.agent:
+                raise ConflictError("the agent cannot change after the first round")
+            if (
+                role_instructions is not None
+                and role_instructions != config.role_instructions
+            ):
+                raise ConflictError(
+                    "role instructions cannot change after the first round"
+                )
+            updated = _validated_configuration(
+                config.agent,
+                model if model is not None else config.model,
+                effort if effort is not None else config.effort,
+                config.role_instructions,
+            )
+            model_changed = updated[1] != config.model
+            effort_changed = updated[2] != config.effort
+            config.model = updated[1]
+            config.effort = updated[2]
+            if (
+                (model_changed or effort_changed)
+                and not _resume_after_config_change(config.agent)
+            ):
+                config.cli_session_id = None
+        elif supplied_configuration:
             updated = _validated_configuration(
                 agent if agent is not None else config.agent,
                 model if model is not None else config.model,
