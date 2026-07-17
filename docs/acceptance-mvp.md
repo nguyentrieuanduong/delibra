@@ -1,23 +1,83 @@
 # Delibra MVP acceptance
 
 Date: 2026-07-17  
-Scope: requirements FR1–FR11 and plan M0–M4
+Scope: requirements FR1–FR11 and plan M0–M5 implementation
 Runtime: Python 3.12.13, Claude Code 2.1.202, Codex CLI 0.144.5
 
 ## Result and evidence boundary
 
-The deterministic suite passed 102 tests. The chat error contract also ran three Node
-unit tests through the pytest launcher. One non-failing warning remains from
+The deterministic suite passed 120 tests. The chat browser contract also ran seven
+Node unit tests through the pytest launcher. One non-failing warning remains from
 Starlette's deprecated TestClient/httpx compatibility import; it is not an
 application-runtime failure.
 
 Real-provider evidence comes from `spike/FINDINGS.md` and the executable gates
 `spike/m1_http_gate.py`, `spike/m4_config_resume_gate.py`, and
-`spike/m4_chat_gate.py`. No Chromium, Playwright, or Selenium runtime was installed,
-so browser behavior was exercised at the real HTTP/SSE application boundary and the
-exact HTMX/DOM contract was verified deterministically in route tests plus a real
-Node run for safe error parsing. This record does not claim GUI automation that did
-not occur.
+`spike/m4_chat_gate.py`. The repository has no Playwright/Selenium dependency. The
+server-authored contract is verified in route tests, pure interaction helpers run in
+real Node, and the M5 DOM-swap checklist below was exercised through installed
+headless Chrome 150 over the real localhost HTTP service. This record does not claim
+the remaining two-provider/manual observations.
+
+## M5 chat workspace, project files, and round focus
+
+Deterministic evidence:
+
+- `tests/test_routes_files.py` covers generated safe/unsafe paths, traversal,
+  absolute and encoded paths, project-root replacement, parent/final-leaf symlink
+  races, vanished entries, symlink/FIFO listing states, an explicit empty-directory
+  state, `.delibra` access, encoded filenames, GET-only routes, descriptor read caps,
+  truncation, invalid UTF-8, unsupported/binary/non-regular/unreadable files, safe
+  Markdown, and escaped plain text. Displayability failures are accessible HTTP 200
+  fragments scoped to the listing or reader; security failures remain sanitized
+  422 responses.
+- `tests/test_routes_chat.py` verifies the chat-only wide four-region shell and
+  bounded scroll owners; exact and empty role-instruction states; deterministic
+  Claude/Codex selection; synchronized center/composer/right-panel projections for
+  selection, create, and selected/unselected edits while two fake-provider streams
+  remain active; and responses that exclude the shell, timeline, and live panes.
+- The same route tests follow the real server-authored file `hx-get` and exact
+  `#file-reader` target to an accessible display-error fragment. The successful file
+  request contains no global chat error update.
+- Focus-route tests keep another fake-provider stream running while loading the
+  static snapshot. The completed page plus open-modal fragment has unique IDs; the
+  snapshot uses `focus-{session}-{round}`, contains prompt/output/warnings and
+  provenance, and contains no SSE attributes, timeline ID, Focus control, or pass
+  control. Missing sessions/rounds return 404.
+- `tests/js/test_app_errors.js` runs under Node and verifies initial close-control
+  focus, close/Escape restoration to the trigger, backdrop discrimination, safe
+  global-error text handling, and preservation of the global chat error after
+  successful file-region requests.
+
+Read boundary:
+
+The left browser intentionally exposes allowed text files under the entire registered
+project through the unauthenticated localhost service, including Delibra prompts,
+outputs, manifests, and metadata under `.delibra/`. It is read-only and uses a
+descriptor-anchored no-follow walk, but it is not a confidentiality boundary between
+local processes. `DELIBRA_FILE_VIEW_LIMIT` defaults to 512 KiB.
+
+Real-provider and browser boundary:
+
+- The previously recorded M4 real chat gate below proves both providers use the same
+  chat dispatch, SSE, persistence, and scoped-fragment paths retained by M5.
+- A disposable headless Chrome 150 run against the real localhost service observed
+  the initial HTMX listing load; a Markdown reader swap; navigation into `.delibra`
+  and opening `manifest.json`; and an unsupported-type HTTP 200 swap that replaced
+  only `#file-reader`, left the listing present, and preserved a sentinel value in
+  `#chat-errors`. It also opened the static focus fragment, found all DOM IDs unique,
+  focused the close control, closed with Escape, and restored focus to the trigger.
+  At a 1100×800 narrower-desktop viewport, computed layout evidence showed four
+  regions, the center wider than both sidebars, a usable composer, and independent
+  overflow owners. This disposable probe added no repository dependency or artifact.
+- A fresh `spike.m4_chat_gate` invocation after the M5 implementation was attempted
+  on 2026-07-17, but Claude Code returned `Not logged in · Please run /login` on its
+  first round. The gate stopped before Codex, so no new two-provider result is claimed
+  from that invocation.
+- The remaining combined manual gate is to switch, create, and edit selection
+  projections while authenticated Claude and Codex both stream; focus a round during
+  those live streams; inspect for duplicate replay; and visually judge the wide and
+  narrower-desktop layouts. This is not marked observed in this record.
 
 ## M4 project chat and config mutability
 

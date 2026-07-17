@@ -72,6 +72,22 @@ def test_file_browser_lists_directories_then_files_with_root_breadcrumb(
     assert response.text.index("a.md") < response.text.index("z.txt")
 
 
+def test_file_browser_has_an_explicit_empty_directory_state(tmp_path: Path) -> None:
+    app, project, project_path = setup_file_project(tmp_path)
+    (project_path / "empty").mkdir()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"/projects/{project.id}/files",
+            params={"path": "empty"},
+        )
+
+    assert response.status_code == 200
+    assert "Project root" in response.text
+    assert "empty" in response.text
+    assert "No files." in response.text
+
+
 def test_file_view_renders_markdown_safely_and_escapes_plain_text(
     tmp_path: Path,
 ) -> None:
