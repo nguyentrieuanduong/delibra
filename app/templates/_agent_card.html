@@ -5,62 +5,70 @@
   data-selected="{{ 'true' if agent_view.selected else 'false' }}"
 >
   {% set agent = agent_view.session %}
-  <h3>
-    <a
-      href="/projects/{{ project.id }}/chat?agent={{ agent.id }}"
-      hx-get="/projects/{{ project.id }}/chat/select?agent={{ agent.id }}"
-      hx-target="#chat-agent-select"
-      hx-swap="outerHTML"
-    >{{ agent.name }}</a>
-  </h3>
-  <p>{{ agent.agent }} · {{ agent.model }} · {{ agent.effort }} · {{ agent.status }}</p>
-  <section class="agent-role" aria-label="Role instructions">
-    <h4>Role instructions</h4>
-    {% if agent.role_instructions %}
-      <p class="role-instructions">{{ agent.role_instructions }}</p>
-    {% else %}
-      <p class="role-instructions empty">No role instructions</p>
-    {% endif %}
-  </section>
-  {% if agent_view.latest_round %}<p>Latest round {{ agent_view.latest_round }} · {{ agent_view.preview_status }}</p>{% endif %}
-  <p class="agent-preview {{ agent_view.preview_status }}">{{ agent_view.preview }}</p>
-  {% if agent_view.preview_error %}<p class="error">{{ agent_view.preview_error }}</p>{% endif %}
-  <details>
-    <summary>Edit</summary>
-    <form
-      method="post"
-      action="/projects/{{ project.id }}/sessions/{{ agent.id }}/edit?agent={{ selected_session.id if selected_session else agent.id }}"
-      hx-post="/projects/{{ project.id }}/sessions/{{ agent.id }}/edit?agent={{ selected_session.id if selected_session else agent.id }}"
-      hx-target="#agent-sidebar"
-      hx-swap="outerHTML"
-      data-session-config-form
-      data-agent="{{ agent.agent }}"
-    >
-      <label>Name <input name="name" maxlength="200" value="{{ agent.name }}" required></label>
-      {% if not agent.rounds %}
-        <label>Agent
-          <select name="agent" data-agent-select>
-            <option value="claude"{% if agent.agent == 'claude' %} selected{% endif %}>Claude</option>
-            <option value="codex"{% if agent.agent == 'codex' %} selected{% endif %}>Codex</option>
+  <div class="agent-card-heading">
+    <h3>
+      <a
+        id="agent-select-{{ agent.id }}"
+        href="/projects/{{ project.id }}/chat?agent={{ agent.id }}"
+        hx-get="/projects/{{ project.id }}/chat/select?agent={{ agent.id }}"
+        hx-target="#agent-sidebar"
+        hx-swap="outerHTML"
+        {% if agent_view.selected %}aria-current="true"{% endif %}
+      >{{ agent.name }}</a>
+    </h3>
+    <span>{{ agent.status }}</span>
+  </div>
+  <details class="agent-details">
+    <summary>Agent information</summary>
+    <p>{{ agent.agent }} · {{ agent.model }} · {{ agent.effort }}</p>
+    <section class="agent-role" aria-label="Role instructions">
+      <h4>Role instructions</h4>
+      {% if agent.role_instructions %}
+        <p class="role-instructions">{{ agent.role_instructions }}</p>
+      {% else %}
+        <p class="role-instructions empty">No role instructions</p>
+      {% endif %}
+    </section>
+    {% if agent_view.latest_round %}<p>Latest round {{ agent_view.latest_round }} · {{ agent_view.preview_status }}</p>{% endif %}
+    <p class="agent-preview {{ agent_view.preview_status }}">{{ agent_view.preview }}</p>
+    {% if agent_view.preview_error %}<p class="error">{{ agent_view.preview_error }}</p>{% endif %}
+    <details>
+      <summary>Edit</summary>
+      <form
+        method="post"
+        action="/projects/{{ project.id }}/sessions/{{ agent.id }}/edit?agent={{ selected_session.id if selected_session else agent.id }}"
+        hx-post="/projects/{{ project.id }}/sessions/{{ agent.id }}/edit?agent={{ selected_session.id if selected_session else agent.id }}"
+        hx-target="#agent-sidebar"
+        hx-swap="outerHTML"
+        data-session-config-form
+        data-agent="{{ agent.agent }}"
+      >
+        <label>Name <input name="name" maxlength="200" value="{{ agent.name }}" required></label>
+        {% if not agent.rounds %}
+          <label>Agent
+            <select name="agent" data-agent-select>
+              <option value="claude"{% if agent.agent == 'claude' %} selected{% endif %}>Claude</option>
+              <option value="codex"{% if agent.agent == 'codex' %} selected{% endif %}>Codex</option>
+            </select>
+          </label>
+        {% else %}
+          <p class="immutability-hint">Agent provider cannot change after the first round.</p>
+        {% endif %}
+        <label>Model <input name="model" maxlength="200" value="{{ agent.model }}" required></label>
+        <label>Effort
+          <select name="effort" required data-effort-select>
+            {{ effort_options(effort_levels, agent.agent, agent.effort) }}
           </select>
         </label>
-      {% else %}
-        <p class="immutability-hint">Agent provider cannot change after the first round.</p>
-      {% endif %}
-      <label>Model <input name="model" maxlength="200" value="{{ agent.model }}" required></label>
-      <label>Effort
-        <select name="effort" required data-effort-select>
-          {{ effort_options(effort_levels, agent.agent, agent.effort) }}
-        </select>
-      </label>
-      {% if not agent.rounds %}
-        <label>Role instructions
-          <textarea name="role_instructions" maxlength="20000">{{ agent.role_instructions }}</textarea>
-        </label>
-      {% else %}
-        <p class="immutability-hint">Role instructions cannot change after the first round.</p>
-      {% endif %}
-      <button type="submit"{% if agent.status == 'running' %} disabled{% endif %}>Save</button>
-    </form>
+        {% if not agent.rounds %}
+          <label>Role instructions
+            <textarea name="role_instructions" maxlength="20000">{{ agent.role_instructions }}</textarea>
+          </label>
+        {% else %}
+          <p class="immutability-hint">Role instructions cannot change after the first round.</p>
+        {% endif %}
+        <button type="submit"{% if agent.status == 'running' %} disabled{% endif %}>Save</button>
+      </form>
+    </details>
   </details>
 </article>

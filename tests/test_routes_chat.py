@@ -197,7 +197,9 @@ def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> No
     assert '<p data-conversation-empty>No conversation yet.</p>' in response.text
     assert "Oldest → newest" in response.text
     assert "Create agent" in response.text
-    assert "No agents yet. Create an agent in the right panel to begin." in response.text
+    assert "No agents yet. Create an agent to begin." in response.text
+    assert "right panel" not in response.text
+    assert 'id="chat-agent-select"' not in response.text
     assert 'id="chat-composer"' in response.text
     assert re.search(r'<textarea name="prompt"[^>]+disabled', response.text)
     assert '<button type="submit" disabled>Send</button>' in response.text
@@ -231,7 +233,8 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
         assert f'data-workspace-region="{region}"' in response.text
     assert 'id="file-browser-host"' in response.text
     assert 'id="file-reader"' in response.text
-    assert 'id="chat-agent-select"' in response.text
+    assert 'id="chat-agent-select"' not in response.text
+    assert response.text.count('<details class="agent-details">') == 2
     assert "Be rigorous &amp; challenge &lt;claims&gt;." in response.text
     assert "No role instructions" in response.text
     assert "Role instructions are fixed after the first round." not in response.text
@@ -240,7 +243,7 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
     assert "#file-browser-host, #file-reader { min-height: 0; overflow: auto; }" in stylesheet.text
 
 
-def test_chat_uses_compact_horizontal_controls_and_small_agent_rail(
+def test_chat_uses_compact_composer_and_wider_agent_rail(
     tmp_path: Path,
 ) -> None:
     alpha = session("a" * 32, "Alpha", agent="claude")
@@ -251,23 +254,16 @@ def test_chat_uses_compact_horizontal_controls_and_small_agent_rail(
 
     assert response.status_code == 200
     assert css.status_code == 200
-    controls = re.search(
-        r'<div class="conversation-controls">(?P<body>.*?)</div>\s*'
-        r'<div id="chat-errors"',
-        response.text,
-        flags=re.DOTALL,
+    assert 'class="conversation-controls"' not in response.text
+    assert 'id="chat-agent-select"' not in response.text
+    assert response.text.index('id="chat-composer"') < response.text.index(
+        'id="chat-errors"'
     )
-    assert controls is not None
-    assert 'id="chat-agent-select"' in controls["body"]
-    assert 'id="chat-composer"' in controls["body"]
+    assert 'name="prompt"' in response.text
     assert "body.chat-page { padding-top: .5rem; }" in css.text
     assert "body.chat-page > header { margin-bottom: .5rem; }" in css.text
     assert (
         ".workspace-topic h1, .workspace-topic p { margin: .1rem 0; }"
-        in css.text
-    )
-    assert (
-        "grid-template-columns: minmax(11rem, 1fr) minmax(22rem, 2fr)"
         in css.text
     )
     assert (
@@ -278,46 +274,103 @@ def test_chat_uses_compact_horizontal_controls_and_small_agent_rail(
         "grid-template-rows: minmax(32rem, calc(100vh - 4rem))"
         in css.text
     )
-    assert ".conversation-controls textarea { min-height: 4rem; }" in css.text
-    assert ".workspace-agents { font-size: .85rem;" in css.text
+    assert "#chat-composer textarea { min-height: 3rem; }" in css.text
+    assert (
+        ".workspace-agents {\n"
+        "  display: grid;\n"
+        "  font-size: .85rem;" in css.text
+    )
     assert (
         ".workspace-agents :is(input, select, textarea, button) { font: inherit; }"
         in css.text
     )
 
 
-def test_chat_nests_topic_inside_full_height_file_rail(tmp_path: Path) -> None:
+def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> None:
     alpha = session("a" * 32, "Alpha", agent="claude")
-    app, project, _ = setup_project(tmp_path, [alpha])
+    beta = session("b" * 32, "Beta", agent="codex")
+    app, project, _ = setup_project(tmp_path, [alpha, beta])
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        response = client.get(f"/projects/{project.id}/chat?agent={beta.id}")
+        selected = client.get(
+            f"/projects/{project.id}/chat/select", params={"agent": alpha.id}
+        )
         css = client.get("/static/app.css")
 
     assert response.status_code == 200
     assert css.status_code == 200
+    agents = re.search(
+        r'<section class="workspace-agents"[^>]*>(?P<body>.*?)</section>\s*'
+        r'<section\s+class="workspace-conversation"',
+        response.text,
+        flags=re.DOTALL,
+    )
     files = re.search(
         r'<aside\s+class="workspace-files"[^>]*>(?P<body>.*?)</aside>',
         response.text,
         flags=re.DOTALL,
     )
+    assert agents is not None
     assert files is not None
-    rail = files["body"]
-    assert 'data-workspace-region="topic"' in rail
-    assert rail.index('data-workspace-region="topic"') < rail.index(
-        'id="file-browser-host"'
+    assert agents["body"].index('data-workspace-region="topic"') < agents[
+        "body"
+    ].index('id="agent-sidebar"')
+    assert 'data-workspace-region="topic"' not in files["body"]
+    assert files["body"].index('id="file-browser-host"') < files["body"].index(
+        'id="file-reader"'
     )
-    assert rail.index('id="file-browser-host"') < rail.index('id="file-reader"')
-    assert response.text.count('data-workspace-region="topic"') == 1
-    assert response.text.count('id="file-browser-host"') == 1
-    assert response.text.count('id="file-reader"') == 1
-    assert '"files conversation agents";' in css.text
-    assert '"topic topic topic"' not in css.text
-    assert 'grid-template-rows: minmax(32rem, calc(100vh - 4rem))' in css.text
+    assert 'id="chat-agent-select"' not in response.text
+    assert "Choose agent" not in response.text
+    beta_card = re.search(
+        rf'<article\s+class="agent-card selected"\s+'
+        rf'data-session-id="{beta.id}".*?</article>',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert beta_card is not None
+    assert f'id="agent-select-{beta.id}"' in beta_card.group()
     assert (
-        'grid-template-rows: auto minmax(10rem, 2fr) minmax(12rem, 3fr)'
-        in css.text
+        f'hx-get="/projects/{project.id}/chat/select?agent={beta.id}"'
+        in beta_card.group()
     )
-    assert "grid-area: topic" not in css.text
+    assert 'hx-target="#agent-sidebar"' in beta_card.group()
+    assert 'aria-current="true"' in beta_card.group()
+    assert '<details class="agent-details">' in beta_card.group()
+    assert '<details open class="agent-details">' not in beta_card.group()
+    assert (
+        f'<input type="hidden" name="session_id" value="{beta.id}">'
+        in response.text
+    )
+    assert selected.status_code == 200
+    assert selected.headers["hx-push-url"] == (
+        f"/projects/{project.id}/chat?agent={alpha.id}"
+    )
+    assert selected.text.count('id="agent-sidebar"') == 1
+    assert selected.text.count('id="chat-composer"') == 1
+    assert selected.text.count('aria-current="true"') == 1
+    assert f'data-session-id="{alpha.id}"' in selected.text
+    assert selected.text.count('class="agent-card selected"') == 1
+    assert 'hx-swap-oob="outerHTML:#chat-composer"' in selected.text
+    assert 'id="chat-agent-select"' not in selected.text
+    assert '<section class="chat-timeline"' not in selected.text
+    assert '"agents conversation files";' in css.text
+    assert (
+        "grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) "
+        "minmax(12rem, .7fr)" in css.text
+    )
+    assert re.search(
+        r"\.workspace-agents\s*\{[^}]*min-width:\s*0;",
+        css.text,
+        flags=re.DOTALL,
+    )
+    assert re.search(
+        r"\.workspace-files\s*\{[^}]*min-width:\s*0;",
+        css.text,
+        flags=re.DOTALL,
+    )
+    assert "#chat-composer textarea { min-height: 3rem; }" in css.text
+    assert ".conversation-controls" not in css.text
+    assert ".chat-agent-select" not in css.text
 
 
 def test_file_browser_links_target_only_the_reader_for_display_errors(
@@ -462,21 +515,32 @@ def test_chat_selection_is_deterministic_and_invalid_selection_is_rejected(
         malformed = client.get(f"/projects/{project.id}/chat?agent=not-an-id")
         missing = client.get(f"/projects/{project.id}/chat?agent={'c' * 32}")
 
-    assert f'value="{alpha.id}" selected' in default.text
-    assert re.search(
-        rf'data-session-id="{alpha.id}"\s+data-selected="true"',
-        default.text,
-    )
-    assert f'value="{zulu.id}" selected' in explicit.text
-    assert re.search(
-        rf'data-session-id="{zulu.id}"\s+data-selected="true"',
-        explicit.text,
-    )
+    for response, selected in ((default, alpha), (explicit, zulu)):
+        assert response.text.count('id="agent-sidebar"') == 1
+        assert response.text.count('id="chat-composer"') == 1
+        assert response.text.count('class="agent-card selected"') == 1
+        assert response.text.count('aria-current="true"') == 1
+        assert re.search(
+            rf'class="agent-card selected"\s+data-session-id="{selected.id}"\s+'
+            r'data-selected="true"',
+            response.text,
+        )
+        assert (
+            f'<input type="hidden" name="session_id" value="{selected.id}">'
+            in response.text
+        )
+        assert 'hx-swap-oob="outerHTML:#chat-composer"' not in response.text
+        assert '<section class="chat-timeline"' in response.text
     assert malformed.status_code == 422
     assert missing.status_code == 404
     assert sidebar.status_code == 200
-    assert 'id="agent-sidebar"' in sidebar.text
+    assert sidebar.text.count('id="agent-sidebar"') == 1
+    assert sidebar.text.count('id="chat-composer"') == 0
+    assert sidebar.text.count('class="agent-card selected"') == 1
+    assert sidebar.text.count('aria-current="true"') == 1
+    assert 'hx-swap-oob=' not in sidebar.text
     assert '<section class="chat-timeline"' not in sidebar.text
+    assert 'class="live-round"' not in sidebar.text
     assert "No rounds yet." in sidebar.text
 
 
@@ -518,10 +582,23 @@ def test_selection_transaction_supports_both_providers_and_rejects_invalid_ids(
         assert response.headers["hx-push-url"] == (
             f"/projects/{project.id}/chat?agent={selected.id}"
         )
-        assert f'value="{selected.id}" selected' in response.text
+        assert re.search(
+            rf'class="agent-card selected"\s+data-session-id="{selected.id}"\s+'
+            r'data-selected="true"',
+            response.text,
+        )
+        assert (
+            f'<input type="hidden" name="session_id" value="{selected.id}">'
+            in response.text
+        )
         assert f"{selected.agent} · {selected.model}" in response.text
-        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' in response.text
+        assert response.text.count('id="agent-sidebar"') == 1
+        assert response.text.count('id="chat-composer"') == 1
+        assert response.text.count('class="agent-card selected"') == 1
+        assert response.text.count('aria-current="true"') == 1
         assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
+        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
+        assert 'id="chat-agent-select"' not in response.text
         assert '<section class="chat-timeline"' not in response.text
         assert 'class="live-round"' not in response.text
     assert malformed.status_code == 422
@@ -568,18 +645,29 @@ def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs
 
     for response in (created, selected_edit, unselected_edit):
         assert response.status_code == 200
-        assert 'hx-swap-oob="outerHTML:#chat-agent-select"' in response.text
+        assert re.search(
+            rf'class="agent-card selected"\s+data-session-id="{new_agent.id}"\s+'
+            r'data-selected="true"',
+            response.text,
+        )
+        assert (
+            f'<input type="hidden" name="session_id" value="{new_agent.id}">'
+            in response.text
+        )
+        assert response.text.count('id="agent-sidebar"') == 1
+        assert response.text.count('id="chat-composer"') == 1
+        assert response.text.count('class="agent-card selected"') == 1
+        assert response.text.count('aria-current="true"') == 1
         assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
+        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
+        assert 'id="chat-agent-select"' not in response.text
         assert '<section class="chat-timeline"' not in response.text
         assert 'class="live-round"' not in response.text
     assert created.headers["hx-push-url"] == (
         f"/projects/{project.id}/chat?agent={new_agent.id}"
     )
-    assert f'value="{new_agent.id}" selected' in created.text
     assert "New agent renamed" in selected_edit.text
-    assert f'value="{new_agent.id}" selected' in selected_edit.text
     assert "Observer renamed" in unselected_edit.text
-    assert f'value="{new_agent.id}" selected' in unselected_edit.text
     assert store.load_session(claude.id).status == "idle"
     assert store.load_session(codex.id).status == "idle"
 
@@ -645,10 +733,22 @@ def test_hx_create_selects_first_agent_and_updates_sidebar_composer_and_url(
     assert response.headers["hx-push-url"] == (
         f"/projects/{project.id}/chat?agent={created.id}"
     )
-    assert 'id="agent-sidebar"' in response.text
-    assert 'hx-swap-oob="outerHTML:#chat-agent-select"' in response.text
+    assert re.search(
+        rf'class="agent-card selected"\s+data-session-id="{created.id}"\s+'
+        r'data-selected="true"',
+        response.text,
+    )
+    assert response.text.count('id="agent-sidebar"') == 1
+    assert response.text.count('id="chat-composer"') == 1
+    assert response.text.count('class="agent-card selected"') == 1
+    assert response.text.count('aria-current="true"') == 1
     assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
-    assert f'value="{created.id}" selected' in response.text
+    assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
+    assert 'id="chat-agent-select"' not in response.text
+    assert (
+        f'<input type="hidden" name="session_id" value="{created.id}">'
+        in response.text
+    )
     assert 'name="prompt"' in response.text
     assert '<section class="chat-timeline"' not in response.text
 
@@ -670,10 +770,22 @@ def test_hx_edit_preserves_selection_without_replacing_another_live_stream(
             follow_redirects=False,
         )
         assert edited.status_code == 200
-        assert 'id="agent-sidebar"' in edited.text
-        assert 'hx-swap-oob="outerHTML:#chat-agent-select"' in edited.text
+        assert re.search(
+            rf'class="agent-card selected"\s+data-session-id="{beta.id}"\s+'
+            r'data-selected="true"',
+            edited.text,
+        )
+        assert edited.text.count('id="agent-sidebar"') == 1
+        assert edited.text.count('id="chat-composer"') == 1
+        assert edited.text.count('class="agent-card selected"') == 1
+        assert edited.text.count('aria-current="true"') == 1
         assert 'hx-swap-oob="outerHTML:#chat-composer"' in edited.text
-        assert f'value="{beta.id}" selected' in edited.text
+        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in edited.text
+        assert 'id="chat-agent-select"' not in edited.text
+        assert (
+            f'<input type="hidden" name="session_id" value="{beta.id}">'
+            in edited.text
+        )
         assert "Beta renamed" in edited.text
         assert '<section class="chat-timeline"' not in edited.text
         assert store.load_session(alpha.id).status == "running"
