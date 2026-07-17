@@ -71,7 +71,7 @@ function handleFocusDialogCancel(event) {
 
 function shouldClearChatError(requestPath) {
   const pathname = String(requestPath || "").split(/[?#]/, 1)[0];
-  return !/^\/projects\/[^/]+\/files(?:\/view)?\/?$/.test(pathname);
+  return !/^\/projects\/[^/]+\/files(?:\/(?:view|focus))?\/?$/.test(pathname);
 }
 
 function syncEffortOptions(form) {
@@ -102,6 +102,18 @@ function removeConversationEmptyState(timeline) {
   if (!empty || !message) return false;
   empty.remove();
   return true;
+}
+
+function resetFileReader(reader) {
+  reader.replaceChildren();
+  const empty = reader.ownerDocument.createElement("p");
+  empty.className = "file-reader-empty";
+  empty.textContent = "Select a text file to read it here.";
+  reader.appendChild(empty);
+  if (typeof reader.focus === "function") {
+    reader.focus({ preventScroll: true });
+  }
+  return empty;
 }
 
 function conversationTimelineForSwap(detailTarget, swappedElement) {
@@ -144,6 +156,7 @@ if (typeof module !== "undefined" && module.exports) {
     isDialogBackdropClick,
     openFocusDialog,
     removeConversationEmptyState,
+    resetFileReader,
     renderChatError,
     shouldClearChatError,
     syncConversationDisclosure,
@@ -220,6 +233,17 @@ if (typeof document !== "undefined") {
   });
 
   document.addEventListener("click", function (event) {
+    const fileCloseControl =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest("[data-file-reader-close]")
+        : null;
+    if (fileCloseControl) {
+      const reader = document.getElementById("file-reader");
+      if (reader) {
+        resetFileReader(reader);
+      }
+      return;
+    }
     const closeControl =
       event.target && typeof event.target.closest === "function"
         ? event.target.closest("[data-focus-dialog-close]")

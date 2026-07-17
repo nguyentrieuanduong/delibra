@@ -10,6 +10,7 @@ const {
   isDialogBackdropClick,
   openFocusDialog,
   removeConversationEmptyState,
+  resetFileReader,
   renderChatError,
   shouldClearChatError,
   syncConversationDisclosure,
@@ -245,6 +246,34 @@ test("a final live message leaves every recorded message closed", () => {
   assert.equal(older.details.open, false);
 });
 
+test("closing a file restores the dimmed reader placeholder", () => {
+  const children = [];
+  let focusOptions = null;
+  const reader = {
+    ownerDocument: {
+      createElement(tagName) {
+        assert.equal(tagName, "p");
+        return { className: "", textContent: "" };
+      },
+    },
+    replaceChildren() {
+      children.length = 0;
+    },
+    appendChild(child) {
+      children.push(child);
+    },
+    focus(options) {
+      focusOptions = options;
+    },
+  };
+  const empty = resetFileReader(reader);
+  assert.equal(children.length, 1);
+  assert.equal(children[0], empty);
+  assert.equal(empty.className, "file-reader-empty");
+  assert.equal(empty.textContent, "Select a text file to read it here.");
+  assert.deepEqual(focusOptions, { preventScroll: true });
+});
+
 test("successful file fragments preserve the global chat error", function () {
   const project = "a".repeat(32);
   assert.equal(
@@ -253,6 +282,10 @@ test("successful file fragments preserve the global chat error", function () {
   );
   assert.equal(
     shouldClearChatError(`/projects/${project}/files/view?path=notes.md`),
+    false
+  );
+  assert.equal(
+    shouldClearChatError(`/projects/${project}/files/focus?path=notes.md`),
     false
   );
   assert.equal(shouldClearChatError(`/projects/${project}/chat/select`), true);

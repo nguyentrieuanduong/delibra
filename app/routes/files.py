@@ -44,6 +44,11 @@ def _view_url(project_id: str, path: str) -> str:
     return f"/projects/{project_id}/files/view?{query}"
 
 
+def _focus_url(project_id: str, path: str) -> str:
+    query = urlencode({"path": path})
+    return f"/projects/{project_id}/files/focus?{query}"
+
+
 def _breadcrumbs(project_id: str, path: str) -> list[dict[str, str]]:
     parts = project_path_parts(path)
     breadcrumbs = [
@@ -103,12 +108,11 @@ async def list_files(
     )
 
 
-@router.get("/projects/{project_id}/files/view", response_class=HTMLResponse)
-async def view_file(
+def _file_view_context(
     request: Request,
     project_id: str,
-    path: str = Query(...),
-) -> HTMLResponse:
+    path: str,
+) -> dict[str, object]:
     project = request.app.state.registry.get(project_id)
     try:
         project_path_parts(path)
@@ -142,15 +146,42 @@ async def view_file(
                     text = contents.data.decode("utf-8", errors="replace")
                     replacements = True
                 truncated = contents.truncated
+    return {
+        "path": path,
+        "text": text,
+        "markdown": suffix in {".md", ".markdown"},
+        "truncated": truncated,
+        "replacements": replacements,
+        "file_error": error,
+        "focus_url": _focus_url(project_id, path),
+    }
+
+
+@router.get("/projects/{project_id}/files/view", response_class=HTMLResponse)
+async def view_file(
+    request: Request,
+    project_id: str,
+    path: str = Query(...),
+) -> HTMLResponse:
+    context = _file_view_context(request, project_id, path)
+    context["focused"] = False
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_file_view.html",
-        context={
-            "path": path,
-            "text": text,
-            "markdown": suffix in {".md", ".markdown"},
-            "truncated": truncated,
-            "replacements": replacements,
-            "file_error": error,
-        },
+        context=context,
+    )
+
+
+@router.get("/projects/{project_id}/files/focus", response_class=HTMLResponse)
+async def focus_file(
+    request: Request,
+    project_id: str,
+    path: str = Query(...),
+) -> HTMLResponse:
+    context = _file_view_context(request, project_id, path)
+    context["focused"] = True
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_file_view.html",
+        context=context,
     )
