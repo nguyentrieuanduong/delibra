@@ -1,13 +1,44 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} · Chat · Delibra{% endblock %}
+{% block body_class %}chat-page{% endblock %}
 {% block content %}
-  <p><a href="/">Projects</a> · <a href="/projects/{{ project.id }}/settings">Manage</a></p>
-  <h1>{{ project.name }}</h1>
-  <div id="chat-errors" class="chat-errors" aria-live="polite"></div>
-  <div class="chat-layout">
-    {% include "_agent_sidebar.html" %}
-    <div class="chat-main">
+  <div class="chat-workspace">
+    <section class="workspace-topic" data-workspace-region="topic" aria-label="Topic information">
+      <div>
+        <p><a href="/">Projects</a> · <a href="/projects/{{ project.id }}/settings">Manage</a></p>
+        <h1>{{ project.name }}</h1>
+        <p class="project-path">{{ project.path }}</p>
+      </div>
+      <div class="topic-health" aria-label="Provider health">
+        {% for provider in health %}
+          <span class="health {{ 'warning' if provider.checking or provider.warning else 'ok' }}">
+            {% if provider.checking %}Checking {{ provider.name|title }}…{% else %}{{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}{% endif %}
+          </span>
+        {% endfor %}
+      </div>
+    </section>
+
+    <aside class="workspace-files" data-workspace-region="files" aria-label="Project files">
+      <div
+        id="file-browser-host"
+        hx-get="/projects/{{ project.id }}/files"
+        hx-trigger="load"
+        hx-target="this"
+        hx-swap="innerHTML"
+      >Loading files…</div>
+      <section id="file-reader" aria-label="File reader">
+        <p>Select a text file to read it here.</p>
+      </section>
+    </aside>
+
+    <section
+      class="workspace-conversation"
+      data-workspace-region="conversation"
+      aria-label="Conversation workspace"
+    >
+      {% include "_chat_select.html" %}
       {% include "_composer.html" %}
+      <div id="chat-errors" class="chat-errors" aria-live="polite"></div>
       <section class="chat-timeline" aria-label="Conversation">
         {% set chat_view = true %}
         {% for item in timeline %}
@@ -25,6 +56,10 @@
           <p>No conversation yet.</p>
         {% endfor %}
       </section>
-    </div>
+    </section>
+
+    <section class="workspace-agents" data-workspace-region="agents">
+      {% include "_agent_sidebar.html" %}
+    </section>
   </div>
 {% endblock %}

@@ -1,5 +1,9 @@
 {% from "_form_macros.html" import effort_options %}
-<aside id="agent-sidebar" aria-label="Agents">
+<aside
+  id="agent-sidebar"
+  aria-label="Agents"
+  {% if sidebar_oob %}hx-swap-oob="outerHTML:#agent-sidebar"{% endif %}
+>
   <h2>Agents</h2>
   <details{% if not sessions %} open{% endif %}>
     <summary>Create agent</summary>
@@ -39,4 +43,5 @@
     {% endfor %}
   </div>
 </aside>
+{% if chat_select_oob %}{% include "_chat_select.html" %}{% endif %}
 {% if composer_oob %}{% include "_composer.html" %}{% endif %}
