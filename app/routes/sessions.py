@@ -196,6 +196,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
     project = request.app.state.registry.get(project_id)
     store = ProjectStore(project)
     session = store.load_session(session_id)
+    sessions = store.list_sessions()
     active_key = request.app.state.manager.active_key(project_id, session_id)
     return request.app.state.templates.TemplateResponse(
         request=request,
@@ -204,6 +205,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
             "project": project,
             "session": session,
             "rounds": _round_views(store, session_id),
+            "sessions": sessions,
             "active_key": active_key,
             "health": request.app.state.health,
         },
@@ -219,11 +221,17 @@ async def round_fragment(
 ):
     project = request.app.state.registry.get(project_id)
     store = ProjectStore(project)
+    sessions = store.list_sessions()
     view = next(
         item for item in _round_views(store, session_id) if item["n"] == round_n
     )
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_round.html",
-        context={"project": project, "session_id": session_id, "round": view},
+        context={
+            "project": project,
+            "session_id": session_id,
+            "round": view,
+            "sessions": sessions,
+        },
     )

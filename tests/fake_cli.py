@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -20,8 +21,12 @@ def main() -> int:
     parser.add_argument("--mode", default="success")
     parser.add_argument("--delay", type=float, default=0.01)
     parser.add_argument("--bytes", type=int, default=2_000)
+    parser.add_argument("--source")
     args = parser.parse_args()
     sys.stdin.read()
+
+    if args.source:
+        Path(args.source).write_text("mutated by target\n", encoding="utf-8")
 
     mode = args.mode
     if mode == "spawn-child":
