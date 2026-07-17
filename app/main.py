@@ -15,8 +15,9 @@ from app.agents.codex import CodexAdapter
 from app.config import Settings, settings
 from app.health import probe_all
 from app.markdown import render_markdown
+from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
-from app.runner import RunManager
+from app.runner import AdapterFactory, RunManager
 from app.security import LocalSecurityMiddleware
 from app.storage import (
     ConflictError,
@@ -36,16 +37,19 @@ def create_app(
     *,
     settings_override: Settings | None = None,
     provider_commands: dict[str, str] | None = None,
+    adapter_factory_override: AdapterFactory | None = None,
 ) -> FastAPI:
     app_settings = settings_override or settings
     commands = provider_commands or {"claude": "claude", "codex": "codex"}
 
-    def adapters(config):
+    def built_in_adapter(config):
         if config.agent == "claude":
             return ClaudeAdapter(commands["claude"])
         if config.agent == "codex":
             return CodexAdapter(commands["codex"])
         raise ValueError(f"unknown agent: {config.agent}")
+
+    adapter_factory = adapter_factory_override or built_in_adapter
 
     templates = Jinja2Templates(directory=APP_ROOT / "templates")
     templates.env.filters["md"] = render_markdown
@@ -58,7 +62,7 @@ def create_app(
             registry=registry,
             locks=locks,
             settings=app_settings,
-            adapter_factory=adapters,
+            adapter_factory=adapter_factory,
         )
         app.state.registry = registry
         app.state.locks = locks
@@ -87,6 +91,7 @@ def create_app(
     app.state.templates = templates
     app.state.health = []
     app.include_router(sessions_router)
+    app.include_router(runs_router)
 
     @app.exception_handler(NotFoundError)
     async def not_found(_: Request, exc: NotFoundError):
