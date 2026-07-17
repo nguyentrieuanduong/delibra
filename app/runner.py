@@ -24,6 +24,7 @@ from app.storage import (
     StorageError,
     atomic_write_json,
     atomic_write_text,
+    ensure_owned_directory,
     safe_copy_file,
     utc_now,
 )
@@ -70,7 +71,7 @@ class ActiveRun:
     next_event_id: int = 1
     replay: deque[StreamEvent] = field(default_factory=deque)
     replay_bytes: int = 0
-    subscribers: set[asyncio.Queue[StreamEvent]] = field(default_factory=set)
+    subscribers: set[asyncio.Queue[StreamEvent | None]] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -299,6 +300,7 @@ class RunManager:
         input_root = (
             store.workspace_dir(session_id) / "inputs" / f"round-{round_n:02d}"
         )
+        ensure_owned_directory(input_root.parent, store.workspace_dir(session_id))
         try:
             input_root.mkdir(mode=0o700)
         except FileExistsError as exc:
@@ -382,7 +384,7 @@ class RunManager:
             if name in os.environ
         }
         tmpdir = workspace / ".tmp"
-        tmpdir.mkdir(exist_ok=True, mode=0o700)
+        ensure_owned_directory(tmpdir, workspace)
         environment["TMPDIR"] = str(tmpdir)
         if config.agent == "codex":
             self._prepare_codex_home()
@@ -391,11 +393,16 @@ class RunManager:
 
     def _prepare_codex_home(self) -> None:
         codex_home = self.settings.codex_home
-        codex_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_owned_directory(codex_home, self.settings.home)
         os.chmod(codex_home, 0o700)
         target = codex_home / "auth.json"
-        if target.exists():
+        if target.is_symlink():
+            raise StorageError("Codex auth path must not be a symlink")
+        if target.is_file():
+            os.chmod(target, 0o600)
             return
+        if target.exists():
+            raise StorageError("Codex auth path is not a regular file")
         source = Path(os.environ.get("HOME", "")) / ".codex" / "auth.json"
         if not source.is_file():
             raise StorageError("Codex is not logged in; auth.json was not found")
@@ -660,7 +667,7 @@ class RunManager:
             active.replay_bytes -= (
                 len(removed.data.encode("utf-8")) + len(removed.kind) + 16
             )
-        dropped: list[asyncio.Queue[StreamEvent]] = []
+        dropped: list[asyncio.Queue[StreamEvent | None]] = []
         for queue in active.subscribers:
             try:
                 queue.put_nowait(event)
@@ -668,6 +675,12 @@ class RunManager:
                 dropped.append(queue)
         for queue in dropped:
             active.subscribers.discard(queue)
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            queue.put_nowait(None)
         return event
 
     async def subscribe(
@@ -714,7 +727,7 @@ class RunManager:
             threshold = parsed_last or 0
             initial = [event for event in events if event.event_id > threshold]
 
-        queue: asyncio.Queue[StreamEvent] | None = None
+        queue: asyncio.Queue[StreamEvent | None] | None = None
         if active is not None and not any(event.kind == "done" for event in initial):
             queue = asyncio.Queue(maxsize=1_000)
             active.subscribers.add(queue)
@@ -725,6 +738,8 @@ class RunManager:
                     return
             while queue is not None:
                 event = await queue.get()
+                if event is None:
+                    return
                 yield event
                 if event.kind == "done":
                     return

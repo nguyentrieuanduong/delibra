@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
+from app.storage import sanitize_name
+
 
 Scope = dict[str, Any]
 Message = dict[str, Any]
@@ -26,26 +28,49 @@ def _header(scope: Scope, name: bytes) -> str | None:
     return None
 
 
-def _loopback_authority(value: str) -> bool:
+def _parse_authority(value: str) -> tuple[str, int | None] | None:
     candidate = value.strip()
-    if not candidate:
-        return False
-    if candidate.startswith("["):
-        end = candidate.find("]")
-        return end > 0 and candidate[1:end] == "::1"
-    host = candidate.rsplit(":", 1)[0] if candidate.count(":") == 1 else candidate
-    return host.lower() in {"localhost", "127.0.0.1", "::1"}
+    if not candidate or any(character.isspace() for character in candidate):
+        return None
+    try:
+        parsed = urlsplit(f"//{candidate}")
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return parsed.hostname.lower(), port
 
 
-def _same_site_origin(value: str) -> bool:
+def _loopback_authority(value: str) -> bool:
+    parsed = _parse_authority(value)
+    return parsed is not None and parsed[0] in {"localhost", "127.0.0.1", "::1"}
+
+
+def _same_origin(value: str, host: str, scheme: str) -> bool:
     try:
         parsed = urlsplit(value)
+        origin_port = parsed.port
     except ValueError:
         return False
+    host_parts = _parse_authority(host)
+    if host_parts is None or parsed.hostname is None:
+        return False
+    if parsed.path or parsed.query or parsed.fragment or parsed.username is not None:
+        return False
+    expected_port = host_parts[1] or (443 if scheme == "https" else 80)
+    actual_port = origin_port or (443 if parsed.scheme == "https" else 80)
     return (
-        parsed.scheme in {"http", "https"}
-        and parsed.hostname is not None
-        and parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+        parsed.scheme == scheme
+        and parsed.hostname.lower() == host_parts[0]
+        and actual_port == expected_port
     )
 
 
@@ -82,7 +107,11 @@ class LocalSecurityMiddleware:
 
         if scope.get("method", "GET").upper() not in {"GET", "HEAD", "OPTIONS"}:
             origin = _header(scope, b"origin")
-            if origin is not None and not _same_site_origin(origin):
+            if origin is not None and not _same_origin(
+                origin,
+                host,
+                str(scope.get("scheme", "http")),
+            ):
                 await _plain_response(send, HTTPStatus.FORBIDDEN, "Forbidden Origin")
                 return
 
@@ -146,3 +175,11 @@ def validate_field(
     if "\x00" in value:
         raise HTTPException(status_code=422, detail=f"{label} contains invalid characters")
     return value
+
+
+def validate_name(value: str, label: str = "Name") -> str:
+    validate_field(value, label, maximum=200)
+    try:
+        return sanitize_name(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

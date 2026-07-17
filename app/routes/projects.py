@@ -7,19 +7,11 @@ from pathlib import Path
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app.security import validate_field
-from app.storage import ConflictError, ProjectStore, sanitize_name
+from app.security import validate_field, validate_name
+from app.storage import ConflictError, ProjectStore
 
 
 router = APIRouter()
-
-
-def _name(value: str) -> str:
-    validate_field(value, "Name", maximum=200)
-    try:
-        return sanitize_name(value)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _project_path(value: str) -> Path:
@@ -42,7 +34,7 @@ async def register_project(
     name: str = Form(...),
     path: str = Form(...),
 ):
-    name = _name(name)
+    name = validate_name(name)
     candidate = _project_path(path)
     async with request.app.state.locks.registry_lock:
         project = request.app.state.registry.register(name, candidate)
@@ -55,7 +47,7 @@ async def rename_project(
     project_id: str,
     name: str = Form(...),
 ):
-    name = _name(name)
+    name = validate_name(name)
     async with request.app.state.locks.registry_project_sessions(project_id):
         project = request.app.state.registry.get(project_id)
         _reject_running_sessions(project)

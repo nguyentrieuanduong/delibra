@@ -56,3 +56,52 @@ def test_session_page_renders_seeded_rounds_and_safe_markdown(tmp_path) -> None:
     assert "<strong>rendered</strong>" in response.text
     assert "<script>bad()" not in response.text
     assert "Claude CLI not found" in response.text
+
+
+def test_invalid_route_ids_and_missing_round_are_client_errors(tmp_path) -> None:
+    settings = Settings(home=tmp_path / "home")
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    registry = RegistryStore(settings.home)
+    project = registry.register("Seeded Project", project_dir)
+    store = ProjectStore(project)
+    session = SessionConfig(
+        id="a" * 32,
+        name="Empty",
+        agent="claude",
+        model="sonnet",
+        effort="low",
+        role_instructions="",
+        cli_session_id=None,
+        status="idle",
+        created_at="2026-07-17T00:00:00Z",
+        rounds=[],
+    )
+    store.create_session(session)
+    app = create_app(
+        settings_override=settings,
+        provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
+    )
+    with TestClient(app, base_url="http://localhost") as client:
+        invalid_project = client.get("/projects/not-an-id")
+        invalid_session = client.get(f"/projects/{project.id}/sessions/not-an-id")
+        missing_session = client.get(f"/projects/{project.id}/sessions/{'b' * 32}")
+        missing_round = client.get(
+            f"/projects/{project.id}/sessions/{session.id}/rounds/99"
+        )
+        invalid_stream = client.get(
+            f"/projects/{project.id}/sessions/not-an-id/rounds/1/stream"
+        )
+        missing_stream = client.get(
+            f"/projects/{project.id}/sessions/{session.id}/rounds/99/stream"
+        )
+        invalid_cancel = client.post(
+            f"/projects/{project.id}/sessions/not-an-id/cancel"
+        )
+    assert invalid_project.status_code == 422
+    assert invalid_session.status_code == 422
+    assert missing_session.status_code == 404
+    assert missing_round.status_code == 404
+    assert invalid_stream.status_code == 422
+    assert missing_stream.status_code == 404
+    assert invalid_cancel.status_code == 422

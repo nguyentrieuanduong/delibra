@@ -60,11 +60,8 @@ async def pass_round(
     target_session_id: str = Form(...),
     instruction: str = Form(""),
 ):
-    try:
-        validate_id(source_session_id, "source session id")
-        validate_id(target_session_id, "target session id")
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    validate_id(source_session_id, "source session id")
+    validate_id(target_session_id, "target session id")
     if source_round < 1:
         raise HTTPException(status_code=422, detail="Source round must be positive")
     instruction = validate_field(
@@ -119,14 +116,23 @@ async def round_stream(
     round_n: int,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
+    validate_id(project_id, "project id")
+    validate_id(session_id, "session id")
+    if round_n < 1:
+        raise HTTPException(status_code=422, detail="Round must be positive")
+    project = request.app.state.registry.get(project_id)
+    config = ProjectStore(project).load_session(session_id)
+    if not any(record.n == round_n for record in config.rounds):
+        raise HTTPException(status_code=404, detail="round not found")
     key = RunKey(project_id, session_id, round_n)
 
     async def events():
         async for event in request.app.state.manager.subscribe(key, last_event_id):
+            data = str(round_n) if event.kind == "reset" else event.data
             yield {
                 "id": str(event.event_id),
                 "event": event.kind,
-                "data": _event_data(event.kind, event.data),
+                "data": _event_data(event.kind, data),
             }
 
     return EventSourceResponse(events(), ping=15)
@@ -134,6 +140,10 @@ async def round_stream(
 
 @router.post("/projects/{project_id}/sessions/{session_id}/cancel")
 async def cancel_session(request: Request, project_id: str, session_id: str):
+    validate_id(project_id, "project id")
+    validate_id(session_id, "session id")
+    project = request.app.state.registry.get(project_id)
+    ProjectStore(project).load_session(session_id)
     manager = request.app.state.manager
     key = manager.active_key(project_id, session_id)
     if key is None:
