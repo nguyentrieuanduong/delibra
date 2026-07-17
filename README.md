@@ -33,8 +33,10 @@ envs/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
-Claude or Codex session, and submit a prompt. The footer reports missing CLIs and
-version drift without preventing the rest of the UI from loading.
+Claude or Codex agent from the project chat, and submit a prompt. The project chat
+merges every agent's recorded rounds into one timeline; **Manage** opens project and
+agent settings. The footer starts in a checking state, then reports missing CLIs and
+version drift without delaying or preventing the rest of the UI from loading.
 
 ## Workflow and storage
 
@@ -57,6 +59,18 @@ Native provider session IDs are used for replies. If a provider supplies no nati
 ID, Delibra stages at most 20 completed rounds and 2 MiB of history, newest-first for
 selection and chronological for presentation. A newest round that cannot fit fails
 clearly rather than being silently truncated.
+
+Agent names, models, and effort levels remain editable after round 1; provider and
+role instructions become fixed. Edits are rejected while an agent is running. Real
+CLI gates verified that both Claude Code and Codex preserve native conversation state
+when model and effort change, so the next round resumes natively with new settings.
+The executable adapter capability flags remain the source of truth; an unproven or
+failing provider falls back to bounded staged history with a visible round warning.
+
+The chat sidebar can add or edit an agent without replacing the timeline or tearing
+down another agent's live SSE connection. Completed output can be sent to a different
+agent; session-namespaced fragment IDs keep simultaneous same-numbered rounds scoped
+to the correct stream.
 
 ## Isolation and security boundary
 
@@ -117,6 +131,14 @@ envs/bin/python -m pytest -q
 ```
 
 The complete MVP acceptance record, including separate Claude and Codex parity
-evidence and the documented browser-automation limitation, is in
+evidence, the M4 chat/config gate, and the documented browser-automation limitation,
+is in
 `docs/acceptance-mvp.md`. Sanitized CLI commands and behavioral isolation evidence
 are in `spike/FINDINGS.md`.
+
+The manually invoked real-provider gates are executable and disposable:
+
+```sh
+envs/bin/python -m spike.m4_config_resume_gate
+envs/bin/python -m spike.m4_chat_gate
+```

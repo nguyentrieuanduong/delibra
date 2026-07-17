@@ -69,7 +69,8 @@ def test_project_crud_path_validation_canonicalization_import_and_invalid_metada
             follow_redirects=False,
         )
         assert registered.status_code == 303
-        project_id = registered.headers["location"].rsplit("/", 1)[-1]
+        assert registered.headers["location"].endswith("/chat")
+        project_id = registered.headers["location"].split("/")[-2]
         registry = RegistryStore(settings.home)
         assert registry.get(project_id).path == str(real.resolve())
         assert client.post(
@@ -100,7 +101,7 @@ def test_project_crud_path_validation_canonicalization_import_and_invalid_metada
             follow_redirects=False,
         )
         assert imported.status_code == 303
-        assert imported.headers["location"].endswith(project_id)
+        assert imported.headers["location"] == f"/projects/{project_id}/chat"
 
         invalid = tmp_path / "invalid-project"
         (invalid / ".delibra").mkdir(parents=True)
@@ -189,3 +190,38 @@ async def test_rename_unregister_and_run_start_are_serialized_without_stranding(
                 assert removed.status_code == 303
     assert not RegistryStore(settings.home).list_projects()
     assert (project_path / ".delibra").is_dir()
+
+
+def test_project_chat_is_primary_and_settings_remains_available(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "primary-project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Primary", project_path)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        primary = client.get(f"/projects/{project.id}", follow_redirects=False)
+        chat = client.get(f"/projects/{project.id}/chat")
+        management = client.get(f"/projects/{project.id}/settings")
+        created = client.post(
+            f"/projects/{project.id}/sessions",
+            data={
+                "name": "Claude",
+                "agent": "claude",
+                "model": "sonnet",
+                "effort": "low",
+                "role_instructions": "",
+            },
+            follow_redirects=False,
+        )
+
+    session = ProjectStore(project).list_sessions()[0]
+    assert primary.status_code == 303
+    assert primary.headers["location"] == f"/projects/{project.id}/chat"
+    assert chat.status_code == 200
+    assert f'href="/projects/{project.id}/settings"' in chat.text
+    assert "Manage" in chat.text
+    assert management.status_code == 200
+    assert "Sessions" in management.text
+    assert created.headers["location"] == (
+        f"/projects/{project.id}/chat?agent={session.id}"
+    )

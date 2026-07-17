@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} · Chat · Delibra{% endblock %}
 {% block content %}
-  <p><a href="/">Projects</a></p>
+  <p><a href="/">Projects</a> · <a href="/projects/{{ project.id }}/settings">Manage</a></p>
   <h1>{{ project.name }}</h1>
   <div id="chat-errors" class="chat-errors" aria-live="polite"></div>
   <div class="chat-layout">

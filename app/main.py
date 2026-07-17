@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.config import Settings, settings
-from app.health import probe_all
+from app.health import checking_health, probe_all
 from app.markdown import render_markdown
 from app.routes.projects import router as projects_router
 from app.routes.chat import router as chat_router
@@ -69,7 +70,20 @@ def create_app(
         app.state.registry = registry
         app.state.locks = locks
         app.state.manager = manager
-        app.state.health = probe_all(commands)
+        app.state.health = checking_health(commands)
+
+        async def refresh_health() -> None:
+            try:
+                app.state.health = await probe_all(commands)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Background CLI health probe failed")
+
+        health_task = asyncio.create_task(
+            refresh_health(),
+            name="delibra-health-probe",
+        )
         for project in registry.list_projects():
             try:
                 store = ProjectStore(project)
@@ -77,8 +91,17 @@ def create_app(
                     store.reconcile_session(session.id)
             except StorageError:
                 LOGGER.exception("Startup reconciliation failed for project %s", project.id)
-        yield
-        await manager.shutdown()
+        try:
+            yield
+        finally:
+            health_task.cancel()
+            try:
+                await asyncio.wait_for(health_task, timeout=2)
+            except asyncio.CancelledError:
+                pass
+            except TimeoutError:
+                LOGGER.error("CLI health probe did not stop within the shutdown bound")
+            await manager.shutdown()
 
     app = FastAPI(lifespan=lifespan)
     app.add_middleware(
@@ -121,8 +144,13 @@ def create_app(
             },
         )
 
-    @app.get("/projects/{project_id}", response_class=HTMLResponse)
-    async def project_page(request: Request, project_id: str):
+    @app.get("/projects/{project_id}")
+    async def project_primary(request: Request, project_id: str):
+        request.app.state.registry.get(project_id)
+        return RedirectResponse(f"/projects/{project_id}/chat", status_code=303)
+
+    @app.get("/projects/{project_id}/settings", response_class=HTMLResponse)
+    async def project_settings(request: Request, project_id: str):
         registry = request.app.state.registry
         project = registry.get(project_id)
         sessions = ProjectStore(project).list_sessions()

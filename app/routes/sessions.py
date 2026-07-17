@@ -98,7 +98,7 @@ async def create_session(
             },
         )
     return RedirectResponse(
-        f"/projects/{project_id}/sessions/{session_id}",
+        f"/projects/{project_id}/chat?agent={session_id}",
         status_code=303,
     )
 
