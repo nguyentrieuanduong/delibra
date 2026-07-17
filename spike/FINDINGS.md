@@ -10,6 +10,7 @@
 - Resume strategy: **native**. `--resume <session-id>` recalled the seeded codeword and retained the same native session id.
 - Stdin: both prompts were supplied on stdin.
 - R4 boundary: **strict workspace-only writes** with private `TMPDIR=<workspace>/.tmp`. On first and resumed turns, the workspace write succeeded; attempted writes to adjacent project storage, another session, shared `/tmp`, and a pre-seeded symlink to outside were rejected. Exact writable root: `<workspace>`.
+- Rejected candidate: `--permission-mode acceptEdits` with a bare `Write` allow rule wrote outside the workspace during the disposable probe. Production must retain `dontAsk` plus path-scoped `Edit(/**)`.
 - Staged input: `workspace/inputs/source.md` was read on both turns (canary observed in the actual final text).
 - Role instructions: required response prefix observed on both turns.
 - Web: a `WebSearch` tool-use event was observed on both turns; Bash was absent from the allowed tool set.
@@ -26,3 +27,32 @@ claude -p --output-format stream-json --verbose --include-partial-messages --mod
 
 Resume appends `--resume <cli-session-id>` to the same command, retaining cwd and environment.
 <!-- CLAUDE-SPIKE:END -->
+
+<!-- CODEX-SPIKE:START -->
+## Codex CLI
+
+- Executable: `/opt/homebrew/bin/codex`
+- Version: `codex-cli 0.144.5`
+- Model/effort exercised: `gpt-5.4` / `low`; installed config accepts `minimal`, `low`, `medium`, `high`, `xhigh`.
+- JSONL schema: `thread.started`, `turn.started`, `item.started`, `item.completed`, `turn.completed`; the invalid-model fixture contains both `error` and `turn.failed`.
+- Streaming class: discrete provider-native `command_execution`, `web_search`, and completed `agent_message` items. Interim agent messages arrive as whole progress messages; the answer arrives as one final agent message, with no token/text deltas on 0.144.5. First progress at 8.214s before terminal at 18.976s; resumed progress at 5.428s before terminal at 13.455s.
+- Resume strategy: **native**. `exec resume <thread-id>` recalled the codeword and emitted the same thread id.
+- Stdin/non-Git: both prompts used stdin (`-`), and `--skip-git-repo-check` succeeded in a non-Git workspace.
+- R4 boundary: **strict workspace-only writes**; shared `/tmp` was rejected. On both turns the workspace and private `$TMPDIR` policy remained active; adjacent project storage, another session, isolated provider state, and writes through agent-created symlinks were rejected. The exact agent-writable root is `<workspace>`; Codex itself writes provider-controlled resume/auth state under `<CODEX_HOME>`.
+- Staged input: `workspace/inputs/source.md` was read on both turns (canary observed in actual final text).
+- Role instructions: the round-1 role block persisted on the resumed turn.
+- Web/network: a completed native `web_search` item was observed on both turns while shell `curl` failed under `sandbox_workspace_write.network_access=false`.
+- Ambient isolation: normal-HOME global and parent-project `AGENTS.md`, plus normal-HOME config/MCP/hook/skill sentinels, were inert with a clean app-owned `CODEX_HOME`, `project_root_markers=[]`, `project_doc_max_bytes=0`, `--ignore-user-config`, `--ignore-rules`, and disabled hooks/plugins/apps/memories/goals/multi-agent features. A sentinel placed inside the active `CODEX_HOME` was loaded despite `project_doc_max_bytes=0`, proving that the clean dedicated home is required rather than optional.
+- Approvals: `--ask-for-approval never`; denied operations returned to the model and the process exited without waiting for input.
+- Environment: authentication succeeded from a disposable auth copy with only `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_ALL`, `TERM`, private `TMPDIR`, and isolated `CODEX_HOME` when present.
+- Prepared fallback: `spike/fixtures/codex_stateless_prompt.txt` records one bounded stateless-history prompt shape.
+- Exit/timing: first rc=0, 19.984s; resume rc=0, 14.004s; invalid-model rc=1, 1.856s.
+
+Proven first-turn command (prompt on stdin; placeholders are app values):
+
+```text
+codex --model <model> --sandbox workspace-write --ask-for-approval never --search --cd <workspace> --config model_reasoning_effort=<effort> --config project_root_markers=[] --config project_doc_max_bytes=0 --config sandbox_workspace_write.exclude_slash_tmp=true --config sandbox_workspace_write.exclude_tmpdir_env_var=false --config sandbox_workspace_write.network_access=false --config shell_environment_policy.inherit=all --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+```
+
+Resume uses the same global policy options followed by `exec resume --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config <thread-id> -`.
+<!-- CODEX-SPIKE:END -->

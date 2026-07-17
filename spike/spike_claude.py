@@ -266,7 +266,7 @@ def sanitize_value(value: Any, replacements: dict[str, str]) -> Any:
             value = value.replace(original, replacement)
         if value != SESSION_PLACEHOLDER:
             value = re.sub(
-                r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+                r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b",
                 "<UUID>",
                 value,
                 flags=re.IGNORECASE,
@@ -541,6 +541,7 @@ Current user prompt: Continue the analysis using the staged history.
 - Resume strategy: **native**. `--resume <session-id>` recalled the seeded codeword and retained the same native session id.
 - Stdin: both prompts were supplied on stdin.
 - R4 boundary: **strict workspace-only writes** with private `TMPDIR=<workspace>/.tmp`. On first and resumed turns, the workspace write succeeded; attempted writes to adjacent project storage, another session, shared `/tmp`, and a pre-seeded symlink to outside were rejected. Exact writable root: `<workspace>`.
+- Rejected candidate: `--permission-mode acceptEdits` with a bare `Write` allow rule wrote outside the workspace during the disposable probe. Production must retain `dontAsk` plus path-scoped `Edit(/**)`.
 - Staged input: `workspace/inputs/source.md` was read on both turns (canary observed in the actual final text).
 - Role instructions: required response prefix observed on both turns.
 - Web: a `WebSearch` tool-use event was observed on both turns; Bash was absent from the allowed tool set.
