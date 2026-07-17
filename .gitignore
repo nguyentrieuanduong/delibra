@@ -1,0 +1,8 @@
+envs/
+requirements.md
+recommends.md
+.plan/
+.idea/
+__pycache__/
+.pytest_cache/
+*.py[cod]
