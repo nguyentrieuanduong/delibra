@@ -5,12 +5,14 @@ const assert = require("node:assert/strict");
 const {
   chatErrorMessage,
   closeFocusDialog,
+  conversationTimelineForSwap,
   handleFocusDialogCancel,
   isDialogBackdropClick,
   openFocusDialog,
   removeConversationEmptyState,
   renderChatError,
   shouldClearChatError,
+  syncConversationDisclosure,
 } = require("../../app/static/app.js");
 
 test("extracts string details without interpreting markup", function () {
@@ -150,6 +152,97 @@ test("empty marker stays until a conversation message exists", () => {
   };
   assert.equal(removeConversationEmptyState(timeline), false);
   assert.equal(removed, 0);
+});
+
+test("beforeend swaps use their timeline detail target", () => {
+  const timeline = {
+    classList: {
+      contains(value) {
+        assert.equal(value, "chat-timeline");
+        return true;
+      },
+    },
+  };
+  const swapped = {
+    closest() {
+      throw new Error("the swapped element is unnecessary for beforeend");
+    },
+  };
+  assert.equal(conversationTimelineForSwap(timeline, swapped), timeline);
+});
+
+test("outerHTML swaps use the newly inserted event target", () => {
+  const timeline = {};
+  const detachedTarget = {
+    classList: {
+      contains(value) {
+        assert.equal(value, "chat-timeline");
+        return false;
+      },
+    },
+  };
+  const swapped = {
+    closest(selector) {
+      assert.equal(selector, ".chat-timeline");
+      return timeline;
+    },
+  };
+  assert.equal(
+    conversationTimelineForSwap(detachedTarget, swapped),
+    timeline
+  );
+});
+
+test("unrelated swaps resolve no conversation timeline", () => {
+  const target = {
+    classList: { contains() { return false; } },
+  };
+  const swapped = {
+    closest() { return null; },
+  };
+  assert.equal(conversationTimelineForSwap(target, swapped), null);
+});
+
+function recordedMessage(open) {
+  const details = { open };
+  return {
+    details,
+    querySelector(selector) {
+      assert.equal(selector, ".round-details");
+      return details;
+    },
+  };
+}
+
+test("only the final recorded conversation message stays open", () => {
+  const older = recordedMessage(true);
+  const latest = recordedMessage(false);
+  const timeline = {
+    querySelectorAll(selector) {
+      assert.equal(selector, ".round, .live-round");
+      return [older, latest];
+    },
+  };
+  assert.equal(syncConversationDisclosure(timeline), true);
+  assert.equal(older.details.open, false);
+  assert.equal(latest.details.open, true);
+});
+
+test("a final live message leaves every recorded message closed", () => {
+  const older = recordedMessage(true);
+  const live = {
+    querySelector(selector) {
+      assert.equal(selector, ".round-details");
+      return null;
+    },
+  };
+  const timeline = {
+    querySelectorAll() {
+      return [older, live];
+    },
+  };
+  assert.equal(syncConversationDisclosure(timeline), false);
+  assert.equal(older.details.open, false);
 });
 
 test("successful file fragments preserve the global chat error", function () {

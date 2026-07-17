@@ -248,3 +248,15 @@ may orphan CLI processes because the MVP intentionally has no external watchdog.
   its modal operable; two live panes retained distinct ids and kept updating.
 - Scope check: session history stayed expanded, and M6 changed no route,
   storage, SSE, pagination, mobile, or authenticated-provider behavior.
+
+## M7 integrated topic rail and disclosure acceptance
+
+- Automated gate: the full Python suite and direct Node tests passed.
+- Chrome 1100×800: topic navigation, project metadata, path, and provider health
+  stayed inside the left file rail while conversation and agents used the full
+  workspace height; file browser and reader targets remained operable.
+- Disclosure gate: only the final recorded item loaded open; a newer live item
+  closed it; concurrent earlier completion stayed closed; final completion alone
+  opened, with Focus/modal and live ids preserved.
+- Scope check: session history stayed expanded, and M7 changed no route,
+  storage, SSE, ordering, focus, selection, pagination, or mobile behavior.

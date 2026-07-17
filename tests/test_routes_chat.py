@@ -159,24 +159,34 @@ def test_chat_merges_rounds_deterministically_with_unique_composite_fragments(
     assert fragment.status_code == 200
     assert f'id="{alpha_dom_id}"' in fragment.text
     assert "Alpha · Round 1" in fragment.text
-    bubble = re.search(
+    alpha_bubble = re.search(
         rf'<article[^>]+id="round-{alpha.id}-1".*?</article>',
         response.text,
         flags=re.DOTALL,
     )
-    assert bubble is not None
-    assert '<details open class="round-details">' in bubble.group()
-    assert bubble.group().index(">Focus</button>") < bubble.group().index(
-        '<details open class="round-details">'
+    gamma_bubble = re.search(
+        rf'<article[^>]+id="round-{gamma.id}-1".*?</article>',
+        response.text,
+        flags=re.DOTALL,
     )
+    assert alpha_bubble is not None
+    assert gamma_bubble is not None
+    assert '<details class="round-details">' in alpha_bubble.group()
+    assert '<details open class="round-details">' not in alpha_bubble.group()
+    assert alpha_bubble.group().index(">Focus</button>") < alpha_bubble.group().index(
+        '<details class="round-details">'
+    )
+    assert '<details open class="round-details">' in gamma_bubble.group()
+    assert response.text.count('<details open class="round-details">') == 1
     assert chat_fragment.status_code == 200
-    assert '<details open class="round-details">' in chat_fragment.text
+    assert '<details class="round-details">' in chat_fragment.text
+    assert '<details open class="round-details">' not in chat_fragment.text
     assert chat_fragment.text.index(">Focus</button>") < chat_fragment.text.index(
-        '<details open class="round-details">'
+        '<details class="round-details">'
     )
     assert session_page.status_code == 200
-    assert '<details open class="round-details">' not in fragment.text
-    assert '<details open class="round-details">' not in session_page.text
+    assert '<details class="round-details">' not in fragment.text
+    assert '<details class="round-details">' not in session_page.text
 
 
 def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> None:

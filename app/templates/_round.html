@@ -13,7 +13,7 @@
     {% endif %}
   </div>
   {% if chat_view %}
-    <details open class="round-details">
+    <details{% if round_expanded %} open{% endif %} class="round-details">
       <summary>Message contents</summary>
       {% include "_round_contents.html" %}
     </details>
