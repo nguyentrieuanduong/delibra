@@ -36,8 +36,10 @@
       data-workspace-region="conversation"
       aria-label="Conversation workspace"
     >
-      {% include "_chat_select.html" %}
-      {% include "_composer.html" %}
+      <div class="conversation-controls">
+        {% include "_chat_select.html" %}
+        {% include "_composer.html" %}
+      </div>
       <div id="chat-errors" class="chat-errors" aria-live="polite"></div>
       <section class="chat-timeline" aria-label="Conversation">
         {% set chat_view = true %}

@@ -1,6 +1,8 @@
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
 body { max-width: 960px; margin: 0 auto; padding: 1rem; line-height: 1.5; }
 body.chat-page { max-width: none; min-width: 900px; }
+body.chat-page { padding-top: .5rem; }
+body.chat-page > header { margin-bottom: .5rem; }
 header { font-size: 1.25rem; font-weight: 700; margin-bottom: 2rem; }
 footer { border-top: 1px solid #8885; display: flex; gap: 1rem; margin-top: 3rem; padding-top: 1rem; }
 .round { border: 1px solid #8885; border-radius: .5rem; margin: 1rem 0; padding: 1rem; }
@@ -18,12 +20,12 @@ textarea { min-height: 7rem; }
 .health { font-size: .85rem; }
 .chat-workspace {
   display: grid;
-  gap: 1rem;
+  gap: .65rem;
   grid-template-areas:
     "topic topic topic"
     "files conversation agents";
-  grid-template-columns: minmax(15rem, 1fr) minmax(30rem, 3fr) minmax(15rem, 1fr);
-  grid-template-rows: auto minmax(32rem, calc(100vh - 12rem));
+  grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) minmax(12rem, .7fr);
+  grid-template-rows: auto minmax(32rem, calc(100vh - 9rem));
 }
 .workspace-topic {
   align-items: center;
@@ -32,7 +34,7 @@ textarea { min-height: 7rem; }
   grid-area: topic;
   justify-content: space-between;
 }
-.workspace-topic h1, .workspace-topic p { margin: .2rem 0; }
+.workspace-topic h1, .workspace-topic p { margin: .1rem 0; }
 .project-path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
 .topic-health { display: flex; flex-direction: column; text-align: right; }
 .workspace-files {
@@ -47,12 +49,30 @@ textarea { min-height: 7rem; }
   display: grid;
   gap: .75rem;
   grid-area: conversation;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }
+.conversation-controls {
+  align-items: start;
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: minmax(11rem, 1fr) minmax(22rem, 2fr);
+}
+.conversation-controls form { margin: 0; }
+.conversation-controls .chat-agent-select {
+  border-bottom: 0;
+  border-right: 1px solid #8885;
+  padding-bottom: 0;
+  padding-right: .75rem;
+}
+.conversation-controls textarea { min-height: 4rem; }
 .chat-timeline { min-height: 0; overflow: auto; }
-.workspace-agents { grid-area: agents; min-height: 0; overflow: auto; }
+.workspace-agents { font-size: .85rem; grid-area: agents; min-height: 0; overflow: auto; }
+.workspace-agents :is(input, select, textarea, button) { font: inherit; }
+.workspace-agents form { gap: .45rem; margin: .5rem 0; }
+.workspace-agents textarea { min-height: 4rem; }
+.workspace-agents .agent-card { margin: .5rem 0; padding: .5rem; }
 .chat-agent-select { border-bottom: 1px solid #8885; padding-bottom: .75rem; }
 .chat-agent-select h2, .chat-agent-select h3, .chat-agent-select p { margin: .25rem 0; }
 .agent-role { border-left: .2rem solid #8885; padding-left: .6rem; }
