@@ -1,0 +1,9 @@
+<article class="round {{ round.record.status if round.record else 'orphan' }}" id="round-{{ round.n }}">
+  <h2>Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}</h2>
+  {% if round.record and round.record.error %}<p class="error">{{ round.record.error }}</p>{% endif %}
+  {% if round.record and round.record.warnings %}
+    <ul class="warnings">{% for warning in round.record.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md }}</div></details>
+  <div class="markdown output">{{ round.output|md }}</div>
+</article>
