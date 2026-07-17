@@ -4,9 +4,26 @@
   <p><a href="/projects/{{ project.id }}">{{ project.name }}</a></p>
   <h1>{{ session.name }}</h1>
   <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
+  <form
+    hx-post="/projects/{{ project.id }}/sessions/{{ session.id }}/run"
+    hx-target=".rounds"
+    hx-swap="beforeend"
+  >
+    <label>{% if session.rounds %}Reply{% else %}Prompt{% endif %}
+      <textarea name="prompt" maxlength="100000" required{% if session.status == 'running' %} disabled{% endif %}></textarea>
+    </label>
+    <button type="submit"{% if session.status == 'running' %} disabled{% endif %}>
+      {% if session.rounds %}Reply{% else %}Run{% endif %}
+    </button>
+  </form>
   <section class="rounds">
     {% for round in rounds %}
-      {% include "_round.html" %}
+      {% if active_key and active_key.round_n == round.n %}
+        {% set key = active_key %}
+        {% include "_live.html" %}
+      {% else %}
+        {% include "_round.html" %}
+      {% endif %}
     {% else %}
       <p>No rounds yet.</p>
     {% endfor %}
