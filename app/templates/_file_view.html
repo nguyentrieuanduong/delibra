@@ -1,0 +1,14 @@
+<article class="file-view" aria-label="Opened file">
+  <h3>{{ path }}</h3>
+  {% if file_error %}
+    <p class="file-error" role="status">{{ file_error }}</p>
+  {% else %}
+    {% if truncated %}<p class="file-warning" role="status">File truncated at the view limit.</p>{% endif %}
+    {% if replacements %}<p class="file-warning" role="status">Invalid UTF-8 was replaced for display.</p>{% endif %}
+    {% if markdown %}
+      <div class="markdown">{{ text|md }}</div>
+    {% else %}
+      <pre>{{ text }}</pre>
+    {% endif %}
+  {% endif %}
+</article>

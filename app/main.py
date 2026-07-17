@@ -16,8 +16,9 @@ from app.agents.codex import CodexAdapter
 from app.config import Settings, settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
-from app.routes.projects import router as projects_router
 from app.routes.chat import router as chat_router
+from app.routes.files import router as files_router
+from app.routes.projects import router as projects_router
 from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
 from app.runner import AdapterFactory, RunManager
@@ -117,6 +118,7 @@ def create_app(
     app.state.health = []
     app.include_router(projects_router)
     app.include_router(chat_router)
+    app.include_router(files_router)
     app.include_router(sessions_router)
     app.include_router(runs_router)
 

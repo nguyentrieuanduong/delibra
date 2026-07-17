@@ -1,0 +1,35 @@
+<section id="file-browser-list" aria-label="Project files">
+  <nav aria-label="File breadcrumbs">
+    {% for breadcrumb in breadcrumbs %}
+      {% if not loop.first %}<span aria-hidden="true">/</span>{% endif %}
+      <a
+        href="{{ breadcrumb.url }}"
+        hx-get="{{ breadcrumb.url }}"
+        hx-target="#file-browser-list"
+        hx-swap="outerHTML"
+      >{{ breadcrumb.label }}</a>
+    {% endfor %}
+  </nav>
+  {% if file_error %}
+    <p class="file-error" role="status">{{ file_error }}</p>
+  {% else %}
+    <ul class="file-entries">
+      {% for item in entries %}
+        <li class="file-entry {{ item.entry.kind }}">
+          {% if item.entry.openable %}
+            <a
+              href="{{ item.url }}"
+              hx-get="{{ item.url }}"
+              hx-target="{{ '#file-browser-list' if item.entry.kind == 'directory' else '#file-reader' }}"
+              hx-swap="{{ 'outerHTML' if item.entry.kind == 'directory' else 'innerHTML' }}"
+            >{{ item.entry.name }}</a>
+          {% else %}
+            <span aria-disabled="true">{{ item.entry.name }}</span>
+          {% endif %}
+        </li>
+      {% else %}
+        <li>No files.</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>

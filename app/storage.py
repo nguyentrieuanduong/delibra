@@ -12,7 +12,7 @@ cannot create two lifecycle locks for the same project id.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -22,7 +22,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
-from typing import Any, AsyncIterator, Iterable
+from typing import Any, AsyncIterator, Iterable, Iterator, Literal
 from uuid import uuid4
 
 from app.models import Project, RoundRecord, SessionConfig
@@ -55,6 +55,28 @@ class InvalidIdentifier(StorageError):
     """An externally supplied project or session identifier is malformed."""
 
 
+class ProjectFileSecurityError(StorageError):
+    """A project-browser path failed its security boundary."""
+
+
+class ProjectFileDisplayError(StorageError):
+    """A safe project-browser path cannot currently be displayed."""
+
+
+@dataclass(frozen=True)
+class ProjectFileEntry:
+    name: str
+    relative_path: str
+    kind: Literal["directory", "file", "other"]
+    openable: bool
+
+
+@dataclass(frozen=True)
+class ProjectFileContents:
+    data: bytes
+    truncated: bool
+
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -74,6 +96,159 @@ def validate_id(value: str, label: str = "id") -> str:
     if not ID_PATTERN.fullmatch(value):
         raise InvalidIdentifier(f"invalid {label}")
     return value
+
+
+def project_path_parts(value: str) -> tuple[str, ...]:
+    if len(value) > 4_096 or "\x00" in value or value.startswith("/"):
+        raise ProjectFileSecurityError("invalid project file path")
+    raw_parts = value.split("/")
+    if any(part == ".." for part in raw_parts):
+        raise ProjectFileSecurityError("invalid project file path")
+    return tuple(part for part in raw_parts if part not in {"", "."})
+
+
+def _project_directory_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if any(not hasattr(os, name) for name in required):
+        raise ProjectFileSecurityError("safe project browsing is unavailable")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+@contextmanager
+def _open_project_directory(root: Path, parts: tuple[str, ...]) -> Iterator[int]:
+    flags = _project_directory_flags()
+    descriptor: int | None = None
+    try:
+        try:
+            root_info = os.stat(root, follow_symlinks=False)
+        except OSError as exc:
+            raise ProjectFileDisplayError("project root cannot be displayed") from exc
+        if stat.S_ISLNK(root_info.st_mode):
+            raise ProjectFileSecurityError("symlinked project root rejected")
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise ProjectFileDisplayError("project root cannot be displayed")
+        try:
+            descriptor = os.open(root, flags)
+        except (FileNotFoundError, PermissionError) as exc:
+            raise ProjectFileDisplayError("project root cannot be displayed") from exc
+        except OSError as exc:
+            raise ProjectFileSecurityError("project root changed during access") from exc
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise ProjectFileSecurityError("project root is not a directory")
+        for part in parts:
+            try:
+                entry = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+            except OSError as exc:
+                raise ProjectFileDisplayError("directory cannot be displayed") from exc
+            if stat.S_ISLNK(entry.st_mode):
+                raise ProjectFileSecurityError("symlinked project path rejected")
+            if not stat.S_ISDIR(entry.st_mode):
+                raise ProjectFileDisplayError("directory cannot be displayed")
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+            except (FileNotFoundError, PermissionError) as exc:
+                raise ProjectFileDisplayError("directory cannot be displayed") from exc
+            except OSError as exc:
+                raise ProjectFileSecurityError("project path changed during access") from exc
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor
+    except ProjectFileSecurityError:
+        raise
+    except OSError as exc:
+        raise ProjectFileDisplayError("directory cannot be displayed") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def list_project_directory(root: Path, relative_path: str) -> list[ProjectFileEntry]:
+    parts = project_path_parts(relative_path)
+    with _open_project_directory(root, parts) as descriptor:
+        entries: list[ProjectFileEntry] = []
+        try:
+            names = os.listdir(descriptor)
+        except OSError as exc:
+            raise ProjectFileDisplayError("directory cannot be displayed") from exc
+        for name in names:
+            try:
+                info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ProjectFileDisplayError("directory cannot be displayed") from exc
+            if stat.S_ISDIR(info.st_mode):
+                kind: Literal["directory", "file", "other"] = "directory"
+                openable = True
+            elif stat.S_ISREG(info.st_mode):
+                kind = "file"
+                openable = True
+            else:
+                kind = "other"
+                openable = False
+            path = "/".join((*parts, name))
+            entries.append(ProjectFileEntry(name, path, kind, openable))
+    order = {"directory": 0, "file": 1, "other": 2}
+    return sorted(entries, key=lambda item: (order[item.kind], item.name.casefold(), item.name))
+
+
+@contextmanager
+def _open_project_file(root: Path, parts: tuple[str, ...]) -> Iterator[int]:
+    flags = (
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_descriptor: int | None = None
+    try:
+        with _open_project_directory(root, parts[:-1]) as directory_descriptor:
+            try:
+                before = os.stat(parts[-1], dir_fd=directory_descriptor, follow_symlinks=False)
+            except OSError as exc:
+                raise ProjectFileDisplayError("file cannot be displayed") from exc
+            if stat.S_ISLNK(before.st_mode):
+                raise ProjectFileSecurityError("symlinked project path rejected")
+            if not stat.S_ISREG(before.st_mode):
+                raise ProjectFileDisplayError("file cannot be displayed")
+            try:
+                file_descriptor = os.open(parts[-1], flags, dir_fd=directory_descriptor)
+            except (FileNotFoundError, PermissionError) as exc:
+                raise ProjectFileDisplayError("file cannot be displayed") from exc
+            except OSError as exc:
+                raise ProjectFileSecurityError("project path changed during access") from exc
+            try:
+                opened = os.fstat(file_descriptor)
+            except OSError as exc:
+                raise ProjectFileDisplayError("file cannot be displayed") from exc
+            if not stat.S_ISREG(opened.st_mode):
+                raise ProjectFileDisplayError("file cannot be displayed")
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise ProjectFileSecurityError("project path changed during access")
+        yield file_descriptor
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+
+
+def read_project_file(root: Path, relative_path: str, limit: int) -> ProjectFileContents:
+    parts = project_path_parts(relative_path)
+    if not parts:
+        raise ProjectFileDisplayError("file cannot be displayed")
+    with _open_project_file(root, parts) as file_descriptor:
+        try:
+            remaining = limit + 1
+            blocks: list[bytes] = []
+            while remaining:
+                block = os.read(file_descriptor, min(64 * 1024, remaining))
+                if not block:
+                    break
+                blocks.append(block)
+                remaining -= len(block)
+            captured = b"".join(blocks)
+            return ProjectFileContents(captured[:limit], len(captured) > limit)
+        except OSError as exc:
+            raise ProjectFileDisplayError("file cannot be displayed") from exc
 
 
 def _fsync_directory(path: Path) -> None:
