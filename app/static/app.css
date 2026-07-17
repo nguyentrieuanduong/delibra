@@ -58,6 +58,7 @@ textarea { min-height: 7rem; }
 .file-view-header h3 { margin-top: 0; overflow-wrap: anywhere; }
 .file-view-actions { display: flex; gap: .35rem; }
 .file-view pre { overflow: auto; white-space: pre-wrap; }
+.file-view pre.structured-data { tab-size: 2; white-space: pre; }
 .workspace-conversation {
   display: grid;
   gap: .75rem;

@@ -24,8 +24,11 @@
   {% else %}
     {% if truncated %}<p class="file-warning" role="status">File truncated at the view limit.</p>{% endif %}
     {% if replacements %}<p class="file-warning" role="status">Invalid UTF-8 was replaced for display.</p>{% endif %}
+    {% if structured_warning %}<p class="file-warning" role="status">{{ structured_warning }}</p>{% endif %}
     {% if markdown %}
       <div class="markdown">{{ text|md }}</div>
+    {% elif structured_kind %}
+      <pre class="structured-data" data-format="{{ structured_kind }}">{{ text }}</pre>
     {% else %}
       <pre>{{ text }}</pre>
     {% endif %}
