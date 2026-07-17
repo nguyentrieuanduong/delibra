@@ -18,7 +18,7 @@
     </h3>
     <span>{{ agent.status }}</span>
   </div>
-  <details class="agent-details">
+  <details{% if agent_view.selected %} open{% endif %} class="agent-details">
     <summary>Agent information</summary>
     <p>{{ agent.agent }} · {{ agent.model }} · {{ agent.effort }}</p>
     <section class="agent-role" aria-label="Role instructions">

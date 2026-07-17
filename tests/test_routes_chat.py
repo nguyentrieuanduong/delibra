@@ -130,6 +130,7 @@ def assert_synchronized_selection_fragment(
     assert response.text.count('id="chat-composer"') == 1
     assert response.text.count('class="agent-card selected"') == 1
     assert response.text.count('aria-current="true"') == 1
+    assert response.text.count('<details open class="agent-details">') == 1
     assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
     assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
     assert 'id="chat-agent-select"' not in response.text
@@ -260,7 +261,8 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
     assert 'id="file-browser-host"' in response.text
     assert 'id="file-reader"' in response.text
     assert 'id="chat-agent-select"' not in response.text
-    assert response.text.count('<details class="agent-details">') == 2
+    assert response.text.count('<details open class="agent-details">') == 1
+    assert response.text.count('<details class="agent-details">') == 1
     assert "Be rigorous &amp; challenge &lt;claims&gt;." in response.text
     assert "No role instructions" in response.text
     assert "Role instructions are fixed after the first round." not in response.text
@@ -365,8 +367,8 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
     )
     assert 'hx-target="#agent-sidebar"' in beta_card.group()
     assert 'aria-current="true"' in beta_card.group()
-    assert '<details class="agent-details">' in beta_card.group()
-    assert '<details open class="agent-details">' not in beta_card.group()
+    assert '<details open class="agent-details">' in beta_card.group()
+    assert response.text.count('<details open class="agent-details">') == 1
     assert (
         f'<input type="hidden" name="session_id" value="{beta.id}">'
         in response.text
@@ -545,6 +547,7 @@ def test_chat_selection_is_deterministic_and_invalid_selection_is_rejected(
         assert response.text.count('id="chat-composer"') == 1
         assert response.text.count('class="agent-card selected"') == 1
         assert response.text.count('aria-current="true"') == 1
+        assert response.text.count('<details open class="agent-details">') == 1
         assert re.search(
             rf'class="agent-card selected"\s+data-session-id="{selected.id}"\s+'
             r'data-selected="true"',
@@ -563,6 +566,7 @@ def test_chat_selection_is_deterministic_and_invalid_selection_is_rejected(
     assert sidebar.text.count('id="chat-composer"') == 0
     assert sidebar.text.count('class="agent-card selected"') == 1
     assert sidebar.text.count('aria-current="true"') == 1
+    assert sidebar.text.count('<details open class="agent-details">') == 1
     assert 'hx-swap-oob=' not in sidebar.text
     assert '<section class="chat-timeline"' not in sidebar.text
     assert 'class="live-round"' not in sidebar.text
