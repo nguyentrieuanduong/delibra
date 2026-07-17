@@ -62,4 +62,16 @@
       {% include "_agent_sidebar.html" %}
     </section>
   </div>
+  <dialog id="focus-dialog" class="focus-dialog" aria-label="Round focus">
+    <div class="focus-dialog-shell">
+      <button
+        type="button"
+        class="focus-dialog-close"
+        data-focus-dialog-close
+      >Close</button>
+      <div id="focus-dialog-content" tabindex="-1">
+        <p>Select Focus on a recorded round to inspect it.</p>
+      </div>
+    </div>
+  </dialog>
 {% endblock %}
