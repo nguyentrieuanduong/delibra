@@ -6,7 +6,7 @@ Runtime: Python 3.12.13, Claude Code 2.1.202, Codex CLI 0.144.5
 
 ## Result and evidence boundary
 
-The deterministic suite passed 77 tests. One non-failing warning remains from
+The deterministic suite passed 84 tests. One non-failing warning remains from
 Starlette's deprecated TestClient/httpx compatibility import; it is not an
 application-runtime failure.
 
@@ -98,14 +98,16 @@ record does not claim GUI automation that did not occur.
 
 - Unsafe Markdown: scripts, raw HTML handlers, and `javascript:` links are
   neutralized; SSE provider text is escaped.
-- Request boundary: non-loopback Host and cross-site mutation Origin are rejected;
-  body size is capped while receiving chunked requests.
+- Request boundary: non-loopback Host and any non-matching mutation Origin (including
+  another loopback port or alias) are rejected; body size is capped while receiving
+  chunked requests.
 - IDs and paths: invalid pass IDs are rejected; registry paths must be absolute and
   canonical; round/source paths are constructed only from validated IDs and numeric
   round numbers.
 - Filesystem ownership: no-follow safe copy detects vanished/replaced/symlink sources;
-  a symlinked session directory cannot be deleted; manifest identity is checked before
-  directory removal.
+  symlinked session roots, session directories, staging roots, private temp roots, and
+  Codex credentials are rejected; manifest identity is checked before directory
+  removal.
 - Agent environment: a dedicated test proves arbitrary server secrets/API keys are
   absent from the subprocess allowlist.
 - Process lifecycle: cancel, timeout, spawned-child cancellation, and graceful

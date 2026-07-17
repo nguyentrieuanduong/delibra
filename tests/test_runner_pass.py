@@ -189,3 +189,18 @@ async def test_precreated_target_input_is_rejected_and_not_removed(
         await manager.start(project_id, target.id, "Pass", source=descriptor)
     assert input_root.exists()
     assert store.load_session(target.id).rounds == []
+
+
+@pytest.mark.asyncio
+async def test_symlinked_inputs_parent_cannot_escape_staging(tmp_path: Path) -> None:
+    manager, project_id, store, _, target, descriptor, _ = manager_setup(tmp_path)
+    inputs = store.workspace_dir(target.id) / "inputs"
+    inputs.rmdir()
+    outside = tmp_path / "outside-inputs"
+    outside.mkdir()
+    inputs.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(StorageError):
+        await manager.start(project_id, target.id, "Pass", source=descriptor)
+    assert not list(outside.iterdir())
+    assert store.load_session(target.id).rounds == []

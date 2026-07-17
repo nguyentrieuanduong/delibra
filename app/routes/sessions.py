@@ -10,19 +10,11 @@ from fastapi.responses import RedirectResponse
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import SessionConfig
-from app.security import validate_field
-from app.storage import ConflictError, ProjectStore, sanitize_name, utc_now
+from app.security import validate_field, validate_name
+from app.storage import ConflictError, NotFoundError, ProjectStore, utc_now
 
 
 router = APIRouter()
-
-
-def _validated_name(value: str) -> str:
-    validate_field(value, "Name", maximum=200)
-    try:
-        return sanitize_name(value)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _validated_configuration(
@@ -65,7 +57,7 @@ async def create_session(
     effort: str = Form(...),
     role_instructions: str = Form(""),
 ):
-    name = _validated_name(name)
+    name = validate_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
         agent, model, effort, role_instructions
     )
@@ -102,7 +94,7 @@ async def edit_session(
     effort: str | None = Form(None),
     role_instructions: str | None = Form(None),
 ):
-    name = _validated_name(name)
+    name = validate_name(name)
     supplied_configuration = any(
         value is not None for value in (agent, model, effort, role_instructions)
     )
@@ -223,8 +215,11 @@ async def round_fragment(
     store = ProjectStore(project)
     sessions = store.list_sessions()
     view = next(
-        item for item in _round_views(store, session_id) if item["n"] == round_n
+        (item for item in _round_views(store, session_id) if item["n"] == round_n),
+        None,
     )
+    if view is None:
+        raise NotFoundError(f"round not found: {round_n}")
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_round.html",

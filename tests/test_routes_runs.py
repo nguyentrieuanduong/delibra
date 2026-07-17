@@ -118,6 +118,10 @@ def test_post_run_stream_reconnect_late_done_and_final_fragment(tmp_path: Path) 
         assert 'id="live-1"' in started.text
         assert 'hx-target="#live-1"' in started.text
         assert 'hx-swap="outerHTML"' in started.text
+        assert 'sse-swap="reset"' in started.text
+
+        base_page = client.get(base)
+        assert '<script src="/static/app.js" defer></script>' in base_page.text
 
         busy = client.post(f"{base}/run", data={"prompt": "Another"})
         assert busy.status_code == 409
@@ -167,6 +171,7 @@ def test_replay_gap_streams_reset_snapshot_and_done(tmp_path: Path) -> None:
         ) as response:
             replay = parse_sse(response)
     assert [event["event"] for event in replay] == ["reset", "snapshot", "done"]
+    assert replay[0]["data"] == "1"
     assert "Hello" in replay[1]["data"]
 
 

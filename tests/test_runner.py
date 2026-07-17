@@ -138,6 +138,54 @@ def test_subprocess_environment_does_not_inherit_server_secrets(
     }
 
 
+@pytest.mark.asyncio
+async def test_symlinked_private_tmp_becomes_visible_error_without_outside_write(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    private_tmp = store.workspace_dir(session_id) / ".tmp"
+    private_tmp.rmdir()
+    outside = tmp_path / "outside-tmp"
+    outside.mkdir()
+    private_tmp.symlink_to(outside, target_is_directory=True)
+
+    record = await manager.wait(
+        await manager.start(project_id, session_id, "Question")
+    )
+    assert record.status == "error"
+    assert "symlink" in (record.error or "")
+    assert not list(outside.iterdir())
+
+
+def test_codex_auth_symlink_is_rejected(tmp_path: Path) -> None:
+    manager, _, _, _ = setup_manager(tmp_path)
+    manager.settings.codex_home.mkdir(mode=0o700)
+    outside = tmp_path / "outside-auth.json"
+    outside.write_text('{"token":"outside"}', encoding="utf-8")
+    (manager.settings.codex_home / "auth.json").symlink_to(outside)
+
+    with pytest.raises(StorageError, match="symlink"):
+        manager._prepare_codex_home()
+
+
+@pytest.mark.asyncio
+async def test_full_subscriber_queue_disconnects_only_that_subscriber(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, _ = setup_manager(tmp_path, mode="sleep")
+    key = await manager.start(project_id, session_id, "Question")
+    active = manager._active[key]
+    queue = asyncio.Queue(maxsize=1)
+    active.subscribers.add(queue)
+
+    manager._publish(active, "progress", "first")
+    manager._publish(active, "progress", "second")
+
+    assert queue not in active.subscribers
+    assert await queue.get() is None
+    await manager.cancel(key)
+
+
 async def collect(manager: RunManager, key, last_event_id: int | str | None = None):
     return [event async for event in manager.subscribe(key, last_event_id)]
 

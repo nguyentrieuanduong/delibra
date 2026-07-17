@@ -42,10 +42,34 @@ def test_cross_site_origin_post_rejected_but_absent_origin_allowed(tmp_path) -> 
             content=b"ok",
             headers={"origin": "https://attacker.example"},
         )
+        other_local_port = client.post(
+            "/__test/echo",
+            content=b"ok",
+            headers={"origin": "http://localhost:9000"},
+        )
+        other_loopback_alias = client.post(
+            "/__test/echo",
+            content=b"ok",
+            headers={"origin": "http://127.0.0.1"},
+        )
+        same_origin = client.post(
+            "/__test/echo",
+            content=b"ok",
+            headers={"origin": "http://localhost"},
+        )
         allowed = client.post("/__test/echo", content=b"ok")
     assert rejected.status_code == 403
+    assert other_local_port.status_code == 403
+    assert other_loopback_alias.status_code == 403
+    assert same_origin.status_code == 200
     assert allowed.status_code == 200
     assert allowed.json() == {"size": 2}
+
+
+def test_malformed_loopback_host_is_rejected(tmp_path) -> None:
+    with app_client(tmp_path) as client:
+        response = client.get("/", headers={"host": "[::1]attacker"})
+    assert response.status_code == 403
 
 
 def test_chunked_oversized_body_is_rejected_while_streaming(tmp_path) -> None:

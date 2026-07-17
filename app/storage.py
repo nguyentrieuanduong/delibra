@@ -51,6 +51,10 @@ class OwnershipError(StorageError):
     """A path or identity is not proven to be owned by Delibra."""
 
 
+class InvalidIdentifier(StorageError):
+    """An externally supplied project or session identifier is malformed."""
+
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -68,7 +72,7 @@ def sanitize_name(value: str, *, maximum: int = 200) -> str:
 
 def validate_id(value: str, label: str = "id") -> str:
     if not ID_PATTERN.fullmatch(value):
-        raise ValueError(f"invalid {label}")
+        raise InvalidIdentifier(f"invalid {label}")
     return value
 
 
@@ -214,6 +218,23 @@ def _assert_no_symlink_components(
             raise OwnershipError(f"symlinked path component rejected: {current}")
 
 
+def ensure_owned_directory(path: Path, root: Path) -> Path:
+    """Create a missing leaf directory after rejecting every symlink component."""
+    _assert_no_symlink_components(path, root, allow_missing_leaf=True)
+    try:
+        path.mkdir(mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise StorageError(f"owned directory is unavailable: {path}") from exc
+    _assert_no_symlink_components(path, root, allow_missing_leaf=False)
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise OwnershipError(f"owned directory is unavailable: {path}") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise OwnershipError(f"owned path is not a directory: {path}")
+    return path
+
+
 def safe_copy_file(
     source: Path,
     allowed_source_root: Path,
@@ -352,6 +373,11 @@ class RegistryStore:
         if metadata.exists():
             if metadata.is_symlink() or not metadata.is_dir():
                 raise OwnershipError("existing .delibra is not an owned directory")
+            _assert_no_symlink_components(
+                manifest_path,
+                metadata,
+                allow_missing_leaf=False,
+            )
             try:
                 manifest = load_json_recover(manifest_path)
             except StorageError as exc:
@@ -421,21 +447,31 @@ class ProjectStore:
         self.project_path = Path(project.path).resolve(strict=True)
         self.root = self.project_path / ".delibra"
         _assert_no_symlink_components(self.root, self.root, allow_missing_leaf=False)
-        manifest = load_json_recover(self.root / "manifest.json")
+        manifest_path = self.root / "manifest.json"
+        _assert_no_symlink_components(
+            manifest_path,
+            self.root,
+            allow_missing_leaf=False,
+        )
+        manifest = load_json_recover(manifest_path)
         if manifest.get("format") != FORMAT or manifest.get("id") != project.id:
             raise OwnershipError("project manifest identity does not match registry")
         self.sessions_root = self.root / "sessions"
-        self.sessions_root.mkdir(exist_ok=True, mode=0o700)
+        ensure_owned_directory(self.sessions_root, self.root)
 
     def session_dir(self, session_id: str) -> Path:
         validate_id(session_id, "session id")
         return self.sessions_root / session_id
 
     def rounds_dir(self, session_id: str) -> Path:
-        return self.session_dir(session_id) / "rounds"
+        path = self.session_dir(session_id) / "rounds"
+        _assert_no_symlink_components(path, self.sessions_root, allow_missing_leaf=False)
+        return path
 
     def workspace_dir(self, session_id: str) -> Path:
-        return self.session_dir(session_id) / "workspace"
+        path = self.session_dir(session_id) / "workspace"
+        _assert_no_symlink_components(path, self.sessions_root, allow_missing_leaf=False)
+        return path
 
     def create_session(self, config: SessionConfig) -> SessionConfig:
         validate_id(config.id, "session id")
@@ -459,6 +495,12 @@ class ProjectStore:
 
     def load_session(self, session_id: str) -> SessionConfig:
         destination = self.session_dir(session_id)
+        try:
+            destination.lstat()
+        except FileNotFoundError as exc:
+            raise NotFoundError(f"session not found: {session_id}") from exc
+        except OSError as exc:
+            raise StorageError(f"failed to inspect session: {session_id}") from exc
         _assert_no_symlink_components(destination, self.sessions_root, allow_missing_leaf=False)
         data = load_json_recover(destination / "config.json")
         config = SessionConfig.from_dict(data)
@@ -482,7 +524,6 @@ class ProjectStore:
 
     def delete_session(self, session_id: str) -> None:
         destination = self.session_dir(session_id)
-        _assert_no_symlink_components(destination, self.sessions_root, allow_missing_leaf=False)
         config = self.load_session(session_id)
         if config.id != session_id:
             raise OwnershipError("session identity mismatch")

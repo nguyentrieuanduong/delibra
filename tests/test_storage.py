@@ -267,6 +267,21 @@ def test_delete_refuses_symlinked_session_directory(tmp_path: Path) -> None:
     assert original.is_dir()
 
 
+def test_project_store_rejects_symlinked_sessions_root(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.sessions_root.rmdir()
+    outside = tmp_path / "outside-sessions"
+    outside.mkdir()
+    store.sessions_root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(OwnershipError, match="symlink"):
+        ProjectStore(project)
+    assert not list(outside.iterdir())
+
+
 @pytest.mark.parametrize("bad", ["line\nbreak", "control\x00char", "\t"])
 def test_name_sanitization_rejects_controls(bad: str) -> None:
     with pytest.raises(ValueError):
