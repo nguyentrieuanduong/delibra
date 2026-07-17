@@ -173,6 +173,43 @@ async def chat_select(
     )
 
 
+@router.get(
+    "/projects/{project_id}/sessions/{session_id}/rounds/{round_n}/focus",
+    response_class=HTMLResponse,
+)
+async def round_focus(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    round_n: int,
+) -> HTMLResponse:
+    validate_id(session_id, "session id")
+    project = request.app.state.registry.get(project_id)
+    store = ProjectStore(project)
+    session = store.load_session(session_id)
+    focused = next(
+        (
+            item
+            for item in round_views(store, session_id)
+            if item["n"] == round_n and item["record"] is not None
+        ),
+        None,
+    )
+    if focused is None:
+        raise HTTPException(status_code=404, detail="round not found")
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_round_focus.html",
+        context={
+            "project": project,
+            "session": session,
+            "session_id": session_id,
+            "round": focused,
+            "focus_dom_id": f"focus-{session_id}-{round_n}",
+        },
+    )
+
+
 @router.post(
     "/projects/{project_id}/chat/run",
     response_class=HTMLResponse,

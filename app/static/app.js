@@ -28,6 +28,52 @@ function renderChatError(region, status, responseText) {
   return message;
 }
 
+let focusDialogTrigger = null;
+
+function restoreFocusDialogTrigger() {
+  const trigger = focusDialogTrigger;
+  focusDialogTrigger = null;
+  if (
+    trigger &&
+    trigger.isConnected !== false &&
+    typeof trigger.focus === "function"
+  ) {
+    trigger.focus();
+  }
+}
+
+function openFocusDialog(dialog, trigger) {
+  focusDialogTrigger = trigger || null;
+  if (!dialog.open) {
+    dialog.showModal();
+  }
+  const closeControl = dialog.querySelector("[data-focus-dialog-close]");
+  if (closeControl) {
+    closeControl.focus();
+  }
+}
+
+function closeFocusDialog(dialog) {
+  if (dialog.open) {
+    dialog.close();
+  }
+  restoreFocusDialogTrigger();
+}
+
+function isDialogBackdropClick(dialog, event) {
+  return event.target === dialog;
+}
+
+function handleFocusDialogCancel(event) {
+  event.preventDefault();
+  closeFocusDialog(event.currentTarget);
+}
+
+function shouldClearChatError(requestPath) {
+  const pathname = String(requestPath || "").split(/[?#]/, 1)[0];
+  return !/^\/projects\/[^/]+\/files(?:\/view)?\/?$/.test(pathname);
+}
+
 function syncEffortOptions(form) {
   const agentSelect = form.querySelector("[data-agent-select]");
   const effortSelect = form.querySelector("[data-effort-select]");
@@ -51,7 +97,15 @@ function syncEffortOptions(form) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { chatErrorMessage, renderChatError };
+  module.exports = {
+    chatErrorMessage,
+    closeFocusDialog,
+    handleFocusDialogCancel,
+    isDialogBackdropClick,
+    openFocusDialog,
+    renderChatError,
+    shouldClearChatError,
+  };
 }
 
 if (typeof document !== "undefined") {
@@ -104,9 +158,50 @@ if (typeof document !== "undefined") {
     renderChatError(region, xhr.status, xhr.responseText || "");
   });
 
+  document.addEventListener("htmx:afterSwap", function (event) {
+    const target = event.detail && event.detail.target;
+    if (!target || target.id !== "focus-dialog-content") {
+      return;
+    }
+    const dialog = document.getElementById("focus-dialog");
+    if (dialog) {
+      openFocusDialog(dialog, document.activeElement);
+    }
+  });
+
+  document.addEventListener("click", function (event) {
+    const closeControl =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest("[data-focus-dialog-close]")
+        : null;
+    const dialog = document.getElementById("focus-dialog");
+    if (!dialog) {
+      return;
+    }
+    if (closeControl || isDialogBackdropClick(dialog, event)) {
+      closeFocusDialog(dialog);
+    }
+  });
+
+  const focusDialog = document.getElementById("focus-dialog");
+  if (focusDialog) {
+    focusDialog.addEventListener("cancel", handleFocusDialogCancel);
+    focusDialog.addEventListener("close", restoreFocusDialogTrigger);
+  }
+
   document.addEventListener("htmx:afterRequest", function (event) {
     const region = document.getElementById("chat-errors");
-    if (region && event.detail && event.detail.successful) {
+    const detail = event.detail;
+    const requestPath =
+      (detail && detail.pathInfo && detail.pathInfo.requestPath) ||
+      (detail && detail.requestConfig && detail.requestConfig.path) ||
+      "";
+    if (
+      region &&
+      detail &&
+      detail.successful &&
+      shouldClearChatError(requestPath)
+    ) {
       region.textContent = "";
     }
   });

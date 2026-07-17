@@ -205,6 +205,101 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
     assert "#file-browser-host, #file-reader { min-height: 0; overflow: auto; }" in stylesheet.text
 
 
+def test_file_browser_links_target_only_the_reader_for_display_errors(
+    tmp_path: Path,
+) -> None:
+    alpha = session("a" * 32, "Alpha")
+    app, project, _ = setup_project(tmp_path, [alpha])
+    (Path(project.path) / "notes.txt").write_text("Read me", encoding="utf-8")
+    (Path(project.path) / "archive.bin").write_bytes(b"not rendered")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{project.id}/chat")
+        listing = client.get(f"/projects/{project.id}/files")
+        error = client.get(
+            f"/projects/{project.id}/files/view",
+            params={"path": "archive.bin"},
+        )
+
+    assert page.status_code == 200
+    assert f'hx-get="/projects/{project.id}/files"' in page.text
+    archive_link = re.search(
+        rf'<a\s+href="([^"]*archive\.bin)".*?</a>',
+        listing.text,
+        flags=re.DOTALL,
+    )
+    assert archive_link is not None
+    assert f'hx-get="{archive_link.group(1)}"' in archive_link.group()
+    assert 'hx-target="#file-reader"' in archive_link.group()
+    assert 'hx-swap="innerHTML"' in archive_link.group()
+    assert error.status_code == 200
+    assert 'class="file-error" role="status"' in error.text
+    assert "This file type cannot be displayed." in error.text
+    assert 'id="chat-errors"' not in error.text
+
+
+def test_round_focus_fragment_is_static_and_keeps_complete_dom_ids_unique(
+    tmp_path: Path,
+) -> None:
+    alpha_round = record(1, "2026-07-17T00:00:01Z")
+    alpha_round.warnings = ["Fallback context was used."]
+    alpha = session("a" * 32, "Alpha", rounds=[alpha_round])
+    beta = session("b" * 32, "Beta", mode="sleep")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+    beta_base = f"/projects/{project.id}/sessions/{beta.id}"
+    focus_url = (
+        f"/projects/{project.id}/sessions/{alpha.id}/rounds/1/focus"
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        assert client.post(f"{beta_base}/run", data={"prompt": "B"}).status_code == 202
+        page = client.get(f"/projects/{project.id}/chat")
+        focused = client.get(focus_url)
+        missing_session = client.get(
+            f"/projects/{project.id}/sessions/{'c' * 32}/rounds/1/focus"
+        )
+        missing_round = client.get(
+            f"/projects/{project.id}/sessions/{alpha.id}/rounds/2/focus"
+        )
+        assert store.load_session(beta.id).status == "running"
+        assert client.post(f"{beta_base}/cancel").status_code == 200
+
+    assert page.status_code == 200
+    assert 'id="focus-dialog"' in page.text
+    assert 'id="focus-dialog-content"' in page.text
+    assert f'id="round-{beta.id}-1"' in page.text
+    alpha_bubble = re.search(
+        rf'<article[^>]+id="round-{alpha.id}-1".*?</article>',
+        page.text,
+        flags=re.DOTALL,
+    )
+    assert alpha_bubble is not None
+    assert f'hx-get="{focus_url}"' in alpha_bubble.group()
+    assert 'hx-target="#focus-dialog-content"' in alpha_bubble.group()
+    assert focused.status_code == 200
+    assert f'id="focus-{alpha.id}-1"' in focused.text
+    assert f'id="round-{alpha.id}-1"' not in focused.text
+    assert "Prompt Alpha" in focused.text
+    assert "Answer Alpha" in focused.text
+    assert "Fallback context was used." in focused.text
+    for forbidden in (
+        "hx-ext=",
+        "sse-connect=",
+        "class=\"live-round\"",
+        ">Focus<",
+        ">Pass<",
+        "Send to…",
+    ):
+        assert forbidden not in focused.text
+    assert f'id="round-{beta.id}-1"' not in focused.text
+    page_ids = re.findall(r'\bid="([^"]+)"', page.text)
+    focus_ids = re.findall(r'\bid="([^"]+)"', focused.text)
+    combined_ids = page_ids + focus_ids
+    assert len(combined_ids) == len(set(combined_ids))
+    assert missing_session.status_code == 404
+    assert missing_round.status_code == 404
+
+
 def test_chat_renders_two_concurrent_live_fragments_with_scoped_done_targets(
     tmp_path: Path,
 ) -> None:

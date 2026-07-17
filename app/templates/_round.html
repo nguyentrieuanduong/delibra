@@ -1,5 +1,15 @@
 <article class="round {{ round.record.status if round.record else 'orphan' }}" id="{{ round.dom_id }}">
   <h2>{{ session.name }} · Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}</h2>
+  {% if chat_view and round.record %}
+    <button
+      type="button"
+      class="focus-round"
+      aria-haspopup="dialog"
+      hx-get="/projects/{{ project.id }}/sessions/{{ session_id }}/rounds/{{ round.n }}/focus"
+      hx-target="#focus-dialog-content"
+      hx-swap="innerHTML"
+    >Focus</button>
+  {% endif %}
   {% if round.record %}
     <p class="provenance">{{ round.record.agent }} · {{ round.record.model }} · {{ round.record.effort }} · {{ round.record.status }}</p>
     {% if round.record.source.type == 'pass' %}
