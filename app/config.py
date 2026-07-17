@@ -31,6 +31,7 @@ class Settings:
     stateless_history_limit: int = 2 * MIB
     stateless_round_limit: int = 20
     request_body_limit: int = 2 * MIB
+    file_view_limit: int = 512 * 1024
 
     @property
     def codex_home(self) -> Path:
@@ -53,6 +54,7 @@ class Settings:
             ),
             stateless_round_limit=_integer("DELIBRA_STATELESS_ROUND_LIMIT", 20),
             request_body_limit=_integer("DELIBRA_REQUEST_BODY_LIMIT", 2 * MIB),
+            file_view_limit=_integer("DELIBRA_FILE_VIEW_LIMIT", 512 * 1024),
         )
 
 
