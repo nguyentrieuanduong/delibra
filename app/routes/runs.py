@@ -11,6 +11,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.models import RunKey, SourceDescriptor
 from app.security import validate_field
 from app.storage import ConflictError, ProjectStore, validate_id
+from app.views import round_dom_id
 
 
 router = APIRouter()
@@ -39,10 +40,16 @@ async def run_session(
 ):
     prompt = validate_field(prompt, "Prompt", maximum=100_000)
     key = await request.app.state.manager.start(project_id, session_id, prompt)
+    project = request.app.state.registry.get(project_id)
+    session = ProjectStore(project).load_session(session_id)
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_live.html",
-        context={"key": key},
+        context={
+            "key": key,
+            "session": session,
+            "dom_id": round_dom_id(session_id, key.round_n),
+        },
         status_code=202,
     )
 
@@ -103,7 +110,11 @@ async def pass_round(
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_live.html",
-        context={"key": key},
+        context={
+            "key": key,
+            "session": sessions[target_session_id],
+            "dom_id": round_dom_id(target_session_id, key.round_n),
+        },
         status_code=202,
     )
 
@@ -128,7 +139,11 @@ async def round_stream(
 
     async def events():
         async for event in request.app.state.manager.subscribe(key, last_event_id):
-            data = str(round_n) if event.kind == "reset" else event.data
+            data = (
+                round_dom_id(session_id, round_n)
+                if event.kind == "reset"
+                else event.data
+            )
             yield {
                 "id": str(event.event_id),
                 "event": event.kind,

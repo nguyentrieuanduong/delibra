@@ -38,9 +38,9 @@ document.addEventListener("htmx:sseMessage", function (event) {
   if (!message || message.type !== "reset") {
     return;
   }
-  const round = String(message.data || "");
-  const byId = /^\d+$/.test(round)
-    ? document.getElementById(`live-${round}`)
+  const domId = String(message.data || "");
+  const byId = /^round-[0-9a-f]{32}-\d+$/.test(domId)
+    ? document.getElementById(domId)
     : null;
   const live = byId || event.target.closest(".live-round");
   if (!live) {

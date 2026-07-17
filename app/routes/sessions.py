@@ -12,6 +12,7 @@ from app.agents.codex import CodexAdapter
 from app.models import SessionConfig
 from app.security import validate_field, validate_name
 from app.storage import ConflictError, NotFoundError, ProjectStore, utc_now
+from app.views import round_dom_id
 
 
 router = APIRouter()
@@ -191,6 +192,7 @@ def _round_views(store: ProjectStore, session_id: str) -> list[dict]:
                     else ""
                 ),
                 "orphan": False,
+                "dom_id": round_dom_id(session_id, record.n),
             }
         )
     scan = store.scan_round_files(session_id)
@@ -211,6 +213,7 @@ def _round_views(store: ProjectStore, session_id: str) -> list[dict]:
                     else ""
                 ),
                 "orphan": True,
+                "dom_id": round_dom_id(session_id, number),
             }
         )
     return sorted(views, key=lambda item: item["n"])
@@ -246,6 +249,7 @@ async def round_fragment(
 ):
     project = request.app.state.registry.get(project_id)
     store = ProjectStore(project)
+    session = store.load_session(session_id)
     sessions = store.list_sessions()
     view = next(
         (item for item in _round_views(store, session_id) if item["n"] == round_n),
@@ -258,6 +262,7 @@ async def round_fragment(
         name="_round.html",
         context={
             "project": project,
+            "session": session,
             "session_id": session_id,
             "round": view,
             "sessions": sessions,

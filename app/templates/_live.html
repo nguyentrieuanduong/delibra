@@ -1,23 +1,23 @@
 <section
   class="live-round"
-  id="live-{{ key.round_n }}"
+  id="{{ dom_id }}"
   hx-ext="sse"
   sse-connect="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/stream"
 >
-  <h2>Round {{ key.round_n }} · running</h2>
+  <h2>{{ session.name }} · Round {{ key.round_n }} · running</h2>
   <pre class="live-text" sse-swap="text_delta,snapshot" hx-swap="beforeend"></pre>
   <div class="live-progress" sse-swap="progress" hx-swap="beforeend"></div>
   <span class="live-reset" sse-swap="reset" hx-swap="none" hidden></span>
   <button
     type="button"
     hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/cancel"
-    hx-target="#live-{{ key.round_n }}"
+    hx-target="#{{ dom_id }}"
     hx-swap="none"
   >Cancel</button>
   <span
     hx-get="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}"
     hx-trigger="sse:done once"
-    hx-target="#live-{{ key.round_n }}"
+    hx-target="#{{ dom_id }}"
     hx-swap="outerHTML"
   ></span>
 </section>

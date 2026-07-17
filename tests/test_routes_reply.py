@@ -194,7 +194,7 @@ def test_running_page_attaches_live_pane_and_cancel_button(tmp_path: Path) -> No
     with TestClient(app, base_url="http://localhost") as client:
         assert client.post(f"{base}/run", data={"prompt": "Long"}).status_code == 202
         page = client.get(base)
-        assert 'id="live-1"' in page.text
+        assert f'id="round-{config.id}-1"' in page.text
         assert ">Cancel</button>" in page.text
         assert client.post(f"{base}/cancel").status_code == 200
     assert store.load_session(config.id).rounds[0].status == "cancelled"
