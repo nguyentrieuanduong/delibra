@@ -77,3 +77,17 @@ Resume uses the same global policy options followed by `exec resume --json --ski
   attributes. T9's fake-provider route test verifies the live markup and complete
   replay/reset/cancel cases deterministically.
 <!-- M1-HTTP-GATE:END -->
+
+<!-- M2-RESUME-GATE:START -->
+## M2 real-provider native-resume gate
+
+- Date: 2026-07-17. `spike/m1_http_gate.py` was extended to execute a second
+  HTTP round for each provider after deleting `gate.txt`, so recall could not come
+  from rereading the workspace file.
+- Claude: round 2 completed, recalled `CLAUDE_GATE_CANARY`, preserved the exact
+  native session id, emitted four SSE events, and persisted an 18-byte result.
+- Codex: round 2 completed, recalled `CODEX_GATE_CANARY`, preserved the exact
+  native thread id, emitted its terminal SSE event, and persisted a 19-byte result.
+- Immediately preceding first turns also re-passed pre-completion progress,
+  disconnect/reconnect, one `done`, and durable rendering for both providers.
+<!-- M2-RESUME-GATE:END -->

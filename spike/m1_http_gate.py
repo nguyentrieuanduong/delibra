@@ -176,6 +176,47 @@ def exercise_provider(
     }
 
 
+def exercise_native_resume(
+    client: httpx.Client,
+    home: Path,
+    project_id: str,
+    session: SessionConfig,
+) -> dict[str, object]:
+    registry = RegistryStore(home)
+    store = ProjectStore(registry.get(project_id))
+    before = store.load_session(session.id)
+    assert before.cli_session_id
+    (store.workspace_dir(session.id) / "gate.txt").unlink()
+    base = f"/projects/{project_id}/sessions/{session.id}"
+    response = client.post(
+        f"{base}/run",
+        data={
+            "prompt": (
+                "Continue this conversation without using a tool. State the canary "
+                "you reported in the previous turn."
+            )
+        },
+    )
+    assert response.status_code == 202, response.text
+    assert 'id="live-2"' in response.text
+    with client.stream("GET", f"{base}/rounds/2/stream") as stream:
+        events = list(sse_events(stream))
+    assert events[-1].get("event") == "done"
+    after = store.load_session(session.id)
+    output_path = store.rounds_dir(session.id) / "round-02.md"
+    output = output_path.read_text(encoding="utf-8")
+    assert after.rounds[-1].status == "complete", after.rounds[-1].error
+    assert after.cli_session_id == before.cli_session_id
+    assert f"{session.agent.upper()}_GATE_CANARY" in output
+    return {
+        "agent": session.agent,
+        "native_session_stable": True,
+        "resume_events": len(events),
+        "resume_final_bytes": output_path.stat().st_size,
+        "status": after.rounds[-1].status,
+    }
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="delibra-m1-") as temporary:
         root = Path(temporary)
@@ -208,8 +249,14 @@ def main() -> None:
                 timeout=httpx.Timeout(180, connect=5),
             ) as client:
                 wait_until_ready(client)
-                results = [
+                first_turns = [
                     exercise_provider(client, home, project_id, sessions[agent])
+                    for agent in ("claude", "codex")
+                ]
+                native_resumes = [
+                    exercise_native_resume(
+                        client, home, project_id, sessions[agent]
+                    )
                     for agent in ("claude", "codex")
                 ]
         finally:
@@ -220,7 +267,14 @@ def main() -> None:
                 server.kill()
                 server.wait(timeout=5)
         assert server.returncode in {0, -15}
-        sys.stdout.write(json.dumps(results, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(
+            json.dumps(
+                {"first_turns": first_turns, "native_resumes": native_resumes},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
 
 
 if __name__ == "__main__":
