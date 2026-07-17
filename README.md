@@ -34,9 +34,13 @@ envs/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
 Claude or Codex agent from the project chat, and submit a prompt. The project chat
-merges every agent's recorded rounds into one timeline; **Manage** opens project and
-agent settings. The footer starts in a checking state, then reports missing CLIs and
-version drift without delaying or preventing the rest of the UI from loading.
+merges every agent's recorded rounds into one timeline. Its workspace keeps project
+health at the top, a project-file browser and reader on the left, the selected agent
+and conversation in the center, and agent creation/editing on the right. Recorded
+rounds can be opened in a keyboard-accessible focus dialog without replacing live
+streams. **Manage** opens project and agent settings. The footer starts in a checking
+state, then reports missing CLIs and version drift without delaying or preventing the
+rest of the UI from loading.
 
 ## Workflow and storage
 
@@ -88,6 +92,16 @@ Delibra provides write isolation, not read confidentiality:
 - The HTTP server is localhost-only, rejects non-loopback Host values and cross-site
   mutation Origins, and has no remote-user authentication. Do not bind it to LAN or
   public interfaces in the MVP.
+- The project-file browser is intentionally read-only but exposes allowed text files
+  below the **entire registered project directory** through the localhost HTTP
+  service. This includes prompts, outputs, manifests, and session metadata under
+  `.delibra/`. Any local process that can reach the service can read those displayed
+  files; register only directories whose contents may cross that boundary.
+- File paths are walked from a verified project-directory descriptor without
+  following symlinks. Files are limited to the displayed text-extension allowlist,
+  binary/non-regular files are rejected, and each view reads at most the configured
+  byte limit plus one byte used to detect truncation. This is a display boundary, not
+  an access-control system for other local processes.
 - Markdown raw HTML is disabled and SSE text is HTML-escaped before HTMX swaps it.
 
 All mutations use the lock order `registry -> project lifecycle -> session IDs in
@@ -118,6 +132,7 @@ The main environment settings are:
 - `DELIBRA_STATELESS_HISTORY_LIMIT` (default 2 MiB)
 - `DELIBRA_STATELESS_ROUND_LIMIT` (default 20)
 - `DELIBRA_REQUEST_BODY_LIMIT` (default 2 MiB)
+- `DELIBRA_FILE_VIEW_LIMIT` (default 512 KiB)
 
 Names/models are capped at 200 characters, role instructions at 20,000, prompts at
 100,000, and pass instructions at 10,000.
@@ -131,8 +146,8 @@ envs/bin/python -m pytest -q
 ```
 
 The complete MVP acceptance record, including separate Claude and Codex parity
-evidence, the M4 chat/config gate, and the documented browser-automation limitation,
-is in
+evidence, the M4 chat/config gate, M5 workspace/file/focus evidence, and the remaining
+manual-browser checklist, is in
 `docs/acceptance-mvp.md`. Sanitized CLI commands and behavioral isolation evidence
 are in `spike/FINDINGS.md`.
 
