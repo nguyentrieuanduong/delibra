@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} · Chat · Delibra{% endblock %}
+{% block content %}
+  <p><a href="/">Projects</a></p>
+  <h1>{{ project.name }}</h1>
+  <section class="chat-timeline" aria-label="Conversation">
+    {% for item in timeline %}
+      {% set session = item.session %}
+      {% set session_id = session.id %}
+      {% set round = item.round %}
+      {% set dom_id = round.dom_id %}
+      {% if item.key %}
+        {% set key = item.key %}
+        {% include "_live.html" %}
+      {% else %}
+        {% include "_round.html" %}
+      {% endif %}
+    {% else %}
+      <p>No conversation yet.</p>
+    {% endfor %}
+  </section>
+{% endblock %}

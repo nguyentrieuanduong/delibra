@@ -115,8 +115,9 @@ def test_post_run_stream_reconnect_late_done_and_final_fragment(tmp_path: Path) 
     with TestClient(app, base_url="http://localhost") as client:
         started = client.post(f"{base}/run", data={"prompt": "Question"})
         assert started.status_code == 202
-        assert 'id="live-1"' in started.text
-        assert 'hx-target="#live-1"' in started.text
+        dom_id = f"round-{session.id}-1"
+        assert f'id="{dom_id}"' in started.text
+        assert f'hx-target="#{dom_id}"' in started.text
         assert 'hx-swap="outerHTML"' in started.text
         assert 'sse-swap="reset"' in started.text
 
@@ -171,7 +172,7 @@ def test_replay_gap_streams_reset_snapshot_and_done(tmp_path: Path) -> None:
         ) as response:
             replay = parse_sse(response)
     assert [event["event"] for event in replay] == ["reset", "snapshot", "done"]
-    assert replay[0]["data"] == "1"
+    assert replay[0]["data"] == f"round-{session.id}-1"
     assert "Hello" in replay[1]["data"]
 
 

@@ -146,7 +146,7 @@ def test_pass_stages_exact_bytes_composes_prompt_records_provenance_and_renders(
             },
         )
         assert passed.status_code == 202
-        assert 'id="live-1"' in passed.text
+        assert f'id="round-{target.id}-1"' in passed.text
         finish(client, target_base, 1)
         target_page = client.get(target_base)
 

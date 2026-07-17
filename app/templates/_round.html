@@ -1,5 +1,5 @@
-<article class="round {{ round.record.status if round.record else 'orphan' }}" id="round-{{ round.n }}">
-  <h2>Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}</h2>
+<article class="round {{ round.record.status if round.record else 'orphan' }}" id="{{ round.dom_id }}">
+  <h2>{{ session.name }} · Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}</h2>
   {% if round.record %}
     <p class="provenance">{{ round.record.agent }} · {{ round.record.model }} · {{ round.record.effort }} · {{ round.record.status }}</p>
     {% if round.record.source.type == 'pass' %}
