@@ -1,0 +1,7 @@
+{% macro effort_options(effort_levels, active_provider, selected_effort) -%}
+  {% for provider, levels in effort_levels.items() %}
+    <optgroup label="{{ provider|title }}" data-effort-agent="{{ provider }}"{% if provider != active_provider %} disabled{% endif %}>
+      {% for level in levels %}<option value="{{ level }}"{% if provider == active_provider and level == selected_effort %} selected{% endif %}>{{ level }}</option>{% endfor %}
+    </optgroup>
+  {% endfor %}
+{%- endmacro %}

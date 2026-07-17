@@ -1,3 +1,4 @@
+{% from "_form_macros.html" import effort_options %}
 <aside id="agent-sidebar" aria-label="Agents">
   <h2>Agents</h2>
   <details{% if not sessions %} open{% endif %}>
@@ -21,11 +22,7 @@
       <label>Model <input name="model" maxlength="200" value="sonnet" required></label>
       <label>Effort
         <select name="effort" required data-effort-select>
-          {% for provider, levels in effort_levels.items() %}
-            <optgroup label="{{ provider|title }}" data-effort-agent="{{ provider }}"{% if provider != 'claude' %} disabled{% endif %}>
-              {% for level in levels %}<option value="{{ level }}"{% if provider == 'claude' and level == 'high' %} selected{% endif %}>{{ level }}</option>{% endfor %}
-            </optgroup>
-          {% endfor %}
+          {{ effort_options(effort_levels, 'claude', 'high') }}
         </select>
       </label>
       <label>Role instructions
