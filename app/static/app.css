@@ -79,7 +79,25 @@ textarea { min-height: 7rem; }
 .agent-role h4, .agent-role p { margin: .25rem 0; }
 .role-instructions { white-space: pre-wrap; }
 .immutability-hint { font-size: .85rem; opacity: .75; }
-.focus-round { float: right; }
+.timeline-heading {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 .25rem;
+}
+.timeline-heading h2 { font-size: 1rem; margin: 0; }
+.timeline-heading span { font-size: .8rem; opacity: .7; }
+.round-header {
+  align-items: center;
+  display: flex;
+  gap: .75rem;
+  justify-content: space-between;
+}
+.round-header h2 { margin: 0; }
+.focus-round { flex: 0 0 auto; }
+.round-details { margin-top: .5rem; }
+.round-details > summary { cursor: pointer; font-size: .85rem; }
+.round-details[open] > summary { margin-bottom: .5rem; }
 .focus-dialog {
   border: 1px solid #8888;
   border-radius: .5rem;

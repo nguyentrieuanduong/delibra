@@ -137,6 +137,12 @@ def test_chat_merges_rounds_deterministically_with_unique_composite_fragments(
         fragment = client.get(
             f"/projects/{project.id}/sessions/{alpha.id}/rounds/1"
         )
+        chat_fragment = client.get(
+            f"/projects/{project.id}/sessions/{alpha.id}/rounds/1?view=chat"
+        )
+        session_page = client.get(
+            f"/projects/{project.id}/sessions/{alpha.id}"
+        )
 
     assert response.status_code == 200
     alpha_dom_id = f"round-{alpha.id}-1"
@@ -153,6 +159,24 @@ def test_chat_merges_rounds_deterministically_with_unique_composite_fragments(
     assert fragment.status_code == 200
     assert f'id="{alpha_dom_id}"' in fragment.text
     assert "Alpha · Round 1" in fragment.text
+    bubble = re.search(
+        rf'<article[^>]+id="round-{alpha.id}-1".*?</article>',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert bubble is not None
+    assert '<details open class="round-details">' in bubble.group()
+    assert bubble.group().index(">Focus</button>") < bubble.group().index(
+        '<details open class="round-details">'
+    )
+    assert chat_fragment.status_code == 200
+    assert '<details open class="round-details">' in chat_fragment.text
+    assert chat_fragment.text.index(">Focus</button>") < chat_fragment.text.index(
+        '<details open class="round-details">'
+    )
+    assert session_page.status_code == 200
+    assert '<details open class="round-details">' not in fragment.text
+    assert '<details open class="round-details">' not in session_page.text
 
 
 def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> None:
@@ -160,7 +184,8 @@ def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> No
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(f"/projects/{project.id}/chat")
     assert response.status_code == 200
-    assert "No conversation yet." in response.text
+    assert '<p data-conversation-empty>No conversation yet.</p>' in response.text
+    assert "Oldest → newest" in response.text
     assert "Create agent" in response.text
     assert "No agents yet. Create an agent in the right panel to begin." in response.text
     assert 'id="chat-composer"' in response.text

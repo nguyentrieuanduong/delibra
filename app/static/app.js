@@ -96,6 +96,14 @@ function syncEffortOptions(form) {
   }
 }
 
+function removeConversationEmptyState(timeline) {
+  const empty = timeline.querySelector("[data-conversation-empty]");
+  const message = timeline.querySelector(".round, .live-round");
+  if (!empty || !message) return false;
+  empty.remove();
+  return true;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     chatErrorMessage,
@@ -103,6 +111,7 @@ if (typeof module !== "undefined" && module.exports) {
     handleFocusDialogCancel,
     isDialogBackdropClick,
     openFocusDialog,
+    removeConversationEmptyState,
     renderChatError,
     shouldClearChatError,
   };
@@ -160,7 +169,13 @@ if (typeof document !== "undefined") {
 
   document.addEventListener("htmx:afterSwap", function (event) {
     const target = event.detail && event.detail.target;
-    if (!target || target.id !== "focus-dialog-content") {
+    if (!target) {
+      return;
+    }
+    if (target.classList.contains("chat-timeline")) {
+      removeConversationEmptyState(target);
+    }
+    if (target.id !== "focus-dialog-content") {
       return;
     }
     const dialog = document.getElementById("focus-dialog");

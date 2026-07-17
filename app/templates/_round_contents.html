@@ -1,0 +1,41 @@
+{% if round.record %}
+  <p class="provenance">{{ round.record.agent }} · {{ round.record.model }} · {{ round.record.effort }} · {{ round.record.status }}</p>
+  {% if round.record.source.type == 'pass' %}
+    <p class="provenance">
+      Passed from session {{ round.record.source.from_session }}, round {{ round.record.source.from_round }}
+      · staged {{ round.record.source.staged_file }}
+      · SHA-256 {{ round.record.source.source_sha256 }}
+    </p>
+  {% endif %}
+{% endif %}
+{% if round.record and round.record.error %}<p class="error">{{ round.record.error }}</p>{% endif %}
+{% if round.record and round.record.warnings %}
+  <ul class="warnings">{% for warning in round.record.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+{% endif %}
+<details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md }}</div></details>
+<div class="markdown output">{{ round.output|md }}</div>
+{% if round.record and round.record.status == 'complete' and sessions and (not chat_view or sessions|length > 1) %}
+  <details>
+    <summary>{% if chat_view %}Send to…{% else %}Pass to…{% endif %}</summary>
+    <form
+      method="post"
+      action="/projects/{{ project.id }}/sessions/{{ session_id }}/pass{% if chat_view %}?view=chat{% endif %}"
+      hx-post="/projects/{{ project.id }}/sessions/{{ session_id }}/pass{% if chat_view %}?view=chat{% endif %}"
+      hx-target="{{ '.chat-timeline' if chat_view else '.rounds' }}"
+      hx-swap="beforeend"
+    >
+      <input type="hidden" name="source_round" value="{{ round.n }}">
+      <label>Target session
+        <select name="target_session_id" required>
+          {% for target in sessions %}
+            {% if not chat_view or target.id != session_id %}<option value="{{ target.id }}">{{ target.name }}</option>{% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <label>Instruction
+        <textarea name="instruction" maxlength="10000" placeholder="Review the following document and give your critique."></textarea>
+      </label>
+      <button type="submit">Pass</button>
+    </form>
+  </details>
+{% endif %}
