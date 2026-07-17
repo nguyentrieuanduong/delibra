@@ -27,6 +27,30 @@ def _event_data(kind: str, data: str) -> str:
     return escaped
 
 
+async def start_run_fragment(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    prompt: str,
+    *,
+    chat_view: bool,
+):
+    key = await request.app.state.manager.start(project_id, session_id, prompt)
+    project = request.app.state.registry.get(project_id)
+    session = ProjectStore(project).load_session(session_id)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_live.html",
+        context={
+            "key": key,
+            "session": session,
+            "dom_id": round_dom_id(session_id, key.round_n),
+            "chat_view": chat_view,
+        },
+        status_code=202,
+    )
+
+
 @router.post(
     "/projects/{project_id}/sessions/{session_id}/run",
     response_class=HTMLResponse,
@@ -39,18 +63,12 @@ async def run_session(
     prompt: str = Form(...),
 ):
     prompt = validate_field(prompt, "Prompt", maximum=100_000)
-    key = await request.app.state.manager.start(project_id, session_id, prompt)
-    project = request.app.state.registry.get(project_id)
-    session = ProjectStore(project).load_session(session_id)
-    return request.app.state.templates.TemplateResponse(
-        request=request,
-        name="_live.html",
-        context={
-            "key": key,
-            "session": session,
-            "dom_id": round_dom_id(session_id, key.round_n),
-        },
-        status_code=202,
+    return await start_run_fragment(
+        request,
+        project_id,
+        session_id,
+        prompt,
+        chat_view=False,
     )
 
 
@@ -66,6 +84,7 @@ async def pass_round(
     source_round: int = Form(...),
     target_session_id: str = Form(...),
     instruction: str = Form(""),
+    view: str | None = None,
 ):
     validate_id(source_session_id, "source session id")
     validate_id(target_session_id, "target session id")
@@ -114,6 +133,7 @@ async def pass_round(
             "key": key,
             "session": sessions[target_session_id],
             "dom_id": round_dom_id(target_session_id, key.round_n),
+            "chat_view": view == "chat",
         },
         status_code=202,
     )

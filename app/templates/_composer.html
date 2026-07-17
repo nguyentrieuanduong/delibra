@@ -1,0 +1,26 @@
+<form
+  id="chat-composer"
+  method="post"
+  action="/projects/{{ project.id }}/chat/run"
+  hx-post="/projects/{{ project.id }}/chat/run"
+  hx-target=".chat-timeline"
+  hx-swap="beforeend"
+  {% if composer_oob %}hx-swap-oob="outerHTML:#chat-composer"{% endif %}
+>
+  <label>Agent
+    <select name="session_id" required{% if not selected_session %} disabled{% endif %}>
+      {% for session in sessions|sort(attribute='name') %}
+        <option value="{{ session.id }}"{% if selected_session and session.id == selected_session.id %} selected{% endif %}>{{ session.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% if selected_session %}
+    <p class="composer-agent-meta">
+      {{ selected_session.agent }} · {{ selected_session.model }} · {{ selected_session.effort }}
+    </p>
+  {% endif %}
+  <label>Message
+    <textarea name="prompt" maxlength="100000" required{% if not selected_session %} disabled{% endif %}></textarea>
+  </label>
+  <button type="submit"{% if not selected_session %} disabled{% endif %}>Send</button>
+</form>

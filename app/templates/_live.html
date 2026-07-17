@@ -15,7 +15,7 @@
     hx-swap="none"
   >Cancel</button>
   <span
-    hx-get="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}"
+    hx-get="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}{% if chat_view %}?view=chat{% endif %}"
     hx-trigger="sse:done once"
     hx-target="#{{ dom_id }}"
     hx-swap="outerHTML"
