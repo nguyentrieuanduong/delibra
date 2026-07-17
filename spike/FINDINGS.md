@@ -56,3 +56,24 @@ codex --model <model> --sandbox workspace-write --ask-for-approval never --searc
 
 Resume uses the same global policy options followed by `exec resume --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config <thread-id> -`.
 <!-- CODEX-SPIKE:END -->
+
+<!-- M1-HTTP-GATE:START -->
+## M1 real-provider HTTP/SSE gate
+
+- Date: 2026-07-17. The workspace had no Chromium/Playwright/Selenium runtime, so
+  `spike/m1_http_gate.py` exercised the same contract against a real Uvicorn socket
+  rather than claiming GUI automation.
+- Claude: real `sonnet`/`low` round completed; the first provider-native progress
+  event arrived at 5.994s, before completion. After a forced SSE disconnect,
+  reconnect with `Last-Event-ID` delivered three strictly newer events ending in one
+  `done`; the final 51-byte Markdown file was durable and rendered by the round
+  endpoint.
+- Codex: real `gpt-5.4`/`low` round completed; the first provider-native progress
+  event arrived at 14.276s, before completion. After a forced SSE disconnect,
+  reconnect delivered five strictly newer events ending in one `done`; the final
+  34-byte Markdown file was durable and rendered by the round endpoint.
+- Both runs rejected a concurrent second POST with 409, returned immediate `done`
+  to a late subscriber, and exposed the exact one-shot HTMX final replacement
+  attributes. T9's fake-provider route test verifies the live markup and complete
+  replay/reset/cancel cases deterministically.
+<!-- M1-HTTP-GATE:END -->
