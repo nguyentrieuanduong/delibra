@@ -22,6 +22,12 @@ function chatErrorMessage(status, responseText) {
   return `Request failed (${status})`;
 }
 
+function renderChatError(region, status, responseText) {
+  const message = chatErrorMessage(status, responseText);
+  region.textContent = message;
+  return message;
+}
+
 function syncEffortOptions(form) {
   const agentSelect = form.querySelector("[data-agent-select]");
   const effortSelect = form.querySelector("[data-effort-select]");
@@ -45,7 +51,7 @@ function syncEffortOptions(form) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { chatErrorMessage };
+  module.exports = { chatErrorMessage, renderChatError };
 }
 
 if (typeof document !== "undefined") {
@@ -95,7 +101,7 @@ if (typeof document !== "undefined") {
     if (!region || !xhr) {
       return;
     }
-    region.textContent = chatErrorMessage(xhr.status, xhr.responseText || "");
+    renderChatError(region, xhr.status, xhr.responseText || "");
   });
 
   document.addEventListener("htmx:afterRequest", function (event) {

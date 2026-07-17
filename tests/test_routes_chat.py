@@ -377,7 +377,15 @@ def test_sidebar_preview_is_plain_truncated_and_send_targets_exclude_source(
     assert "&lt;b&gt;unsafe&lt;/b&gt;" in response.text
     assert "<b>unsafe</b>" not in response.text
     assert "…" in response.text
-    assert "error" in response.text and "provider failed" in response.text
+    beta_card = re.search(
+        rf'<article\s+class="agent-card[^>]*"\s+data-session-id="{beta.id}".*?</article>',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert beta_card is not None
+    assert "Latest round 1 · error" in beta_card.group()
+    assert "Answer Beta" in beta_card.group()
+    assert "provider failed" in beta_card.group()
     alpha_bubble = re.search(
         rf'<article[^>]+id="round-{alpha.id}-1".*?</article>',
         response.text,

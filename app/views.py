@@ -103,6 +103,7 @@ def agent_views(
     views: list[dict[str, Any]] = []
     for session in sorted(sessions, key=lambda item: (item.name.casefold(), item.id)):
         latest = max(session.rounds, key=lambda item: item.n, default=None)
+        preview_error: str | None = None
         if latest is None:
             preview = "No rounds yet."
             preview_status = "empty"
@@ -115,18 +116,19 @@ def agent_views(
             partial = rounds / f"round-{latest.n:02d}.partial.md"
             source = output if output.is_file() else partial
             text = source.read_text(encoding="utf-8") if source.is_file() else ""
-            if latest.status == "error":
-                preview = latest.error or text or "Run failed."
-            else:
-                preview = text or "No output."
+            preview = text or "No output."
             preview = _truncate_plain_text(preview)
+            if latest.status == "error":
+                preview_error = _truncate_plain_text(latest.error or "Run failed.")
             preview_status = latest.status
         views.append(
             {
                 "session": session,
                 "selected": selected is not None and session.id == selected.id,
                 "preview": preview,
+                "preview_error": preview_error,
                 "preview_status": preview_status,
+                "latest_round": latest.n if latest is not None else None,
             }
         )
     return views

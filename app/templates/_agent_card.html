@@ -1,3 +1,4 @@
+{% from "_form_macros.html" import effort_options %}
 <article
   class="agent-card{% if agent_view.selected %} selected{% endif %}"
   data-session-id="{{ agent_view.session.id }}"
@@ -6,7 +7,9 @@
   {% set agent = agent_view.session %}
   <h3><a href="/projects/{{ project.id }}/chat?agent={{ agent.id }}">{{ agent.name }}</a></h3>
   <p>{{ agent.agent }} · {{ agent.model }} · {{ agent.effort }} · {{ agent.status }}</p>
+  {% if agent_view.latest_round %}<p>Latest round {{ agent_view.latest_round }} · {{ agent_view.preview_status }}</p>{% endif %}
   <p class="agent-preview {{ agent_view.preview_status }}">{{ agent_view.preview }}</p>
+  {% if agent_view.preview_error %}<p class="error">{{ agent_view.preview_error }}</p>{% endif %}
   <details>
     <summary>Edit</summary>
     <form
@@ -32,13 +35,7 @@
       <label>Model <input name="model" maxlength="200" value="{{ agent.model }}" required></label>
       <label>Effort
         <select name="effort" required data-effort-select>
-          {% for provider, levels in effort_levels.items() %}
-            <optgroup label="{{ provider|title }}" data-effort-agent="{{ provider }}"{% if provider != agent.agent %} disabled{% endif %}>
-              {% for level in levels %}<option value="{{ level }}"{% if provider == agent.agent and level == agent.effort %} selected{% endif %}>{{ level }}</option>{% endfor %}
-            </optgroup>
-          {% else %}
-            <option value="{{ agent.effort }}" selected>{{ agent.effort }}</option>
-          {% endfor %}
+          {{ effort_options(effort_levels, agent.agent, agent.effort) }}
         </select>
       </label>
       {% if not agent.rounds %}
