@@ -577,8 +577,10 @@ class ProjectStore:
                 continue
             partial = self.rounds_dir(session_id) / f"round-{round_record.n:02d}.partial.md"
             output = self.rounds_dir(session_id) / f"round-{round_record.n:02d}.md"
-            if partial.is_file():
+            if partial.is_file() and not output.is_file():
                 atomic_write_bytes(output, partial.read_bytes())
+                partials_to_remove.append(partial)
+            elif partial.is_file():
                 partials_to_remove.append(partial)
             elif not output.exists():
                 atomic_write_text(output, "")

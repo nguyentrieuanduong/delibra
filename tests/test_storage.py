@@ -234,6 +234,43 @@ def test_reconcile_interrupted_round_promotes_partial_and_session_remains_runnab
     assert not (rounds / "round-01.partial.md").exists()
 
 
+def test_reconcile_keeps_existing_final_output_and_discards_stale_partial(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    session = make_session()
+    session.status = "running"
+    session.rounds.append(
+        RoundRecord(
+            n=1,
+            status="running",
+            error=None,
+            warnings=[],
+            agent="claude",
+            model="sonnet",
+            effort="high",
+            started_at="2026-07-17T00:01:00Z",
+            finished_at=None,
+            source=SourceDescriptor(type="user"),
+        )
+    )
+    store.create_session(session)
+    rounds = store.rounds_dir(session.id)
+    (rounds / "round-01.md").write_text("authoritative final", encoding="utf-8")
+    partial = rounds / "round-01.partial.md"
+    partial.write_text("stale partial", encoding="utf-8")
+
+    reconciled = store.reconcile_session(session.id)
+
+    assert reconciled.rounds[0].status == "error"
+    assert reconciled.rounds[0].error == "interrupted by restart"
+    assert (rounds / "round-01.md").read_text() == "authoritative final"
+    assert not partial.exists()
+
+
 def test_delete_requires_matching_owned_identity(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()

@@ -7,19 +7,22 @@
   <h2>Sessions</h2>
   <details>
     <summary>Create session</summary>
-    <form method="post" action="/projects/{{ project.id }}/sessions">
+    <form method="post" action="/projects/{{ project.id }}/sessions" data-session-config-form data-agent="claude">
       <label>Name <input name="name" maxlength="200" required></label>
       <label>Agent
-        <select name="agent" required>
+        <select name="agent" required data-agent-select>
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
         </select>
       </label>
       <label>Model <input name="model" maxlength="200" value="sonnet" required></label>
       <label>Effort
-        <select name="effort" required>
-          <option>minimal</option><option>low</option><option>medium</option>
-          <option selected>high</option><option>xhigh</option><option>max</option>
+        <select name="effort" required data-effort-select>
+          {% for provider, levels in effort_levels.items() %}
+            <optgroup label="{{ provider|title }}" data-effort-agent="{{ provider }}"{% if provider != 'claude' %} disabled{% endif %}>
+              {% for level in levels %}<option value="{{ level }}"{% if provider == 'claude' and level == 'high' %} selected{% endif %}>{{ level }}</option>{% endfor %}
+            </optgroup>
+          {% endfor %}
         </select>
       </label>
       <label>Role instructions
@@ -36,22 +39,36 @@
           <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
           <details>
             <summary>Edit</summary>
-            <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/edit">
+            <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/edit" data-session-config-form data-agent="{{ session.agent }}">
               <label>Name <input name="name" maxlength="200" value="{{ session.name }}" required></label>
               {% if not session.rounds %}
                 <label>Agent
-                  <select name="agent">
+                  <select name="agent" data-agent-select>
                     <option value="claude"{% if session.agent == 'claude' %} selected{% endif %}>Claude</option>
                     <option value="codex"{% if session.agent == 'codex' %} selected{% endif %}>Codex</option>
                   </select>
                 </label>
+              {% else %}
+                <p>Agent: {{ session.agent }} (fixed after the first round)</p>
+              {% endif %}
                 <label>Model <input name="model" maxlength="200" value="{{ session.model }}" required></label>
-                <label>Effort <input name="effort" value="{{ session.effort }}" required></label>
+                <label>Effort
+                  <select name="effort" required data-effort-select>
+                    {% for provider, levels in effort_levels.items() %}
+                      <optgroup label="{{ provider|title }}" data-effort-agent="{{ provider }}"{% if provider != session.agent %} disabled{% endif %}>
+                        {% for level in levels %}<option value="{{ level }}"{% if provider == session.agent and level == session.effort %} selected{% endif %}>{{ level }}</option>{% endfor %}
+                      </optgroup>
+                    {% endfor %}
+                  </select>
+                </label>
+              {% if not session.rounds %}
                 <label>Role instructions
                   <textarea name="role_instructions" maxlength="20000">{{ session.role_instructions }}</textarea>
                 </label>
+              {% else %}
+                <p>Role instructions are fixed after the first round.</p>
               {% endif %}
-              <button type="submit">Save</button>
+              <button type="submit"{% if session.status == 'running' %} disabled{% endif %}>Save</button>
             </form>
           </details>
           <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/delete">

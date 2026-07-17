@@ -131,6 +131,10 @@ def create_app(
                 "project": project,
                 "sessions": sessions,
                 "health": request.app.state.health,
+                "effort_levels": {
+                    "claude": ClaudeAdapter.EFFORT_LEVELS,
+                    "codex": CodexAdapter.EFFORT_LEVELS,
+                },
             },
         )
 
