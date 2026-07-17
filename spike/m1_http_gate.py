@@ -17,6 +17,7 @@ import tempfile
 import time
 from typing import Iterator
 from uuid import uuid4
+from hashlib import sha256
 
 import httpx
 
@@ -217,6 +218,91 @@ def exercise_native_resume(
     }
 
 
+def exercise_pass_turn(
+    client: httpx.Client,
+    home: Path,
+    project_id: str,
+    source_session: SessionConfig,
+    target_session: SessionConfig,
+    root: Path,
+) -> dict[str, object]:
+    registry = RegistryStore(home)
+    store = ProjectStore(registry.get(project_id))
+    source_path = store.rounds_dir(source_session.id) / "round-02.md"
+    original = source_path.read_bytes()
+    target_before = store.load_session(target_session.id)
+    target_workspace = store.workspace_dir(target_session.id)
+    inside = target_workspace / f"pass-inside-{target_session.agent}.txt"
+    other = store.workspace_dir(source_session.id) / (
+        f"pass-other-{target_session.agent}.txt"
+    )
+    shared_tmp = Path(tempfile.gettempdir()) / f"delibra-pass-{uuid4().hex}.txt"
+    outside = root / f"outside-{target_session.agent}"
+    outside.mkdir()
+    link = target_workspace / f"pass-link-{target_session.agent}"
+    link.symlink_to(outside, target_is_directory=True)
+    through_link = link / "through-link.txt"
+    instruction = f"""Perform this behavioral sandbox check using available tools.
+Attempt every write below with the exact path and literal text `pass`; continue after
+expected denials:
+1. {inside}
+2. {source_path}
+3. {other}
+4. {shared_tmp}
+5. {through_link}
+Use the native web-search tool to search for the official Python documentation home
+page. Read the staged source document and include its exact GATE_CANARY token in the
+final response. Keep the response brief."""
+    base = f"/projects/{project_id}/sessions/{source_session.id}"
+    response = client.post(
+        f"{base}/pass",
+        data={
+            "source_round": "2",
+            "target_session_id": target_session.id,
+            "instruction": instruction,
+        },
+    )
+    assert response.status_code == 202, response.text
+    assert 'id="live-3"' in response.text
+    target_base = f"/projects/{project_id}/sessions/{target_session.id}"
+    with client.stream("GET", f"{target_base}/rounds/3/stream") as stream:
+        events = list(sse_events(stream))
+    assert events[-1].get("event") == "done"
+    assert any(
+        event.get("event") == "progress" and "Searching" in str(event.get("data"))
+        for event in events
+    )
+    after = store.load_session(target_session.id)
+    output_path = store.rounds_dir(target_session.id) / "round-03.md"
+    output = output_path.read_text(encoding="utf-8")
+    provenance = after.rounds[-1].source
+    assert after.rounds[-1].status == "complete", after.rounds[-1].error
+    assert after.cli_session_id == target_before.cli_session_id
+    assert source_path.read_bytes() == original
+    assert inside.is_file()
+    assert not other.exists()
+    assert not shared_tmp.exists()
+    assert not through_link.exists()
+    assert f"{source_session.agent.upper()}_GATE_CANARY" in output
+    assert provenance.from_session == source_session.id
+    assert provenance.from_round == 2
+    assert provenance.source_sha256 == sha256(original).hexdigest()
+    staged = target_workspace / str(provenance.staged_file)
+    assert staged.read_bytes() == original
+    return {
+        "source_agent": source_session.agent,
+        "target_agent": target_session.agent,
+        "events": len(events),
+        "native_session_stable": True,
+        "source_hash_verified": True,
+        "source_immutable": True,
+        "workspace_write_succeeded": True,
+        "out_of_boundary_writes_rejected": True,
+        "native_web_progress": True,
+        "status": after.rounds[-1].status,
+    }
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="delibra-m1-") as temporary:
         root = Path(temporary)
@@ -259,6 +345,20 @@ def main() -> None:
                     )
                     for agent in ("claude", "codex")
                 ]
+                pass_turns = [
+                    exercise_pass_turn(
+                        client,
+                        home,
+                        project_id,
+                        sessions[source_agent],
+                        sessions[target_agent],
+                        root,
+                    )
+                    for source_agent, target_agent in (
+                        ("claude", "codex"),
+                        ("codex", "claude"),
+                    )
+                ]
         finally:
             server.terminate()
             try:
@@ -269,7 +369,11 @@ def main() -> None:
         assert server.returncode in {0, -15}
         sys.stdout.write(
             json.dumps(
-                {"first_turns": first_turns, "native_resumes": native_resumes},
+                {
+                    "first_turns": first_turns,
+                    "native_resumes": native_resumes,
+                    "pass_turns": pass_turns,
+                },
                 indent=2,
                 sort_keys=True,
             )

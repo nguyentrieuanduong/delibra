@@ -63,6 +63,9 @@ def test_create_session_validates_provider_specific_effort_and_renders_controls(
         ).status_code == 422
         assert create_session(client, project.id, agent="other").status_code == 422
         assert create_session(client, project.id, model="  ").status_code == 422
+        assert create_session(
+            client, project.id, role_instructions="x" * 20_001
+        ).status_code == 422
 
         page = client.get(f"/projects/{project.id}")
     sessions = store.list_sessions()

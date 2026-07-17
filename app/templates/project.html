@@ -23,7 +23,7 @@
         </select>
       </label>
       <label>Role instructions
-        <textarea name="role_instructions" maxlength="50000"></textarea>
+        <textarea name="role_instructions" maxlength="20000"></textarea>
       </label>
       <button type="submit">Create session</button>
     </form>
@@ -48,7 +48,7 @@
                 <label>Model <input name="model" maxlength="200" value="{{ session.model }}" required></label>
                 <label>Effort <input name="effort" value="{{ session.effort }}" required></label>
                 <label>Role instructions
-                  <textarea name="role_instructions" maxlength="50000">{{ session.role_instructions }}</textarea>
+                  <textarea name="role_instructions" maxlength="20000">{{ session.role_instructions }}</textarea>
                 </label>
               {% endif %}
               <button type="submit">Save</button>
