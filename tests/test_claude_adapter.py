@@ -181,3 +181,7 @@ def test_build_command_stateless_reapplies_role_and_lists_staged_history() -> No
 
 def test_effort_levels_match_installed_claude() -> None:
     assert ClaudeAdapter.EFFORT_LEVELS == ["low", "medium", "high", "xhigh", "max"]
+
+
+def test_native_resume_after_config_change_matches_real_m4_gate() -> None:
+    assert ClaudeAdapter.RESUME_AFTER_CONFIG_CHANGE is True

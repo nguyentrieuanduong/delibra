@@ -208,3 +208,7 @@ def test_build_command_stateless_reapplies_role_history_and_source() -> None:
 
 def test_effort_levels_match_installed_codex() -> None:
     assert CodexAdapter.EFFORT_LEVELS == ["minimal", "low", "medium", "high", "xhigh"]
+
+
+def test_native_resume_after_config_change_matches_real_m4_gate() -> None:
+    assert CodexAdapter.RESUME_AFTER_CONFIG_CHANGE is True

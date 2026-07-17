@@ -11,6 +11,7 @@ from app.models import SessionConfig
 
 class CodexAdapter:
     EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"]
+    RESUME_AFTER_CONFIG_CHANGE = True
 
     def __init__(self, executable: str = "codex") -> None:
         self.executable = executable

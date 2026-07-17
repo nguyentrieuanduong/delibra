@@ -39,6 +39,7 @@ class Command:
 
 class AgentAdapter(Protocol):
     EFFORT_LEVELS: list[str]
+    RESUME_AFTER_CONFIG_CHANGE: bool
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command: ...
 
