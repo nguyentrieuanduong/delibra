@@ -116,9 +116,10 @@ def exercise_provider(
         },
     )
     assert response.status_code == 202, response.text
-    assert 'id="live-1"' in response.text
+    dom_id = f"round-{session.id}-1"
+    assert f'id="{dom_id}"' in response.text
     assert 'hx-trigger="sse:done once"' in response.text
-    assert 'hx-target="#live-1"' in response.text
+    assert f'hx-target="#{dom_id}"' in response.text
     assert 'hx-swap="outerHTML"' in response.text
     assert client.post(f"{base}/run", data={"prompt": "busy"}).status_code == 409
 
@@ -199,7 +200,7 @@ def exercise_native_resume(
         },
     )
     assert response.status_code == 202, response.text
-    assert 'id="live-2"' in response.text
+    assert f'id="round-{session.id}-2"' in response.text
     with client.stream("GET", f"{base}/rounds/2/stream") as stream:
         events = list(sse_events(stream))
     assert events[-1].get("event") == "done"
@@ -263,7 +264,7 @@ final response. Keep the response brief."""
         },
     )
     assert response.status_code == 202, response.text
-    assert 'id="live-3"' in response.text
+    assert f'id="round-{target_session.id}-3"' in response.text
     target_base = f"/projects/{project_id}/sessions/{target_session.id}"
     with client.stream("GET", f"{target_base}/rounds/3/stream") as stream:
         events = list(sse_events(stream))

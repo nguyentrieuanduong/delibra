@@ -1,27 +1,78 @@
 # Delibra MVP acceptance
 
 Date: 2026-07-17  
-Scope: requirements FR1–FR11 and plan M0–M3  
+Scope: requirements FR1–FR11 and plan M0–M4
 Runtime: Python 3.12.13, Claude Code 2.1.202, Codex CLI 0.144.5
 
 ## Result and evidence boundary
 
-The deterministic suite passed 84 tests. One non-failing warning remains from
+The deterministic suite passed 102 tests. The chat error contract also ran two Node
+unit tests through the pytest launcher. One non-failing warning remains from
 Starlette's deprecated TestClient/httpx compatibility import; it is not an
 application-runtime failure.
 
-Real-provider evidence comes from `spike/FINDINGS.md` and the executable
-`spike/m1_http_gate.py`. No Chromium, Playwright, or Selenium runtime was installed,
-so browser behavior was exercised at the real Uvicorn HTTP/SSE boundary and the exact
-HTMX DOM contract was verified deterministically in `tests/test_routes_runs.py`. This
-record does not claim GUI automation that did not occur.
+Real-provider evidence comes from `spike/FINDINGS.md` and the executable gates
+`spike/m1_http_gate.py`, `spike/m4_config_resume_gate.py`, and
+`spike/m4_chat_gate.py`. No Chromium, Playwright, or Selenium runtime was installed,
+so browser behavior was exercised at the real HTTP/SSE application boundary and the
+exact HTMX/DOM contract was verified deterministically in route tests plus a real
+Node run for safe error parsing. This record does not claim GUI automation that did
+not occur.
+
+## M4 project chat and config mutability
+
+Deterministic evidence:
+
+- `tests/test_routes_chat.py` verifies merged chronological projection, exact
+  `(started_at, session id, round)` tie-breaking, empty state, membership-validated
+  `?agent=`, dispatch to the selected agent, two concurrent live agents, composite
+  reset/done targets, source-excluding “Send to…” controls, sidebar previews, HX-only
+  sidebar/OOB composer replacement, and an unrelated live stream surviving edits.
+- `tests/test_routes_sessions.py` verifies running-edit atomicity, editable
+  name/model/effort after round 1, immutable provider/role, identical-value handling,
+  native-ID preservation, and the forced stateless fallback warning/history/new-ID
+  branch. Recovery tests prove stale partials cannot overwrite existing final output.
+- `tests/js/test_app_errors.js` executes under Node and proves hostile detail text is
+  returned only as text; browser code assigns it with `textContent` and clears stale
+  errors after a successful HTMX action.
+- `tests/test_health.py` starts a PID-reporting hung version process, proves app
+  startup returns in under 0.5 seconds with “checking” health, then proves bounded
+  shutdown cancels/awaits the task, reaps the process group, and emits no
+  never-retrieved-task warning.
+
+Real provider-switch evidence (manually invoked capability gate):
+
+- Claude Code 2.1.202 resumed one native session from requested `sonnet`/`low`
+  (`claude-sonnet-5`) as `opus`/`medium` (`claude-opus-4-8`), retained the exact
+  native ID, and recalled its canary.
+- Codex CLI 0.144.5 resumed one native thread from `gpt-5.4`/`low` as
+  `gpt-5.4-mini`/`medium`; provider-authored rollout contexts recorded both new
+  values, the exact thread ID remained stable, and the canary was recalled.
+
+Real chat gate (manually invoked `spike/m4_chat_gate.py` on 2026-07-17):
+
+- Claude A streamed four events on round 1 and four on round 2. An HX edit changed
+  its recorded command settings to `opus`/`medium`; the native ID stayed stable and
+  the first-turn canary was recalled.
+- Codex B was created after Claude's conversation without a chat-shell response,
+  completed its first round, then received Claude round 2 through staged pass input.
+  Its pass round emitted three SSE events, retained the native ID, and returned the
+  staged Claude canary.
+- Claude A round 2 and live Codex B round 2 appeared together with one scoped DOM ID
+  each; Codex completion replaced only its own fragment. Final chat rendered both
+  completed bubbles exactly once.
+
+This was a real CLI/HTTP/SSE gate and deterministic HTML-contract check, not a GUI
+browser observation. The manual browser checklist remains: visually watch A stream,
+edit settings and send again, add B, send A's output to B, and confirm only B's
+same-numbered live pane is replaced.
 
 ## FR1–FR11
 
 | Requirement | Accepted evidence |
 |---|---|
-| FR1 Project CRUD | `tests/test_routes_projects.py`: absolute-path validation, canonical symlinks, resolved-path uniqueness, manifest import/rejection, rename/unregister locking, and unregister-without-delete. |
-| FR2 Session CRUD | `tests/test_routes_sessions.py`: provider-specific effort validation, all-field edits before round 1, name-only edits afterward, running-delete rejection, and owned identity checks. |
+| FR1 Project CRUD | `tests/test_routes_projects.py`: absolute-path validation, canonical symlinks, resolved-path uniqueness, manifest import/rejection, chat-primary/settings routing, rename/unregister locking, and unregister-without-delete. |
+| FR2 Session CRUD | `tests/test_routes_sessions.py`: provider-specific effort validation, all-field edits before round 1, name/model/effort edits afterward, running-edit/delete rejection, executable resume capability policy, and owned identity checks. |
 | FR3 Headless runs | Adapter golden tests pin the verified Claude stream-JSON and Codex JSONL commands; real first/resume/pass rounds completed for both providers. |
 | FR4 Live streaming | T7/T9 cover monotonic IDs, replay gaps, reset/snapshot, late subscribers, and cancellation. Real Claude/Codex runs emitted honest pre-completion activity. The long gate ran 61.048s across disconnect/reconnect without duplicate IDs. |
 | FR5 Markdown persistence | Runner and route integration tests verify prompt, partial, final, atomic metadata, and recovery files. All real parity rounds persisted nonempty `.md` outputs. |
@@ -118,8 +169,10 @@ record does not claim GUI automation that did not occur.
 ## Runtime health and residual risk
 
 The verified runtime versions are Claude Code 2.1.202 and Codex CLI 0.144.5. Startup
-health probes show a UI warning for a missing executable or version drift rather than
-raising a generic page error. Authentication failures become provider error rounds.
+health probes run concurrently in a managed background task: initial UI state is
+“checking,” and a missing executable, timeout, or version drift becomes a warning
+without blocking startup. Shutdown cancels and awaits probes with a bound and reaps
+their process groups. Authentication failures become provider error rounds.
 
 The adopted boundary is strict workspace-only agent writes plus app-owned Codex
 provider state. It does not provide read confidentiality from the local OS user.

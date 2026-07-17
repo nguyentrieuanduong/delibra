@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 import pytest
@@ -91,6 +92,11 @@ def create_session(client: TestClient, project_id: str, **overrides):
     )
 
 
+def created_session_id(response) -> str:
+    location = urlsplit(response.headers["location"])
+    return parse_qs(location.query)["agent"][0]
+
+
 def seed_completed_round(store: ProjectStore, session_id: str) -> None:
     config = store.load_session(session_id)
     config.cli_session_id = "original-native-id"
@@ -149,7 +155,7 @@ def test_create_session_validates_provider_specific_effort_and_renders_controls(
             client, project.id, role_instructions="x" * 20_001
         ).status_code == 422
 
-        page = client.get(f"/projects/{project.id}")
+        page = client.get(f"/projects/{project.id}/settings")
     sessions = store.list_sessions()
     assert {(item.agent, item.effort) for item in sessions} == {
         ("codex", "minimal"),
@@ -169,7 +175,7 @@ def test_edit_all_fields_before_first_round_then_name_only(tmp_path: Path) -> No
     client, project, store = seeded_client(tmp_path)
     with client:
         created = create_session(client, project.id)
-        session_id = created.headers["location"].rsplit("/", 1)[-1]
+        session_id = created_session_id(created)
         edit_path = f"/projects/{project.id}/sessions/{session_id}/edit"
         edited = client.post(
             edit_path,
@@ -239,7 +245,7 @@ def test_post_round_model_effort_edit_drives_next_run_and_preserves_native_id(
     client, project, store = seeded_client(tmp_path, observations=observations)
     with client:
         created = create_session(client, project.id, effort="low")
-        session_id = created.headers["location"].rsplit("/", 1)[-1]
+        session_id = created_session_id(created)
         seed_completed_round(store, session_id)
         edit_path = f"/projects/{project.id}/sessions/{session_id}/edit"
 
@@ -295,7 +301,7 @@ def test_unsupported_config_change_clears_resume_then_warns_and_adopts_new_id(
     monkeypatch.setattr(ClaudeAdapter, "RESUME_AFTER_CONFIG_CHANGE", False)
     with client:
         created = create_session(client, project.id, effort="low")
-        session_id = created.headers["location"].rsplit("/", 1)[-1]
+        session_id = created_session_id(created)
         seed_completed_round(store, session_id)
         edited = client.post(
             f"/projects/{project.id}/sessions/{session_id}/edit",
@@ -332,7 +338,7 @@ def test_any_edit_while_running_is_409_and_leaves_snapshot_unchanged(
     client, project, store = seeded_client(tmp_path)
     with client:
         created = create_session(client, project.id)
-        session_id = created.headers["location"].rsplit("/", 1)[-1]
+        session_id = created_session_id(created)
         seed_completed_round(store, session_id)
         config = store.load_session(session_id)
         config.status = "running"
@@ -369,7 +375,7 @@ def test_delete_rejects_running_session_and_removes_idle_owned_session(
     client, project, store = seeded_client(tmp_path)
     with client:
         created = create_session(client, project.id)
-        session_id = created.headers["location"].rsplit("/", 1)[-1]
+        session_id = created_session_id(created)
         delete_path = f"/projects/{project.id}/sessions/{session_id}/delete"
         config = store.load_session(session_id)
         config.status = "running"

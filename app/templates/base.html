@@ -14,8 +14,8 @@
     <main>{% block content %}{% endblock %}</main>
     <footer>
       {% for provider in health %}
-        <span class="health {{ 'warning' if provider.warning else 'ok' }}">
-          {{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}
+        <span class="health {{ 'warning' if provider.checking or provider.warning else 'ok' }}">
+          {% if provider.checking %}Checking {{ provider.name|title }} CLI…{% else %}{{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}{% endif %}
         </span>
       {% endfor %}
     </footer>

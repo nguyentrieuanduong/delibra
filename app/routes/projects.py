@@ -38,7 +38,7 @@ async def register_project(
     candidate = _project_path(path)
     async with request.app.state.locks.registry_lock:
         project = request.app.state.registry.register(name, candidate)
-    return RedirectResponse(f"/projects/{project.id}", status_code=303)
+    return RedirectResponse(f"/projects/{project.id}/chat", status_code=303)
 
 
 @router.post("/projects/{project_id}/rename")

@@ -7,6 +7,15 @@ probe used disposable workspaces and, for Codex, a disposable copy of the local
 ChatGPT OAuth credential. It retained no provider transcript. Both adapters
 therefore encode `RESUME_AFTER_CONFIG_CHANGE = True`.
 
+The final chat-level gate (`envs/bin/python -m spike.m4_chat_gate`) also passed on
+2026-07-17. Claude A emitted four SSE events on each of its first and changed-config
+turns, retained its native id under `sonnet`/`low` → `opus`/`medium`, and recalled
+the canary. Codex B was added through the HX sidebar response, retained its native id,
+and read Claude's staged canary on a three-event pass turn. While Claude A round 2
+was complete and Codex B round 2 was live, the chat rendered each composite fragment
+exactly once and the Codex done target remained scoped to its own pane. This was a
+real CLI/HTTP/SSE execution with deterministic HTML inspection, not GUI automation.
+
 ### Claude Code
 
 - Runtime/account: Claude Code `2.1.202`; local authenticated first-party

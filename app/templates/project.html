@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} · Delibra{% endblock %}
 {% block content %}
-  <p><a href="/">Projects</a></p>
+  <p><a href="/">Projects</a> · <a href="/projects/{{ project.id }}/chat">Chat</a></p>
   <h1>{{ project.name }}</h1>
   <p><code>{{ project.path }}</code></p>
   <h2>Sessions</h2>
