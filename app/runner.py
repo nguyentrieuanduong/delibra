@@ -665,6 +665,17 @@ class RunManager:
             return completed.record
         return self._completed_from_disk(key).record
 
+    def active_key(self, project_id: str, session_id: str) -> RunKey | None:
+        """Return the single active run for a session, if one exists."""
+        return next(
+            (
+                key
+                for key in self._active
+                if key.project_id == project_id and key.session_id == session_id
+            ),
+            None,
+        )
+
     async def cancel(self, key: RunKey) -> None:
         active = self._active.get(key)
         if active is None:
