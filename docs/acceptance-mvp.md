@@ -6,7 +6,7 @@ Runtime: Python 3.12.13, Claude Code 2.1.202, Codex CLI 0.144.5
 
 ## Result and evidence boundary
 
-The deterministic suite passed 102 tests. The chat error contract also ran two Node
+The deterministic suite passed 102 tests. The chat error contract also ran three Node
 unit tests through the pytest launcher. One non-failing warning remains from
 Starlette's deprecated TestClient/httpx compatibility import; it is not an
 application-runtime failure.
