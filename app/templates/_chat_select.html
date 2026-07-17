@@ -1,0 +1,28 @@
+<section
+  id="chat-agent-select"
+  class="chat-agent-select"
+  {% if chat_select_oob %}hx-swap-oob="outerHTML:#chat-agent-select"{% endif %}
+>
+  <h2>Agent</h2>
+  {% if selected_session %}
+    <label>Choose agent
+      <select
+        name="agent"
+        hx-get="/projects/{{ project.id }}/chat/select"
+        hx-target="#chat-agent-select"
+        hx-swap="outerHTML"
+        hx-trigger="change"
+      >
+        {% for agent_view in agent_views %}
+          {% set option = agent_view.session %}
+          <option value="{{ option.id }}"{% if option.id == selected_session.id %} selected{% endif %}>{{ option.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <h3>{{ selected_session.name }}</h3>
+    <p>{{ selected_session.agent }} · {{ selected_session.model }} · {{ selected_session.effort }} · {{ selected_session.status }}</p>
+  {% else %}
+    <p>No agents yet. Create an agent in the right panel to begin.</p>
+  {% endif %}
+</section>
+{% if sidebar_oob %}{% include "_agent_sidebar.html" %}{% endif %}

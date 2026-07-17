@@ -9,7 +9,7 @@
     <script src="/static/sse.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
-  <body>
+  <body class="{% block body_class %}{% endblock %}">
     <header><a href="/">Delibra</a></header>
     <main>{% block content %}{% endblock %}</main>
     <footer>

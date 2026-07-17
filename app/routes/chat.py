@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from app.models import Project
+from app.models import Project, SessionConfig
 from app.routes.runs import start_run_fragment
 from app.security import validate_field
 from app.storage import ProjectStore, validate_id
@@ -46,7 +48,7 @@ def _timeline(request: Request, project_id: str, store: ProjectStore) -> list[di
 
 def _sidebar_context(
     store: ProjectStore,
-    sessions,
+    sessions: list[SessionConfig],
     selected_id: str | None,
     *,
     composer_oob: bool,
@@ -59,7 +61,36 @@ def _sidebar_context(
         "agent_views": agent_views(store, sessions, selected),
         "effort_levels": effort_levels(),
         "composer_oob": composer_oob,
+        "chat_select_oob": False,
+        "sidebar_oob": False,
     }
+
+
+def selection_response(
+    request: Request,
+    project: Project,
+    *,
+    selected_id: str | None,
+    primary: Literal["center", "sidebar"],
+    synchronized: bool,
+    headers: dict[str, str] | None = None,
+) -> HTMLResponse:
+    store = ProjectStore(project)
+    sessions = store.list_sessions()
+    context = _sidebar_context(
+        store,
+        sessions,
+        selected_id,
+        composer_oob=synchronized,
+    )
+    context["chat_select_oob"] = synchronized and primary == "sidebar"
+    context["sidebar_oob"] = synchronized and primary == "center"
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_chat_select.html" if primary == "center" else "_agent_sidebar.html",
+        context=context,
+        headers=headers,
+    )
 
 
 def sidebar_response(
@@ -69,18 +100,13 @@ def sidebar_response(
     selected_id: str | None,
     composer_oob: bool,
     headers: dict[str, str] | None = None,
-):
-    store = ProjectStore(project)
-    sessions = store.list_sessions()
-    return request.app.state.templates.TemplateResponse(
-        request=request,
-        name="_agent_sidebar.html",
-        context=_sidebar_context(
-            store,
-            sessions,
-            selected_id,
-            composer_oob=composer_oob,
-        ),
+) -> HTMLResponse:
+    return selection_response(
+        request,
+        project,
+        selected_id=selected_id,
+        primary="sidebar",
+        synchronized=composer_oob,
         headers=headers,
     )
 
@@ -120,6 +146,30 @@ async def chat_sidebar(
         project,
         selected_id=agent,
         composer_oob=False,
+    )
+
+
+@router.get("/projects/{project_id}/chat/select", response_class=HTMLResponse)
+async def chat_select(
+    request: Request,
+    project_id: str,
+    agent: str | None = Query(None),
+) -> HTMLResponse:
+    project = request.app.state.registry.get(project_id)
+    sessions = ProjectStore(project).list_sessions()
+    selected = selected_session(sessions, agent)
+    headers = (
+        {"HX-Push-Url": f"/projects/{project_id}/chat?agent={selected.id}"}
+        if selected is not None
+        else None
+    )
+    return selection_response(
+        request,
+        project,
+        selected_id=selected.id if selected is not None else None,
+        primary="center",
+        synchronized=True,
+        headers=headers,
     )
 
 

@@ -67,16 +67,18 @@ def session(
     session_id: str,
     name: str,
     *,
+    agent: str = "fake",
     mode: str = "success",
+    role_instructions: str = "Test",
     rounds: list[RoundRecord] | None = None,
 ) -> SessionConfig:
     return SessionConfig(
         id=session_id,
         name=name,
-        agent="fake",
+        agent=agent,
         model=mode,
         effort="low",
-        role_instructions="Test",
+        role_instructions=role_instructions,
         cli_session_id=None,
         status="idle",
         created_at="2026-07-17T00:00:00Z",
@@ -160,9 +162,47 @@ def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> No
     assert response.status_code == 200
     assert "No conversation yet." in response.text
     assert "Create agent" in response.text
+    assert "No agents yet. Create an agent in the right panel to begin." in response.text
     assert 'id="chat-composer"' in response.text
     assert re.search(r'<textarea name="prompt"[^>]+disabled', response.text)
     assert '<button type="submit" disabled>Send</button>' in response.text
+
+
+def test_chat_workspace_renders_four_regions_and_full_agent_information(
+    tmp_path: Path,
+) -> None:
+    alpha = session(
+        "a" * 32,
+        "Alpha",
+        agent="claude",
+        role_instructions="Be rigorous & challenge <claims>.",
+        rounds=[record(1, "2026-07-17T00:00:01Z")],
+    )
+    beta = session(
+        "b" * 32,
+        "Beta",
+        agent="codex",
+        role_instructions="",
+    )
+    app, project, _ = setup_project(tmp_path, [alpha, beta])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        stylesheet = client.get("/static/app.css")
+
+    assert response.status_code == 200
+    assert '<body class="chat-page">' in response.text
+    for region in ("topic", "files", "conversation", "agents"):
+        assert f'data-workspace-region="{region}"' in response.text
+    assert 'id="file-browser-host"' in response.text
+    assert 'id="file-reader"' in response.text
+    assert 'id="chat-agent-select"' in response.text
+    assert "Be rigorous &amp; challenge &lt;claims&gt;." in response.text
+    assert "No role instructions" in response.text
+    assert "Role instructions are fixed after the first round." not in response.text
+    assert "body.chat-page { max-width: none" in stylesheet.text
+    assert "grid-template-areas:" in stylesheet.text
+    assert "#file-browser-host, #file-reader { min-height: 0; overflow: auto; }" in stylesheet.text
 
 
 def test_chat_renders_two_concurrent_live_fragments_with_scoped_done_targets(
@@ -230,6 +270,110 @@ def test_chat_selection_is_deterministic_and_invalid_selection_is_rejected(
     assert "No rounds yet." in sidebar.text
 
 
+def test_selection_transaction_supports_both_providers_and_rejects_invalid_ids(
+    tmp_path: Path,
+) -> None:
+    claude = session("a" * 32, "Claude researcher", agent="claude")
+    codex = session("b" * 32, "Codex critic", agent="codex")
+    app, project, _ = setup_project(tmp_path, [claude, codex])
+    other_path = tmp_path / "other-project"
+    other_path.mkdir()
+    other = RegistryStore(tmp_path / "home").register("Other", other_path)
+    outsider = session("c" * 32, "Outsider", agent="codex")
+    ProjectStore(other).create_session(outsider)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        claude_selected = client.get(
+            f"/projects/{project.id}/chat/select",
+            params={"agent": claude.id},
+        )
+        codex_selected = client.get(
+            f"/projects/{project.id}/chat/select",
+            params={"agent": codex.id},
+        )
+        malformed = client.get(
+            f"/projects/{project.id}/chat/select",
+            params={"agent": "bad"},
+        )
+        cross_project = client.get(
+            f"/projects/{project.id}/chat/select",
+            params={"agent": outsider.id},
+        )
+
+    for response, selected in (
+        (claude_selected, claude),
+        (codex_selected, codex),
+    ):
+        assert response.status_code == 200
+        assert response.headers["hx-push-url"] == (
+            f"/projects/{project.id}/chat?agent={selected.id}"
+        )
+        assert f'value="{selected.id}" selected' in response.text
+        assert f"{selected.agent} · {selected.model}" in response.text
+        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' in response.text
+        assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
+        assert '<section class="chat-timeline"' not in response.text
+        assert 'class="live-round"' not in response.text
+    assert malformed.status_code == 422
+    assert cross_project.status_code == 404
+
+
+def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs(
+    tmp_path: Path,
+) -> None:
+    claude = session("a" * 32, "Claude", agent="claude", mode="sleep")
+    codex = session("b" * 32, "Codex", agent="codex", mode="sleep")
+    observer = session("c" * 32, "Observer", agent="claude")
+    app, project, store = setup_project(tmp_path, [claude, codex, observer])
+    claude_base = f"/projects/{project.id}/sessions/{claude.id}"
+    codex_base = f"/projects/{project.id}/sessions/{codex.id}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        assert client.post(f"{claude_base}/run", data={"prompt": "A"}).status_code == 202
+        assert client.post(f"{codex_base}/run", data={"prompt": "B"}).status_code == 202
+        created = client.post(
+            f"/projects/{project.id}/sessions",
+            headers={"HX-Request": "true"},
+            data={
+                "name": "New agent",
+                "agent": "codex",
+                "model": "success",
+                "effort": "low",
+                "role_instructions": "New role",
+            },
+        )
+        new_agent = next(item for item in store.list_sessions() if item.name == "New agent")
+        selected_edit = client.post(
+            f"/projects/{project.id}/sessions/{new_agent.id}/edit?agent={new_agent.id}",
+            headers={"HX-Request": "true"},
+            data={"name": "New agent renamed", "model": "success", "effort": "medium"},
+        )
+        unselected_edit = client.post(
+            f"/projects/{project.id}/sessions/{observer.id}/edit?agent={new_agent.id}",
+            headers={"HX-Request": "true"},
+            data={"name": "Observer renamed"},
+        )
+        assert client.post(f"{claude_base}/cancel").status_code == 200
+        assert client.post(f"{codex_base}/cancel").status_code == 200
+
+    for response in (created, selected_edit, unselected_edit):
+        assert response.status_code == 200
+        assert 'hx-swap-oob="outerHTML:#chat-agent-select"' in response.text
+        assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
+        assert '<section class="chat-timeline"' not in response.text
+        assert 'class="live-round"' not in response.text
+    assert created.headers["hx-push-url"] == (
+        f"/projects/{project.id}/chat?agent={new_agent.id}"
+    )
+    assert f'value="{new_agent.id}" selected' in created.text
+    assert "New agent renamed" in selected_edit.text
+    assert f'value="{new_agent.id}" selected' in selected_edit.text
+    assert "Observer renamed" in unselected_edit.text
+    assert f'value="{new_agent.id}" selected' in unselected_edit.text
+    assert store.load_session(claude.id).status == "idle"
+    assert store.load_session(codex.id).status == "idle"
+
+
 def test_chat_dispatch_validates_membership_and_runs_the_selected_agent(
     tmp_path: Path,
 ) -> None:
@@ -292,6 +436,7 @@ def test_hx_create_selects_first_agent_and_updates_sidebar_composer_and_url(
         f"/projects/{project.id}/chat?agent={created.id}"
     )
     assert 'id="agent-sidebar"' in response.text
+    assert 'hx-swap-oob="outerHTML:#chat-agent-select"' in response.text
     assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
     assert f'value="{created.id}" selected' in response.text
     assert 'name="prompt"' in response.text
@@ -316,6 +461,7 @@ def test_hx_edit_preserves_selection_without_replacing_another_live_stream(
         )
         assert edited.status_code == 200
         assert 'id="agent-sidebar"' in edited.text
+        assert 'hx-swap-oob="outerHTML:#chat-agent-select"' in edited.text
         assert 'hx-swap-oob="outerHTML:#chat-composer"' in edited.text
         assert f'value="{beta.id}" selected' in edited.text
         assert "Beta renamed" in edited.text

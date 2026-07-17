@@ -7,16 +7,10 @@
   hx-swap="beforeend"
   {% if composer_oob %}hx-swap-oob="outerHTML:#chat-composer"{% endif %}
 >
-  <label>Agent
-    <select name="session_id" required{% if not selected_session %} disabled{% endif %}>
-      {% for session in sessions|sort(attribute='name') %}
-        <option value="{{ session.id }}"{% if selected_session and session.id == selected_session.id %} selected{% endif %}>{{ session.name }}</option>
-      {% endfor %}
-    </select>
-  </label>
   {% if selected_session %}
+    <input type="hidden" name="session_id" value="{{ selected_session.id }}">
     <p class="composer-agent-meta">
-      {{ selected_session.agent }} · {{ selected_session.model }} · {{ selected_session.effort }}
+      Sending as {{ selected_session.name }} · {{ selected_session.agent }} · {{ selected_session.model }} · {{ selected_session.effort }}
     </p>
   {% endif %}
   <label>Message
