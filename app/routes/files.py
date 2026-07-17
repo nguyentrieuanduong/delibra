@@ -15,6 +15,7 @@ from app.storage import (
     project_path_parts,
     read_project_file,
 )
+from app.structured import StructuredKind, pretty_structured_text
 
 
 router = APIRouter()
@@ -32,6 +33,11 @@ TEXT_EXTENSIONS = frozenset(
         ".yml",
     }
 )
+STRUCTURED_EXTENSIONS: dict[str, StructuredKind] = {
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
 
 
 def _listing_url(project_id: str, path: str) -> str:
@@ -119,10 +125,12 @@ def _file_view_context(
     except ProjectFileSecurityError as exc:
         raise HTTPException(status_code=422, detail="invalid project file path") from exc
     suffix = PurePosixPath(path).suffix.casefold()
+    structured_kind = STRUCTURED_EXTENSIONS.get(suffix)
     error: str | None = None
     text = ""
     truncated = False
     replacements = False
+    structured_warning: str | None = None
     if suffix not in TEXT_EXTENSIONS:
         error = "This file type cannot be displayed."
     else:
@@ -146,12 +154,28 @@ def _file_view_context(
                     text = contents.data.decode("utf-8", errors="replace")
                     replacements = True
                 truncated = contents.truncated
+    if error is None and structured_kind is not None:
+        if truncated:
+            structured_warning = (
+                f"This {structured_kind.upper()} file is truncated; "
+                "showing the original text without pretty formatting."
+            )
+        else:
+            structured_view = pretty_structured_text(
+                text,
+                structured_kind,
+                output_limit=request.app.state.settings.file_view_limit,
+            )
+            text = structured_view.text
+            structured_warning = structured_view.warning
     return {
         "path": path,
         "text": text,
         "markdown": suffix in {".md", ".markdown"},
+        "structured_kind": structured_kind,
         "truncated": truncated,
         "replacements": replacements,
+        "structured_warning": structured_warning,
         "file_error": error,
         "focus_url": _focus_url(project_id, path),
     }

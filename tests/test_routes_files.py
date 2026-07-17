@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import unescape
+import json
 import os
 import random
 import re
@@ -7,6 +9,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
+import yaml
 
 from app.config import Settings
 from app.main import create_app
@@ -31,6 +34,37 @@ def setup_file_project(tmp_path: Path, *, file_view_limit: int = 512 * 1024):
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
     )
     return app, project, project_path
+
+
+def generated_structured_value(generator: random.Random, depth: int = 0) -> object:
+    leaves: list[object] = [
+        None,
+        True,
+        False,
+        generator.randint(-10_000, 10_000),
+        "".join(generator.choice("abc <>é") for _ in range(12)),
+    ]
+    if depth >= 3:
+        return generator.choice(leaves)
+    choice = generator.randrange(3)
+    if choice == 0:
+        return generator.choice(leaves)
+    if choice == 1:
+        return [generated_structured_value(generator, depth + 1) for _ in range(3)]
+    return {
+        f"key-{index}": generated_structured_value(generator, depth + 1)
+        for index in range(3)
+    }
+
+
+def structured_pre_text(response_text: str, kind: str) -> str:
+    match = re.search(
+        rf'<pre class="structured-data" data-format="{kind}">(?P<text>.*?)</pre>',
+        response_text,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    return unescape(match["text"])
 
 
 def test_project_path_parser_handles_generated_safe_and_unsafe_inputs() -> None:
@@ -117,6 +151,118 @@ def test_file_view_renders_markdown_safely_and_escapes_plain_text(
     assert "&lt;script&gt;alert('x')&lt;/script&gt;" in markdown.text
     assert plain.status_code == 200
     assert "<pre>value = &#39;&lt;b&gt;literal&lt;/b&gt;&#39;</pre>" in plain.text
+
+
+def test_generated_structured_file_values_are_pretty_and_safe(
+    tmp_path: Path,
+) -> None:
+    app, project, project_path = setup_file_project(tmp_path)
+    generator = random.Random(20260717)
+    values = [
+        {"unsafe": "<script>alert('x')</script>", "items": [1, 2]},
+        *(generated_structured_value(generator) for _ in range(100)),
+    ]
+
+    with TestClient(app, base_url="http://localhost") as client:
+        for index, value in enumerate(values):
+            json_source = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            (project_path / "value.json").write_text(json_source, encoding="utf-8")
+            json_response = client.get(
+                f"/projects/{project.id}/files/view",
+                params={"path": "value.json"},
+            )
+
+            yaml_source = yaml.safe_dump(
+                value,
+                allow_unicode=True,
+                default_flow_style=True,
+                sort_keys=False,
+            )
+            (project_path / "value.yaml").write_text(yaml_source, encoding="utf-8")
+            yaml_route = "focus" if index == 0 else "view"
+            yaml_response = client.get(
+                f"/projects/{project.id}/files/{yaml_route}",
+                params={"path": "value.yaml"},
+            )
+
+            assert json_response.status_code == 200
+            assert yaml_response.status_code == 200
+            json_text = structured_pre_text(json_response.text, "json")
+            yaml_text = structured_pre_text(yaml_response.text, "yaml")
+            assert json.loads(json_text) == value
+            assert yaml.safe_load(yaml_text) == value
+            assert "<script>" not in json_response.text
+            assert "<script>" not in yaml_response.text
+            if index == 0:
+                assert '\n  "unsafe"' in json_text
+                assert "\nitems:" in yaml_text
+                assert 'aria-label="Focused file"' in yaml_response.text
+
+
+def test_invalid_structured_file_shows_escaped_source_and_warning(
+    tmp_path: Path,
+) -> None:
+    app, project, project_path = setup_file_project(tmp_path)
+    source = '{"unsafe":"<script>",'
+    (project_path / "invalid.json").write_text(source, encoding="utf-8")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"/projects/{project.id}/files/view",
+            params={"path": "invalid.json"},
+        )
+
+    assert response.status_code == 200
+    assert structured_pre_text(response.text, "json") == source
+    assert "<script>" not in response.text
+    assert (
+        "Could not pretty-format this JSON file; showing the original text."
+        in response.text
+    )
+
+
+def test_structured_output_limit_falls_back_to_compact_source(tmp_path: Path) -> None:
+    app, project, project_path = setup_file_project(tmp_path, file_view_limit=16)
+    source = '{"a":[1,2]}'
+    (project_path / "compact.json").write_text(source, encoding="utf-8")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"/projects/{project.id}/files/view",
+            params={"path": "compact.json"},
+        )
+
+    assert response.status_code == 200
+    assert structured_pre_text(response.text, "json") == source
+    assert (
+        "Pretty-formatted JSON exceeds the view limit; showing the original text."
+        in response.text
+    )
+
+
+def test_truncated_structured_file_stays_raw_with_format_warning(
+    tmp_path: Path,
+) -> None:
+    app, project, project_path = setup_file_project(tmp_path, file_view_limit=8)
+    (project_path / "truncated.json").write_text(
+        '{"items":[1,2]}',
+        encoding="utf-8",
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"/projects/{project.id}/files/view",
+            params={"path": "truncated.json"},
+        )
+
+    assert response.status_code == 200
+    assert structured_pre_text(response.text, "json") == '{"items"'
+    assert "File truncated at the view limit." in response.text
+    assert (
+        "This JSON file is truncated; showing the original text without pretty "
+        "formatting."
+        in response.text
+    )
 
 
 def test_file_view_offers_close_and_descriptor_safe_focus(tmp_path: Path) -> None:
