@@ -2,12 +2,30 @@
 {% block title %}Projects · Delibra{% endblock %}
 {% block content %}
   <h1>Projects</h1>
+  <details>
+    <summary>Register project</summary>
+    <form method="post" action="/projects">
+      <label>Name <input name="name" maxlength="200" required></label>
+      <label>Absolute directory path <input name="path" maxlength="4096" required></label>
+      <button type="submit">Register project</button>
+    </form>
+  </details>
   {% if projects %}
-    <ul>
+    <div class="projects">
       {% for project in projects %}
-        <li><a href="/projects/{{ project.id }}">{{ project.name }}</a><br><small>{{ project.path }}</small></li>
+        <article class="project-card">
+          <h2><a href="/projects/{{ project.id }}">{{ project.name }}</a></h2>
+          <p><small>{{ project.path }}</small></p>
+          <form method="post" action="/projects/{{ project.id }}/rename">
+            <label>Rename <input name="name" maxlength="200" value="{{ project.name }}" required></label>
+            <button type="submit">Rename</button>
+          </form>
+          <form method="post" action="/projects/{{ project.id }}/unregister">
+            <button type="submit">Unregister</button>
+          </form>
+        </article>
       {% endfor %}
-    </ul>
+    </div>
   {% else %}
     <p>No projects registered yet.</p>
   {% endif %}
