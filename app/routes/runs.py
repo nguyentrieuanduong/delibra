@@ -8,8 +8,9 @@ from fastapi import APIRouter, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
-from app.models import RunKey
+from app.models import RunKey, SourceDescriptor
 from app.security import validate_field
+from app.storage import ConflictError, ProjectStore, validate_id
 
 
 router = APIRouter()
@@ -38,6 +39,70 @@ async def run_session(
 ):
     prompt = validate_field(prompt, "Prompt", maximum=100_000)
     key = await request.app.state.manager.start(project_id, session_id, prompt)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_live.html",
+        context={"key": key},
+        status_code=202,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/sessions/{source_session_id}/pass",
+    response_class=HTMLResponse,
+    status_code=202,
+)
+async def pass_round(
+    request: Request,
+    project_id: str,
+    source_session_id: str,
+    source_round: int = Form(...),
+    target_session_id: str = Form(...),
+    instruction: str = Form(""),
+):
+    try:
+        validate_id(source_session_id, "source session id")
+        validate_id(target_session_id, "target session id")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if source_round < 1:
+        raise HTTPException(status_code=422, detail="Source round must be positive")
+    instruction = validate_field(
+        instruction,
+        "Instruction",
+        maximum=10_000,
+        allow_empty=True,
+    )
+    project = request.app.state.registry.get(project_id)
+    store = ProjectStore(project)
+    sessions = {session.id: session for session in store.list_sessions()}
+    source_config = sessions.get(source_session_id)
+    if source_config is None:
+        raise HTTPException(status_code=404, detail="source session not found")
+    if target_session_id not in sessions:
+        raise HTTPException(
+            status_code=422,
+            detail="target session must belong to the same project",
+        )
+    source_record = next(
+        (item for item in source_config.rounds if item.n == source_round),
+        None,
+    )
+    if source_record is None:
+        raise HTTPException(status_code=404, detail="source round not found")
+    if source_record.status != "complete":
+        raise ConflictError("only a complete round can be passed")
+    descriptor = SourceDescriptor(
+        type="pass",
+        from_session=source_session_id,
+        from_round=source_round,
+    )
+    key = await request.app.state.manager.start(
+        project_id,
+        target_session_id,
+        instruction,
+        source=descriptor,
+    )
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_live.html",

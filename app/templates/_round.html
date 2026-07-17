@@ -2,6 +2,13 @@
   <h2>Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}</h2>
   {% if round.record %}
     <p class="provenance">{{ round.record.agent }} · {{ round.record.model }} · {{ round.record.effort }} · {{ round.record.status }}</p>
+    {% if round.record.source.type == 'pass' %}
+      <p class="provenance">
+        Passed from session {{ round.record.source.from_session }}, round {{ round.record.source.from_round }}
+        · staged {{ round.record.source.staged_file }}
+        · SHA-256 {{ round.record.source.source_sha256 }}
+      </p>
+    {% endif %}
   {% endif %}
   {% if round.record and round.record.error %}<p class="error">{{ round.record.error }}</p>{% endif %}
   {% if round.record and round.record.warnings %}
@@ -9,4 +16,29 @@
   {% endif %}
   <details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md }}</div></details>
   <div class="markdown output">{{ round.output|md }}</div>
+  {% if round.record and round.record.status == 'complete' and sessions %}
+    <details>
+      <summary>Pass to…</summary>
+      <form
+        method="post"
+        action="/projects/{{ project.id }}/sessions/{{ session_id }}/pass"
+        hx-post="/projects/{{ project.id }}/sessions/{{ session_id }}/pass"
+        hx-target=".rounds"
+        hx-swap="beforeend"
+      >
+        <input type="hidden" name="source_round" value="{{ round.n }}">
+        <label>Target session
+          <select name="target_session_id" required>
+            {% for target in sessions %}
+              <option value="{{ target.id }}">{{ target.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Instruction
+          <textarea name="instruction" maxlength="10000" placeholder="Review the following document and give your critique."></textarea>
+        </label>
+        <button type="submit">Pass</button>
+      </form>
+    </details>
+  {% endif %}
 </article>
