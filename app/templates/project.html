@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} · Delibra{% endblock %}
+{% block content %}
+  <p><a href="/">Projects</a></p>
+  <h1>{{ project.name }}</h1>
+  <p><code>{{ project.path }}</code></p>
+  <h2>Sessions</h2>
+  {% if sessions %}
+    <ul>
+      {% for session in sessions %}
+        <li><a href="/projects/{{ project.id }}/sessions/{{ session.id }}">{{ session.name }}</a> · {{ session.agent }} · {{ session.status }}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No sessions yet.</p>
+  {% endif %}
+{% endblock %}

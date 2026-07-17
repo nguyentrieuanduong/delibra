@@ -1,0 +1,8 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { max-width: 960px; margin: 0 auto; padding: 1rem; line-height: 1.5; }
+header { font-size: 1.25rem; font-weight: 700; margin-bottom: 2rem; }
+footer { border-top: 1px solid #8885; display: flex; gap: 1rem; margin-top: 3rem; padding-top: 1rem; }
+.round { border: 1px solid #8885; border-radius: .5rem; margin: 1rem 0; padding: 1rem; }
+.markdown pre { overflow-x: auto; padding: .75rem; background: #8882; }
+.error, .warning, .warnings { color: #c43b2f; }
+.health { font-size: .85rem; }
