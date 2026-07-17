@@ -196,6 +196,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
     project = request.app.state.registry.get(project_id)
     store = ProjectStore(project)
     session = store.load_session(session_id)
+    active_key = request.app.state.manager.active_key(project_id, session_id)
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="session.html",
@@ -203,6 +204,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
             "project": project,
             "session": session,
             "rounds": _round_views(store, session_id),
+            "active_key": active_key,
             "health": request.app.state.health,
         },
     )
