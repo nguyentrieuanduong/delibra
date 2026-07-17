@@ -1,0 +1,5 @@
+{"thread_id": "<UUID>", "type": "thread.started"}
+{"item": {"id": "item_0", "message": "Model metadata for `delibra-invalid-model-for-error-fixture` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.", "type": "error"}, "type": "item.completed"}
+{"type": "turn.started"}
+{"message": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'delibra-invalid-model-for-error-fixture' model is not supported when using Codex with a ChatGPT account.\"}}", "type": "error"}
+{"error": {"message": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'delibra-invalid-model-for-error-fixture' model is not supported when using Codex with a ChatGPT account.\"}}"}, "type": "turn.failed"}
