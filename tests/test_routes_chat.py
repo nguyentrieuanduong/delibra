@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
@@ -109,6 +110,31 @@ def setup_project(tmp_path: Path, sessions: list[SessionConfig]):
         adapter_factory_override=lambda config: ChatAdapter(config.model),
     )
     return app, project, store
+
+
+def assert_synchronized_selection_fragment(
+    response: Response,
+    selected: SessionConfig,
+) -> None:
+    assert response.status_code == 200
+    assert re.search(
+        rf'class="agent-card selected"\s+data-session-id="{selected.id}"\s+'
+        r'data-selected="true"',
+        response.text,
+    )
+    assert (
+        f'<input type="hidden" name="session_id" value="{selected.id}">'
+        in response.text
+    )
+    assert response.text.count('id="agent-sidebar"') == 1
+    assert response.text.count('id="chat-composer"') == 1
+    assert response.text.count('class="agent-card selected"') == 1
+    assert response.text.count('aria-current="true"') == 1
+    assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
+    assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
+    assert 'id="chat-agent-select"' not in response.text
+    assert '<section class="chat-timeline"' not in response.text
+    assert 'class="live-round"' not in response.text
 
 
 def test_chat_merges_rounds_deterministically_with_unique_composite_fragments(
@@ -345,18 +371,10 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
         f'<input type="hidden" name="session_id" value="{beta.id}">'
         in response.text
     )
-    assert selected.status_code == 200
+    assert_synchronized_selection_fragment(selected, alpha)
     assert selected.headers["hx-push-url"] == (
         f"/projects/{project.id}/chat?agent={alpha.id}"
     )
-    assert selected.text.count('id="agent-sidebar"') == 1
-    assert selected.text.count('id="chat-composer"') == 1
-    assert selected.text.count('aria-current="true"') == 1
-    assert f'data-session-id="{alpha.id}"' in selected.text
-    assert selected.text.count('class="agent-card selected"') == 1
-    assert 'hx-swap-oob="outerHTML:#chat-composer"' in selected.text
-    assert 'id="chat-agent-select"' not in selected.text
-    assert '<section class="chat-timeline"' not in selected.text
     assert '"agents conversation files";' in css.text
     assert (
         "grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) "
@@ -585,29 +603,11 @@ def test_selection_transaction_supports_both_providers_and_rejects_invalid_ids(
         (claude_selected, claude),
         (codex_selected, codex),
     ):
-        assert response.status_code == 200
+        assert_synchronized_selection_fragment(response, selected)
         assert response.headers["hx-push-url"] == (
             f"/projects/{project.id}/chat?agent={selected.id}"
         )
-        assert re.search(
-            rf'class="agent-card selected"\s+data-session-id="{selected.id}"\s+'
-            r'data-selected="true"',
-            response.text,
-        )
-        assert (
-            f'<input type="hidden" name="session_id" value="{selected.id}">'
-            in response.text
-        )
         assert f"{selected.agent} · {selected.model}" in response.text
-        assert response.text.count('id="agent-sidebar"') == 1
-        assert response.text.count('id="chat-composer"') == 1
-        assert response.text.count('class="agent-card selected"') == 1
-        assert response.text.count('aria-current="true"') == 1
-        assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
-        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
-        assert 'id="chat-agent-select"' not in response.text
-        assert '<section class="chat-timeline"' not in response.text
-        assert 'class="live-round"' not in response.text
     assert malformed.status_code == 422
     assert cross_project.status_code == 404
 
@@ -651,25 +651,7 @@ def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs
         assert client.post(f"{codex_base}/cancel").status_code == 200
 
     for response in (created, selected_edit, unselected_edit):
-        assert response.status_code == 200
-        assert re.search(
-            rf'class="agent-card selected"\s+data-session-id="{new_agent.id}"\s+'
-            r'data-selected="true"',
-            response.text,
-        )
-        assert (
-            f'<input type="hidden" name="session_id" value="{new_agent.id}">'
-            in response.text
-        )
-        assert response.text.count('id="agent-sidebar"') == 1
-        assert response.text.count('id="chat-composer"') == 1
-        assert response.text.count('class="agent-card selected"') == 1
-        assert response.text.count('aria-current="true"') == 1
-        assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
-        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
-        assert 'id="chat-agent-select"' not in response.text
-        assert '<section class="chat-timeline"' not in response.text
-        assert 'class="live-round"' not in response.text
+        assert_synchronized_selection_fragment(response, new_agent)
     assert created.headers["hx-push-url"] == (
         f"/projects/{project.id}/chat?agent={new_agent.id}"
     )
@@ -736,28 +718,11 @@ def test_hx_create_selects_first_agent_and_updates_sidebar_composer_and_url(
         )
 
     created = store.list_sessions()[0]
-    assert response.status_code == 200
+    assert_synchronized_selection_fragment(response, created)
     assert response.headers["hx-push-url"] == (
         f"/projects/{project.id}/chat?agent={created.id}"
     )
-    assert re.search(
-        rf'class="agent-card selected"\s+data-session-id="{created.id}"\s+'
-        r'data-selected="true"',
-        response.text,
-    )
-    assert response.text.count('id="agent-sidebar"') == 1
-    assert response.text.count('id="chat-composer"') == 1
-    assert response.text.count('class="agent-card selected"') == 1
-    assert response.text.count('aria-current="true"') == 1
-    assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
-    assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
-    assert 'id="chat-agent-select"' not in response.text
-    assert (
-        f'<input type="hidden" name="session_id" value="{created.id}">'
-        in response.text
-    )
     assert 'name="prompt"' in response.text
-    assert '<section class="chat-timeline"' not in response.text
 
 
 def test_hx_edit_preserves_selection_without_replacing_another_live_stream(
@@ -776,25 +741,8 @@ def test_hx_edit_preserves_selection_without_replacing_another_live_stream(
             data={"name": "Beta renamed"},
             follow_redirects=False,
         )
-        assert edited.status_code == 200
-        assert re.search(
-            rf'class="agent-card selected"\s+data-session-id="{beta.id}"\s+'
-            r'data-selected="true"',
-            edited.text,
-        )
-        assert edited.text.count('id="agent-sidebar"') == 1
-        assert edited.text.count('id="chat-composer"') == 1
-        assert edited.text.count('class="agent-card selected"') == 1
-        assert edited.text.count('aria-current="true"') == 1
-        assert 'hx-swap-oob="outerHTML:#chat-composer"' in edited.text
-        assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in edited.text
-        assert 'id="chat-agent-select"' not in edited.text
-        assert (
-            f'<input type="hidden" name="session_id" value="{beta.id}">'
-            in edited.text
-        )
+        assert_synchronized_selection_fragment(edited, beta)
         assert "Beta renamed" in edited.text
-        assert '<section class="chat-timeline"' not in edited.text
         assert store.load_session(alpha.id).status == "running"
         assert client.post(f"{alpha_base}/cancel").status_code == 200
 
