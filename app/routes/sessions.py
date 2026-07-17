@@ -49,7 +49,7 @@ def _validated_configuration(
     role_instructions = validate_field(
         role_instructions,
         "Role instructions",
-        maximum=50_000,
+        maximum=20_000,
         allow_empty=True,
     )
     return agent, model, effort, role_instructions

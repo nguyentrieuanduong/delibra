@@ -251,6 +251,22 @@ def test_delete_requires_matching_owned_identity(tmp_path: Path) -> None:
     assert store.session_dir(session.id).exists()
 
 
+def test_delete_refuses_symlinked_session_directory(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    session = make_session()
+    store.create_session(session)
+    original = store.sessions_root / "original-session"
+    store.session_dir(session.id).rename(original)
+    store.session_dir(session.id).symlink_to(original, target_is_directory=True)
+
+    with pytest.raises(OwnershipError, match="symlink"):
+        store.delete_session(session.id)
+    assert original.is_dir()
+
+
 @pytest.mark.parametrize("bad", ["line\nbreak", "control\x00char", "\t"])
 def test_name_sanitization_rejects_controls(bad: str) -> None:
     with pytest.raises(ValueError):

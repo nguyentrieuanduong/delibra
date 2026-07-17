@@ -113,6 +113,31 @@ def setup_manager(
     return manager, project.id, config.id, store
 
 
+def test_subprocess_environment_does_not_inherit_server_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELIBRA_SERVER_SECRET", "must-not-reach-agent")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-agent")
+    manager, _, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    environment = manager._subprocess_environment(
+        config, store.workspace_dir(session_id)
+    )
+    assert "DELIBRA_SERVER_SECRET" not in environment
+    assert "OPENAI_API_KEY" not in environment
+    assert set(environment) <= {
+        "PATH",
+        "HOME",
+        "USER",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "TMPDIR",
+    }
+
+
 async def collect(manager: RunManager, key, last_event_id: int | str | None = None):
     return [event async for event in manager.subscribe(key, last_event_id)]
 

@@ -91,3 +91,26 @@ Resume uses the same global policy options followed by `exec resume --json --ski
 - Immediately preceding first turns also re-passed pre-completion progress,
   disconnect/reconnect, one `done`, and durable rendering for both providers.
 <!-- M2-RESUME-GATE:END -->
+
+<!-- FINAL-PARITY-GATE:START -->
+## Final real-provider parity gate
+
+- Date: 2026-07-17. The full `spike/m1_http_gate.py` flow re-passed real first
+  turns and native resumes, then executed both cross-provider pass directions.
+- Claude target (source: Codex): the pass round completed with 17 SSE events,
+  emitted native web-search progress, read `CODEX_GATE_CANARY`, retained its native
+  session id, and performed the requested workspace write. Attempts to modify the
+  source output, the other session, shared temp, and an agent-visible symlink target
+  all failed. The source bytes and runner-computed SHA-256 remained identical.
+- Codex target (source: Claude): the pass round completed with six SSE events,
+  emitted native web-search progress, read `CLAUDE_GATE_CANARY`, retained its native
+  thread id, and performed the requested workspace write. The same source,
+  other-session, shared-temp, and symlink-boundary writes failed; source bytes and
+  provenance hash remained identical.
+- First-turn pre-completion activity arrived at 3.031s for Claude and 8.192s for
+  Codex in this run. Both disconnect/reconnect paths remained duplicate-free and
+  completed with durable output.
+- `spike/long_sse_gate.py` separately ran for 61.048s: it disconnected after the
+  first delta, reconnected with `Last-Event-ID`, received three strictly newer
+  events and exactly one `done`, and persisted a complete result.
+<!-- FINAL-PARITY-GATE:END -->
