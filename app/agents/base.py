@@ -28,6 +28,7 @@ class RunContext:
     resume_strategy: Literal["native", "stateless"]
     staged_history: list[Path]
     staged_source: Path | None
+    workspace: Path = Path(".")
 
 
 @dataclass(frozen=True)
