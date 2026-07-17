@@ -20,6 +20,7 @@ _TOOL_PROGRESS = {
 
 class ClaudeAdapter:
     EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+    RESUME_AFTER_CONFIG_CHANGE = True
 
     def __init__(self, executable: str = "claude") -> None:
         self.executable = executable

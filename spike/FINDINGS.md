@@ -1,5 +1,51 @@
 # M0 CLI findings
 
+## M4 config-change resume capability gate
+
+Executed 2026-07-17 against the local authenticated provider accounts. The
+probe used disposable workspaces and, for Codex, a disposable copy of the local
+ChatGPT OAuth credential. It retained no provider transcript. Both adapters
+therefore encode `RESUME_AFTER_CONFIG_CHANGE = True`.
+
+### Claude Code
+
+- Runtime/account: Claude Code `2.1.202`; local authenticated first-party
+  Claude Code account. The managed command sandbox hid the macOS credential,
+  so the real-provider probe ran with explicitly approved direct credential and
+  network access.
+- First turn: requested model `sonnet`, effort `low`; provider event metadata
+  resolved the model to `claude-sonnet-5`. Native session id:
+  `aa814cc1-a1b2-43d2-bc59-b212012b769c`.
+- Resumed turn: requested model `opus`, effort `medium`; provider event metadata
+  resolved the model to `claude-opus-4-8`. The successful zero-exit invocation
+  accepted the changed effort flag and emitted the same native session id.
+- Behavioral evidence: the resumed turn returned the exact first-turn canary
+  `m4-claude-saffron-8472`; the new model metadata differed from the first turn.
+- First command (prompt on stdin):
+  `claude -p --output-format stream-json --verbose --include-partial-messages --model sonnet --effort low --append-system-prompt <role> --permission-mode dontAsk --tools Read,Write,Edit,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),WebSearch,WebFetch' --safe-mode --setting-sources "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome`.
+- Resume command rebuilt all options with the new settings and appended:
+  `--model opus --effort medium ... --resume aa814cc1-a1b2-43d2-bc59-b212012b769c`.
+
+### Codex CLI
+
+- Runtime/account: Codex CLI `0.144.5`; local authenticated ChatGPT OAuth
+  account, exercised through an isolated `CODEX_HOME` containing only a
+  mode-0600 disposable auth copy and provider-created rollout state. The real
+  provider probe required explicitly approved direct network access because the
+  managed sandbox's TLS interception produced `UnknownIssuer`.
+- First turn: requested and rollout-recorded model `gpt-5.4`, effort `low`.
+  Native thread id: `019f6eb9-d474-7ab0-9c02-80b9e0355edf`.
+- Resumed turn: requested and rollout-recorded model `gpt-5.4-mini`, effort
+  `medium`. Provider-authored `turn_context` metadata recorded both changed
+  values under the same native thread id.
+- Behavioral evidence: the resumed turn returned the exact first-turn canary
+  `m4-codex-ember-3916`.
+- First command (prompt on stdin):
+  `codex --model gpt-5.4 --sandbox workspace-write --ask-for-approval never --search --cd <workspace> --config 'model_reasoning_effort="low"' --config project_root_markers=[] --config project_doc_max_bytes=0 --config sandbox_workspace_write.exclude_slash_tmp=true --config sandbox_workspace_write.exclude_tmpdir_env_var=false --config sandbox_workspace_write.network_access=false --config 'shell_environment_policy.inherit="all"' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -`.
+- Resume command rebuilt all options with `--model gpt-5.4-mini` and
+  `model_reasoning_effort="medium"`, then used
+  `exec resume --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config 019f6eb9-d474-7ab0-9c02-80b9e0355edf -`.
+
 <!-- CLAUDE-SPIKE:START -->
 ## Claude Code
 
