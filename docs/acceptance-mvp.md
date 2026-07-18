@@ -261,7 +261,7 @@ may orphan CLI processes because the MVP intentionally has no external watchdog.
 - Scope check: session history stayed expanded, and M7 changed no route,
   storage, SSE, ordering, focus, selection, pagination, or mobile behavior.
 
-## M8 sidebar selection and file focus acceptance
+## M8 sidebar selection and file focus acceptance (historical pre-T29)
 
 - Automated gate: the full Python suite and direct Node tests passed.
 - Chrome 1100×800: project metadata and collapsed agent cards occupied the wider
@@ -274,3 +274,18 @@ may orphan CLI processes because the MVP intentionally has no external watchdog.
   display-error paths retained the existing boundary.
 - Scope check: M8 changed no storage, SSE, ordering, disclosure, pass, provider,
   authenticated-provider, pagination, or mobile behavior.
+
+## Post-M8 T29/T30 automated acceptance
+
+- Automated gate: 131 Python tests and 15 direct Node tests passed; `pip check`,
+  Python compilation, whitespace checks, and security diff scans completed.
+- Selection gate: initial/default selection, explicit `?agent=`, sidebar/select
+  fragments, create, and edit responses rendered exactly one selected outer agent
+  disclosure open; unselected outer disclosures and nested Edit stayed closed.
+- Structured-file gate: JSON, YAML, and YML values normalized in escaped `<pre>`
+  output; seeded generated values round-tripped; multi-document YAML used safe
+  loading/dumping; invalid, truncated, and pretty-output-over-limit files retained
+  escaped original text with visible warnings; focused views shared the same path.
+- Evidence boundary: this follow-up added no new Chrome or authenticated-provider
+  acceptance result. The historical M8 browser gate remains above, and the combined
+  authenticated provider/browser gate remains pending in the master plan.

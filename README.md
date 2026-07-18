@@ -34,11 +34,12 @@ envs/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
 Claude or Codex agent, and submit a prompt. The project chat keeps project context
-and collapsed agent cards in the wider left rail, a compact composer and merged
-conversation in the center, and project-file browsing/reading in the narrower
-right rail. Select an agent name to route the composer and highlight that card.
-Recorded rounds and opened files use the shared keyboard-accessible focus dialog.
-**Manage** opens project and agent settings. The footer starts in a checking
+and agent cards in the wider left rail, with the selected agent's information
+expanded and every unselected agent collapsed. A compact composer and merged
+conversation stay in the center, while project-file browsing/reading stays in the
+narrower right rail. Select an agent name to route the composer and highlight that
+card. Recorded rounds and opened files use the shared keyboard-accessible focus
+dialog. **Manage** opens project and agent settings. The footer starts in a checking
 state, then reports missing CLIs and version drift without delaying or preventing
 the rest of the UI from loading.
 
@@ -102,6 +103,12 @@ Delibra provides write isolation, not read confidentiality:
   binary/non-regular files are rejected, and each view reads at most the configured
   byte limit plus one byte used to detect truncation. This is a display boundary, not
   an access-control system for other local processes.
+
+Complete JSON, YAML, and YML files are parsed as data and shown in normalized,
+escaped preformatted views. Invalid structured content, truncated reads, and pretty
+output that would exceed the file-view limit stay as escaped original text with a
+visible warning.
+
 - Markdown raw HTML is disabled and SSE text is HTML-escaped before HTMX swaps it.
 
 All mutations use the lock order `registry -> project lifecycle -> session IDs in
