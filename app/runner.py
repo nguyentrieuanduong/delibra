@@ -10,6 +10,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 from typing import Callable, Protocol
@@ -45,6 +46,15 @@ LOGGER = logging.getLogger(__name__)
 STATELESS_CONTINUATION_WARNING = (
     "Native context was reset or unavailable; bounded staged history supplied "
     "a stateless continuation."
+)
+CODEX_AUTH_MARKERS = (
+    "codex isolated login is missing",
+    "access token could not be refreshed",
+    "refresh token was revoked",
+    "refresh token expired",
+    "token has expired",
+    "authentication required",
+    "not logged in",
 )
 
 
@@ -467,7 +477,11 @@ class RunManager:
                 limit=self.settings.stdout_line_limit + 1,
             )
         except (OSError, ValueError, StorageError) as exc:
-            active.errors.append(f"failed to spawn agent: {exc}")
+            message = self._normalize_error(
+                config.agent,
+                f"failed to spawn agent: {exc}",
+            )
+            active.errors.append(message)
             await self._finalize_locked(active, None)
             return key
 
@@ -627,13 +641,19 @@ class RunManager:
             return
         if target.exists():
             raise StorageError("Codex auth path is not a regular file")
-        source = Path(os.environ.get("HOME", "")) / ".codex" / "auth.json"
-        if not source.is_file():
-            raise StorageError("Codex is not logged in; auth.json was not found")
-        temporary = codex_home / f".auth.{os.getpid()}.tmp"
-        safe_copy_file(source, source.parent, temporary, codex_home)
-        os.replace(temporary, target)
-        os.chmod(target, 0o600)
+        raise StorageError("Codex isolated login is missing")
+
+    def _normalize_error(self, agent: str, value: str) -> str:
+        lowered = value.casefold()
+        if agent != "codex" or not any(
+            marker in lowered for marker in CODEX_AUTH_MARKERS
+        ):
+            return value
+        home = shlex.quote(str(self.settings.codex_home))
+        return (
+            "Codex authentication for Delibra needs renewal. Run: "
+            f"env CODEX_HOME={home} codex login --device-auth, then Retry."
+        )
 
     async def _run_active(self, active: ActiveRun, stdin_payload: str) -> None:
         process = active.process
@@ -755,8 +775,9 @@ class RunManager:
             active.warnings.append(event.text)
             self._publish(active, "warning", event.text)
         elif event.kind == "error":
-            active.errors.append(event.text)
-            self._publish(active, "error", event.text)
+            message = self._normalize_error(active.config.agent, event.text)
+            active.errors.append(message)
+            self._publish(active, "error", message)
         return True
 
     async def _consume_stderr(self, active: ActiveRun) -> None:
@@ -811,7 +832,12 @@ class RunManager:
             return
         active.finalized = True
         record = active.record
-        stderr = active.stderr_tail.decode("utf-8", errors="replace").strip()
+        raw_stderr = active.stderr_tail.decode("utf-8", errors="replace").strip()
+        stderr = (
+            self._normalize_error(active.config.agent, raw_stderr)
+            if raw_stderr
+            else ""
+        )
         if active.cancel_requested:
             status = "cancelled"
             error = "cancelled by user"
@@ -827,7 +853,12 @@ class RunManager:
         else:
             status = "complete"
             error = None
-        if status == "error" and stderr:
+        if (
+            status == "error"
+            and stderr
+            and stderr not in active.errors
+            and stderr not in (error or "")
+        ):
             error = f"{error}; stderr: {stderr}"
         if not active.cli_session_id:
             active.warnings.append("provider did not return a native session id")

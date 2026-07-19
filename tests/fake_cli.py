@@ -11,6 +11,11 @@ import sys
 import time
 
 
+CODEX_REVOKED = (
+    "Your access token could not be refreshed because your refresh token was revoked."
+)
+
+
 def emit(payload: dict) -> None:
     sys.stdout.write(json.dumps(payload) + "\n")
     sys.stdout.flush()
@@ -29,6 +34,13 @@ def main() -> int:
         Path(args.source).write_text("mutated by target\n", encoding="utf-8")
 
     mode = args.mode
+    if mode == "codex-auth-event":
+        emit({"kind": "error", "text": CODEX_REVOKED})
+        return 1
+    if mode == "codex-auth-stderr":
+        sys.stderr.write(CODEX_REVOKED + "\n")
+        sys.stderr.flush()
+        return 1
     if mode == "spawn-child":
         subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(300)"],

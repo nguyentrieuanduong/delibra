@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 from typing import Callable
 
@@ -276,6 +277,89 @@ def test_codex_auth_symlink_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(StorageError, match="symlink"):
         manager._prepare_codex_home()
+
+
+def test_codex_auth_home_never_copies_ambient_auth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient = tmp_path / "ambient"
+    (ambient / ".codex").mkdir(parents=True)
+    (ambient / ".codex" / "auth.json").write_text(
+        "ambient-auth-sentinel",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(ambient))
+    manager, _, _, _ = setup_manager(tmp_path)
+
+    with pytest.raises(StorageError, match="isolated login"):
+        manager._prepare_codex_home()
+
+    assert not (manager.settings.codex_home / "auth.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["codex-auth-event", "codex-auth-stderr"])
+async def test_codex_auth_errors_are_normalized_before_replay_and_persistence(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode=mode)
+    config = store.load_session(session_id)
+    config.agent = "codex"
+    store.save_session(config)
+    manager.settings.codex_home.mkdir(mode=0o700)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+
+    key = await manager.start(project_id, session_id, "Retry me")
+    record = await manager.wait(key)
+    events = await collect(manager, key, 0)
+    persisted_output = (
+        store.rounds_dir(session_id) / f"round-{record.n:02d}.md"
+    ).read_text(encoding="utf-8")
+    combined = (record.error or "") + " " + " ".join(
+        event.data for event in events
+    ) + " " + persisted_output
+
+    assert record.status == "error"
+    assert "refresh token was revoked" not in combined
+    assert "codex login --device-auth" in combined
+    assert f"CODEX_HOME={shlex.quote(str(manager.settings.codex_home))}" in combined
+    assert (manager.settings.codex_home / "auth.json").read_text(
+        encoding="utf-8"
+    ) == "{}"
+
+
+@pytest.mark.asyncio
+async def test_codex_auth_missing_isolated_login_can_retry_after_login(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    config.agent = "codex"
+    store.save_session(config)
+
+    failed = await manager.wait(
+        await manager.start(project_id, session_id, "Retry me")
+    )
+    assert failed.status == "error"
+    assert "codex login --device-auth" in (failed.error or "")
+
+    manager.settings.codex_home.mkdir(mode=0o700, exist_ok=True)
+    (manager.settings.codex_home / "auth.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    retried = await manager.wait(
+        await manager.retry(project_id, session_id, failed.n)
+    )
+
+    assert retried.status == "complete"
+    assert retried.retry_of == failed.n
 
 
 @pytest.mark.asyncio
