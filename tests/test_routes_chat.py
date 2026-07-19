@@ -97,6 +97,8 @@ def setup_project(tmp_path: Path, sessions: list[SessionConfig]):
     project_path = tmp_path / "project"
     project_path.mkdir()
     registry = RegistryStore(settings.home)
+    settings.codex_home.mkdir(mode=0o700)
+    (settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
     project = registry.register("Chat", project_path)
     store = ProjectStore(project)
     for config in sessions:
