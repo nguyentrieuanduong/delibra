@@ -224,6 +224,50 @@ def test_chat_merges_rounds_deterministically_with_unique_composite_fragments(
     assert '<details class="round-details">' not in session_page.text
 
 
+def test_message_markdown_links_open_owned_files_in_reader_and_focus(
+    tmp_path: Path,
+) -> None:
+    alpha = session(
+        "a" * 32,
+        "Alpha",
+        rounds=[record(1, "2026-07-17T00:00:01Z")],
+    )
+    app, project, store = setup_project(tmp_path, [alpha])
+    docs = Path(project.path) / "docs"
+    docs.mkdir()
+    linked = docs / "review.md"
+    linked.write_text("# Linked review", encoding="utf-8")
+    (store.rounds_dir(alpha.id) / "round-01.md").write_text(
+        f"[Relative](docs/review.md) [Absolute]({linked}:12)",
+        encoding="utf-8",
+    )
+    view_url = f"/projects/{project.id}/files/view?path=docs%2Freview.md"
+    focus_url = f"/projects/{project.id}/files/focus?path=docs%2Freview.md"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{project.id}/chat")
+        session_page = client.get(f"/projects/{project.id}/sessions/{alpha.id}")
+        focused = client.get(
+            f"/projects/{project.id}/sessions/{alpha.id}/rounds/1/focus"
+        )
+        opened = client.get(view_url)
+
+    assert page.status_code == 200
+    assert page.text.count(f'href="{view_url}"') == 2
+    assert page.text.count(f'hx-get="{view_url}"') == 2
+    assert page.text.count('hx-target="#file-reader"') == 2
+    assert session_page.status_code == 200
+    assert session_page.text.count(f'href="{view_url}"') == 2
+    assert f'hx-get="{view_url}"' not in session_page.text
+    assert focused.status_code == 200
+    assert focused.text.count(f'href="{focus_url}"') == 2
+    assert focused.text.count(f'hx-get="{focus_url}"') == 2
+    assert focused.text.count('hx-target="#focus-dialog-content"') == 2
+    assert opened.status_code == 200
+    assert "docs/review.md" in opened.text
+    assert "<h1>Linked review</h1>" in opened.text
+
+
 def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> None:
     app, project, _ = setup_project(tmp_path, [])
     with TestClient(app, base_url="http://localhost") as client:
