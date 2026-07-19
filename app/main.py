@@ -27,6 +27,8 @@ from app.storage import (
     ConflictError,
     LockCoordinator,
     NotFoundError,
+    ProjectFileDisplayError,
+    ProjectFileSecurityError,
     ProjectStore,
     RegistryStore,
     StorageError,
@@ -155,13 +157,27 @@ def create_app(
     async def project_settings(request: Request, project_id: str):
         registry = request.app.state.registry
         project = registry.get(project_id)
-        sessions = ProjectStore(project).list_sessions()
+        store = ProjectStore(project)
+        sessions = store.list_sessions()
+        shared_markdown_path = store.selected_shared_markdown_path()
+        shared_markdown_available: bool | None = None
+        if shared_markdown_path is not None:
+            try:
+                store.read_selected_shared_markdown(
+                    request.app.state.settings.file_view_limit
+                )
+            except (ProjectFileDisplayError, ProjectFileSecurityError):
+                shared_markdown_available = False
+            else:
+                shared_markdown_available = True
         return templates.TemplateResponse(
             request=request,
             name="project.html",
             context={
                 "project": project,
                 "sessions": sessions,
+                "shared_markdown_path": shared_markdown_path,
+                "shared_markdown_available": shared_markdown_available,
                 "health": request.app.state.health,
                 "effort_levels": {
                     "claude": ClaudeAdapter.EFFORT_LEVELS,

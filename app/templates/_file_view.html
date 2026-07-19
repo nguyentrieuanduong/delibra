@@ -25,6 +25,36 @@
     {% if truncated %}<p class="file-warning" role="status">File truncated at the view limit.</p>{% endif %}
     {% if replacements %}<p class="file-warning" role="status">Invalid UTF-8 was replaced for display.</p>{% endif %}
     {% if structured_warning %}<p class="file-warning" role="status">{{ structured_warning }}</p>{% endif %}
+    {% if shared_status %}<p class="file-warning" role="status">{{ shared_status }}</p>{% endif %}
+    {% if shared_controls and shared_selectable and not shared_selected %}
+      <form method="post" action="/projects/{{ project.id }}/files/shared/select"
+            hx-post="/projects/{{ project.id }}/files/shared/select"
+            hx-target="#file-reader" hx-swap="innerHTML">
+        <input type="hidden" name="path" value="{{ path }}">
+        <button type="submit">Use as shared context</button>
+      </form>
+    {% elif shared_controls and shared_selected and not file_error %}
+      <section class="shared-context-editor" aria-label="Shared project context editor">
+        <p><strong>Selected as shared context</strong></p>
+        <form method="post" action="/projects/{{ project.id }}/files/shared/save"
+              hx-post="/projects/{{ project.id }}/files/shared/save"
+              hx-target="#file-reader" hx-swap="innerHTML">
+          <input type="hidden" name="path" value="{{ path }}">
+          <input type="hidden" name="expected_sha256" value="{{ shared_digest }}">
+          <label>Markdown <textarea name="text">{{ text }}</textarea></label>
+          <button type="submit">Save</button>
+        </form>
+        <div class="shared-context-actions">
+          <a href="#file-browser-list">Choose another</a>
+          <form method="post" action="/projects/{{ project.id }}/files/shared/clear"
+                hx-post="/projects/{{ project.id }}/files/shared/clear"
+                hx-target="#file-reader" hx-swap="innerHTML">
+            <input type="hidden" name="path" value="{{ path }}">
+            <button type="submit">Stop sharing</button>
+          </form>
+        </div>
+      </section>
+    {% endif %}
     {% if markdown %}
       <div class="markdown">{{ text|md }}</div>
     {% elif structured_kind %}
