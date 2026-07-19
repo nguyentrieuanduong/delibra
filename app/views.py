@@ -67,6 +67,21 @@ def round_views(store: ProjectStore, session_id: str) -> list[dict[str, Any]]:
     return sorted(views, key=lambda item: item["n"])
 
 
+def conversation_round_views(
+    store: ProjectStore,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Project rounds visible as shared conversation messages."""
+
+    return [
+        view
+        for view in round_views(store, session_id)
+        if view["record"] is None
+        or view["record"].auto is None
+        or view["record"].auto.phase != "preparation"
+    ]
+
+
 def effort_levels() -> dict[str, list[str]]:
     return {
         "claude": ClaudeAdapter.EFFORT_LEVELS,
@@ -102,7 +117,12 @@ def agent_views(
 ) -> list[dict[str, Any]]:
     views: list[dict[str, Any]] = []
     for session in sorted(sessions, key=lambda item: (item.name.casefold(), item.id)):
-        latest = max(session.rounds, key=lambda item: item.n, default=None)
+        visible_rounds = [
+            record
+            for record in session.rounds
+            if record.auto is None or record.auto.phase != "preparation"
+        ]
+        latest = max(visible_rounds, key=lambda item: item.n, default=None)
         preview_error: str | None = None
         if latest is None:
             preview = "No rounds yet."

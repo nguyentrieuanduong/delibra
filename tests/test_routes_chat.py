@@ -14,6 +14,7 @@ from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
 from app.main import create_app
 from app.models import (
+    AutoRoundDescriptor,
     RoundRecord,
     SessionConfig,
     SharedContextDescriptor,
@@ -873,6 +874,36 @@ def test_sidebar_preview_is_plain_truncated_and_send_targets_exclude_source(
     assert 'hx-target=".chat-timeline"' in alpha_bubble.group()
     assert f'<option value="{alpha.id}">' not in alpha_bubble.group()
     assert f'<option value="{beta.id}">' in alpha_bubble.group()
+
+
+def test_preparation_is_hidden_from_chat_timeline_and_sidebar_but_kept_in_session(
+    tmp_path: Path,
+) -> None:
+    manual = record(1, "2026-07-17T00:00:01Z")
+    preparation = record(2, "2026-07-17T00:00:02Z")
+    preparation.source = SourceDescriptor(type="auto")
+    preparation.auto = AutoRoundDescriptor(
+        auto_id="c" * 32,
+        phase="preparation",
+        cycle=None,
+        position=0,
+        context_file="inputs/round-02/auto-context.md",
+        context_sha256="d" * 64,
+    )
+    alpha = session("a" * 32, "Alpha", rounds=[manual, preparation])
+    app, project, store = setup_project(tmp_path, [alpha])
+    rounds = store.rounds_dir(alpha.id)
+    (rounds / "round-01.md").write_text("Public answer", encoding="utf-8")
+    (rounds / "round-02.md").write_text("Private preparation", encoding="utf-8")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        chat = client.get(f"/projects/{project.id}/chat")
+        detail = client.get(f"/projects/{project.id}/sessions/{alpha.id}")
+
+    assert "Public answer" in chat.text
+    assert "Private preparation" not in chat.text
+    assert "Latest round 1" in chat.text
+    assert "Private preparation" in detail.text
 
 
 def test_chat_error_javascript_contract_runs_under_node() -> None:

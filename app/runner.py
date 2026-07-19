@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 import json
 import logging
@@ -18,8 +18,11 @@ import signal
 from typing import Callable, Protocol
 
 from app.agents.base import AgentAdapter, AgentEvent, RunContext
+from app.auto import parse_auto_verdict
 from app.config import Settings
 from app.models import (
+    AutoRoundDescriptor,
+    AutoRunRecord,
     Project,
     RoundRecord,
     RunKey,
@@ -43,6 +46,7 @@ from app.storage import (
     ensure_owned_directory,
     safe_copy_file,
     utc_now,
+    validate_id,
 )
 
 
@@ -93,6 +97,7 @@ class ActiveRun:
     deadline_monotonic: float
     hard_deadline_monotonic: float
     deadline_changed: asyncio.Event
+    auto_request: AutoRunRequest | None = None
     task: asyncio.Task[None] | None = None
     captured: bytearray = field(default_factory=bytearray)
     stderr_tail: bytearray = field(default_factory=bytearray)
@@ -105,6 +110,7 @@ class ActiveRun:
     next_event_id: int = 1
     replay: deque[StreamEvent] = field(default_factory=deque)
     replay_bytes: int = 0
+    control_tail: str = ""
     subscribers: set[asyncio.Queue[StreamEvent | None]] = field(default_factory=set)
 
 
@@ -129,6 +135,27 @@ class RunRequest:
     retry_of: int | None = None
     force_stateless: bool = False
     expected_source_sha256: str | None = None
+    auto: AutoRunRequest | None = None
+
+
+@dataclass(frozen=True)
+class AutoRunRequest:
+    auto_id: str
+    phase: str
+    cycle: int | None
+    position: int
+    context_source: Path
+    context_root: Path
+    context_sha256: str
+    shared_source: Path | None
+    shared_root: Path | None
+    shared_path: str | None
+    shared_sha256: str | None
+    execution_prompt: str
+    turn_token: str | None
+    initial_timeout_seconds: int
+    preserve_native_session: bool
+    ignore_returned_session: bool
 
 
 class RunManager:
@@ -187,6 +214,121 @@ class RunManager:
                 session_id,
                 RunRequest(prompt=prompt, source=source),
             )
+
+    async def start_auto_locked(
+        self,
+        project_id: str,
+        session_id: str,
+        request: AutoRunRequest,
+    ) -> RunKey:
+        """Start one reservation-owned Auto turn while the caller holds its locks."""
+
+        return await self._start_locked(
+            project_id,
+            session_id,
+            RunRequest(prompt=request.execution_prompt, auto=request),
+        )
+
+    def _validate_auto_request(
+        self,
+        store: ProjectStore,
+        config: SessionConfig,
+        request: AutoRunRequest,
+    ) -> AutoRunRecord:
+        validate_id(request.auto_id, "Auto run id")
+        if store.active_auto_run_id() != request.auto_id:
+            raise ConflictError("Auto run does not own the active reservation")
+        record = store.load_auto_run(request.auto_id)
+        if request.phase not in {"preparation", "discussion"}:
+            raise StorageError("Auto phase is invalid")
+        expected_status = (
+            "preparing" if request.phase == "preparation" else "discussing"
+        )
+        if record.status != expected_status or record.stop_requested:
+            raise ConflictError("Auto run is not ready for this phase")
+        if (
+            record.active_key is not None
+            or record.active_turn_token is not None
+            or record.active_timeout is not None
+        ):
+            raise ConflictError("Auto run already has an active turn")
+        if (
+            type(request.position) is not int
+            or request.position != record.next_participant
+            or not 0 <= request.position < len(record.participants)
+        ):
+            raise ConflictError("Auto next participant changed")
+        participant = record.participants[request.position]
+        if (
+            participant.session_id,
+            participant.name,
+            participant.agent,
+            participant.model,
+            participant.effort,
+        ) != (
+            config.id,
+            config.name,
+            config.agent,
+            config.model,
+            config.effort,
+        ):
+            raise ConflictError("Auto participant configuration changed")
+        if (
+            type(request.preserve_native_session) is not bool
+            or type(request.ignore_returned_session) is not bool
+        ):
+            raise StorageError("Auto native-session policy is invalid")
+        if request.phase == "preparation":
+            if request.cycle is not None or request.turn_token is not None:
+                raise StorageError("Auto preparation request is invalid")
+        elif (
+            type(request.cycle) is not int
+            or request.cycle < 1
+            or request.cycle != record.current_cycle
+            or request.turn_token is None
+            or re.fullmatch(r"[A-Za-z0-9_-]{43}", request.turn_token) is None
+        ):
+            raise StorageError("Auto discussion request is invalid")
+        if (
+            type(request.initial_timeout_seconds) is not int
+            or not 1 <= request.initial_timeout_seconds <= self.settings.max_run_timeout
+        ):
+            raise StorageError("Auto timeout budget is invalid")
+        if re.fullmatch(r"[0-9a-f]{64}", request.context_sha256) is None:
+            raise StorageError("Auto context digest is invalid")
+        run_dir = store.auto_run_dir(request.auto_id).resolve(strict=True)
+        if request.context_root.resolve(strict=True) != run_dir:
+            raise OwnershipError("Auto context root is invalid")
+        try:
+            request.context_source.resolve(strict=True).relative_to(run_dir)
+        except (OSError, ValueError) as exc:
+            raise OwnershipError("Auto context source is invalid") from exc
+        shared_values = (
+            request.shared_source,
+            request.shared_root,
+            request.shared_path,
+            request.shared_sha256,
+        )
+        if any(value is not None for value in shared_values):
+            if any(value is None for value in shared_values):
+                raise StorageError("Auto shared context is incomplete")
+            assert request.shared_source is not None
+            assert request.shared_root is not None
+            assert request.shared_sha256 is not None
+            if record.shared_context is None or (
+                request.shared_path != record.shared_context_source
+                or request.shared_sha256 != record.shared_context.sha256
+            ):
+                raise ConflictError("Auto shared context changed")
+            if request.shared_root.resolve(strict=True) != run_dir:
+                raise OwnershipError("Auto shared context root is invalid")
+            try:
+                request.shared_source.resolve(strict=True).relative_to(run_dir)
+            except (OSError, ValueError) as exc:
+                raise OwnershipError("Auto shared context source is invalid") from exc
+        elif record.shared_context is not None:
+            raise StorageError("Auto shared context is incomplete")
+        return record
 
     async def retry(
         self,
@@ -286,6 +428,12 @@ class RunManager:
         project = self.registry.get(project_id)
         store = ProjectStore(project)
         config = store.load_session(session_id)
+        auto_request = request.auto
+        auto_record = (
+            self._validate_auto_request(store, config, auto_request)
+            if auto_request is not None
+            else None
+        )
         if config.status == "running" or any(
             key.project_id == project_id and key.session_id == session_id
             for key in self._active
@@ -293,12 +441,19 @@ class RunManager:
             raise SessionBusy("session already has a running agent")
 
         round_n = store.allocate_round(session_id)
-        shared_document = store.read_selected_shared_markdown(
-            self.settings.file_view_limit
+        shared_document = (
+            None
+            if auto_request is not None
+            else store.read_selected_shared_markdown(self.settings.file_view_limit)
         )
         key = RunKey(project_id, session_id, round_n)
         workspace = store.workspace_dir(session_id)
-        if request.force_stateless:
+        if auto_request is not None:
+            strategy = "stateless"
+            resume_id = None
+            if not auto_request.preserve_native_session:
+                config.cli_session_id = None
+        elif request.force_stateless:
             strategy = "stateless"
             resume_id = None
             config.cli_session_id = None
@@ -314,13 +469,54 @@ class RunManager:
         execution_prompt = request.prompt
         record_source = SourceDescriptor(type="user")
         try:
-            if strategy == "stateless":
+            if auto_request is not None:
+                input_root = self._create_input_root(store, session_id, round_n)
+                staged_source = (
+                    Path("inputs") / f"round-{round_n:02d}" / "auto-context.md"
+                )
+                digest = safe_copy_file(
+                    auto_request.context_source,
+                    auto_request.context_root,
+                    workspace / staged_source,
+                    input_root,
+                )
+                if digest != auto_request.context_sha256:
+                    raise ConflictError("Auto context digest changed")
+                record_source = SourceDescriptor(
+                    type="auto",
+                    staged_file=staged_source.as_posix(),
+                    source_sha256=digest,
+                )
+                execution_prompt = auto_request.execution_prompt
+                if auto_request.shared_source is not None:
+                    assert auto_request.shared_root is not None
+                    assert auto_request.shared_path is not None
+                    assert auto_request.shared_sha256 is not None
+                    staged_shared_context = (
+                        Path("inputs")
+                        / f"round-{round_n:02d}"
+                        / "shared-context.md"
+                    )
+                    shared_digest = safe_copy_file(
+                        auto_request.shared_source,
+                        auto_request.shared_root,
+                        workspace / staged_shared_context,
+                        input_root,
+                    )
+                    if shared_digest != auto_request.shared_sha256:
+                        raise ConflictError("Auto shared context digest changed")
+                    shared_context = SharedContextDescriptor(
+                        path=auto_request.shared_path,
+                        staged_file=staged_shared_context.as_posix(),
+                        sha256=shared_digest,
+                    )
+            elif strategy == "stateless":
                 input_root, staged_history = self._stage_history(
                     store,
                     config,
                     round_n,
                 )
-            if shared_document is not None:
+            if auto_request is None and shared_document is not None:
                 if input_root is None:
                     input_root = self._create_input_root(
                         store,
@@ -339,7 +535,7 @@ class RunManager:
                     staged_file=staged_shared_context.as_posix(),
                     sha256=shared_document.sha256,
                 )
-            if request.expected_source_sha256 is not None:
+            if auto_request is None and request.expected_source_sha256 is not None:
                 retry_source = request.source
                 if (
                     retry_source is None
@@ -399,7 +595,7 @@ class RunManager:
                     staged_file=staged_source.as_posix(),
                     source_sha256=digest,
                 )
-            elif request.source is not None:
+            elif auto_request is None and request.source is not None:
                 source_config, source_path = self._pass_source(
                     store,
                     request.source,
@@ -448,13 +644,30 @@ class RunManager:
         prompt_path = rounds / f"round-{round_n:02d}.prompt.md"
         partial_path = rounds / f"round-{round_n:02d}.partial.md"
         output_path = rounds / f"round-{round_n:02d}.md"
+        initial_timeout = (
+            auto_request.initial_timeout_seconds
+            if auto_request is not None
+            else self.settings.run_timeout
+        )
+        timeout = TimeoutRecord(
+            initial_seconds=initial_timeout,
+            effective_seconds=initial_timeout,
+            hard_cap_seconds=self.settings.max_run_timeout,
+            deadline_at=self._display_deadline_after(initial_timeout),
+        )
+        if auto_request is not None:
+            assert staged_source is not None
         record = RoundRecord(
             n=round_n,
             status="running",
             error=None,
             warnings=(
                 [STATELESS_CONTINUATION_WARNING]
-                if round_n > 1 and strategy == "stateless"
+                if (
+                    auto_request is None
+                    and round_n > 1
+                    and strategy == "stateless"
+                )
                 else []
             ),
             agent=config.agent,
@@ -465,21 +678,45 @@ class RunManager:
             source=record_source,
             shared_context=shared_context,
             retry_of=request.retry_of,
-            timeout=TimeoutRecord(
-                initial_seconds=self.settings.run_timeout,
-                effective_seconds=self.settings.run_timeout,
-                hard_cap_seconds=self.settings.max_run_timeout,
-                deadline_at=self._display_deadline_after(self.settings.run_timeout),
+            auto=(
+                AutoRoundDescriptor(
+                    auto_id=auto_request.auto_id,
+                    phase=auto_request.phase,
+                    cycle=auto_request.cycle,
+                    position=auto_request.position,
+                    context_file=staged_source.as_posix(),
+                    context_sha256=auto_request.context_sha256,
+                )
+                if auto_request is not None
+                else None
             ),
+            timeout=timeout,
         )
 
+        auto_state_persisted = False
         try:
             atomic_write_text(prompt_path, execution_prompt)
             atomic_write_text(partial_path, "")
+            if auto_record is not None and auto_request is not None:
+                auto_record.active_key = key
+                auto_record.active_turn_token = auto_request.turn_token
+                auto_record.active_timeout = deepcopy(timeout)
+                store.save_auto_run(auto_record)
+                auto_state_persisted = True
             config.rounds.append(record)
             config.status = "running"
             store.save_session(config)
         except Exception:
+            if auto_state_persisted and auto_record is not None:
+                auto_record.active_key = None
+                auto_record.active_turn_token = None
+                auto_record.active_timeout = None
+                auto_record.status = "error"
+                auto_record.terminal_reason = "failed to persist Auto round"
+                try:
+                    store.save_auto_run(auto_record)
+                except Exception:
+                    LOGGER.exception("Failed to roll back Auto state for %s", key)
             prompt_path.unlink(missing_ok=True)
             partial_path.unlink(missing_ok=True)
             self._cleanup_input_root(input_root)
@@ -500,11 +737,12 @@ class RunManager:
             output_path=output_path,
             completion=completion,
             started_monotonic=started_monotonic,
-            deadline_monotonic=started_monotonic + self.settings.run_timeout,
+            deadline_monotonic=started_monotonic + initial_timeout,
             hard_deadline_monotonic=(
                 started_monotonic + self.settings.max_run_timeout
             ),
             deadline_changed=asyncio.Event(),
+            auto_request=auto_request,
             warnings=list(record.warnings),
         )
         self._active[key] = active
@@ -603,7 +841,15 @@ class RunManager:
         round_n: int,
     ) -> tuple[Path, list[Path]]:
         completed = sorted(
-            (record for record in config.rounds if record.status == "complete"),
+            (
+                record
+                for record in config.rounds
+                if record.status == "complete"
+                and not (
+                    record.auto is not None
+                    and record.auto.phase == "preparation"
+                )
+            ),
             key=lambda record: record.n,
             reverse=True,
         )
@@ -828,7 +1074,10 @@ class RunManager:
 
     async def _handle_agent_event(self, active: ActiveRun, event: AgentEvent) -> bool:
         if event.kind == "init":
-            if event.cli_session_id:
+            if event.cli_session_id and not (
+                active.auto_request is not None
+                and active.auto_request.ignore_returned_session
+            ):
                 active.cli_session_id = event.cli_session_id
             return True
         if event.kind == "text_delta":
@@ -849,10 +1098,24 @@ class RunManager:
                 text = ""
             if accepted:
                 active.captured.extend(accepted)
-                with active.partial_path.open("ab") as partial:
-                    partial.write(accepted)
-                    partial.flush()
-                self._publish(active, "text_delta", text)
+                if (
+                    active.auto_request is not None
+                    and active.auto_request.phase == "discussion"
+                ):
+                    pending = active.control_tail + text
+                    publish_length = max(0, len(pending) - 512)
+                    published = pending[:publish_length]
+                    active.control_tail = pending[publish_length:]
+                    if published:
+                        with active.partial_path.open("ab") as partial:
+                            partial.write(published.encode("utf-8"))
+                            partial.flush()
+                        self._publish(active, "text_delta", published)
+                else:
+                    with active.partial_path.open("ab") as partial:
+                        partial.write(accepted)
+                        partial.flush()
+                    self._publish(active, "text_delta", text)
             if len(encoded) > remaining:
                 active.errors.append("captured output limit exceeded")
                 self._signal_process(active, signal.SIGTERM)
@@ -949,14 +1212,34 @@ class RunManager:
             and stderr not in (error or "")
         ):
             error = f"{error}; stderr: {stderr}"
-        if not active.cli_session_id:
+        suppress_native_warning = (
+            active.auto_request is not None
+            and active.auto_request.ignore_returned_session
+        )
+        if not active.cli_session_id and not suppress_native_warning:
             active.warnings.append("provider did not return a native session id")
 
-        output = (
-            active.adapter.final_text()
-            if status == "complete"
-            else active.captured.decode("utf-8", errors="replace")
+        auto_discussion = (
+            active.auto_request is not None
+            and active.auto_request.phase == "discussion"
         )
+        if status == "complete":
+            output = active.adapter.final_text()
+            if auto_discussion:
+                assert active.auto_request is not None
+                assert active.auto_request.turn_token is not None
+                parsed = parse_auto_verdict(
+                    output,
+                    active.auto_request.auto_id,
+                    active.auto_request.turn_token,
+                )
+                output = parsed.content
+                if parsed.warning is not None:
+                    active.warnings.append(parsed.warning)
+                assert record.auto is not None
+                record.auto = replace(record.auto, verdict=parsed.decision)
+        else:
+            output = active.captured.decode("utf-8", errors="replace")
         output_persisted = False
         metadata_persisted = False
         try:
@@ -972,7 +1255,7 @@ class RunManager:
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
         active.config.status = "idle" if status in {"complete", "cancelled"} else "error"
-        if active.cli_session_id:
+        if active.cli_session_id and not suppress_native_warning:
             active.config.cli_session_id = active.cli_session_id
         try:
             active.store.save_session(active.config)
@@ -986,6 +1269,9 @@ class RunManager:
 
         if output_persisted and metadata_persisted:
             active.partial_path.unlink(missing_ok=True)
+        if auto_discussion:
+            self._publish(active, "reset")
+            self._publish(active, "snapshot", output)
         if record.status == "error":
             self._publish(active, "error", record.error or "agent run failed")
         self._publish(active, "done", record.status)
@@ -993,7 +1279,11 @@ class RunManager:
         completed = CompletedRun(
             record=record,
             events=tuple(active.replay),
-            snapshot=active.captured.decode("utf-8", errors="replace"),
+            snapshot=(
+                output
+                if auto_discussion
+                else active.captured.decode("utf-8", errors="replace")
+            ),
         )
         self._completed[active.key] = completed
         self._active.pop(active.key, None)

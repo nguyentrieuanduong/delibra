@@ -15,12 +15,21 @@ import pytest
 from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
 from app.models import (
+    AutoArtifact,
+    AutoParticipant,
+    AutoRoundDescriptor,
+    AutoRunRecord,
     RoundRecord,
     SessionConfig,
     SharedContextDescriptor,
     SourceDescriptor,
 )
-from app.runner import RunManager, SessionBusy
+from app.runner import (
+    STATELESS_CONTINUATION_WARNING,
+    AutoRunRequest,
+    RunManager,
+    SessionBusy,
+)
 from app.storage import (
     ConflictError,
     LockCoordinator,
@@ -84,6 +93,37 @@ class AdapterFactory:
         return FakeAdapter(config.model, self.contexts)
 
 
+class AutoVerdictAdapter(FakeAdapter):
+    def __init__(
+        self,
+        auto_id: str,
+        turn_token: str,
+        contexts: list[RunContext],
+    ) -> None:
+        super().__init__("success", contexts)
+        self.content = "x" * 600
+        self.marker = (
+            f'[DELIBRA_AUTO run="{auto_id}" turn="{turn_token}" '
+            'decision="agree"]'
+        )
+
+    def parse_line(self, line: str) -> list[AgentEvent]:
+        payload = json.loads(line)
+        kind = payload.get("kind")
+        if kind == "init":
+            return [AgentEvent("init", cli_session_id="must-be-ignored")]
+        if kind == "delta" and payload.get("text") == "Hel":
+            return [AgentEvent("text_delta", self.content)]
+        if kind == "delta":
+            return [AgentEvent("text_delta", f"\n{self.marker}")]
+        if kind == "result":
+            self._final = f"{self.content}\n{self.marker}"
+            return [AgentEvent("result", self._final)]
+        if kind == "progress":
+            return [AgentEvent("progress", "Fake progress")]
+        return []
+
+
 def session(session_id: str = "a" * 32, *, mode: str = "success") -> SessionConfig:
     return SessionConfig(
         id=session_id,
@@ -126,6 +166,264 @@ def setup_manager(
         final_writer=final_writer,
     )
     return manager, project.id, config.id, store
+
+
+def create_runner_auto_record(
+    store: ProjectStore,
+    session_id: str,
+    *,
+    status: str,
+    shared: bytes | None = None,
+) -> AutoRunRecord:
+    second_id = "b" * 32
+    store.create_session(session(second_id))
+    topic = b"Frozen Auto context"
+    record = AutoRunRecord(
+        id="c" * 32,
+        project_id=store.project.id,
+        status=status,
+        agreement_policy="all_agree",
+        max_cycles=3,
+        current_cycle=1 if status == "discussing" else 0,
+        next_participant=0,
+        participants=[
+            AutoParticipant(session_id, "runner test", "fake", "success", "low"),
+            AutoParticipant(second_id, "runner test", "fake", "success", "low"),
+        ],
+        topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
+        baseline=AutoArtifact("baseline.md", sha256(b"").hexdigest()),
+        baseline_entries=[],
+        shared_context=(
+            AutoArtifact("shared-context.md", sha256(shared).hexdigest())
+            if shared is not None
+            else None
+        ),
+        shared_context_source="brief.md" if shared is not None else None,
+        preparations=[],
+        discussion=[],
+        active_key=None,
+        active_turn_token=None,
+        future_turn_timeout_seconds=2,
+        active_timeout=None,
+        stop_requested=False,
+        created_at="2026-07-19T00:00:00Z",
+        started_at="2026-07-19T00:00:01Z",
+        finished_at=None,
+        terminal_reason=None,
+    )
+    store.create_auto_run(
+        record,
+        topic=topic,
+        baseline=b"",
+        shared_context=shared,
+    )
+    store.publish_auto_reservation(record.id)
+    return record
+
+
+def auto_run_request(
+    store: ProjectStore,
+    record: AutoRunRecord,
+    *,
+    phase: str,
+    turn_token: str | None = None,
+) -> AutoRunRequest:
+    run_dir = store.auto_run_dir(record.id)
+    return AutoRunRequest(
+        auto_id=record.id,
+        phase=phase,
+        cycle=1 if phase == "discussion" else None,
+        position=0,
+        context_source=run_dir / "topic.md",
+        context_root=run_dir,
+        context_sha256=record.topic.sha256,
+        shared_source=(run_dir / "shared-context.md" if record.shared_context else None),
+        shared_root=(run_dir if record.shared_context else None),
+        shared_path=record.shared_context_source,
+        shared_sha256=(
+            record.shared_context.sha256 if record.shared_context is not None else None
+        ),
+        execution_prompt="Read inputs/round-01/auto-context.md and respond.",
+        turn_token=turn_token,
+        initial_timeout_seconds=2,
+        preserve_native_session=True,
+        ignore_returned_session=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_run_stages_only_verified_frozen_inputs_and_preserves_native_id(
+    tmp_path: Path,
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+    )
+    config = store.load_session(session_id)
+    config.cli_session_id = "preserved-native-session"
+    store.save_session(config)
+    frozen_shared = b"Frozen shared bytes"
+    auto_record = create_runner_auto_record(
+        store,
+        session_id,
+        status="preparing",
+        shared=frozen_shared,
+    )
+    current_shared = store.project_path / "brief.md"
+    current_shared.write_bytes(b"Changed project bytes")
+    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
+
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(
+            project_id,
+            session_id,
+            auto_run_request(store, auto_record, phase="preparation"),
+        )
+    record = await manager.wait(key)
+
+    staged_context = Path("inputs/round-01/auto-context.md")
+    staged_shared = Path("inputs/round-01/shared-context.md")
+    assert contexts[0].resume_strategy == "stateless"
+    assert contexts[0].resume_id is None
+    assert contexts[0].staged_history == []
+    assert contexts[0].staged_source == staged_context
+    assert (store.workspace_dir(session_id) / staged_context).read_bytes() == (
+        b"Frozen Auto context"
+    )
+    assert (store.workspace_dir(session_id) / staged_shared).read_bytes() == frozen_shared
+    assert record.source.type == "auto"
+    assert record.auto == AutoRoundDescriptor(
+        auto_id=auto_record.id,
+        phase="preparation",
+        cycle=None,
+        position=0,
+        context_file=staged_context.as_posix(),
+        context_sha256=auto_record.topic.sha256,
+        verdict=None,
+    )
+    assert STATELESS_CONTINUATION_WARNING not in record.warnings
+    assert "provider did not return a native session id" not in record.warnings
+    assert store.load_session(session_id).cli_session_id == "preserved-native-session"
+
+
+@pytest.mark.asyncio
+async def test_auto_discussion_buffers_control_tail_and_sanitizes_final_snapshot(
+    tmp_path: Path,
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    auto_record = create_runner_auto_record(store, session_id, status="discussing")
+    turn_token = "T" * 43
+    manager.adapter_factory = lambda _config: AutoVerdictAdapter(
+        auto_record.id,
+        turn_token,
+        contexts,
+    )
+
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(
+            project_id,
+            session_id,
+            auto_run_request(
+                store,
+                auto_record,
+                phase="discussion",
+                turn_token=turn_token,
+            ),
+        )
+    record = await manager.wait(key)
+    events = await collect(manager, key, 0)
+
+    assert record.status == "complete"
+    assert record.auto is not None and record.auto.verdict == "agree"
+    assert (store.rounds_dir(session_id) / "round-01.md").read_text() == "x" * 600
+    text_deltas = [event.data for event in events if event.kind == "text_delta"]
+    marker = (
+        f'[DELIBRA_AUTO run="{auto_record.id}" turn="{turn_token}" '
+        'decision="agree"]'
+    )
+    streamed = f'{"x" * 600}\n{marker}'
+    assert "".join(text_deltas) == streamed[:-512]
+    assert any(event.kind == "reset" for event in events)
+    snapshots = [event.data for event in events if event.kind == "snapshot"]
+    assert snapshots[-1] == "x" * 600
+    assert all("DELIBRA_AUTO" not in event.data for event in events)
+
+
+@pytest.mark.asyncio
+async def test_auto_discussion_preserves_invalid_footer_as_continue_with_warning(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    auto_record = create_runner_auto_record(store, session_id, status="discussing")
+    current_token = "T" * 43
+    wrong_token = "U" * 43
+    manager.adapter_factory = lambda _config: AutoVerdictAdapter(
+        auto_record.id,
+        wrong_token,
+        [],
+    )
+
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(
+            project_id,
+            session_id,
+            auto_run_request(
+                store,
+                auto_record,
+                phase="discussion",
+                turn_token=current_token,
+            ),
+        )
+    record = await manager.wait(key)
+    output = (store.rounds_dir(session_id) / "round-01.md").read_text()
+
+    assert record.auto is not None and record.auto.verdict == "continue"
+    assert any("verdict footer" in warning for warning in record.warnings)
+    assert f'turn="{wrong_token}"' in output
+    events = await collect(manager, key, 0)
+    assert [event.data for event in events if event.kind == "snapshot"][-1] == output
+
+
+@pytest.mark.asyncio
+async def test_auto_run_rejects_context_digest_change_before_round_allocation(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    auto_record = create_runner_auto_record(store, session_id, status="preparing")
+    request = replace(
+        auto_run_request(store, auto_record, phase="preparation"),
+        context_sha256="f" * 64,
+    )
+
+    with pytest.raises(ConflictError, match="context digest"):
+        async with manager.locks.registry_project_sessions(project_id, [session_id]):
+            await manager.start_auto_locked(project_id, session_id, request)
+
+    assert store.load_session(session_id).rounds == []
+    assert not (store.workspace_dir(session_id) / "inputs/round-01").exists()
+
+
+def test_generic_retry_rejects_auto_rounds() -> None:
+    config = session()
+    config.rounds.append(
+        RoundRecord(
+            n=1,
+            status="error",
+            error="provider failed",
+            warnings=[],
+            agent="fake",
+            model="success",
+            effort="low",
+            started_at="2026-07-19T00:00:00Z",
+            finished_at="2026-07-19T00:00:01Z",
+            source=SourceDescriptor(type="auto"),
+        )
+    )
+
+    with pytest.raises(ConflictError, match="unsupported"):
+        RunManager._retry_record(config, 1)
 
 
 @pytest.mark.asyncio
@@ -712,3 +1010,46 @@ async def test_stateless_history_is_newest_bounded_chronological_and_oversize_is
         await manager.start(project_id, oversize_id, "Continue")
     assert store.load_session(oversize_id).rounds == oversized.rounds
     assert not (store.workspace_dir(oversize_id) / "inputs/round-02").exists()
+
+
+def test_stateless_history_excludes_auto_preparation_rounds(tmp_path: Path) -> None:
+    manager, _, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    rounds = store.rounds_dir(session_id)
+    for number, phase in ((1, None), (2, "preparation")):
+        (rounds / f"round-{number:02d}.prompt.md").write_text(f"prompt {number}")
+        (rounds / f"round-{number:02d}.md").write_text(f"answer {number}")
+        config.rounds.append(
+            RoundRecord(
+                n=number,
+                status="complete",
+                error=None,
+                warnings=[],
+                agent="fake",
+                model="success",
+                effort="low",
+                started_at=f"2026-07-17T00:00:0{number}Z",
+                finished_at=f"2026-07-17T00:00:0{number}Z",
+                source=SourceDescriptor(type="auto" if phase else "user"),
+                auto=(
+                    AutoRoundDescriptor(
+                        auto_id="c" * 32,
+                        phase=phase,
+                        cycle=None,
+                        position=0,
+                        context_file=(
+                            f"inputs/round-{number:02d}/auto-context.md"
+                        ),
+                        context_sha256="d" * 64,
+                    )
+                    if phase
+                    else None
+                ),
+            )
+        )
+    store.save_session(config)
+
+    input_root, staged = manager._stage_history(store, config, 3)
+
+    assert [path.name for path in staged] == ["round-01.prompt.md", "round-01.md"]
+    manager._cleanup_input_root(input_root)

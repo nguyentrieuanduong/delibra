@@ -9,7 +9,13 @@ from app.models import Project, SessionConfig
 from app.routes.runs import start_run_fragment
 from app.security import validate_field
 from app.storage import ProjectStore, validate_id
-from app.views import agent_views, effort_levels, round_views, selected_session
+from app.views import (
+    agent_views,
+    conversation_round_views,
+    effort_levels,
+    round_views,
+    selected_session,
+)
 
 
 router = APIRouter()
@@ -19,7 +25,7 @@ def _timeline(request: Request, project_id: str, store: ProjectStore) -> list[di
     items: list[dict] = []
     for session in store.list_sessions():
         active_key = request.app.state.manager.active_key(project_id, session.id)
-        for round_view in round_views(store, session.id):
+        for round_view in conversation_round_views(store, session.id):
             record = round_view["record"]
             if record is None:
                 continue
