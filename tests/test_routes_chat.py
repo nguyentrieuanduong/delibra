@@ -237,7 +237,10 @@ def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> No
     assert 'id="chat-agent-select"' not in response.text
     assert 'id="chat-composer"' in response.text
     assert re.search(r'<textarea name="prompt"[^>]+disabled', response.text)
-    assert '<button type="submit" disabled>Send</button>' in response.text
+    assert re.search(
+        r'<button[^>]*type="submit"[^>]*disabled[^>]*>\s*Send</button>',
+        response.text,
+    )
 
 
 def test_chat_workspace_renders_four_regions_and_full_agent_information(

@@ -17,18 +17,26 @@
   {% if round.record.retry_of %}
     <p class="provenance">Retry of round {{ round.record.retry_of }}</p>
   {% endif %}
+  {% if round.record.auto %}
+    <p class="provenance auto-provenance">
+      <a href="/projects/{{ project.id }}/auto-runs/{{ round.record.auto.auto_id }}">Auto {{ round.record.auto.auto_id }}</a>
+      · {% if round.record.auto.phase == 'preparation' %}Auto preparation{% else %}discussion cycle {{ round.record.auto.cycle }}{% endif %}
+      · position {{ round.record.auto.position + 1 }}
+      {% if round.record.auto.verdict %}· verdict {{ round.record.auto.verdict }}{% endif %}
+    </p>
+  {% endif %}
 {% endif %}
 {% if round.record and round.record.error %}<p class="error">{{ round.record.error }}</p>{% endif %}
 {% if round.record and round.record.warnings %}
   <ul class="warnings">{% for warning in round.record.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
 {% endif %}
-{% if round.record and round.record.status == 'error' %}
+{% if round.record and round.record.status == 'error' and round.record.source.type != 'auto' %}
   <form method="post"
         action="/projects/{{ project.id }}/sessions/{{ session.id }}/rounds/{{ round.n }}/retry{% if chat_view %}?view=chat{% endif %}"
         hx-post="/projects/{{ project.id }}/sessions/{{ session.id }}/rounds/{{ round.n }}/retry{% if chat_view %}?view=chat{% endif %}"
         hx-target="{{ '.chat-timeline' if chat_view else '.rounds' }}"
         hx-swap="beforeend">
-    <button type="submit">Retry</button>
+    <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Retry</button>
   </form>
 {% endif %}
 <details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md }}</div></details>
@@ -54,7 +62,7 @@
       <label>Instruction
         <textarea name="instruction" maxlength="10000" placeholder="Review the following document and give your critique."></textarea>
       </label>
-      <button type="submit">Pass</button>
+      <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Pass</button>
     </form>
   </details>
 {% endif %}

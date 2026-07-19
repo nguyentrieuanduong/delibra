@@ -10,9 +10,9 @@
     hx-swap="beforeend"
   >
     <label>{% if session.rounds %}Reply{% else %}Prompt{% endif %}
-      <textarea name="prompt" maxlength="100000" required{% if session.status == 'running' %} disabled{% endif %}></textarea>
+      <textarea name="prompt" maxlength="100000" required{% if session.status == 'running' or auto_active %} disabled{% endif %}></textarea>
     </label>
-    <button type="submit"{% if session.status == 'running' %} disabled{% endif %}>
+    <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>
       {% if session.rounds %}Reply{% else %}Run{% endif %}
     </button>
   </form>

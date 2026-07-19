@@ -38,7 +38,7 @@
       <label>Role instructions
         <textarea name="role_instructions" maxlength="20000"></textarea>
       </label>
-      <button type="submit">Create session</button>
+      <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create session</button>
     </form>
   </details>
   {% if sessions %}
@@ -74,11 +74,11 @@
               {% else %}
                 <p>Role instructions are fixed after the first round.</p>
               {% endif %}
-              <button type="submit"{% if session.status == 'running' %} disabled{% endif %}>Save</button>
+              <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
             </form>
           </details>
           <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/delete">
-            <button type="submit"{% if session.status == 'running' %} disabled{% endif %}>Delete</button>
+            <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Delete</button>
           </form>
         </article>
       {% endfor %}

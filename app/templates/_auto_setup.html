@@ -1,0 +1,47 @@
+<dialog
+  open
+  class="auto-setup-dialog"
+  data-auto-setup-dialog
+  data-topic-source="{{ topic_source }}"
+>
+  <form
+    method="post"
+    action="/projects/{{ project.id }}/auto-runs"
+    hx-post="/projects/{{ project.id }}/auto-runs"
+    hx-target="#auto-status-host"
+    hx-swap="innerHTML"
+  >
+    <div class="auto-setup-heading">
+      <h2>Start Auto discussion</h2>
+      <button type="button" data-auto-setup-close>Close</button>
+    </div>
+    <label>Topic
+      <textarea name="topic" maxlength="100000" required>{{ topic }}</textarea>
+    </label>
+    <fieldset>
+      <legend>Agents · speaking order</legend>
+      {% for session in sessions %}
+        <label>
+          <input type="checkbox" name="participant_id" value="{{ session.id }}" checked>
+          {{ session.name }} · {{ session.agent }} · {{ session.model }}
+        </label>
+      {% else %}
+        <p>No agents are available.</p>
+      {% endfor %}
+    </fieldset>
+    <fieldset>
+      <legend>Agreement</legend>
+      <label><input type="radio" name="agreement_policy" value="all_agree" checked> All agree</label>
+      <label><input type="radio" name="agreement_policy" value="first_agree"> First agree</label>
+      <p class="hint">First agree may stop before every agent speaks in the discussion.</p>
+    </fieldset>
+    <label>Maximum discussion cycles
+      <input name="max_cycles" type="number" min="1" max="20" value="3" required>
+    </label>
+    <p class="hint">
+      Maximum provider calls with all selected agents: {{ sessions|length }} preparations
+      + {{ sessions|length * 3 }} discussion turns at the default cycle limit.
+    </p>
+    <button type="submit"{% if sessions|length < 2 %} disabled{% endif %}>Start Auto</button>
+  </form>
+</dialog>

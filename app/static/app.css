@@ -70,12 +70,38 @@ textarea { min-height: 7rem; }
   display: grid;
   gap: .75rem;
   grid-area: conversation;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }
 #chat-composer { margin: 0; }
 #chat-composer textarea { min-height: 3rem; }
+.composer-actions, .auto-status-heading, .auto-setup-heading {
+  align-items: center;
+  display: flex;
+  gap: .5rem;
+  justify-content: space-between;
+}
+.auto-setup-dialog {
+  border: 1px solid #8888;
+  border-radius: .5rem;
+  max-height: 85vh;
+  overflow: auto;
+  width: min(90vw, 42rem);
+}
+.auto-setup-dialog::backdrop { background: #0009; }
+.auto-setup-dialog fieldset { display: grid; gap: .35rem; }
+.auto-status {
+  border: 1px solid #3b82c488;
+  border-radius: .5rem;
+  max-height: 18rem;
+  overflow: auto;
+  padding: .75rem;
+}
+.auto-status h2, .auto-status h3, .auto-status p { margin: .25rem 0; }
+.auto-status pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.auto-terminal-reason { font-weight: 600; }
+.auto-preparation { border-style: dashed; }
 .chat-timeline { min-height: 0; overflow: auto; }
 .workspace-agents {
   display: grid;

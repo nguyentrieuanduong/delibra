@@ -17,6 +17,7 @@ from app.auto import AutoManager
 from app.config import Settings, settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
+from app.routes.auto import router as auto_router
 from app.routes.chat import router as chat_router
 from app.routes.files import router as files_router
 from app.routes.projects import router as projects_router
@@ -130,6 +131,7 @@ def create_app(
     app.state.templates = templates
     app.state.health = []
     app.include_router(projects_router)
+    app.include_router(auto_router)
     app.include_router(chat_router)
     app.include_router(files_router)
     app.include_router(sessions_router)
@@ -150,11 +152,17 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         registry = request.app.state.registry
+        projects = registry.list_projects()
         return templates.TemplateResponse(
             request=request,
             name="index.html",
             context={
-                "projects": registry.list_projects(),
+                "projects": projects,
+                "active_auto_projects": {
+                    project.id
+                    for project in projects
+                    if ProjectStore(project).active_auto_run_id() is not None
+                },
                 "health": request.app.state.health,
             },
         )
@@ -194,6 +202,7 @@ def create_app(
                     "claude": ClaudeAdapter.EFFORT_LEVELS,
                     "codex": CodexAdapter.EFFORT_LEVELS,
                 },
+                "auto_active": store.active_auto_run_id() is not None,
             },
         )
 

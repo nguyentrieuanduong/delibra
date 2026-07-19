@@ -18,10 +18,10 @@
           <p><small>{{ project.path }}</small></p>
           <form method="post" action="/projects/{{ project.id }}/rename">
             <label>Rename <input name="name" maxlength="200" value="{{ project.name }}" required></label>
-            <button type="submit">Rename</button>
+            <button type="submit"{% if project.id in active_auto_projects %} disabled{% endif %}>Rename</button>
           </form>
           <form method="post" action="/projects/{{ project.id }}/unregister">
-            <button type="submit">Unregister</button>
+            <button type="submit"{% if project.id in active_auto_projects %} disabled{% endif %}>Unregister</button>
           </form>
         </article>
       {% endfor %}

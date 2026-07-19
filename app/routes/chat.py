@@ -5,7 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import Project, SessionConfig
+from app.routes.auto import auto_status_context, project_auto_record
 from app.routes.runs import start_run_fragment
 from app.security import validate_field
 from app.storage import ProjectStore, validate_id
@@ -56,6 +58,7 @@ def _sidebar_context(
     selected_id: str | None,
     *,
     composer_oob: bool,
+    auto_active: bool,
 ) -> dict:
     selected = selected_session(sessions, selected_id)
     return {
@@ -65,6 +68,7 @@ def _sidebar_context(
         "agent_views": agent_views(store, sessions, selected),
         "effort_levels": effort_levels(),
         "composer_oob": composer_oob,
+        "auto_active": auto_active,
     }
 
 
@@ -86,6 +90,7 @@ def sidebar_response(
             sessions,
             selected_id,
             composer_oob=composer_oob,
+            auto_active=store.active_auto_run_id() is not None,
         ),
         headers=headers,
     )
@@ -100,7 +105,18 @@ async def chat_page(
     project = request.app.state.registry.get(project_id)
     store = ProjectStore(project)
     sessions = store.list_sessions()
-    sidebar = _sidebar_context(store, sessions, agent, composer_oob=False)
+    auto_record = project_auto_record(request, project_id)
+    auto_active = (
+        auto_record is not None
+        and auto_record.status in ACTIVE_AUTO_STATUSES
+    )
+    sidebar = _sidebar_context(
+        store,
+        sessions,
+        agent,
+        composer_oob=False,
+        auto_active=auto_active,
+    )
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="chat.html",
@@ -108,8 +124,33 @@ async def chat_page(
             "project": project,
             "sessions": sessions,
             "timeline": _timeline(request, project_id, store),
+            "auto_status": (
+                auto_status_context(request, project_id, auto_record)
+                if auto_record is not None
+                else None
+            ),
+            "auto_active": auto_active,
             "health": request.app.state.health,
             **sidebar,
+        },
+    )
+
+
+@router.get(
+    "/projects/{project_id}/chat/timeline",
+    response_class=HTMLResponse,
+)
+async def chat_timeline(request: Request, project_id: str) -> HTMLResponse:
+    project = request.app.state.registry.get(project_id)
+    store = ProjectStore(project)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_timeline.html",
+        context={
+            "project": project,
+            "sessions": store.list_sessions(),
+            "timeline": _timeline(request, project_id, store),
+            "auto_active": store.active_auto_run_id() is not None,
         },
     )
 

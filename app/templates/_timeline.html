@@ -1,0 +1,21 @@
+<section class="chat-timeline" id="chat-timeline" aria-label="Conversation">
+  <div class="timeline-heading">
+    <h2>Conversation</h2><span>Oldest → newest</span>
+  </div>
+  {% set chat_view = true %}
+  {% for item in timeline %}
+    {% set session = item.session %}
+    {% set session_id = session.id %}
+    {% set round = item.round %}
+    {% set dom_id = round.dom_id %}
+    {% set round_expanded = loop.last %}
+    {% if item.key %}
+      {% set key = item.key %}
+      {% include "_live.html" %}
+    {% else %}
+      {% include "_round.html" %}
+    {% endif %}
+  {% else %}
+    <p data-conversation-empty>No conversation yet.</p>
+  {% endfor %}
+</section>
