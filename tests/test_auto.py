@@ -5,9 +5,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
-import random
 import re
-import string
 import sys
 
 import pytest
@@ -15,10 +13,8 @@ from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
 from app.auto import (
-    AUTO_VERDICT_WARNING,
     AutoManager,
     ContextEntry,
-    new_turn_token,
     parse_auto_verdict,
     render_discussion_context,
     render_preparation_context,
@@ -49,77 +45,39 @@ from app.storage import (
 )
 
 
-AUTO_ID = "a" * 32
-TURN_TOKEN = "T" * 43
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
-AGREE = (
-    f'[DELIBRA_AUTO run="{AUTO_ID}" turn="{TURN_TOKEN}" decision="agree"]'
-)
-CONTINUE = (
-    f'[DELIBRA_AUTO run="{AUTO_ID}" turn="{TURN_TOKEN}" decision="continue"]'
-)
-
-
-@pytest.mark.parametrize("marker, decision", [(AGREE, "agree"), (CONTINUE, "continue")])
-def test_parse_auto_verdict_accepts_only_exact_final_current_marker(
-    marker: str,
-    decision: str,
-) -> None:
-    parsed = parse_auto_verdict(f"Recommendation\n{marker}\n \t\n", AUTO_ID, TURN_TOKEN)
-
-    assert parsed.decision == decision
-    assert parsed.content == "Recommendation\n \t"
-    assert parsed.warning is None
-
-
-def test_new_turn_tokens_match_the_fixed_verdict_grammar_width() -> None:
-    tokens = {new_turn_token() for _ in range(32)}
-
-    assert len(tokens) == 32
-    assert all(len(token) == 43 for token in tokens)
-    alphabet = set(string.ascii_letters + string.digits + "_-")
-    assert all(set(token) <= alphabet for token in tokens)
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "expected"),
     [
-        "No control footer",
-        f"{AGREE} trailing prose",
-        f"{AGREE}\nnot final",
-        f"{AGREE}\n{AGREE}",
-        AGREE.replace(AUTO_ID, "b" * 32),
-        AGREE.replace(TURN_TOKEN, "U" * 43),
-        AGREE.replace('decision="agree"', 'decision="AGREE"'),
-        AGREE.replace("[DELIBRA_AUTO", "[DELIBRA-AUTO"),
+        ("AGREE", "agree"),
+        ("Recommendation\nAgree.", "agree"),
+        ("Analysis\nLine two\nI do not aGrEe\n", "agree"),
+        ("prefix\nAgree\nsecond\nthird", "agree"),
+        ("first\nsecond\nthird\n(Agree)", "agree"),
+        ("agree\nline two\nline three\nline four", "continue"),
+        ("agree\n\nline two\nline three\nline four", "continue"),
+        ("disagree\nagreement\nagreed", "continue"),
+        ("agreeing", "continue"),
+        ("The proposal is agreeable", "continue"),
+        ("continue", "continue"),
+        ("\n \t\n", "continue"),
     ],
 )
-def test_parse_auto_verdict_preserves_invalid_output_and_warns(text: str) -> None:
-    parsed = parse_auto_verdict(text, AUTO_ID, TURN_TOKEN)
-
-    assert parsed.decision == "continue"
-    assert parsed.content == text
-    assert parsed.warning == AUTO_VERDICT_WARNING
-
-
-def test_quoted_old_marker_does_not_duplicate_current_final_marker() -> None:
-    quoted = f"> {AGREE}"
-    parsed = parse_auto_verdict(f"Prior material:\n{quoted}\n{CONTINUE}", AUTO_ID, TURN_TOKEN)
-
-    assert parsed.decision == "continue"
-    assert parsed.content == f"Prior material:\n{quoted}"
-    assert parsed.warning is None
+def test_parse_auto_verdict_uses_only_final_three_nonempty_lines(
+    text: str,
+    expected: str,
+) -> None:
+    assert parse_auto_verdict(text) == expected
 
 
-def test_parse_auto_verdict_generated_inputs_never_infer_agreement_from_prose() -> None:
-    generator = random.Random(20260719)
-    alphabet = string.ascii_letters + string.digits + " []_-=\"\n"
-    for _ in range(2_000):
-        text = "".join(generator.choice(alphabet) for _ in range(generator.randrange(80)))
-        parsed = parse_auto_verdict(text, AUTO_ID, TURN_TOKEN)
-        assert parsed.decision == "continue"
-        assert parsed.content == text
-        assert parsed.warning == AUTO_VERDICT_WARNING
+def test_parse_auto_verdict_counts_nonempty_lines_only() -> None:
+    assert parse_auto_verdict("prefix\nAgree\n\nsecond\n \nthird") == "agree"
+    assert (
+        parse_auto_verdict("Agree\n\nsecond\n \nthird\n\tfourth")
+        == "continue"
+    )
 
 
 def test_context_renderers_label_untrusted_injection_and_preserve_stable_order() -> None:
@@ -167,7 +125,7 @@ class RecordingAutoAdapter:
         self.factory = factory
         self.output = output
         self._final = ""
-        self._marker = ""
+        self._verdict_line = ""
         self._released = False
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
@@ -176,19 +134,12 @@ class RecordingAutoAdapter:
             if context.staged_source is not None
             else b""
         )
-        marker = ""
+        verdict_line = ""
         if self.output.decision is not None:
-            match = re.search(
-                r'\[DELIBRA_AUTO run="[0-9a-f]{32}" '
-                r'turn="[A-Za-z0-9_-]{43}" decision="agree"\]',
-                context.user_prompt,
+            verdict_line = (
+                "AGREE" if self.output.decision == "agree" else "Continue"
             )
-            assert match is not None
-            marker = match.group(0).replace(
-                'decision="agree"',
-                f'decision="{self.output.decision}"',
-            )
-        self._marker = marker
+        self._verdict_line = verdict_line
         self.factory.active += 1
         self.factory.maximum_active = max(
             self.factory.maximum_active,
@@ -235,8 +186,8 @@ class RecordingAutoAdapter:
             return [AgentEvent("error", payload.get("text", "provider failed"))]
         if kind == "result":
             self._final = self.output.content
-            if self._marker:
-                self._final = f"{self._final}\n{self._marker}"
+            if self._verdict_line:
+                self._final = f"{self._final}\n{self._verdict_line}"
             if not self._released:
                 self.factory.active -= 1
                 self._released = True
@@ -389,7 +340,6 @@ def seed_durable_auto(
         preparations=[],
         discussion=[],
         active_key=None,
-        active_turn_token=None,
         future_turn_timeout_seconds=2,
         active_timeout=None,
         stop_requested=status == "stopped",
@@ -975,7 +925,6 @@ def test_auto_manager_lifecycle_is_wired_and_reconciles_restart(tmp_path: Path) 
         preparations=[],
         discussion=[],
         active_key=None,
-        active_turn_token=None,
         future_turn_timeout_seconds=2,
         active_timeout=None,
         stop_requested=False,

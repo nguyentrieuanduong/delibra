@@ -110,7 +110,6 @@ class ActiveRun:
     next_event_id: int = 1
     replay: deque[StreamEvent] = field(default_factory=deque)
     replay_bytes: int = 0
-    control_tail: str = ""
     subscribers: set[asyncio.Queue[StreamEvent | None]] = field(default_factory=set)
 
 
@@ -152,7 +151,6 @@ class AutoRunRequest:
     shared_path: str | None
     shared_sha256: str | None
     execution_prompt: str
-    turn_token: str | None
     initial_timeout_seconds: int
     preserve_native_session: bool
     ignore_returned_session: bool
@@ -246,7 +244,6 @@ class RunManager:
             raise ConflictError("Auto run is not ready for this phase")
         if (
             record.active_key is not None
-            or record.active_turn_token is not None
             or record.active_timeout is not None
         ):
             raise ConflictError("Auto run already has an active turn")
@@ -277,14 +274,12 @@ class RunManager:
         ):
             raise StorageError("Auto native-session policy is invalid")
         if request.phase == "preparation":
-            if request.cycle is not None or request.turn_token is not None:
+            if request.cycle is not None:
                 raise StorageError("Auto preparation request is invalid")
         elif (
             type(request.cycle) is not int
             or request.cycle < 1
             or request.cycle != record.current_cycle
-            or request.turn_token is None
-            or re.fullmatch(r"[A-Za-z0-9_-]{43}", request.turn_token) is None
         ):
             raise StorageError("Auto discussion request is invalid")
         if (
@@ -699,7 +694,6 @@ class RunManager:
             atomic_write_text(partial_path, "")
             if auto_record is not None and auto_request is not None:
                 auto_record.active_key = key
-                auto_record.active_turn_token = auto_request.turn_token
                 auto_record.active_timeout = deepcopy(timeout)
                 store.save_auto_run(auto_record)
                 auto_state_persisted = True
@@ -709,7 +703,6 @@ class RunManager:
         except Exception:
             if auto_state_persisted and auto_record is not None:
                 auto_record.active_key = None
-                auto_record.active_turn_token = None
                 auto_record.active_timeout = None
                 auto_record.status = "error"
                 auto_record.terminal_reason = "failed to persist Auto round"
@@ -1098,24 +1091,10 @@ class RunManager:
                 text = ""
             if accepted:
                 active.captured.extend(accepted)
-                if (
-                    active.auto_request is not None
-                    and active.auto_request.phase == "discussion"
-                ):
-                    pending = active.control_tail + text
-                    publish_length = max(0, len(pending) - 512)
-                    published = pending[:publish_length]
-                    active.control_tail = pending[publish_length:]
-                    if published:
-                        with active.partial_path.open("ab") as partial:
-                            partial.write(published.encode("utf-8"))
-                            partial.flush()
-                        self._publish(active, "text_delta", published)
-                else:
-                    with active.partial_path.open("ab") as partial:
-                        partial.write(accepted)
-                        partial.flush()
-                    self._publish(active, "text_delta", text)
+                with active.partial_path.open("ab") as partial:
+                    partial.write(accepted)
+                    partial.flush()
+                self._publish(active, "text_delta", text)
             if len(encoded) > remaining:
                 active.errors.append("captured output limit exceeded")
                 self._signal_process(active, signal.SIGTERM)
@@ -1226,18 +1205,11 @@ class RunManager:
         if status == "complete":
             output = active.adapter.final_text()
             if auto_discussion:
-                assert active.auto_request is not None
-                assert active.auto_request.turn_token is not None
-                parsed = parse_auto_verdict(
-                    output,
-                    active.auto_request.auto_id,
-                    active.auto_request.turn_token,
-                )
-                output = parsed.content
-                if parsed.warning is not None:
-                    active.warnings.append(parsed.warning)
                 assert record.auto is not None
-                record.auto = replace(record.auto, verdict=parsed.decision)
+                record.auto = replace(
+                    record.auto,
+                    verdict=parse_auto_verdict(output),
+                )
         else:
             output = active.captured.decode("utf-8", errors="replace")
         output_persisted = False
@@ -1269,9 +1241,6 @@ class RunManager:
 
         if output_persisted and metadata_persisted:
             active.partial_path.unlink(missing_ok=True)
-        if auto_discussion:
-            self._publish(active, "reset")
-            self._publish(active, "snapshot", output)
         if record.status == "error":
             self._publish(active, "error", record.error or "agent run failed")
         self._publish(active, "done", record.status)
@@ -1279,11 +1248,7 @@ class RunManager:
         completed = CompletedRun(
             record=record,
             events=tuple(active.replay),
-            snapshot=(
-                output
-                if auto_discussion
-                else active.captured.decode("utf-8", errors="replace")
-            ),
+            snapshot=active.captured.decode("utf-8", errors="replace"),
         )
         self._completed[active.key] = completed
         self._active.pop(active.key, None)

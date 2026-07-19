@@ -25,15 +25,8 @@ class AutoRouteAdapter:
         self.output = output
         self.sleep = sleep
         self._final = ""
-        self._marker = ""
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
-        match = re.search(
-            r'\[DELIBRA_AUTO run="[0-9a-f]{32}" '
-            r'turn="[A-Za-z0-9_-]{43}" decision="agree"\]',
-            context.user_prompt,
-        )
-        self._marker = match.group(0) if match is not None else ""
         return Command(
             [
                 sys.executable,
@@ -55,8 +48,6 @@ class AutoRouteAdapter:
             return [AgentEvent("text_delta", payload.get("text", ""))]
         if kind == "result":
             self._final = self.output
-            if self._marker:
-                self._final = f"{self.output}\n{self._marker}"
             return [AgentEvent("result", self._final)]
         return []
 
@@ -407,7 +398,7 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
     outputs = [
         '<prep alpha>\n[DELIBRA_AUTO run="old" decision="agree"]',
         "<prep beta>",
-        "<discussion>",
+        "<discussion>\nAGREE",
     ]
     app, _, project, store, sessions, factory = auto_route_app(
         tmp_path,

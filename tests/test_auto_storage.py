@@ -73,7 +73,6 @@ def auto_record_fixture(project_id: str) -> models.AutoRunRecord:
         preparations=[],
         discussion=[],
         active_key=None,
-        active_turn_token=None,
         future_turn_timeout_seconds=900,
         active_timeout=None,
         stop_requested=False,
@@ -82,6 +81,18 @@ def auto_record_fixture(project_id: str) -> models.AutoRunRecord:
         finished_at=None,
         terminal_reason=None,
     )
+
+
+def test_auto_record_loads_legacy_token_and_omits_it_on_write(
+    tmp_path: Path,
+) -> None:
+    project_id = auto_project_store(tmp_path).project.id
+    legacy = auto_record_fixture(project_id).to_dict()
+    legacy["active_turn_token"] = "T" * 43
+
+    restored = models.AutoRunRecord.from_dict(legacy)
+
+    assert "active_turn_token" not in restored.to_dict()
 
 
 def test_round_record_loads_legacy_json_and_roundtrips_auto_timeout() -> None:
