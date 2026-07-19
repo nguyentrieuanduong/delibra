@@ -25,7 +25,7 @@ import stat
 from typing import Any, AsyncIterator, Iterable, Iterator, Literal
 from uuid import uuid4
 
-from app.models import Project, RoundRecord, SessionConfig
+from app.models import AutoArtifact, AutoRunRecord, Project, RoundRecord, SessionConfig
 
 
 FORMAT = "delibra/1"
@@ -36,6 +36,19 @@ PARTIAL_PATTERN = re.compile(r"^round-(\d{2,})\.partial\.md$")
 SHARED_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 RESERVED_SHARED_ROOTS = frozenset({".delibra", ".git", ".hg", ".svn"})
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+AUTO_FORMAT = "delibra-auto/1"
+AUTO_STATUSES = frozenset(
+    {
+        "preparing",
+        "discussing",
+        "converged",
+        "limit_reached",
+        "stopped",
+        "error",
+        "interrupted",
+    }
+)
+AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
 
 
 class StorageError(RuntimeError):
@@ -780,7 +793,197 @@ class ProjectStore:
         selected = manifest.get("shared_markdown_path")
         if selected is not None and not isinstance(selected, str):
             raise OwnershipError("project shared Markdown path is invalid")
+        active_auto = manifest.get("active_auto_run_id")
+        if active_auto is not None and (
+            not isinstance(active_auto, str) or not ID_PATTERN.fullmatch(active_auto)
+        ):
+            raise OwnershipError("project active Auto run id is invalid")
         return manifest
+
+    @property
+    def auto_runs_root(self) -> Path:
+        return ensure_owned_directory(self.root / "auto-runs", self.root)
+
+    def auto_run_dir(self, auto_id: str) -> Path:
+        validate_id(auto_id, "Auto run id")
+        return self.auto_runs_root / auto_id
+
+    @staticmethod
+    def _validate_auto_record(record: AutoRunRecord, project_id: str) -> None:
+        validate_id(record.id, "Auto run id")
+        if record.project_id != project_id:
+            raise OwnershipError("Auto run project identity does not match")
+        if record.status not in AUTO_STATUSES:
+            raise OwnershipError("Auto run status is invalid")
+        if record.agreement_policy not in AUTO_POLICIES:
+            raise OwnershipError("Auto agreement policy is invalid")
+        if not 1 <= record.max_cycles <= 20:
+            raise OwnershipError("Auto cycle limit is invalid")
+        if len(record.participants) < 2:
+            raise OwnershipError("Auto run requires at least two participants")
+        session_ids = [participant.session_id for participant in record.participants]
+        for session_id in session_ids:
+            validate_id(session_id, "Auto participant id")
+        if len(session_ids) != len(set(session_ids)):
+            raise OwnershipError("Auto participants are duplicated")
+        for artifact in (record.topic, record.baseline, record.shared_context):
+            if artifact is not None and not SHA256_PATTERN.fullmatch(artifact.sha256):
+                raise OwnershipError("Auto artifact digest is invalid")
+
+    @staticmethod
+    def _auto_artifact_path(
+        run_dir: Path,
+        artifact: AutoArtifact,
+        expected_name: str,
+    ) -> Path:
+        if artifact.path != expected_name:
+            raise OwnershipError("Auto artifact path is invalid")
+        path = run_dir / expected_name
+        _assert_no_symlink_components(path, run_dir, allow_missing_leaf=True)
+        return path
+
+    def create_auto_run(
+        self,
+        record: AutoRunRecord,
+        *,
+        topic: bytes,
+        baseline: bytes,
+        shared_context: bytes | None = None,
+    ) -> AutoRunRecord:
+        self._validate_auto_record(record, self.project.id)
+        if sha256(topic).hexdigest() != record.topic.sha256:
+            raise OwnershipError("Auto topic digest does not match")
+        if sha256(baseline).hexdigest() != record.baseline.sha256:
+            raise OwnershipError("Auto baseline digest does not match")
+        if (record.shared_context is None) != (shared_context is None):
+            raise OwnershipError("Auto shared-context metadata does not match")
+        if (
+            record.shared_context is not None
+            and shared_context is not None
+            and sha256(shared_context).hexdigest() != record.shared_context.sha256
+        ):
+            raise OwnershipError("Auto shared-context digest does not match")
+
+        run_dir = self.auto_run_dir(record.id)
+        if run_dir.exists():
+            raise ConflictError(f"Auto run already exists: {record.id}")
+        try:
+            run_dir.mkdir(mode=0o700)
+            os.chmod(run_dir, 0o700)
+            preparations = run_dir / "preparations"
+            preparations.mkdir(mode=0o700)
+            atomic_write_bytes(
+                self._auto_artifact_path(run_dir, record.topic, "topic.md"),
+                topic,
+            )
+            atomic_write_bytes(
+                self._auto_artifact_path(run_dir, record.baseline, "baseline.md"),
+                baseline,
+            )
+            if record.shared_context is not None and shared_context is not None:
+                atomic_write_bytes(
+                    self._auto_artifact_path(
+                        run_dir,
+                        record.shared_context,
+                        "shared-context.md",
+                    ),
+                    shared_context,
+                )
+            atomic_write_json(run_dir / "config.json", record.to_dict())
+        except Exception:
+            if run_dir.exists():
+                shutil.rmtree(run_dir)
+            raise
+        return record
+
+    def load_auto_run(self, auto_id: str) -> AutoRunRecord:
+        run_dir = self.auto_run_dir(auto_id)
+        _assert_no_symlink_components(run_dir, self.auto_runs_root, allow_missing_leaf=False)
+        data = load_json_recover(run_dir / "config.json")
+        if not isinstance(data, dict) or data.get("format") != AUTO_FORMAT:
+            raise OwnershipError("Auto run config has an invalid shape")
+        try:
+            record = AutoRunRecord.from_dict(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OwnershipError("Auto run config has an invalid shape") from exc
+        if record.id != auto_id:
+            raise OwnershipError("Auto run identity does not match directory")
+        self._validate_auto_record(record, self.project.id)
+        return record
+
+    def load_auto_artifact(
+        self,
+        auto_id: str,
+        artifact: AutoArtifact,
+        maximum_bytes: int,
+    ) -> bytes:
+        if maximum_bytes < 1:
+            raise ValueError("Auto artifact limit must be positive")
+        if artifact.path not in {"topic.md", "baseline.md", "shared-context.md"}:
+            raise OwnershipError("Auto artifact path is invalid")
+        if not SHA256_PATTERN.fullmatch(artifact.sha256):
+            raise OwnershipError("Auto artifact digest is invalid")
+        run_dir = self.auto_run_dir(auto_id)
+        _assert_no_symlink_components(run_dir, self.auto_runs_root, allow_missing_leaf=False)
+        path = run_dir / artifact.path
+        _assert_no_symlink_components(path, run_dir, allow_missing_leaf=False)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, flags)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise OwnershipError("Auto artifact is not a regular file")
+            contents = _read_bounded_descriptor(descriptor, maximum_bytes)
+        except OwnershipError:
+            raise
+        except OSError as exc:
+            raise OwnershipError("Auto artifact is unavailable") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if contents.truncated:
+            raise StorageError("Auto artifact exceeds its byte limit")
+        if sha256(contents.data).hexdigest() != artifact.sha256:
+            raise OwnershipError("Auto artifact digest does not match")
+        return contents.data
+
+    def save_auto_run(self, record: AutoRunRecord) -> None:
+        self._validate_auto_record(record, self.project.id)
+        run_dir = self.auto_run_dir(record.id)
+        _assert_no_symlink_components(run_dir, self.auto_runs_root, allow_missing_leaf=False)
+        current = self.load_auto_run(record.id)
+        if current.id != record.id:
+            raise OwnershipError("Auto run identity changed")
+        atomic_write_json(run_dir / "config.json", record.to_dict())
+
+    def list_auto_runs(self) -> list[AutoRunRecord]:
+        records: list[AutoRunRecord] = []
+        for child in self.auto_runs_root.iterdir():
+            if child.is_dir() and ID_PATTERN.fullmatch(child.name):
+                records.append(self.load_auto_run(child.name))
+        return sorted(records, key=lambda item: (item.created_at, item.id))
+
+    def active_auto_run_id(self) -> str | None:
+        active = self._load_manifest().get("active_auto_run_id")
+        return str(active) if active is not None else None
+
+    def publish_auto_reservation(self, auto_id: str) -> None:
+        validate_id(auto_id, "Auto run id")
+        manifest = self._load_manifest()
+        if manifest.get("active_auto_run_id") is not None:
+            raise ConflictError("project already has an active Auto run")
+        self.load_auto_run(auto_id)
+        manifest["active_auto_run_id"] = auto_id
+        atomic_write_json(self.manifest_path, manifest)
+
+    def clear_auto_reservation(self, expected_auto_id: str) -> None:
+        validate_id(expected_auto_id, "Auto run id")
+        manifest = self._load_manifest()
+        if manifest.get("active_auto_run_id") != expected_auto_id:
+            raise ConflictError("active Auto reservation changed")
+        manifest.pop("active_auto_run_id", None)
+        atomic_write_json(self.manifest_path, manifest)
 
     def selected_shared_markdown_path(self) -> str | None:
         selected = self._load_manifest().get("shared_markdown_path")
