@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -1161,6 +1161,62 @@ async def test_auto_stop_claim_prevents_later_turn_during_timeout_race(
     round_record = store.load_session(key.session_id).rounds[-1]
     assert round_record.status == "cancelled"
     assert timeout_result is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_stop_bounds_active_key_churn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("never completes", sleep=True),
+            PlannedOutput("must not run"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Stop churn",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+    )
+    active_key = await wait_for_active_auto_key(
+        manager,
+        project_id,
+        created.id,
+    )
+    original_load = ProjectStore.load_auto_run
+    load_calls = 0
+
+    def churning_load(self: ProjectStore, auto_id: str) -> AutoRunRecord:
+        nonlocal load_calls
+        record = original_load(self, auto_id)
+        if auto_id != created.id:
+            return record
+        load_calls += 1
+        return replace(
+            record,
+            active_key=RunKey(
+                active_key.project_id,
+                active_key.session_id,
+                active_key.round_n + (load_calls % 2),
+            ),
+        )
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(ProjectStore, "load_auto_run", churning_load)
+            with pytest.raises(StorageError, match="^stop timed out$"):
+                await manager.stop(project_id, created.id)
+
+        assert load_calls == 200
+        durable = store.load_auto_run(created.id)
+        assert durable.stop_requested is False
+        assert store.active_auto_run_id() == created.id
+    finally:
+        await manager.stop(project_id, created.id)
 
 
 @pytest.mark.asyncio
