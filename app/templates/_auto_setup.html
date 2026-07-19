@@ -21,7 +21,7 @@
     <fieldset>
       <legend>Agents · speaking order</legend>
       {% for session in sessions %}
-        <label>
+        <label class="auto-choice">
           <input type="checkbox" name="participant_id" value="{{ session.id }}" checked>
           {{ session.name }} · {{ session.agent }} · {{ session.model }}
         </label>
@@ -29,18 +29,22 @@
         <p>No agents are available.</p>
       {% endfor %}
     </fieldset>
+    <label class="auto-choice">
+      <input type="checkbox" name="prepare_first" value="true">
+      Prepare agents independently first
+    </label>
     <fieldset>
       <legend>Agreement</legend>
-      <label><input type="radio" name="agreement_policy" value="all_agree" checked> All agree</label>
-      <label><input type="radio" name="agreement_policy" value="first_agree"> First agree</label>
+      <label class="auto-choice"><input type="radio" name="agreement_policy" value="all_agree"> All agree</label>
+      <label class="auto-choice"><input type="radio" name="agreement_policy" value="first_agree" checked> First agree</label>
       <p class="hint">First agree may stop before every agent speaks in the discussion.</p>
     </fieldset>
     <label>Maximum discussion cycles
       <input name="max_cycles" type="number" min="1" max="20" value="3" required>
     </label>
     <p class="hint">
-      Maximum provider calls with all selected agents: {{ sessions|length }} preparations
-      + {{ sessions|length * 3 }} discussion turns at the default cycle limit.
+      Maximum discussion calls at the default cycle limit: {{ sessions|length * 3 }};
+      enabling preparation adds {{ sessions|length }} calls.
     </p>
     <button type="submit"{% if sessions|length < 2 %} disabled{% endif %}>Start Auto</button>
   </form>

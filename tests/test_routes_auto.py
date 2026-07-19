@@ -137,17 +137,21 @@ def start_auto(
     project_id: str,
     session_ids: list[str],
     *,
-    policy: str = "all_agree",
+    policy: str = "first_agree",
     cycles: int = 1,
+    prepare_first: bool = False,
 ):
+    data = {
+        "topic": "<unsafe topic>",
+        "participant_id": session_ids,
+        "agreement_policy": policy,
+        "max_cycles": str(cycles),
+    }
+    if prepare_first:
+        data["prepare_first"] = "true"
     return client.post(
         f"/projects/{project_id}/auto-runs",
-        data={
-            "topic": "<unsafe topic>",
-            "participant_id": session_ids,
-            "agreement_policy": policy,
-            "max_cycles": str(cycles),
-        },
+        data=data,
     )
 
 
@@ -204,6 +208,16 @@ def opening_tag(contents: str, element_id: str) -> str:
     return match.group(0)
 
 
+def named_input(contents: str, name: str, value: str | None = None) -> str:
+    for match in re.finditer(r"<input\b[^>]*>", contents):
+        tag = match.group(0)
+        if f'name="{name}"' not in tag:
+            continue
+        if value is None or f'value="{value}"' in tag:
+            return tag
+    raise AssertionError(f"input {name!r} with value {value!r} not found")
+
+
 def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     tmp_path: Path,
 ) -> None:
@@ -249,6 +263,15 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     assert setup.text.count(" checked") >= 2
     assert 'value="all_agree"' in setup.text
     assert 'value="first_agree"' in setup.text
+    prepare_tag = named_input(setup.text, "prepare_first")
+    first_tag = named_input(setup.text, "agreement_policy", "first_agree")
+    all_tag = named_input(setup.text, "agreement_policy", "all_agree")
+    assert 'value="true"' in prepare_tag
+    assert "checked" not in prepare_tag
+    assert "checked" in first_tag
+    assert "checked" not in all_tag
+    assert setup.text.count('class="auto-choice"') == len(sessions) + 3
+    assert "enabling preparation adds 2 calls" in setup.text
     assert re.search(
         r'<input[^>]*name="max_cycles"[^>]*min="1"[^>]*max="20"[^>]*value="3"',
         setup.text,
@@ -344,13 +367,51 @@ def test_auto_start_rejects_busy_project_before_creating_auto_directory(
     assert store.list_auto_runs() == []
 
 
+def test_auto_start_skips_preparation_when_checkbox_is_missing(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, factory = auto_route_app(
+        tmp_path,
+        outputs=["Direct answer\nAGREE"],
+    )
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+        )
+        terminal = wait_for_auto(store, terminal=True)
+
+    assert started.status_code == 202
+    assert terminal.status == "converged"
+    assert terminal.preparation_enabled is False
+    assert terminal.preparations == []
+    assert factory.created == 1
+    assert "preparation skipped" in started.text
+
+
+def test_auto_choice_css_aligns_controls_without_changing_global_labels() -> None:
+    css = Path("app/static/app.css").read_text(encoding="utf-8")
+
+    assert "label { display: grid; gap: .25rem; }" in css
+    assert (
+        ".auto-setup-dialog .auto-choice { align-items: center; "
+        "display: flex; gap: .35rem; }"
+    ) in css
+
+
 def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
     tmp_path: Path,
 ) -> None:
     app, _, project, store, sessions, factory = auto_route_app(tmp_path, sleep=True)
     session_ids = [session.id for session in sessions]
     with TestClient(app, base_url="http://localhost") as client:
-        started = start_auto(client, project.id, session_ids)
+        started = start_auto(
+            client,
+            project.id,
+            session_ids,
+            prepare_first=True,
+        )
         active = wait_for_auto(store, terminal=False)
         chat = client.get(f"/projects/{project.id}/chat")
         status = client.get(f"/projects/{project.id}/auto-runs/{active.id}")
@@ -411,6 +472,7 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
             [session.id for session in sessions],
             policy="first_agree",
             cycles=20,
+            prepare_first=True,
         )
         assert started.status_code == 202
         terminal = wait_for_auto(store, terminal=True)
@@ -465,7 +527,12 @@ def test_hidden_preparation_exposes_auto_timeout_scopes_and_status_refresh(
 ) -> None:
     app, _, project, store, sessions, _ = auto_route_app(tmp_path, sleep=True)
     with TestClient(app, base_url="http://localhost") as client:
-        started = start_auto(client, project.id, [session.id for session in sessions])
+        started = start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+            prepare_first=True,
+        )
         assert started.status_code == 202
         active = wait_for_auto(store, terminal=False)
         key = active.active_key
@@ -545,7 +612,12 @@ def test_discussion_places_current_timeout_in_timeline_not_auto_status(
         sleep_at={2},
     )
     with TestClient(app, base_url="http://localhost") as client:
-        started = start_auto(client, project.id, [session.id for session in sessions])
+        started = start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+            prepare_first=True,
+        )
         assert started.status_code == 202
         discussing = wait_for_auto_status(store, "discussing")
         key = discussing.active_key

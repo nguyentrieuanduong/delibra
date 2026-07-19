@@ -91,6 +91,7 @@ textarea { min-height: 7rem; }
 }
 .auto-setup-dialog::backdrop { background: #0009; }
 .auto-setup-dialog fieldset { display: grid; gap: .35rem; }
+.auto-setup-dialog .auto-choice { align-items: center; display: flex; gap: .35rem; }
 .auto-status {
   border: 1px solid #3b82c488;
   border-radius: .5rem;
