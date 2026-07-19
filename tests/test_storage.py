@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,8 @@ from app.storage import (
     ConflictError,
     LockCoordinator,
     OwnershipError,
+    ProjectFileDisplayError,
+    ProjectFileSecurityError,
     ProjectStore,
     RegistryStore,
     StorageError,
@@ -74,6 +77,138 @@ def test_invalid_existing_manifest_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(OwnershipError):
         RegistryStore(tmp_path / "home").register("Bad", project_dir)
+
+
+def test_shared_markdown_selection_persists_and_rejects_reserved_roots(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "docs").mkdir(parents=True)
+    brief = project_dir / "docs" / "brief.MD"
+    brief.write_text("Project rules\n", encoding="utf-8")
+    registry = RegistryStore(tmp_path / "home")
+    project = registry.register("Alpha", project_dir)
+    store = ProjectStore(project)
+
+    selected = store.select_shared_markdown("docs/brief.MD", 512 * 1024)
+
+    assert selected.relative_path == "docs/brief.MD"
+    assert selected.text == "Project rules\n"
+    assert selected.sha256 == sha256(b"Project rules\n").hexdigest()
+    assert store.selected_shared_markdown_path() == "docs/brief.MD"
+    registry.unregister(project.id)
+    imported = registry.register("Imported", project_dir)
+    assert ProjectStore(imported).selected_shared_markdown_path() == "docs/brief.MD"
+
+    for reserved in (".delibra/x.md", ".GIT/x.md", ".hg/x.md", ".svn/x.md"):
+        with pytest.raises(ProjectFileSecurityError):
+            ProjectStore(imported).select_shared_markdown(reserved, 512 * 1024)
+
+
+def test_shared_markdown_read_is_strict_bounded_and_clearable(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    source = project_dir / "brief.md"
+    source.write_text("123456789", encoding="utf-8")
+
+    with pytest.raises(ProjectFileDisplayError, match="limit"):
+        store.select_shared_markdown("brief.md", 8)
+    source.write_bytes(b"invalid-\xff")
+    with pytest.raises(ProjectFileDisplayError, match="UTF-8"):
+        store.select_shared_markdown("brief.md", 64)
+    source.write_bytes(b"nul\x00byte")
+    with pytest.raises(ProjectFileDisplayError, match="NUL"):
+        store.select_shared_markdown("brief.md", 64)
+
+    source.write_bytes(b"")
+    assert store.select_shared_markdown("brief.md", 64).text == ""
+    store.clear_shared_markdown()
+    assert store.selected_shared_markdown_path() is None
+    assert store.read_selected_shared_markdown(64) is None
+
+
+def test_shared_markdown_save_rejects_stale_or_symlinked_target(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    source = project_dir / "brief.md"
+    source.write_text("version one", encoding="utf-8")
+    source.chmod(0o666)
+    selected = store.select_shared_markdown("brief.md", 1024)
+
+    source.write_text("external version", encoding="utf-8")
+    with pytest.raises(ConflictError, match="changed"):
+        store.save_shared_markdown("brief.md", selected.sha256, "Delibra edit", 1024)
+    assert source.read_text() == "external version"
+
+    current = store.read_selected_shared_markdown(1024)
+    assert current is not None
+    previous_umask = os.umask(0o077)
+    try:
+        saved = store.save_shared_markdown(
+            "brief.md",
+            current.sha256,
+            "saved",
+            1024,
+        )
+    finally:
+        os.umask(previous_umask)
+    assert saved.text == "saved"
+    assert stat.S_IMODE(source.stat().st_mode) == 0o666
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    source.unlink()
+    source.symlink_to(outside)
+    with pytest.raises(ProjectFileSecurityError):
+        store.save_shared_markdown("brief.md", saved.sha256, "escape", 1024)
+    assert outside.read_text() == "outside"
+
+
+def test_shared_markdown_save_requires_current_selected_path(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    for name in ("one.md", "two.md"):
+        (project_dir / name).write_text(name, encoding="utf-8")
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    first = store.select_shared_markdown("one.md", 1024)
+    store.select_shared_markdown("two.md", 1024)
+
+    with pytest.raises(ConflictError, match="selection changed"):
+        store.save_shared_markdown("one.md", first.sha256, "stale", 1024)
+    assert (project_dir / "one.md").read_text() == "one.md"
+
+
+def test_shared_markdown_save_rejects_symlinked_parent(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    docs = project_dir / "docs"
+    docs.mkdir(parents=True)
+    source = docs / "brief.md"
+    source.write_text("inside", encoding="utf-8")
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    selected = store.select_shared_markdown("docs/brief.md", 1024)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "brief.md").write_text("outside", encoding="utf-8")
+    docs.rename(project_dir / "original-docs")
+    docs.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ProjectFileSecurityError):
+        store.save_shared_markdown(
+            "docs/brief.md",
+            selected.sha256,
+            "escape",
+            1024,
+        )
+
+    assert (outside / "brief.md").read_text(encoding="utf-8") == "outside"
 
 
 def test_project_store_round_trip_allocation_exact_scans_and_orphans(tmp_path: Path) -> None:

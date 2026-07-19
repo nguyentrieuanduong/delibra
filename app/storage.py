@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
@@ -33,6 +33,9 @@ ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 OUTPUT_PATTERN = re.compile(r"^round-(\d{2,})\.md$")
 PROMPT_PATTERN = re.compile(r"^round-(\d{2,})\.prompt\.md$")
 PARTIAL_PATTERN = re.compile(r"^round-(\d{2,})\.partial\.md$")
+SHARED_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+RESERVED_SHARED_ROOTS = frozenset({".delibra", ".git", ".hg", ".svn"})
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class StorageError(RuntimeError):
@@ -77,6 +80,13 @@ class ProjectFileContents:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class ProjectMarkdown:
+    relative_path: str
+    text: str
+    sha256: str
+
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -105,6 +115,18 @@ def project_path_parts(value: str) -> tuple[str, ...]:
     if any(part == ".." for part in raw_parts):
         raise ProjectFileSecurityError("invalid project file path")
     return tuple(part for part in raw_parts if part not in {"", "."})
+
+
+def shared_markdown_path_parts(value: str) -> tuple[str, ...]:
+    parts = project_path_parts(value)
+    if not parts:
+        raise ProjectFileSecurityError("invalid shared Markdown path")
+    if parts[0].casefold() in RESERVED_SHARED_ROOTS:
+        raise ProjectFileSecurityError("reserved shared Markdown path")
+    suffix = PurePosixPath("/".join(parts)).suffix.casefold()
+    if suffix not in SHARED_MARKDOWN_SUFFIXES:
+        raise ProjectFileSecurityError("shared file must be Markdown")
+    return parts
 
 
 def _project_directory_flags() -> int:
@@ -231,24 +253,141 @@ def _open_project_file(root: Path, parts: tuple[str, ...]) -> Iterator[int]:
             os.close(file_descriptor)
 
 
+def _read_bounded_descriptor(descriptor: int, limit: int) -> ProjectFileContents:
+    remaining = limit + 1
+    blocks: list[bytes] = []
+    while remaining:
+        block = os.read(descriptor, min(64 * 1024, remaining))
+        if not block:
+            break
+        blocks.append(block)
+        remaining -= len(block)
+    captured = b"".join(blocks)
+    return ProjectFileContents(captured[:limit], len(captured) > limit)
+
+
 def read_project_file(root: Path, relative_path: str, limit: int) -> ProjectFileContents:
     parts = project_path_parts(relative_path)
     if not parts:
         raise ProjectFileDisplayError("file cannot be displayed")
     with _open_project_file(root, parts) as file_descriptor:
         try:
-            remaining = limit + 1
-            blocks: list[bytes] = []
-            while remaining:
-                block = os.read(file_descriptor, min(64 * 1024, remaining))
-                if not block:
-                    break
-                blocks.append(block)
-                remaining -= len(block)
-            captured = b"".join(blocks)
-            return ProjectFileContents(captured[:limit], len(captured) > limit)
+            return _read_bounded_descriptor(file_descriptor, limit)
         except OSError as exc:
             raise ProjectFileDisplayError("file cannot be displayed") from exc
+
+
+def read_project_markdown(
+    root: Path,
+    relative_path: str,
+    limit: int,
+) -> ProjectMarkdown:
+    parts = shared_markdown_path_parts(relative_path)
+    normalized = "/".join(parts)
+    contents = read_project_file(root, normalized, limit)
+    if contents.truncated:
+        raise ProjectFileDisplayError("shared Markdown exceeds the view limit")
+    if b"\x00" in contents.data:
+        raise ProjectFileDisplayError("shared Markdown contains NUL")
+    try:
+        text = contents.data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProjectFileDisplayError("shared Markdown is not valid UTF-8") from exc
+    return ProjectMarkdown(normalized, text, sha256(contents.data).hexdigest())
+
+
+def _replace_project_file(
+    root: Path,
+    relative_path: str,
+    expected_sha256: str,
+    data: bytes,
+    limit: int,
+) -> None:
+    parts = shared_markdown_path_parts(relative_path)
+    leaf = parts[-1]
+    temporary = f".delibra-save-{uuid4().hex}.tmp"
+    source_descriptor: int | None = None
+    temporary_descriptor: int | None = None
+    temporary_exists = False
+    with _open_project_directory(root, parts[:-1]) as directory_descriptor:
+        try:
+            before = os.stat(leaf, dir_fd=directory_descriptor, follow_symlinks=False)
+            if stat.S_ISLNK(before.st_mode):
+                raise ProjectFileSecurityError("symlinked project path rejected")
+            if not stat.S_ISREG(before.st_mode):
+                raise ProjectFileDisplayError(
+                    "shared Markdown is not a regular file"
+                )
+            source_descriptor = os.open(
+                leaf,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=directory_descriptor,
+            )
+            opened = os.fstat(source_descriptor)
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise ProjectFileSecurityError("project path changed during access")
+            current = _read_bounded_descriptor(source_descriptor, limit)
+            if current.truncated:
+                raise ConflictError("shared Markdown changed; reload before saving")
+            if sha256(current.data).hexdigest() != expected_sha256:
+                raise ConflictError("shared Markdown changed; reload before saving")
+            after_read = os.fstat(source_descriptor)
+            observed = (
+                after_read.st_dev,
+                after_read.st_ino,
+                after_read.st_size,
+                after_read.st_mtime_ns,
+            )
+            temporary_descriptor = os.open(
+                temporary,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
+                stat.S_IMODE(opened.st_mode) & 0o777,
+                dir_fd=directory_descriptor,
+            )
+            temporary_exists = True
+            os.fchmod(temporary_descriptor, stat.S_IMODE(opened.st_mode) & 0o777)
+            view = memoryview(data)
+            while view:
+                written = os.write(temporary_descriptor, view)
+                view = view[written:]
+            os.fsync(temporary_descriptor)
+            os.close(temporary_descriptor)
+            temporary_descriptor = None
+            latest = os.stat(leaf, dir_fd=directory_descriptor, follow_symlinks=False)
+            current_identity = (
+                latest.st_dev,
+                latest.st_ino,
+                latest.st_size,
+                latest.st_mtime_ns,
+            )
+            if current_identity != observed:
+                raise ConflictError("shared Markdown changed; reload before saving")
+            os.replace(
+                temporary,
+                leaf,
+                src_dir_fd=directory_descriptor,
+                dst_dir_fd=directory_descriptor,
+            )
+            temporary_exists = False
+            os.fsync(directory_descriptor)
+        except (ConflictError, ProjectFileDisplayError, ProjectFileSecurityError):
+            raise
+        except OSError as exc:
+            raise StorageError("failed to save shared Markdown") from exc
+        finally:
+            if source_descriptor is not None:
+                os.close(source_descriptor)
+            if temporary_descriptor is not None:
+                os.close(temporary_descriptor)
+            if temporary_exists:
+                try:
+                    os.unlink(temporary, dir_fd=directory_descriptor)
+                except FileNotFoundError:
+                    pass
 
 
 def _fsync_directory(path: Path) -> None:
@@ -622,17 +761,82 @@ class ProjectStore:
         self.project_path = Path(project.path).resolve(strict=True)
         self.root = self.project_path / ".delibra"
         _assert_no_symlink_components(self.root, self.root, allow_missing_leaf=False)
-        manifest_path = self.root / "manifest.json"
+        self.manifest_path = self.root / "manifest.json"
         _assert_no_symlink_components(
-            manifest_path,
+            self.manifest_path,
             self.root,
             allow_missing_leaf=False,
         )
-        manifest = load_json_recover(manifest_path)
-        if manifest.get("format") != FORMAT or manifest.get("id") != project.id:
-            raise OwnershipError("project manifest identity does not match registry")
+        self._load_manifest()
         self.sessions_root = self.root / "sessions"
         ensure_owned_directory(self.sessions_root, self.root)
+
+    def _load_manifest(self) -> dict[str, Any]:
+        manifest = load_json_recover(self.manifest_path)
+        if not isinstance(manifest, dict):
+            raise OwnershipError("project manifest has an invalid shape")
+        if manifest.get("format") != FORMAT or manifest.get("id") != self.project.id:
+            raise OwnershipError("project manifest identity does not match registry")
+        selected = manifest.get("shared_markdown_path")
+        if selected is not None and not isinstance(selected, str):
+            raise OwnershipError("project shared Markdown path is invalid")
+        return manifest
+
+    def selected_shared_markdown_path(self) -> str | None:
+        selected = self._load_manifest().get("shared_markdown_path")
+        if selected is None:
+            return None
+        return "/".join(shared_markdown_path_parts(selected))
+
+    def select_shared_markdown(
+        self,
+        relative_path: str,
+        limit: int,
+    ) -> ProjectMarkdown:
+        document = read_project_markdown(self.project_path, relative_path, limit)
+        manifest = self._load_manifest()
+        manifest["shared_markdown_path"] = document.relative_path
+        atomic_write_json(self.manifest_path, manifest)
+        return document
+
+    def clear_shared_markdown(self) -> None:
+        manifest = self._load_manifest()
+        manifest.pop("shared_markdown_path", None)
+        atomic_write_json(self.manifest_path, manifest)
+
+    def read_selected_shared_markdown(self, limit: int) -> ProjectMarkdown | None:
+        selected = self.selected_shared_markdown_path()
+        if selected is None:
+            return None
+        return read_project_markdown(self.project_path, selected, limit)
+
+    def save_shared_markdown(
+        self,
+        relative_path: str,
+        expected_sha256: str,
+        text: str,
+        limit: int,
+    ) -> ProjectMarkdown:
+        normalized = "/".join(shared_markdown_path_parts(relative_path))
+        if normalized != self.selected_shared_markdown_path():
+            raise ConflictError(
+                "shared Markdown selection changed; reload before saving"
+            )
+        if not SHA256_PATTERN.fullmatch(expected_sha256):
+            raise ProjectFileSecurityError("invalid shared Markdown digest")
+        encoded = text.encode("utf-8")
+        if b"\x00" in encoded:
+            raise ProjectFileDisplayError("shared Markdown contains NUL")
+        if len(encoded) > limit:
+            raise ProjectFileDisplayError("shared Markdown exceeds the view limit")
+        _replace_project_file(
+            self.project_path,
+            normalized,
+            expected_sha256,
+            encoded,
+            limit,
+        )
+        return read_project_markdown(self.project_path, normalized, limit)
 
     def session_dir(self, session_id: str) -> Path:
         validate_id(session_id, "session id")
