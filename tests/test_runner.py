@@ -803,6 +803,43 @@ async def test_final_write_failure_marks_error_and_preserves_partial(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_auto_discussion_final_write_error_has_no_verdict(
+    tmp_path: Path,
+) -> None:
+    def failing_final_writer(path: Path, contents: str) -> None:
+        if path.name == "round-01.md":
+            raise StorageError("disk unavailable")
+        atomic_write_text(path, contents)
+
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        final_writer=failing_final_writer,
+    )
+    auto_record = create_runner_auto_record(
+        store,
+        session_id,
+        status="discussing",
+    )
+    manager.adapter_factory = lambda _config: AutoVerdictAdapter("AGREE", [])
+
+    async with manager.locks.registry_project_sessions(
+        project_id,
+        [session_id],
+    ):
+        key = await manager.start_auto_locked(
+            project_id,
+            session_id,
+            auto_run_request(store, auto_record, phase="discussion"),
+        )
+    record = await manager.wait(key)
+
+    assert record.status == "error"
+    assert record.auto is not None
+    assert record.auto.verdict is None
+    assert "persist final output" in (record.error or "")
+
+
+@pytest.mark.asyncio
 async def test_total_metadata_loss_still_emits_error_and_keeps_partial(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -824,6 +861,46 @@ async def test_total_metadata_loss_still_emits_error_and_keeps_partial(
     assert any(event.kind == "error" for event in events)
     assert events[-1].kind == "done"
     assert (store.rounds_dir(session_id) / "round-01.partial.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_auto_discussion_metadata_error_has_no_verdict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    auto_record = create_runner_auto_record(
+        store,
+        session_id,
+        status="discussing",
+    )
+    manager.adapter_factory = lambda _config: AutoVerdictAdapter("AGREE", [])
+    original_save = ProjectStore.save_session
+
+    def fail_terminal_save(
+        self: ProjectStore,
+        config: SessionConfig,
+    ) -> None:
+        if config.status != "running":
+            raise StorageError("metadata volume unavailable")
+        original_save(self, config)
+
+    monkeypatch.setattr(ProjectStore, "save_session", fail_terminal_save)
+    async with manager.locks.registry_project_sessions(
+        project_id,
+        [session_id],
+    ):
+        key = await manager.start_auto_locked(
+            project_id,
+            session_id,
+            auto_run_request(store, auto_record, phase="discussion"),
+        )
+    record = await manager.wait(key)
+
+    assert record.status == "error"
+    assert record.auto is not None
+    assert record.auto.verdict is None
+    assert "terminal metadata" in (record.error or "")
 
 
 @pytest.mark.asyncio
