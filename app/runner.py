@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 import json
 import logging
 import os
@@ -24,6 +26,8 @@ from app.models import (
     SessionConfig,
     SharedContextDescriptor,
     SourceDescriptor,
+    TimeoutExtensionRecord,
+    TimeoutRecord,
 )
 from app.storage import (
     ConflictError,
@@ -85,6 +89,10 @@ class ActiveRun:
     partial_path: Path
     output_path: Path
     completion: asyncio.Future[RoundRecord]
+    started_monotonic: float
+    deadline_monotonic: float
+    hard_deadline_monotonic: float
+    deadline_changed: asyncio.Event
     task: asyncio.Task[None] | None = None
     captured: bytearray = field(default_factory=bytearray)
     stderr_tail: bytearray = field(default_factory=bytearray)
@@ -92,6 +100,7 @@ class ActiveRun:
     warnings: list[str] = field(default_factory=list)
     cli_session_id: str | None = None
     cancel_requested: bool = False
+    timeout_claimed: bool = False
     finalized: bool = False
     next_event_id: int = 1
     replay: deque[StreamEvent] = field(default_factory=deque)
@@ -104,6 +113,13 @@ class CompletedRun:
     record: RoundRecord
     events: tuple[StreamEvent, ...]
     snapshot: str
+
+
+@dataclass(frozen=True)
+class TimeoutExtensionResult:
+    timeout: TimeoutRecord
+    max_addition_seconds: int
+    auto_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +148,20 @@ class RunManager:
         self.final_writer = final_writer
         self._active: dict[RunKey, ActiveRun] = {}
         self._completed: dict[RunKey, CompletedRun] = {}
+
+    @staticmethod
+    def _display_deadline_after(seconds: int) -> str:
+        return (
+            datetime.now(UTC) + timedelta(seconds=seconds)
+        ).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _extend_display_deadline(value: str, seconds: int) -> str:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return (parsed + timedelta(seconds=seconds)).isoformat().replace(
+            "+00:00",
+            "Z",
+        )
 
     async def start(
         self,
@@ -435,6 +465,12 @@ class RunManager:
             source=record_source,
             shared_context=shared_context,
             retry_of=request.retry_of,
+            timeout=TimeoutRecord(
+                initial_seconds=self.settings.run_timeout,
+                effective_seconds=self.settings.run_timeout,
+                hard_cap_seconds=self.settings.max_run_timeout,
+                deadline_at=self._display_deadline_after(self.settings.run_timeout),
+            ),
         )
 
         try:
@@ -449,7 +485,9 @@ class RunManager:
             self._cleanup_input_root(input_root)
             raise
 
-        completion = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        completion = loop.create_future()
+        started_monotonic = loop.time()
         active = ActiveRun(
             key=key,
             project=project,
@@ -461,6 +499,12 @@ class RunManager:
             partial_path=partial_path,
             output_path=output_path,
             completion=completion,
+            started_monotonic=started_monotonic,
+            deadline_monotonic=started_monotonic + self.settings.run_timeout,
+            hard_deadline_monotonic=(
+                started_monotonic + self.settings.max_run_timeout
+            ),
+            deadline_changed=asyncio.Event(),
             warnings=list(record.warnings),
         )
         self._active[key] = active
@@ -670,19 +714,18 @@ class RunManager:
             stdout_task = asyncio.create_task(self._consume_stdout(active))
             stderr_task = asyncio.create_task(self._consume_stderr(active))
             wait_task = asyncio.create_task(process.wait())
-            tasks = {stdout_task, stderr_task, wait_task}
-            done, pending = await asyncio.wait(
-                tasks,
-                timeout=self.settings.run_timeout,
+            await self._wait_for_process_or_deadline(active, wait_task)
+            results = await asyncio.gather(
+                stdout_task,
+                stderr_task,
+                wait_task,
+                return_exceptions=True,
             )
-            if pending:
-                active.errors.append(
-                    f"agent timed out after {self.settings.run_timeout} seconds"
-                )
-                await self._terminate(active)
-                await asyncio.gather(*pending, return_exceptions=True)
-            for task in done:
-                exception = task.exception()
+            for result in results:
+                if isinstance(result, BaseException):
+                    exception = result
+                else:
+                    exception = None
                 if exception is not None:
                     active.errors.append(f"agent stream failed: {exception}")
                     await self._terminate(active)
@@ -696,6 +739,52 @@ class RunManager:
             await self._terminate(active)
             returncode = process.returncode
         await self._finalize(active, returncode)
+
+    async def _wait_for_process_or_deadline(
+        self,
+        active: ActiveRun,
+        wait_task: asyncio.Task[int],
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        while not wait_task.done():
+            remaining = max(0.0, active.deadline_monotonic - loop.time())
+            changed = asyncio.create_task(active.deadline_changed.wait())
+            done, _ = await asyncio.wait(
+                {wait_task, changed},
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if wait_task in done:
+                changed.cancel()
+                await asyncio.gather(changed, return_exceptions=True)
+                return
+            if changed in done:
+                active.deadline_changed.clear()
+                continue
+            changed.cancel()
+            await asyncio.gather(changed, return_exceptions=True)
+            async with self.locks.sessions(
+                active.key.project_id,
+                [active.key.session_id],
+            ):
+                if wait_task.done() or active.process is None:
+                    return
+                if active.process.returncode is not None:
+                    return
+                if loop.time() < active.deadline_monotonic:
+                    continue
+                if active.deadline_changed.is_set():
+                    active.deadline_changed.clear()
+                    continue
+                if active.cancel_requested or active.finalized:
+                    return
+                active.timeout_claimed = True
+                timeout = active.record.timeout
+                effective = timeout.effective_seconds if timeout is not None else 0
+                active.errors.append(f"agent timed out after {effective} seconds")
+            await self._terminate(active)
+            await asyncio.shield(wait_task)
+            return
 
     async def _consume_stdout(self, active: ActiveRun) -> None:
         process = active.process
@@ -1038,6 +1127,83 @@ class RunManager:
         if completed is not None:
             return completed.record
         return self._completed_from_disk(key).record
+
+    def timeout_snapshot(self, key: RunKey) -> TimeoutRecord:
+        active = self._active.get(key)
+        if active is not None and active.record.timeout is not None:
+            return deepcopy(active.record.timeout)
+        completed = self._completed.get(key)
+        record = completed.record if completed is not None else self._completed_from_disk(key).record
+        if record.timeout is None:
+            raise ConflictError("round has no timeout metadata")
+        return deepcopy(record.timeout)
+
+    async def extend_timeout(
+        self,
+        key: RunKey,
+        minutes: int,
+        scope: str,
+        expected_version: int,
+    ) -> TimeoutExtensionResult:
+        if type(minutes) is not int or not 1 <= minutes <= 240:
+            raise StorageError("timeout extension minutes must be from 1 through 240")
+        if scope != "current":
+            raise ConflictError("timeout extension scope is not available")
+        if type(expected_version) is not int or expected_version < 0:
+            raise StorageError("timeout extension version is invalid")
+        async with self.locks.sessions(key.project_id, [key.session_id]):
+            active = self._active.get(key)
+            if active is None or active.record.timeout is None:
+                raise ConflictError("round is not active")
+            process = active.process
+            if (
+                active.finalized
+                or active.cancel_requested
+                or active.timeout_claimed
+                or process is None
+                or process.returncode is not None
+            ):
+                raise ConflictError("round can no longer be extended")
+            current = active.record.timeout
+            if current.version != expected_version:
+                raise ConflictError("timeout version changed")
+            added_seconds = minutes * 60
+            effective = current.effective_seconds + added_seconds
+            if effective > current.hard_cap_seconds:
+                raise ConflictError("timeout extension exceeds the maximum")
+            updated = TimeoutRecord(
+                initial_seconds=current.initial_seconds,
+                effective_seconds=effective,
+                hard_cap_seconds=current.hard_cap_seconds,
+                deadline_at=self._extend_display_deadline(
+                    current.deadline_at,
+                    added_seconds,
+                ),
+                version=current.version + 1,
+                extensions=[
+                    *current.extensions,
+                    TimeoutExtensionRecord(
+                        added_seconds=added_seconds,
+                        scope=scope,
+                        extended_at=utc_now(),
+                    ),
+                ],
+            )
+            persisted_config = active.store.load_session(key.session_id)
+            persisted_record = next(
+                item for item in persisted_config.rounds if item.n == key.round_n
+            )
+            persisted_record.timeout = deepcopy(updated)
+            active.store.save_session(persisted_config)
+            active.config = persisted_config
+            active.record = persisted_record
+            active.deadline_monotonic += added_seconds
+            active.deadline_changed.set()
+            self._publish(active, "timeout_extended", str(updated.version))
+            return TimeoutExtensionResult(
+                timeout=deepcopy(updated),
+                max_addition_seconds=updated.hard_cap_seconds - updated.effective_seconds,
+            )
 
     def active_key(self, project_id: str, session_id: str) -> RunKey | None:
         """Return the single active run for a session, if one exists."""

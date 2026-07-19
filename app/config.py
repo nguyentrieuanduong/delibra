@@ -24,6 +24,7 @@ def _integer(name: str, default: int, *, minimum: int = 1) -> int:
 class Settings:
     home: Path
     run_timeout: int = 900
+    max_run_timeout: int = 14_400
     stdout_line_limit: int = 12 * MIB
     captured_output_limit: int = 10 * MIB
     stderr_tail_limit: int = 8 * 1024
@@ -32,6 +33,12 @@ class Settings:
     stateless_round_limit: int = 20
     request_body_limit: int = 2 * MIB
     file_view_limit: int = 512 * 1024
+
+    def __post_init__(self) -> None:
+        if self.max_run_timeout < self.run_timeout:
+            raise ValueError(
+                "DELIBRA_MAX_RUN_TIMEOUT must be at least DELIBRA_RUN_TIMEOUT"
+            )
 
     @property
     def codex_home(self) -> Path:
@@ -45,6 +52,7 @@ class Settings:
         return cls(
             home=home,
             run_timeout=_integer("DELIBRA_RUN_TIMEOUT", 900),
+            max_run_timeout=_integer("DELIBRA_MAX_RUN_TIMEOUT", 14_400),
             stdout_line_limit=_integer("DELIBRA_STDOUT_LINE_LIMIT", 12 * MIB),
             captured_output_limit=_integer("DELIBRA_OUTPUT_LIMIT", 10 * MIB),
             stderr_tail_limit=_integer("DELIBRA_STDERR_TAIL_LIMIT", 8 * 1024),
