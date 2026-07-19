@@ -15,13 +15,21 @@ from typing import Callable, Protocol
 
 from app.agents.base import AgentAdapter, AgentEvent, RunContext
 from app.config import Settings
-from app.models import Project, RoundRecord, RunKey, SessionConfig, SourceDescriptor
+from app.models import (
+    Project,
+    RoundRecord,
+    RunKey,
+    SessionConfig,
+    SharedContextDescriptor,
+    SourceDescriptor,
+)
 from app.storage import (
     ConflictError,
     LockCoordinator,
     ProjectStore,
     RegistryStore,
     StorageError,
+    atomic_write_bytes,
     atomic_write_json,
     atomic_write_text,
     ensure_owned_directory,
@@ -133,11 +141,16 @@ class RunManager:
                 raise SessionBusy("session already has a running agent")
 
             round_n = store.allocate_round(session_id)
+            shared_document = store.read_selected_shared_markdown(
+                self.settings.file_view_limit
+            )
             key = RunKey(project_id, session_id, round_n)
             workspace = store.workspace_dir(session_id)
             strategy = "native" if round_n == 1 or config.cli_session_id else "stateless"
             staged_history: list[Path] = []
             staged_source: Path | None = None
+            staged_shared_context: Path | None = None
+            shared_context: SharedContextDescriptor | None = None
             execution_prompt = prompt
             record_source = SourceDescriptor(type="user")
             try:
@@ -146,6 +159,27 @@ class RunManager:
                         store,
                         config,
                         round_n,
+                    )
+                if shared_document is not None:
+                    if input_root is None:
+                        input_root = self._create_input_root(
+                            store,
+                            session_id,
+                            round_n,
+                        )
+                    staged_shared_context = (
+                        Path("inputs")
+                        / f"round-{round_n:02d}"
+                        / "shared-context.md"
+                    )
+                    atomic_write_bytes(
+                        workspace / staged_shared_context,
+                        shared_document.text.encode("utf-8"),
+                    )
+                    shared_context = SharedContextDescriptor(
+                        path=shared_document.relative_path,
+                        staged_file=staged_shared_context.as_posix(),
+                        sha256=shared_document.sha256,
                     )
                 if source is not None:
                     source_config, source_path = self._pass_source(
@@ -184,6 +218,7 @@ class RunManager:
                 staged_history=staged_history,
                 staged_source=staged_source,
                 workspace=workspace,
+                staged_shared_context=staged_shared_context,
             )
             try:
                 adapter = self.adapter_factory(config)
@@ -210,6 +245,7 @@ class RunManager:
                 started_at=utc_now(),
                 finished_at=None,
                 source=record_source,
+                shared_context=shared_context,
             )
 
             try:

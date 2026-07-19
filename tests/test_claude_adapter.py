@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.agents.base import RunContext
 from app.agents.claude import ClaudeAdapter
 from app.models import SessionConfig
@@ -32,6 +34,28 @@ def parse_fixture(name: str) -> tuple[ClaudeAdapter, list]:
     for line in (FIXTURES / name).read_text(encoding="utf-8").splitlines():
         events.extend(adapter.parse_line(line))
     return adapter, events
+
+
+@pytest.mark.parametrize(
+    "strategy,resume_id",
+    [("native", None), ("native", "thread"), ("stateless", None)],
+)
+def test_shared_context_is_present_in_every_claude_prompt_mode(
+    strategy: str,
+    resume_id: str | None,
+) -> None:
+    run_context = RunContext(
+        user_prompt="Investigate.",
+        resume_id=resume_id,
+        resume_strategy=strategy,
+        staged_history=[],
+        staged_source=None,
+        workspace=Path("/session/workspace"),
+        staged_shared_context=Path("inputs/round-02/shared-context.md"),
+    )
+    command = ClaudeAdapter().build_command(config(), run_context)
+    assert command.stdin.count("inputs/round-02/shared-context.md") == 1
+    assert "standing requirements" in command.stdin
 
 
 def test_fixture_extracts_session_deltas_progress_and_final_without_duplication() -> None:

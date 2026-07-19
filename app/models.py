@@ -48,6 +48,24 @@ class SourceDescriptor:
         return {key: value for key, value in asdict(self).items() if value is not None}
 
 
+@dataclass(frozen=True)
+class SharedContextDescriptor:
+    path: str
+    staged_file: str
+    sha256: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SharedContextDescriptor":
+        return cls(
+            str(data["path"]),
+            str(data["staged_file"]),
+            str(data["sha256"]),
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
 @dataclass
 class RoundRecord:
     n: int
@@ -60,6 +78,8 @@ class RoundRecord:
     started_at: str
     finished_at: str | None
     source: SourceDescriptor
+    shared_context: SharedContextDescriptor | None = None
+    retry_of: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RoundRecord":
@@ -74,11 +94,27 @@ class RoundRecord:
             started_at=str(data["started_at"]),
             finished_at=data.get("finished_at"),
             source=SourceDescriptor.from_dict(data.get("source", {"type": "user"})),
+            shared_context=(
+                SharedContextDescriptor.from_dict(data["shared_context"])
+                if data.get("shared_context") is not None
+                else None
+            ),
+            retry_of=(
+                int(data["retry_of"])
+                if data.get("retry_of") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["source"] = self.source.to_dict()
+        if self.shared_context is None:
+            result.pop("shared_context", None)
+        else:
+            result["shared_context"] = self.shared_context.to_dict()
+        if self.retry_of is None:
+            result.pop("retry_of", None)
         return result
 
 
