@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.runner import RunManager, SessionBusy
 from app.storage import (
+    ConflictError,
     LockCoordinator,
     ProjectFileDisplayError,
     ProjectStore,
@@ -529,6 +530,59 @@ async def test_timeout_cancel_and_shutdown_finalize_without_orphan_processes(tmp
     shutdown_key = await manager.start(project_id, shutdown_id, "Question")
     await manager.shutdown()
     assert (await manager.wait(shutdown_key)).status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_timeout_extension_adds_to_old_deadline_and_persists_before_wake(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        mode="sleep",
+        settings_transform=lambda value: replace(
+            value,
+            run_timeout=1,
+            max_run_timeout=180,
+        ),
+    )
+    key = await manager.start(project_id, session_id, "Question")
+    before = manager.timeout_snapshot(key)
+
+    result = await manager.extend_timeout(key, 1, "current", before.version)
+
+    assert result.timeout.effective_seconds == before.effective_seconds + 60
+    assert result.timeout.version == 1
+    persisted = store.load_session(session_id).rounds[-1].timeout
+    assert persisted == result.timeout
+    await manager.cancel(key)
+
+
+@pytest.mark.asyncio
+async def test_timeout_extension_rejects_stale_over_cap_and_claimed_runs(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, _ = setup_manager(
+        tmp_path,
+        mode="sleep",
+        settings_transform=lambda value: replace(
+            value,
+            run_timeout=1,
+            max_run_timeout=61,
+        ),
+    )
+    key = await manager.start(project_id, session_id, "Question")
+    initial = manager.timeout_snapshot(key)
+    try:
+        await manager.extend_timeout(key, 1, "current", initial.version)
+        with pytest.raises(ConflictError, match="version"):
+            await manager.extend_timeout(key, 1, "current", initial.version)
+        with pytest.raises(ConflictError, match="maximum"):
+            await manager.extend_timeout(key, 1, "current", 1)
+        manager._active[key].timeout_claimed = True
+        with pytest.raises(ConflictError, match="no longer"):
+            await manager.extend_timeout(key, 1, "current", 1)
+    finally:
+        await manager.cancel(key)
 
 
 @pytest.mark.asyncio
