@@ -405,6 +405,28 @@ async def test_auto_run_rejects_context_digest_change_before_round_allocation(
     assert not (store.workspace_dir(session_id) / "inputs/round-01").exists()
 
 
+@pytest.mark.asyncio
+async def test_auto_owner_can_start_only_the_expected_participant(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    auto_record = create_runner_auto_record(store, session_id, status="preparing")
+    unexpected_session_id = auto_record.participants[1].session_id
+
+    with pytest.raises(ConflictError, match="participant configuration changed"):
+        async with manager.locks.registry_project_sessions(
+            project_id,
+            [unexpected_session_id],
+        ):
+            await manager.start_auto_locked(
+                project_id,
+                unexpected_session_id,
+                auto_run_request(store, auto_record, phase="preparation"),
+            )
+
+    assert store.load_session(unexpected_session_id).rounds == []
+
+
 def test_generic_retry_rejects_auto_rounds() -> None:
     config = session()
     config.rounds.append(
@@ -424,6 +446,52 @@ def test_generic_retry_rejects_auto_rounds() -> None:
 
     with pytest.raises(ConflictError, match="unsupported"):
         RunManager._retry_record(config, 1)
+
+
+@pytest.mark.asyncio
+async def test_active_auto_reservation_blocks_manual_start_and_retry(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    rounds = store.rounds_dir(session_id)
+    (rounds / "round-01.prompt.md").write_text("Retry prompt")
+    (rounds / "round-01.md").write_text("Failed output")
+    config.rounds.append(
+        RoundRecord(
+            n=1,
+            status="error",
+            error="provider failed",
+            warnings=[],
+            agent="fake",
+            model="success",
+            effort="low",
+            started_at="2026-07-19T00:00:00Z",
+            finished_at="2026-07-19T00:00:01Z",
+            source=SourceDescriptor(type="user"),
+        )
+    )
+    store.save_session(config)
+    create_runner_auto_record(store, session_id, status="preparing")
+
+    with pytest.raises(ConflictError, match="active Auto"):
+        await manager.start(project_id, session_id, "Manual request")
+    with pytest.raises(ConflictError, match="active Auto"):
+        await manager.retry(project_id, session_id, 1)
+
+
+@pytest.mark.asyncio
+async def test_active_auto_reservation_blocks_public_cancel(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="sleep")
+    key = await manager.start(project_id, session_id, "Keep running")
+    auto_record = create_runner_auto_record(store, session_id, status="preparing")
+
+    with pytest.raises(ConflictError, match="active Auto"):
+        await manager.cancel(key)
+
+    assert manager.active_key(project_id, session_id) == key
+    store.clear_auto_reservation(auto_record.id)
+    await manager.cancel(key)
 
 
 @pytest.mark.asyncio

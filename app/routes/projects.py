@@ -50,6 +50,7 @@ async def rename_project(
     name = validate_name(name)
     async with request.app.state.locks.registry_project_sessions(project_id):
         project = request.app.state.registry.get(project_id)
+        ProjectStore(project).require_auto_inactive()
         _reject_running_sessions(project)
         request.app.state.registry.rename(project_id, name)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
@@ -59,6 +60,7 @@ async def rename_project(
 async def unregister_project(request: Request, project_id: str):
     async with request.app.state.locks.registry_project_sessions(project_id):
         project = request.app.state.registry.get(project_id)
+        ProjectStore(project).require_auto_inactive()
         _reject_running_sessions(project)
         request.app.state.registry.unregister(project_id)
     return RedirectResponse("/", status_code=303)

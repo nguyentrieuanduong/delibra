@@ -236,9 +236,7 @@ class RunManager:
         request: AutoRunRequest,
     ) -> AutoRunRecord:
         validate_id(request.auto_id, "Auto run id")
-        if store.active_auto_run_id() != request.auto_id:
-            raise ConflictError("Auto run does not own the active reservation")
-        record = store.load_auto_run(request.auto_id)
+        record = store.require_auto_owner(request.auto_id)
         if request.phase not in {"preparation", "discussion"}:
             raise StorageError("Auto phase is invalid")
         expected_status = (
@@ -434,6 +432,8 @@ class RunManager:
             if auto_request is not None
             else None
         )
+        if auto_request is None:
+            store.require_auto_inactive()
         if config.status == "running" or any(
             key.project_id == project_id and key.session_id == session_id
             for key in self._active
@@ -1437,11 +1437,11 @@ class RunManager:
     ) -> TimeoutExtensionResult:
         if type(minutes) is not int or not 1 <= minutes <= 240:
             raise StorageError("timeout extension minutes must be from 1 through 240")
-        if scope != "current":
-            raise ConflictError("timeout extension scope is not available")
+        if scope not in {"current", "current_and_future_auto"}:
+            raise StorageError("timeout extension scope is invalid")
         if type(expected_version) is not int or expected_version < 0:
             raise StorageError("timeout extension version is invalid")
-        async with self.locks.sessions(key.project_id, [key.session_id]):
+        async with self.locks.project_sessions(key.project_id, [key.session_id]):
             active = self._active.get(key)
             if active is None or active.record.timeout is None:
                 raise ConflictError("round is not active")
@@ -1455,6 +1455,10 @@ class RunManager:
             ):
                 raise ConflictError("round can no longer be extended")
             current = active.record.timeout
+            descriptor = active.record.auto
+            auto_id = descriptor.auto_id if descriptor is not None else None
+            if scope == "current_and_future_auto" and auto_id is None:
+                raise ConflictError("timeout extension scope is not available")
             if current.version != expected_version:
                 raise ConflictError("timeout version changed")
             added_seconds = minutes * 60
@@ -1479,20 +1483,45 @@ class RunManager:
                     ),
                 ],
             )
-            persisted_config = active.store.load_session(key.session_id)
-            persisted_record = next(
-                item for item in persisted_config.rounds if item.n == key.round_n
-            )
-            persisted_record.timeout = deepcopy(updated)
-            active.store.save_session(persisted_config)
-            active.config = persisted_config
-            active.record = persisted_record
+            if auto_id is not None:
+                auto_record = active.store.require_auto_owner(auto_id)
+                if (
+                    auto_record.stop_requested
+                    or auto_record.active_key != key
+                    or auto_record.active_timeout != current
+                ):
+                    raise ConflictError("Auto active timeout changed")
+                future_timeout = auto_record.future_turn_timeout_seconds
+                if scope == "current_and_future_auto":
+                    future_timeout += added_seconds
+                    if future_timeout > current.hard_cap_seconds:
+                        raise ConflictError("future Auto timeout exceeds the maximum")
+                auto_record.active_timeout = deepcopy(updated)
+                auto_record.future_turn_timeout_seconds = future_timeout
+                active.store.save_auto_run(auto_record)
+                active.record.timeout = deepcopy(updated)
+                persisted_record = next(
+                    item
+                    for item in active.config.rounds
+                    if item.n == key.round_n
+                )
+                persisted_record.timeout = deepcopy(updated)
+            else:
+                persisted_config = active.store.load_session(key.session_id)
+                persisted_record = next(
+                    item for item in persisted_config.rounds if item.n == key.round_n
+                )
+                persisted_record.timeout = deepcopy(updated)
+                active.store.save_session(persisted_config)
+                active.config = persisted_config
+                active.record = persisted_record
             active.deadline_monotonic += added_seconds
             active.deadline_changed.set()
             self._publish(active, "timeout_extended", str(updated.version))
             return TimeoutExtensionResult(
                 timeout=deepcopy(updated),
                 max_addition_seconds=updated.hard_cap_seconds - updated.effective_seconds,
+                auto_id=auto_id,
             )
 
     def active_key(self, project_id: str, session_id: str) -> RunKey | None:
@@ -1510,8 +1539,38 @@ class RunManager:
         active = self._active.get(key)
         if active is None:
             return
-        async with self.locks.sessions(key.project_id, [key.session_id]):
+        async with self.locks.project_sessions(key.project_id, [key.session_id]):
+            project = self.registry.get(key.project_id)
+            ProjectStore(project).require_auto_inactive()
             active.cancel_requested = True
+        await self._terminate(active)
+        await asyncio.shield(active.completion)
+
+    def claim_auto_cancel_locked(self, key: RunKey, auto_id: str) -> bool:
+        """Claim cancellation for the exact Auto-owned active run under its locks."""
+
+        active = self._active.get(key)
+        if active is None:
+            return False
+        descriptor = active.record.auto
+        if descriptor is None or descriptor.auto_id != auto_id:
+            raise ConflictError("active run is not owned by this Auto run")
+        process = active.process
+        if (
+            active.finalized
+            or active.timeout_claimed
+            or process is None
+            or process.returncode is not None
+        ):
+            return False
+        active.cancel_requested = True
+        return True
+
+    async def finish_auto_cancel(self, key: RunKey) -> None:
+        active = self._active.get(key)
+        if active is None:
+            await self.wait(key)
+            return
         await self._terminate(active)
         await asyncio.shield(active.completion)
 

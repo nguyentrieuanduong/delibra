@@ -152,6 +152,26 @@ def test_auto_store_publishes_and_clears_exact_manifest_reservation(
     assert store.active_auto_run_id() is None
 
 
+def test_auto_store_reservation_guards_require_inactive_or_exact_active_owner(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    store.require_auto_inactive()
+    with pytest.raises(ConflictError, match="does not own"):
+        store.require_auto_owner(record.id)
+
+    store.publish_auto_reservation(record.id)
+
+    with pytest.raises(ConflictError, match="active Auto"):
+        store.require_auto_inactive()
+    assert store.require_auto_owner(record.id).id == record.id
+    with pytest.raises(ConflictError, match="does not own"):
+        store.require_auto_owner("d" * 32)
+
+
 def test_auto_store_rejects_digest_and_symlink_tampering(tmp_path: Path) -> None:
     store = auto_project_store(tmp_path)
     record = auto_record_fixture(store.project.id)

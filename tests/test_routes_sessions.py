@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 import sys
 from urllib.parse import parse_qs, urlsplit
@@ -389,3 +390,47 @@ def test_delete_rejects_running_session_and_removes_idle_owned_session(
         assert deleted.status_code == 303
         assert deleted.headers["location"] == f"/projects/{project.id}"
     assert not store.session_dir(session_id).exists()
+
+
+def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_files(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    shared = Path(project.path) / "shared.md"
+    shared.write_text("Original shared context", encoding="utf-8")
+    with client:
+        first = created_session_id(create_session(client, project.id, name="Alpha"))
+        create_session(client, project.id, name="Beta", agent="codex", effort="low")
+        reserve_auto_run(store)
+
+        assert create_session(client, project.id, name="Blocked").status_code == 409
+        assert client.post(
+            f"/projects/{project.id}/sessions/{first}/edit",
+            data={"name": "Blocked edit"},
+            follow_redirects=False,
+        ).status_code == 409
+        assert client.post(
+            f"/projects/{project.id}/sessions/{first}/delete",
+            follow_redirects=False,
+        ).status_code == 409
+
+        selected = client.post(
+            f"/projects/{project.id}/files/shared/select",
+            data={"path": "shared.md"},
+        )
+        assert selected.status_code == 200
+        saved = client.post(
+            f"/projects/{project.id}/files/shared/save",
+            data={
+                "path": "shared.md",
+                "expected_sha256": sha256(
+                    b"Original shared context"
+                ).hexdigest(),
+                "text": "Updated during Auto",
+            },
+        )
+        assert saved.status_code == 200
+
+    assert shared.read_text(encoding="utf-8") == "Updated during Auto"
+    assert len(store.list_sessions()) == 2

@@ -401,3 +401,30 @@ def test_pass_rejects_invalid_cross_project_incomplete_and_busy_target(
         )
         assert busy.status_code == 409
         assert client.post(f"{target_base}/cancel").status_code == 200
+
+
+def test_active_auto_reservation_blocks_pass_and_retry(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, _, project, store, source, target, _, _ = setup(tmp_path)
+    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    source_base = f"/projects/{project.id}/sessions/{source.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        create_failed_pass(client, project, store, source, target)
+        make_target_retryable(store, target)
+        reserve_auto_run(store, auto_id="f" * 32)
+
+        passed = client.post(
+            f"{source_base}/pass",
+            data={
+                "source_round": 1,
+                "target_session_id": target.id,
+                "instruction": "Blocked",
+            },
+        )
+        retried = client.post(f"{target_base}/rounds/1/retry")
+
+    assert passed.status_code == 409
+    assert retried.status_code == 409
+    assert len(store.load_session(target.id).rounds) == 1

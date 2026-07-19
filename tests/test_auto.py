@@ -31,11 +31,20 @@ from app.models import (
     AutoRoundDescriptor,
     AutoRunRecord,
     RoundRecord,
+    RunKey,
     SessionConfig,
     SourceDescriptor,
+    TimeoutRecord,
 )
 from app.runner import RunManager
-from app.storage import LockCoordinator, ProjectStore, RegistryStore, StorageError
+from app.storage import (
+    ConflictError,
+    LockCoordinator,
+    ProjectStore,
+    RegistryStore,
+    StorageError,
+    atomic_write_json,
+)
 
 
 AUTO_ID = "a" * 32
@@ -145,6 +154,8 @@ class PlannedOutput:
     content: str
     decision: str | None = None
     provider_error: bool = False
+    delay: float = 0.01
+    sleep: bool = False
 
 
 class RecordingAutoAdapter:
@@ -192,9 +203,22 @@ class RecordingAutoAdapter:
                 ),
             }
         )
-        mode = "provider-error" if self.output.provider_error else "success"
+        mode = (
+            "sleep"
+            if self.output.sleep
+            else "provider-error"
+            if self.output.provider_error
+            else "success"
+        )
         return Command(
-            [sys.executable, str(FAKE_CLI), "--mode", mode],
+            [
+                sys.executable,
+                str(FAKE_CLI),
+                "--mode",
+                mode,
+                "--delay",
+                str(self.output.delay),
+            ],
             context.user_prompt,
         )
 
@@ -302,6 +326,82 @@ async def wait_for_auto_terminal(
             return record
         await asyncio.sleep(0.01)
     raise AssertionError("Auto run did not reach a terminal state")
+
+
+async def wait_for_active_auto_key(
+    manager: AutoManager,
+    project_id: str,
+    auto_id: str,
+    *,
+    excluded_session: str | None = None,
+):
+    for _ in range(300):
+        record = manager.get(project_id, auto_id)
+        if record.active_key is not None and (
+            excluded_session is None
+            or record.active_key.session_id != excluded_session
+        ):
+            return record.active_key
+        await asyncio.sleep(0.01)
+    raise AssertionError("Auto run did not expose the expected active key")
+
+
+def seed_durable_auto(
+    store: ProjectStore,
+    *,
+    auto_id: str,
+    status: str,
+    publish: bool,
+) -> AutoRunRecord:
+    topic = b"Recovery topic"
+    baseline = b""
+    record = AutoRunRecord(
+        id=auto_id,
+        project_id=store.project.id,
+        status=status,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        current_cycle=0,
+        next_participant=0,
+        participants=[
+            AutoParticipant(
+                session.id,
+                session.name,
+                session.agent,
+                session.model,
+                session.effort,
+            )
+            for session in store.list_sessions()
+        ],
+        topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
+        baseline=AutoArtifact("baseline.md", sha256(baseline).hexdigest()),
+        baseline_entries=[],
+        shared_context=None,
+        shared_context_source=None,
+        preparations=[],
+        discussion=[],
+        active_key=None,
+        active_turn_token=None,
+        future_turn_timeout_seconds=2,
+        active_timeout=None,
+        stop_requested=status == "stopped",
+        created_at="2026-07-19T00:00:00Z",
+        started_at="2026-07-19T00:00:00Z",
+        finished_at=(
+            "2026-07-19T00:00:01Z"
+            if status not in {"preparing", "discussing"}
+            else None
+        ),
+        terminal_reason=(
+            "seeded terminal state"
+            if status not in {"preparing", "discussing"}
+            else None
+        ),
+    )
+    store.create_auto_run(record, topic=topic, baseline=baseline)
+    if publish:
+        store.publish_auto_reservation(auto_id)
+    return record
 
 
 @pytest.mark.asyncio
@@ -759,3 +859,289 @@ def test_auto_manager_lifecycle_is_wired_and_reconciles_restart(tmp_path: Path) 
         reconciled = ProjectStore(project).load_auto_run(record.id)
         assert reconciled.status == "interrupted"
         assert ProjectStore(project).active_auto_run_id() is None
+
+
+@pytest.mark.asyncio
+async def test_auto_restart_interrupts_orphan_and_clears_terminal_pointer(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, _, store = auto_manager_fixture(tmp_path, [])
+    orphan = seed_durable_auto(
+        store,
+        auto_id="d" * 32,
+        status="discussing",
+        publish=False,
+    )
+
+    await manager.reconcile_project(project_id)
+
+    interrupted = store.load_auto_run(orphan.id)
+    assert interrupted.status == "interrupted"
+    assert interrupted.terminal_reason == "interrupted by restart"
+    assert store.active_auto_run_id() is None
+
+    terminal = seed_durable_auto(
+        store,
+        auto_id="e" * 32,
+        status="stopped",
+        publish=True,
+    )
+    await manager.reconcile_project(project_id)
+
+    assert store.load_auto_run(terminal.id).status == "stopped"
+    assert store.active_auto_run_id() is None
+
+
+@pytest.mark.asyncio
+async def test_auto_restart_copies_active_timeout_journal_to_interrupted_round(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(tmp_path, [])
+    auto = seed_durable_auto(
+        store,
+        auto_id="b" * 32,
+        status="preparing",
+        publish=True,
+    )
+    key = RunKey(project_id, session_ids[0], 1)
+    timeout = TimeoutRecord(
+        initial_seconds=2,
+        effective_seconds=62,
+        hard_cap_seconds=14_400,
+        deadline_at="2026-07-19T00:01:02Z",
+        version=1,
+        extensions=[],
+    )
+    config = store.load_session(key.session_id)
+    config.status = "running"
+    config.rounds.append(
+        RoundRecord(
+            n=1,
+            status="running",
+            error=None,
+            warnings=[],
+            agent=config.agent,
+            model=config.model,
+            effort=config.effort,
+            started_at="2026-07-19T00:00:00Z",
+            finished_at=None,
+            source=SourceDescriptor(type="auto"),
+            auto=AutoRoundDescriptor(
+                auto_id=auto.id,
+                phase="preparation",
+                cycle=None,
+                position=0,
+                context_file="inputs/round-01/auto-context.md",
+                context_sha256="1" * 64,
+                verdict=None,
+            ),
+            timeout=TimeoutRecord(
+                initial_seconds=2,
+                effective_seconds=2,
+                hard_cap_seconds=14_400,
+                deadline_at="2026-07-19T00:00:02Z",
+            ),
+        )
+    )
+    store.save_session(config)
+    auto.active_key = key
+    auto.active_timeout = timeout
+    store.save_auto_run(auto)
+
+    store.reconcile_session(key.session_id)
+    await manager.reconcile_project(project_id)
+
+    recovered = store.load_session(key.session_id).rounds[0]
+    assert recovered.status == "error"
+    assert recovered.timeout == timeout
+    assert store.load_auto_run(auto.id).status == "interrupted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broken_target", ["missing", "invalid"])
+async def test_auto_restart_leaves_missing_or_invalid_pointer_reserved(
+    tmp_path: Path,
+    broken_target: str,
+) -> None:
+    manager, _, project_id, _, store = auto_manager_fixture(tmp_path, [])
+    auto_id = "c" * 32
+    if broken_target == "missing":
+        manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+        manifest["active_auto_run_id"] = auto_id
+        atomic_write_json(store.manifest_path, manifest)
+    else:
+        seed_durable_auto(
+            store,
+            auto_id=auto_id,
+            status="preparing",
+            publish=True,
+        )
+        (store.auto_run_dir(auto_id) / "config.json").write_text(
+            "{invalid",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(StorageError):
+        await manager.reconcile_project(project_id)
+
+    assert store.active_auto_run_id() == auto_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope,expected_future",
+    [("current", 2), ("current_and_future_auto", 62)],
+)
+async def test_auto_future_timeout_scope_is_atomic_and_later_turn_starts_fresh(
+    tmp_path: Path,
+    scope: str,
+    expected_future: int,
+) -> None:
+    outputs = [
+        PlannedOutput("Preparation A", delay=0.25),
+        PlannedOutput("Preparation B", delay=0.25),
+        PlannedOutput("unused", "continue"),
+    ]
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(tmp_path, outputs)
+    created = await manager.create(
+        project_id,
+        topic="Timeout topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+    )
+    first_key = await wait_for_active_auto_key(manager, project_id, created.id)
+    before = manager.runner.timeout_snapshot(first_key)
+
+    extension = await manager.runner.extend_timeout(
+        first_key,
+        1,
+        scope,
+        before.version,
+    )
+
+    assert extension.auto_id == created.id
+    updated = manager.get(project_id, created.id)
+    assert updated.active_timeout is not None
+    assert updated.active_timeout.effective_seconds == 62
+    assert updated.future_turn_timeout_seconds == expected_future
+
+    second_key = await wait_for_active_auto_key(
+        manager,
+        project_id,
+        created.id,
+        excluded_session=first_key.session_id,
+    )
+    second_timeout = manager.runner.timeout_snapshot(second_key)
+    assert second_timeout.initial_seconds == expected_future
+    assert second_timeout.effective_seconds == expected_future
+    assert second_timeout.version == 0
+    await manager.stop(project_id, created.id)
+
+
+@pytest.mark.asyncio
+async def test_auto_stop_claim_prevents_later_turn_during_timeout_race(
+    tmp_path: Path,
+) -> None:
+    outputs = [
+        PlannedOutput("never completes", sleep=True),
+        PlannedOutput("must not run"),
+    ]
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        outputs,
+    )
+    created = await manager.create(
+        project_id,
+        topic="Stop topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+    )
+    key = await wait_for_active_auto_key(manager, project_id, created.id)
+    timeout = manager.runner.timeout_snapshot(key)
+
+    stop_result, timeout_result = await asyncio.gather(
+        manager.stop(project_id, created.id),
+        manager.runner.extend_timeout(key, 1, "current", timeout.version),
+        return_exceptions=True,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert not isinstance(stop_result, BaseException)
+    assert terminal.status == "stopped"
+    assert terminal.stop_requested is True
+    assert factory.created == 1
+    round_record = store.load_session(key.session_id).rounds[-1]
+    assert round_record.status == "cancelled"
+    assert timeout_result is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_stop_does_not_override_a_turn_that_already_won_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = [
+        PlannedOutput("Preparation A", delay=0.25),
+        PlannedOutput("Preparation B"),
+        PlannedOutput("Consensus", "agree"),
+    ]
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        outputs,
+    )
+    created = await manager.create(
+        project_id,
+        topic="Finalization race",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=1,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    original_claim = manager.runner.claim_auto_cancel_locked
+    monkeypatch.setattr(
+        manager.runner,
+        "claim_auto_cancel_locked",
+        lambda _key, _auto_id: False,
+    )
+
+    with pytest.raises(ConflictError, match="no longer"):
+        await manager.stop(project_id, created.id)
+
+    monkeypatch.setattr(
+        manager.runner,
+        "claim_auto_cancel_locked",
+        original_claim,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status == "converged"
+    assert terminal.stop_requested is False
+    assert factory.created == 3
+
+
+@pytest.mark.asyncio
+async def test_auto_shutdown_interrupts_and_cancels_active_provider(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("never completes", sleep=True), PlannedOutput("must not run")],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Shutdown topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+    )
+    key = await wait_for_active_auto_key(manager, project_id, created.id)
+
+    await asyncio.wait_for(manager.shutdown(), timeout=3)
+
+    terminal = manager.get(project_id, created.id)
+    assert terminal.status == "interrupted"
+    assert terminal.terminal_reason == "application shutdown"
+    assert store.active_auto_run_id() is None
+    assert store.load_session(key.session_id).rounds[-1].status == "cancelled"
+    assert factory.created == 1
