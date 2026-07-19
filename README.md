@@ -123,9 +123,12 @@ Markdown snapshot. Preparations are available in a collapsed status section but
 do not appear as conversation messages or enter another agent's context until all
 preparations finish. Discussion then passes the topic, all preparations, bounded
 creation-time history, and bounded prior discussion through the selected agents.
-**First agree** stops at the first explicit agreement; **All agree** requires every
-agent to agree within the same complete cycle. Reaching the configured number of
-complete cycles records `limit_reached` without starting an extra turn.
+**First agree** stops at the first agreeing response; **All agree** requires every
+agent to agree within the same complete cycle. A discussion response agrees when
+the standalone word `agree`, matched without case sensitivity, appears in its
+final three non-empty lines. This deliberately favors stopping over continuing
+when wording is ambiguous. Reaching the configured number of complete cycles
+records `limit_reached` without starting an extra turn.
 
 The Auto status panel survives reloads and shows progress, participant order,
 verdicts, future-turn timeout budget, terminal reason, and completed preparations.

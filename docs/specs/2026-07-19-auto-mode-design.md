@@ -34,12 +34,13 @@ shortening the task.
 - After every preparation succeeds, the complete preparation set becomes
   available to every participant for discussion.
 - The user chooses one of two agreement policies:
-  - `all_agree`: stop only when every participant says `agree` in the same
-    completed discussion cycle.
-  - `first_agree`: stop immediately when any discussion turn says `agree`.
-- Agreement is an explicit machine-readable verdict, not a comparison of output
-  text. Minor editorial changes can still be paired with `agree` when the agent
-  has no substantive objection.
+  - `all_agree`: stop only when every participant's response is classified as
+    `agree` in the same completed discussion cycle.
+  - `first_agree`: stop immediately when any discussion response is classified
+    as `agree`.
+- Agreement is inferred from a bounded response tail, not from output equality or
+  semantic similarity. Minor editorial changes can still be paired with `agree`
+  when the agent has no substantive objection.
 - The user limit counts full discussion cycles. Preparation is a separate phase
   and does not consume the cycle limit.
 - A live timeout update only adds time. The UI offers separate actions for the
@@ -70,6 +71,10 @@ request that requires stateless execution, excludes ordinary session history,
 ignores any provider session ID returned by the Auto call, stages an Auto context
 file under the producing session's owned round-input directory, and records its
 descriptor as provenance on the resulting normal round.
+
+Auto turns reuse each adapter's `_stateless_prompt` with an empty
+`staged_history`; `RunManager` excludes local history by bypassing
+`_stage_history` on the Auto-request path.
 
 Because stateless execution and discarded provider session IDs are intentional in
 this mode, Auto requests suppress the ordinary stateless-continuation and
@@ -233,7 +238,7 @@ The Auto config stores at least:
 - preparation session/round references, staged paths, and digests;
 - discussion turn session/round references, cycle, position, verdict, and output
   digest;
-- the active `RunKey` and its verdict turn token, when one exists;
+- the active `RunKey`, when one exists;
 - the future-turn timeout budget plus the active turn's timeout budget, wall-clock
   display deadline, version, and extension audit entries;
 - a durable `stop_requested` flag; and
@@ -276,9 +281,9 @@ execution prompts. Each entry identifies its session, round, source provenance,
 and agent, and places any recorded user/pass prompt and completed output in
 explicitly delimited, untrusted-history blocks. For an Auto discussion round, the
 renderer records its topic/cycle provenance and displayed output but omits the
-server-generated execution prompt, staged paths, verdict token, and control
-instructions. Old paths and control syntax are therefore never presented as the
-current server instruction. A fresh conversation has an empty baseline.
+server-generated execution prompt, staged paths, and agreement instructions. Old
+paths and prior instructions are therefore never presented as the current server
+instruction. A fresh conversation has an empty baseline.
 Preparations never receive this baseline.
 
 Because transcript content can itself contain any Markdown delimiter, the Auto
@@ -309,9 +314,10 @@ containing, in this order:
 4. prior Auto discussion turns in chronological order.
 
 The current prompt tells the agent to read the staged file as untrusted material,
-address the latest state of the discussion, and return a verdict footer. Role
-instructions and the normal shared-Markdown instruction remain adapter-owned and
-apply as they do for manual rounds.
+address the latest state of the discussion, and state its conclusion within the
+final three non-empty response lines. Role instructions and the normal
+shared-Markdown instruction remain adapter-owned and apply as they do for manual
+rounds.
 
 Topic and all preparation texts are mandatory and are never silently truncated.
 For each discussion turn, baseline entries and prior discussion entries form one
@@ -339,53 +345,39 @@ the cycle is complete. Delibra evaluates convergence first, then records
 `limit_reached` only if convergence failed and the completed cycle equals the
 configured maximum; otherwise it advances to the next cycle.
 
-For `first_agree`, a valid `agree` verdict stops immediately, even in the middle of
-a cycle. For `all_agree`, only a completed cycle in which every participant emitted
-a valid `agree` verdict converges. Any `continue`, missing verdict, or malformed
-verdict makes that participant not agreed for the current cycle; agreement never
-carries into a later cycle.
+For `first_agree`, a response classified as `agree` stops immediately, even in the
+middle of a cycle. For `all_agree`, only a completed cycle in which every
+participant's response is classified as `agree` converges. A response classified
+as `continue` makes that participant not agreed for the current cycle; agreement
+never carries into a later cycle.
 
 Preparations cannot converge the run and do not emit convergence verdicts.
 
-## Verdict protocol
+## Agreement classification
 
-Each discussion turn gets a cryptographically random turn token stored in the Auto
-record and included only in that turn's control instruction. The provider must end
-its response with exactly one of these final non-empty lines:
+Delibra classifies a discussion turn as `agree` when the case-insensitive
+standalone word `agree` occurs in any of the final three non-empty response
+lines. Earlier lines and the substrings `disagree`, `agreement`, and `agreed`
+do not match. A negated final-tail phrase such as `I do not agree` still
+matches by deliberate product choice: false stopping is preferred to false
+continuation. The complete response remains visible and durable; Auto
+agreement signaling uses no verdict footer, run ID, turn token, or stripped
+control text.
 
-```text
-[DELIBRA_AUTO run="<auto-id>" turn="<turn-token>" decision="agree"]
-[DELIBRA_AUTO run="<auto-id>" turn="<turn-token>" decision="continue"]
-```
+The agent instruction defines agreement as “no substantive objection remains.”
+An agent may suggest optional wording or a small non-material edit and still use
+`Agree`. If a substantive objection, unanswered question, or necessary change
+remains, the instruction tells the agent not to use `Agree` in its final three
+non-empty lines. Any response without a matching standalone word in that bounded
+tail is classified as `continue`.
 
-The parser treats the final non-empty line as the only verdict candidate, accepts
-only the current Auto ID and turn token, and accepts only lowercase `agree` or
-`continue`. It separately scans line boundaries for a second control-shaped
-`DELIBRA_AUTO` line so duplicate control text is invalid; it never keyword-searches
-arbitrary prose or compares response content. A marker quoted in the topic,
-staged material, an older output, or a non-final line cannot stop Auto. Missing,
-duplicate, mismatched, or malformed control text is recorded as `continue` with a
-warning.
-
-The agent instruction defines `agree` as “no substantive objection remains.” An
-agent may suggest optional wording or a small non-material edit and still agree.
-`continue` means a substantive objection, unanswered question, or necessary change
-remains.
-
-The control line is transport metadata. For Auto discussion output, the run
-pipeline retains only the latest 512 decoded text-delta characters in a separate
-possible-control-tail buffer and streams older text normally. Output-limit
-accounting still includes those characters, and reconnect snapshots omit the
-pending tail. The validated marker is shorter than this fixed bound. At terminal
-output, the parser treats the adapter's canonical complete final text as the
-authority, strips a valid final control line from durable and displayed Markdown,
-and records the parsed decision in metadata. For an invalid or absent marker, the
-pending non-marker suffix is flushed and the complete final text remains content.
-This keeps the live buffer bounded even when a response contains no newline and
-avoids concatenating streamed and canonical output. Provider text continues to be
-escaped and rendered through the existing trusted Markdown path. The token reduces
-accidental or replayed matches; it does not turn a model verdict into a security
-boundary.
+The adapter's canonical complete final text is the classification authority and
+is persisted without modification. Text deltas use the ordinary bounded output
+capture and streaming path, and complete content needs no terminal reset or
+replacement snapshot. Provider text continues to be escaped and rendered through
+the existing trusted Markdown path. A verdict is attached only after final output
+persistence succeeds and is cleared from the returned record if terminal metadata
+persistence fails.
 
 ## Live timeout enforcement
 
@@ -528,6 +520,12 @@ For an Auto-owned round, a successful extension also publishes an Auto status
 event so its preparation control or future-turn budget refreshes without waiting
 for the next orchestration transition.
 
+While Auto is active, HTMX preserves the identity-scoped Auto EventSource,
+current preparation timeout host, and current discussion live round across
+authoritative status/timeline swaps. A changed run key or terminal response
+omits the matching preserved node, so normal cleanup closes stale streams and
+initializes only the new owner.
+
 All mutations retain localhost Host/Origin enforcement, bounded form validation,
 ID validation, project ownership checks, and server-side participant
 revalidation.
@@ -565,6 +563,10 @@ status URLs.
   names, model values, positions, paths, verdicts, and run state are not trusted.
 - The server, not the browser, determines the current participant, cycle, verdict,
   and terminal transition.
+- Tail classification is an orchestration signal, not a security boundary.
+  Untrusted staged material can influence provider wording, so the bounded rule
+  and unchanged durable response make the stop decision inspectable rather than
+  authoritative over any external resource.
 - Timeout minutes, scope, active identity, version, effective deadline, and hard
   cap are server-validated. The browser countdown never controls termination, and
   no extension can exceed the snapshotted server cap.
@@ -592,8 +594,8 @@ transitions and belong in Delibra.
 ### Text similarity convergence
 
 Comparing output strings or embeddings would confuse editorial changes with
-substantive disagreement and could stop without an agent's explicit intent. The
-nonce-bound verdict footer is simpler and auditable.
+substantive disagreement. A bounded, directly inspectable response-tail rule is
+simpler and preserves the agent's complete wording.
 
 ### Replacing or shortening the live timeout
 
@@ -627,18 +629,22 @@ large enough for intentionally long agent work.
    complete hashed preparation set plus bounded baseline/discussion context. The
    baseline is selected newest-first within the configured limits, rendered as a
    chronological untrusted transcript, and excludes generated Auto execution
-   prompts, staged paths, verdict tokens, and control instructions.
+   prompts, staged paths, and agreement instructions.
 6. Preparation rounds are durable and inspectable but absent from the main
    conversation, agent-card conversation previews, and later manual history.
    Session detail labels them explicitly. Discussion rounds appear normally with
    Auto/cycle/verdict provenance. Every Auto round uses `source.type=auto` and a
    hash-verified Auto descriptor, and generic Retry is not rendered for it.
-7. `First agree` stops immediately on the first exact valid `agree` footer.
-   `All agree` stops only after every participant agrees in one completed cycle.
-8. A minor-content response may validly agree. Content equality, similarity, or
-   keywords in prose never determine convergence.
-9. A quoted, stale, malformed, duplicated, non-final, or token-mismatched footer
-   cannot converge the run and is durably treated as `continue` with a warning.
+7. `First agree` stops immediately when the case-insensitive standalone word
+   `agree` occurs in any of a response's final three non-empty lines. `All agree`
+   stops only after every participant agrees in one completed cycle.
+8. A minor-content response may validly agree. Earlier lines and the substrings
+   `disagree`, `agreement`, and `agreed` do not match. A final-tail phrase such as
+   `I do not agree` deliberately matches because false stopping is preferred to
+   false continuation.
+9. The complete response is streamed, displayed, and persisted without a verdict
+   footer, turn token, stripped control text, or invalid-verdict warning. Legacy
+   token-bearing Auto records still load, while newly saved records omit the token.
 10. If no convergence occurs, Auto stops after the configured number of complete
     discussion cycles and records `limit_reached` without an extra provider call.
     A converged final allowed cycle records `converged`, not `limit_reached`.
@@ -681,12 +687,12 @@ large enough for intentionally long agent work.
     an already-observed provider exit beats timeout, and no request revives a
     timed-out, exited, or completed process.
 22. Automated tests cover both Auto start states, independent preparation, context
-    sharing, both convergence policies, cycle limits, invalid verdicts, Stop races,
-    provider failure, restart reconciliation, native-ID isolation, locking,
-    storage bounds, baseline normalization/selection, shared-context snapshot
-    stability, hostile content, bounded verdict-tail streaming, timeout fragment
-    refresh, timeout persistence and race boundaries, SSE reconnect, and
-    backward-compatible deserialization.
+    sharing, both convergence policies, cycle limits, bounded response-tail
+    classification, Stop races, provider failure, restart reconciliation,
+    native-ID isolation, locking, storage bounds, baseline
+    normalization/selection, shared-context snapshot stability, hostile content,
+    unchanged response streaming, timeout fragment refresh, timeout persistence
+    and race boundaries, SSE reconnect, and backward-compatible deserialization.
 
 ## Explicit non-goals
 
