@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 from typing import Callable, Protocol
@@ -26,6 +27,8 @@ from app.models import (
 from app.storage import (
     ConflictError,
     LockCoordinator,
+    NotFoundError,
+    OwnershipError,
     ProjectStore,
     RegistryStore,
     StorageError,
@@ -154,33 +157,84 @@ class RunManager:
         async with self.locks.registry_project_sessions(project_id, [session_id]):
             project = self.registry.get(project_id)
             store = ProjectStore(project)
-            config = store.load_session(session_id)
-            record = next(
-                (item for item in config.rounds if item.n == round_n),
-                None,
+            record = self._retry_record(
+                store.load_session(session_id),
+                round_n,
             )
-            if record is None:
-                raise StorageError("retry round does not exist")
-            if record.status != "error":
-                raise ConflictError("only an error round can be retried")
-            if record.source.type != "user":
-                raise ConflictError("pass-to retry is not available yet")
-            prompt_path = (
-                store.rounds_dir(session_id) / f"round-{round_n:02d}.prompt.md"
+            discovered_source = (
+                record.source.type,
+                record.source.from_session,
             )
-            try:
-                prompt = prompt_path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
-                raise StorageError("retry prompt is unavailable") from exc
+            source_session_id = (
+                record.source.from_session
+                if record.source.type == "pass"
+                else None
+            )
+
+        session_ids = [session_id]
+        if source_session_id is not None:
+            session_ids.append(source_session_id)
+        async with self.locks.registry_project_sessions(project_id, session_ids):
+            project = self.registry.get(project_id)
+            store = ProjectStore(project)
+            record = self._retry_record(
+                store.load_session(session_id),
+                round_n,
+            )
+            current_source = (record.source.type, record.source.from_session)
+            if current_source != discovered_source:
+                raise ConflictError("retry source changed during validation")
+            if record.source.type == "pass":
+                retry_source = record.source
+                expected_source_sha256 = record.source.source_sha256
+            else:
+                retry_source = None
+                expected_source_sha256 = None
+            prompt = self._retry_prompt(store, session_id, round_n)
             return await self._start_locked(
                 project_id,
                 session_id,
                 RunRequest(
                     prompt=prompt,
+                    source=retry_source,
                     retry_of=round_n,
                     force_stateless=True,
+                    expected_source_sha256=expected_source_sha256,
                 ),
             )
+
+    @staticmethod
+    def _retry_record(config: SessionConfig, round_n: int) -> RoundRecord:
+        record = next((item for item in config.rounds if item.n == round_n), None)
+        if record is None:
+            raise StorageError("retry round does not exist")
+        if record.status != "error":
+            raise ConflictError("only an error round can be retried")
+        if record.source.type not in {"user", "pass"}:
+            raise ConflictError("retry source type is unsupported")
+        if record.source.type == "pass" and (
+            not isinstance(record.source.from_session, str)
+            or not isinstance(record.source.from_round, int)
+            or record.source.from_round < 1
+            or not isinstance(record.source.staged_file, str)
+            or not record.source.staged_file
+            or not isinstance(record.source.source_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", record.source.source_sha256)
+        ):
+            raise StorageError("retry source provenance is incomplete")
+        return record
+
+    @staticmethod
+    def _retry_prompt(
+        store: ProjectStore,
+        session_id: str,
+        round_n: int,
+    ) -> str:
+        prompt_path = store.rounds_dir(session_id) / f"round-{round_n:02d}.prompt.md"
+        try:
+            return prompt_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise StorageError("retry prompt is unavailable") from exc
 
     async def _start_locked(
         self,
@@ -245,7 +299,67 @@ class RunManager:
                     staged_file=staged_shared_context.as_posix(),
                     sha256=shared_document.sha256,
                 )
-            if request.source is not None:
+            if request.expected_source_sha256 is not None:
+                retry_source = request.source
+                if (
+                    retry_source is None
+                    or retry_source.type != "pass"
+                    or retry_source.source_sha256
+                    != request.expected_source_sha256
+                ):
+                    raise StorageError("retry source provenance is incomplete")
+                old_staged = retry_source.staged_file
+                if not old_staged:
+                    raise StorageError("retry source provenance is incomplete")
+                try:
+                    source_config, source_path = self._pass_source(
+                        store,
+                        retry_source,
+                    )
+                except NotFoundError:
+                    source_path = workspace / old_staged
+                    source_root = workspace
+                else:
+                    source_root = store.rounds_dir(source_config.id)
+                if execution_prompt.count(old_staged) != 1:
+                    raise ConflictError(
+                        "retry source prompt has ambiguous staging provenance"
+                    )
+                if input_root is None:
+                    input_root = self._create_input_root(
+                        store,
+                        session_id,
+                        round_n,
+                    )
+                staged_source = (
+                    Path("inputs") / f"round-{round_n:02d}" / "source.md"
+                )
+                try:
+                    digest = safe_copy_file(
+                        source_path,
+                        source_root,
+                        workspace / staged_source,
+                        input_root,
+                    )
+                except OwnershipError as exc:
+                    raise StorageError("retry source is unavailable") from exc
+                if digest != request.expected_source_sha256:
+                    raise ConflictError(
+                        "retry source no longer matches its recorded digest"
+                    )
+                execution_prompt = execution_prompt.replace(
+                    old_staged,
+                    staged_source.as_posix(),
+                    1,
+                )
+                record_source = SourceDescriptor(
+                    type="pass",
+                    from_session=retry_source.from_session,
+                    from_round=retry_source.from_round,
+                    staged_file=staged_source.as_posix(),
+                    source_sha256=digest,
+                )
+            elif request.source is not None:
                 source_config, source_path = self._pass_source(
                     store,
                     request.source,
