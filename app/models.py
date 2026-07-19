@@ -406,7 +406,6 @@ class AutoRunRecord:
     preparations: list[AutoTurn]
     discussion: list[AutoTurn]
     active_key: RunKey | None
-    active_turn_token: str | None
     future_turn_timeout_seconds: int
     active_timeout: TimeoutRecord | None
     stop_requested: bool
@@ -454,11 +453,6 @@ class AutoRunRecord:
             active_key=(
                 RunKey.from_dict(data["active_key"])
                 if data.get("active_key") is not None
-                else None
-            ),
-            active_turn_token=(
-                str(data["active_turn_token"])
-                if data.get("active_turn_token") is not None
                 else None
             ),
             future_turn_timeout_seconds=_strict_int(
@@ -510,7 +504,6 @@ class AutoRunRecord:
             "preparations": [item.to_dict() for item in self.preparations],
             "discussion": [item.to_dict() for item in self.discussion],
             "active_key": self.active_key.to_dict() if self.active_key is not None else None,
-            "active_turn_token": self.active_turn_token,
             "future_turn_timeout_seconds": self.future_turn_timeout_seconds,
             "active_timeout": (
                 self.active_timeout.to_dict() if self.active_timeout is not None else None

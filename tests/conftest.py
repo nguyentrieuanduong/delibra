@@ -46,7 +46,6 @@ def reserve_auto_run():
             preparations=[],
             discussion=[],
             active_key=None,
-            active_turn_token=None,
             future_turn_timeout_seconds=900,
             active_timeout=None,
             stop_requested=False,

@@ -96,16 +96,13 @@ class AdapterFactory:
 class AutoVerdictAdapter(FakeAdapter):
     def __init__(
         self,
-        auto_id: str,
-        turn_token: str,
+        final_line: str,
         contexts: list[RunContext],
     ) -> None:
         super().__init__("success", contexts)
         self.content = "x" * 600
-        self.marker = (
-            f'[DELIBRA_AUTO run="{auto_id}" turn="{turn_token}" '
-            'decision="agree"]'
-        )
+        self.final_line = final_line
+        self.response = f"{self.content}\n{self.final_line}"
 
     def parse_line(self, line: str) -> list[AgentEvent]:
         payload = json.loads(line)
@@ -115,9 +112,9 @@ class AutoVerdictAdapter(FakeAdapter):
         if kind == "delta" and payload.get("text") == "Hel":
             return [AgentEvent("text_delta", self.content)]
         if kind == "delta":
-            return [AgentEvent("text_delta", f"\n{self.marker}")]
+            return [AgentEvent("text_delta", f"\n{self.final_line}")]
         if kind == "result":
-            self._final = f"{self.content}\n{self.marker}"
+            self._final = self.response
             return [AgentEvent("result", self._final)]
         if kind == "progress":
             return [AgentEvent("progress", "Fake progress")]
@@ -202,7 +199,6 @@ def create_runner_auto_record(
         preparations=[],
         discussion=[],
         active_key=None,
-        active_turn_token=None,
         future_turn_timeout_seconds=2,
         active_timeout=None,
         stop_requested=False,
@@ -226,7 +222,6 @@ def auto_run_request(
     record: AutoRunRecord,
     *,
     phase: str,
-    turn_token: str | None = None,
 ) -> AutoRunRequest:
     run_dir = store.auto_run_dir(record.id)
     return AutoRunRequest(
@@ -244,7 +239,6 @@ def auto_run_request(
             record.shared_context.sha256 if record.shared_context is not None else None
         ),
         execution_prompt="Read inputs/round-01/auto-context.md and respond.",
-        turn_token=turn_token,
         initial_timeout_seconds=2,
         preserve_native_session=True,
         ignore_returned_session=True,
@@ -308,16 +302,14 @@ async def test_auto_run_stages_only_verified_frozen_inputs_and_preserves_native_
 
 
 @pytest.mark.asyncio
-async def test_auto_discussion_buffers_control_tail_and_sanitizes_final_snapshot(
+async def test_auto_discussion_streams_and_persists_complete_agreement_response(
     tmp_path: Path,
 ) -> None:
     contexts: list[RunContext] = []
     manager, project_id, session_id, store = setup_manager(tmp_path)
     auto_record = create_runner_auto_record(store, session_id, status="discussing")
-    turn_token = "T" * 43
     manager.adapter_factory = lambda _config: AutoVerdictAdapter(
-        auto_record.id,
-        turn_token,
+        "AGREE",
         contexts,
     )
 
@@ -329,39 +321,31 @@ async def test_auto_discussion_buffers_control_tail_and_sanitizes_final_snapshot
                 store,
                 auto_record,
                 phase="discussion",
-                turn_token=turn_token,
             ),
         )
     record = await manager.wait(key)
     events = await collect(manager, key, 0)
+    output_path = store.rounds_dir(session_id) / "round-01.md"
+    expected_response = f"{'x' * 600}\nAGREE"
 
     assert record.status == "complete"
     assert record.auto is not None and record.auto.verdict == "agree"
-    assert (store.rounds_dir(session_id) / "round-01.md").read_text() == "x" * 600
-    text_deltas = [event.data for event in events if event.kind == "text_delta"]
-    marker = (
-        f'[DELIBRA_AUTO run="{auto_record.id}" turn="{turn_token}" '
-        'decision="agree"]'
+    assert output_path.read_text() == expected_response
+    assert (
+        "".join(event.data for event in events if event.kind == "text_delta")
+        == expected_response
     )
-    streamed = f'{"x" * 600}\n{marker}'
-    assert "".join(text_deltas) == streamed[:-512]
-    assert any(event.kind == "reset" for event in events)
-    snapshots = [event.data for event in events if event.kind == "snapshot"]
-    assert snapshots[-1] == "x" * 600
-    assert all("DELIBRA_AUTO" not in event.data for event in events)
+    assert not any(event.kind in {"reset", "snapshot"} for event in events)
 
 
 @pytest.mark.asyncio
-async def test_auto_discussion_preserves_invalid_footer_as_continue_with_warning(
+async def test_auto_discussion_preserves_continue_response_without_warning(
     tmp_path: Path,
 ) -> None:
     manager, project_id, session_id, store = setup_manager(tmp_path)
     auto_record = create_runner_auto_record(store, session_id, status="discussing")
-    current_token = "T" * 43
-    wrong_token = "U" * 43
     manager.adapter_factory = lambda _config: AutoVerdictAdapter(
-        auto_record.id,
-        wrong_token,
+        "Continue",
         [],
     )
 
@@ -373,17 +357,14 @@ async def test_auto_discussion_preserves_invalid_footer_as_continue_with_warning
                 store,
                 auto_record,
                 phase="discussion",
-                turn_token=current_token,
             ),
         )
     record = await manager.wait(key)
     output = (store.rounds_dir(session_id) / "round-01.md").read_text()
 
     assert record.auto is not None and record.auto.verdict == "continue"
-    assert any("verdict footer" in warning for warning in record.warnings)
-    assert f'turn="{wrong_token}"' in output
-    events = await collect(manager, key, 0)
-    assert [event.data for event in events if event.kind == "snapshot"][-1] == output
+    assert output == f"{'x' * 600}\nContinue"
+    assert not any("verdict" in warning.casefold() for warning in record.warnings)
 
 
 @pytest.mark.asyncio
