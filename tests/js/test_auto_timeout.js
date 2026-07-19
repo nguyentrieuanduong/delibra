@@ -3,10 +3,62 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  closeAutoSetup,
   copyAutoComposerTopic,
   formatRemainingSeconds,
+  syncAutoDisabledControls,
   updateTimeoutCountdown,
 } = require("../../app/static/app.js");
+
+test("closes the Auto setup dialog without parsing or inserting HTML", function () {
+  let closed = false;
+  let removed = false;
+  const dialog = {
+    close() {
+      closed = true;
+    },
+    remove() {
+      removed = true;
+    },
+  };
+  const control = {
+    closest(selector) {
+      assert.equal(selector, "[data-auto-setup-dialog]");
+      return dialog;
+    },
+  };
+
+  assert.equal(closeAutoSetup(control), true);
+  assert.equal(closed, true);
+  assert.equal(removed, true);
+});
+
+test("Auto status disables and restores only controls it owns", function () {
+  const autoControl = { disabled: false, dataset: {} };
+  const intrinsicallyDisabled = { disabled: true, dataset: {} };
+  const status = { dataset: { autoActive: "true" } };
+  const documentRoot = {
+    querySelector(selector) {
+      assert.equal(selector, "#auto-status");
+      return status;
+    },
+    querySelectorAll(selector) {
+      assert.equal(selector, "[data-disable-during-auto]");
+      return [autoControl, intrinsicallyDisabled];
+    },
+  };
+
+  assert.equal(syncAutoDisabledControls(documentRoot), true);
+  assert.equal(autoControl.disabled, true);
+  assert.equal(autoControl.dataset.autoDisabled, "true");
+  assert.equal(intrinsicallyDisabled.dataset.autoDisabled, undefined);
+
+  status.dataset.autoActive = "false";
+  assert.equal(syncAutoDisabledControls(documentRoot), false);
+  assert.equal(autoControl.disabled, false);
+  assert.equal(autoControl.dataset.autoDisabled, undefined);
+  assert.equal(intrinsicallyDisabled.disabled, true);
+});
 
 test("formats bounded relative seconds as a stable clock", function () {
   assert.equal(formatRemainingSeconds(0), "0:00");

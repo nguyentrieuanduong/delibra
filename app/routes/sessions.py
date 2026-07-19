@@ -210,6 +210,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
             "rounds": round_views(store, session_id),
             "sessions": sessions,
             "active_key": active_key,
+            "auto_active": store.active_auto_run_id() is not None,
             "health": request.app.state.health,
         },
     )
@@ -243,5 +244,6 @@ async def round_fragment(
             "round": view,
             "sessions": sessions,
             "chat_view": display == "chat",
+            "auto_active": store.active_auto_run_id() is not None,
         },
     )

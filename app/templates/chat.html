@@ -31,28 +31,16 @@
       aria-label="Conversation workspace"
     >
       {% include "_composer.html" %}
+      <div id="auto-setup-host"></div>
       <div id="chat-errors" class="chat-errors" aria-live="polite"></div>
-      <section class="chat-timeline" aria-label="Conversation">
-        <div class="timeline-heading">
-          <h2>Conversation</h2><span>Oldest → newest</span>
-        </div>
-        {% set chat_view = true %}
-        {% for item in timeline %}
-          {% set session = item.session %}
-          {% set session_id = session.id %}
-          {% set round = item.round %}
-          {% set dom_id = round.dom_id %}
-          {% set round_expanded = loop.last %}
-          {% if item.key %}
-            {% set key = item.key %}
-            {% include "_live.html" %}
-          {% else %}
-            {% include "_round.html" %}
-          {% endif %}
-        {% else %}
-          <p data-conversation-empty>No conversation yet.</p>
-        {% endfor %}
-      </section>
+      <div id="auto-status-host">
+        {% if auto_status %}
+          {% with project=auto_status.project, auto=auto_status.auto, auto_active=auto_status.auto_active, topic=auto_status.topic, preparations=auto_status.preparations, preparing_number=auto_status.preparing_number, current_participant=auto_status.current_participant, clear_auto_setup=auto_status.clear_auto_setup %}
+            {% include "_auto_status.html" %}
+          {% endwith %}
+        {% endif %}
+      </div>
+      {% include "_timeline.html" %}
     </section>
 
     <aside

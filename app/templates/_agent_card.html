@@ -67,7 +67,7 @@
         {% else %}
           <p class="immutability-hint">Role instructions cannot change after the first round.</p>
         {% endif %}
-        <button type="submit"{% if agent.status == 'running' %} disabled{% endif %}>Save</button>
+        <button type="submit" data-disable-during-auto{% if agent.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
       </form>
     </details>
   </details>

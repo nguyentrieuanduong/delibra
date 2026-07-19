@@ -14,7 +14,24 @@
     </p>
   {% endif %}
   <label>Message
-    <textarea name="prompt" maxlength="100000" required{% if not selected_session %} disabled{% endif %}></textarea>
+    <textarea name="prompt" maxlength="100000" required{% if not selected_session or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}></textarea>
   </label>
-  <button type="submit"{% if not selected_session %} disabled{% endif %}>Send</button>
+  <div class="composer-actions">
+    <button
+      type="submit"
+      data-disable-during-auto
+      {% if not selected_session or auto_active %}disabled{% endif %}
+      {% if auto_active %}data-auto-disabled="true"{% endif %}
+    >Send</button>
+    <button
+      type="button"
+      data-auto-open
+      data-disable-during-auto
+      hx-get="/projects/{{ project.id }}/auto/setup"
+      hx-target="#auto-setup-host"
+      hx-swap="innerHTML"
+      {% if auto_active or sessions|length < 2 %}disabled{% endif %}
+      {% if auto_active %}data-auto-disabled="true"{% endif %}
+    >Auto</button>
+  </div>
 </form>

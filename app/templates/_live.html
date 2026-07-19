@@ -4,7 +4,12 @@
   hx-ext="sse"
   sse-connect="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/stream"
 >
-  <h2>{{ session.name }} · Round {{ key.round_n }} · running</h2>
+  <h2>
+    {{ session.name }} · Round {{ key.round_n }} · running
+    {% if round is defined and round.record and round.record.auto %}
+      · <a href="/projects/{{ key.project_id }}/auto-runs/{{ round.record.auto.auto_id }}">Auto {{ 'preparation' if round.record.auto.phase == 'preparation' else 'discussion' }}</a>
+    {% endif %}
+  </h2>
   <div
     class="timeout-host"
     hx-get="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout"
@@ -17,9 +22,11 @@
   <span class="live-reset" sse-swap="reset" hx-swap="none" hidden></span>
   <button
     type="button"
+    data-disable-during-auto
     hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/cancel"
     hx-target="#{{ dom_id }}"
     hx-swap="none"
+    {% if auto_active %}disabled data-auto-disabled="true"{% endif %}
   >Cancel</button>
   <span
     hx-get="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}{% if chat_view %}?view=chat{% endif %}"

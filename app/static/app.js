@@ -194,6 +194,43 @@ function copyAutoComposerTopic(setup) {
   return true;
 }
 
+function closeAutoSetup(control) {
+  if (!control || typeof control.closest !== "function") {
+    return false;
+  }
+  const dialog = control.closest("[data-auto-setup-dialog]");
+  if (!dialog) {
+    return false;
+  }
+  if (typeof dialog.close === "function") {
+    dialog.close();
+  }
+  if (typeof dialog.remove === "function") {
+    dialog.remove();
+  }
+  return true;
+}
+
+function syncAutoDisabledControls(documentRoot) {
+  if (!documentRoot || typeof documentRoot.querySelector !== "function") {
+    return false;
+  }
+  const status = documentRoot.querySelector("#auto-status");
+  const active = Boolean(status && status.dataset.autoActive === "true");
+  documentRoot.querySelectorAll("[data-disable-during-auto]").forEach(function (control) {
+    if (active) {
+      if (!control.disabled) {
+        control.disabled = true;
+        control.dataset.autoDisabled = "true";
+      }
+    } else if (control.dataset.autoDisabled === "true") {
+      control.disabled = false;
+      delete control.dataset.autoDisabled;
+    }
+  });
+  return active;
+}
+
 function timeoutControlsWithin(root) {
   const controls = [];
   if (root && typeof root.matches === "function" && root.matches("[data-timeout-controls]")) {
@@ -227,11 +264,14 @@ function initializeDynamicPresentation(root) {
   if (root && typeof root.querySelectorAll === "function") {
     root.querySelectorAll('[data-topic-source="composer"]').forEach(copyAutoComposerTopic);
   }
+  const documentRoot = root && root.ownerDocument ? root.ownerDocument : root;
+  syncAutoDisabledControls(documentRoot);
 }
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     chatErrorMessage,
+    closeAutoSetup,
     closeFocusDialog,
     conversationTimelineForSwap,
     copyAutoComposerTopic,
@@ -244,6 +284,7 @@ if (typeof module !== "undefined" && module.exports) {
     renderChatError,
     shouldClearChatError,
     syncConversationDisclosure,
+    syncAutoDisabledControls,
     updateTimeoutCountdown,
   };
 }
@@ -321,6 +362,14 @@ if (typeof document !== "undefined") {
   });
 
   document.addEventListener("click", function (event) {
+    const autoCloseControl =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest("[data-auto-setup-close]")
+        : null;
+    if (autoCloseControl) {
+      closeAutoSetup(autoCloseControl);
+      return;
+    }
     const fileCloseControl =
       event.target && typeof event.target.closest === "function"
         ? event.target.closest("[data-file-reader-close]")
