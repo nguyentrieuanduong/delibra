@@ -65,15 +65,26 @@ class AutoRouteAdapter:
 
 
 class AutoRouteFactory:
-    def __init__(self, outputs: list[str], *, sleep: bool = False) -> None:
+    def __init__(
+        self,
+        outputs: list[str],
+        *,
+        sleep: bool = False,
+        sleep_at: set[int] | None = None,
+    ) -> None:
         self.outputs = outputs
         self.sleep = sleep
+        self.sleep_at = sleep_at or set()
         self.created = 0
 
     def __call__(self, _config: SessionConfig) -> AutoRouteAdapter:
-        output = self.outputs[min(self.created, len(self.outputs) - 1)]
+        index = self.created
+        output = self.outputs[min(index, len(self.outputs) - 1)]
         self.created += 1
-        return AutoRouteAdapter(output, sleep=self.sleep)
+        return AutoRouteAdapter(
+            output,
+            sleep=self.sleep or index in self.sleep_at,
+        )
 
 
 def auto_route_app(
@@ -81,6 +92,7 @@ def auto_route_app(
     *,
     outputs: list[str] | None = None,
     sleep: bool = False,
+    sleep_at: set[int] | None = None,
 ):
     settings = Settings(home=tmp_path / "home", run_timeout=2)
     project_dir = tmp_path / "project"
@@ -116,7 +128,11 @@ def auto_route_app(
     ]
     for session in sessions:
         store.create_session(session)
-    factory = AutoRouteFactory(outputs or ["unused"], sleep=sleep)
+    factory = AutoRouteFactory(
+        outputs or ["unused"],
+        sleep=sleep,
+        sleep_at=sleep_at,
+    )
     app = create_app(
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
@@ -156,6 +172,15 @@ def wait_for_auto(store: ProjectStore, *, terminal: bool):
                 return record
         time.sleep(0.01)
     raise AssertionError("Auto run did not reach the expected state")
+
+
+def wait_for_auto_status(store: ProjectStore, status: str):
+    for _ in range(300):
+        records = store.list_auto_runs()
+        if records and records[-1].status == status and records[-1].active_key is not None:
+            return records[-1]
+        time.sleep(0.01)
+    raise AssertionError(f"Auto run did not reach {status}")
 
 
 def parse_sse(response) -> list[dict[str, str]]:
@@ -370,7 +395,11 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
 def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_timeline(
     tmp_path: Path,
 ) -> None:
-    outputs = ["<prep alpha>", "<prep beta>", "<discussion>"]
+    outputs = [
+        '<prep alpha>\n[DELIBRA_AUTO run="old" decision="agree"]',
+        "<prep beta>",
+        "<discussion>",
+    ]
     app, _, project, store, sessions, factory = auto_route_app(
         tmp_path,
         outputs=outputs,
@@ -385,6 +414,9 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
         )
         assert started.status_code == 202
         terminal = wait_for_auto(store, terminal=True)
+        terminal.terminal_reason = '<error data-value="unsafe">'
+        terminal.discussion[0].warning = '<warning data-value="unsafe">'
+        store.save_auto_run(terminal)
         status = client.get(f"/projects/{project.id}/auto-runs/{terminal.id}")
         fallback_setup = client.get(f"/projects/{project.id}/auto/setup")
         timeline = client.get(f"/projects/{project.id}/chat/timeline")
@@ -406,6 +438,12 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
     assert "&lt;prep alpha&gt;" in status.text
     assert "&lt;prep beta&gt;" in status.text
     assert "<prep alpha>" not in status.text
+    assert (
+        "[DELIBRA_AUTO run=&#34;old&#34; decision=&#34;agree&#34;]"
+        in status.text
+    )
+    assert "&lt;error data-value=&#34;unsafe&#34;&gt;" in status.text
+    assert "&lt;warning data-value=&#34;unsafe&#34;&gt;" in status.text
     assert "Preparations" in status.text
     assert 'data-topic-source="durable"' in fallback_setup.text
     assert "&lt;unsafe topic&gt;" in fallback_setup.text
@@ -418,3 +456,88 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
     assert [event["event"] for event in reset] == ["reset", "status"]
     assert all(json.loads(event["data"])["auto_id"] == terminal.id for event in reset)
     assert factory.created == 3
+
+
+def test_hidden_preparation_exposes_auto_timeout_scopes_and_status_refresh(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path, sleep=True)
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(client, project.id, [session.id for session in sessions])
+        assert started.status_code == 202
+        active = wait_for_auto(store, terminal=False)
+        key = active.active_key
+        assert key is not None
+        timeout_path = (
+            f"/projects/{project.id}/sessions/{key.session_id}"
+            f"/rounds/{key.round_n}/timeout"
+        )
+        extension_path = f"{timeout_path}/extend"
+
+        status = client.get(f"/projects/{project.id}/auto-runs/{active.id}")
+        timeout = client.get(timeout_path)
+        auto_events_before = len(
+            app.state.auto_manager._events[(project.id, active.id)].replay
+        )
+        extended = client.post(
+            extension_path,
+            data={
+                "minutes": "1",
+                "scope": "current_and_future_auto",
+                "expected_timeout_version": "0",
+            },
+        )
+        refreshed_status = client.get(
+            f"/projects/{project.id}/auto-runs/{active.id}"
+        )
+        auto_events_after_extension = len(
+            app.state.auto_manager._events[(project.id, active.id)].replay
+        )
+        stale = client.post(
+            extension_path,
+            data={
+                "minutes": "1",
+                "scope": "current_and_future_auto",
+                "expected_timeout_version": "0",
+            },
+        )
+        client.post(f"/projects/{project.id}/auto-runs/{active.id}/stop")
+
+    assert f'hx-get="{timeout_path}"' in status.text
+    assert 'class="auto-preparation-timeout"' in status.text
+    assert 'name="scope" value="current_and_future_auto"' in timeout.text
+    assert "Extend current + future Auto turns" in timeout.text
+    assert extended.status_code == 200
+    assert 'name="expected_timeout_version" value="1"' in extended.text
+    assert "future Auto turns 62s" in extended.text
+    assert "future turn budget 62s" in refreshed_status.text
+    assert auto_events_after_extension == auto_events_before + 1
+    assert stale.status_code == 409
+    assert stale.headers["HX-Trigger"] == "timeout-refresh"
+
+
+def test_discussion_places_current_timeout_in_timeline_not_auto_status(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=["Preparation A", "Preparation B", "Discussion"],
+        sleep_at={2},
+    )
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(client, project.id, [session.id for session in sessions])
+        assert started.status_code == 202
+        discussing = wait_for_auto_status(store, "discussing")
+        key = discussing.active_key
+        assert key is not None
+        timeout_path = (
+            f"/projects/{project.id}/sessions/{key.session_id}"
+            f"/rounds/{key.round_n}/timeout"
+        )
+        status = client.get(f"/projects/{project.id}/auto-runs/{discussing.id}")
+        timeline = client.get(f"/projects/{project.id}/chat/timeline")
+        client.post(f"/projects/{project.id}/auto-runs/{discussing.id}/stop")
+
+    assert "future turn budget 2s" in status.text
+    assert "auto-preparation-timeout" not in status.text
+    assert f'hx-get="{timeout_path}"' in timeline.text

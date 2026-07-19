@@ -27,6 +27,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import (
     AutoArtifact,
+    AutoBaselineEntry,
     AutoParticipant,
     AutoRoundDescriptor,
     AutoRunRecord,
@@ -40,6 +41,7 @@ from app.runner import RunManager
 from app.storage import (
     ConflictError,
     LockCoordinator,
+    OwnershipError,
     ProjectStore,
     RegistryStore,
     StorageError,
@@ -265,6 +267,7 @@ def auto_manager_fixture(
     *,
     participants: int = 2,
     captured_output_limit: int | None = None,
+    stateless_history_limit: int | None = None,
 ) -> tuple[AutoManager, RecordingAutoFactory, str, list[str], ProjectStore]:
     settings = Settings(
         home=tmp_path / "home",
@@ -273,6 +276,11 @@ def auto_manager_fixture(
             captured_output_limit
             if captured_output_limit is not None
             else Settings.captured_output_limit
+        ),
+        stateless_history_limit=(
+            stateless_history_limit
+            if stateless_history_limit is not None
+            else Settings.stateless_history_limit
         ),
     )
     project_dir = tmp_path / "project"
@@ -706,6 +714,135 @@ async def test_auto_manager_oversized_output_stops_without_advancing(
     assert terminal.status == "error"
     assert terminal.discussion == []
     assert factory.created == 3
+
+
+@pytest.mark.asyncio
+async def test_auto_manager_rejects_oversized_newest_baseline_before_creation(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("must not run")],
+        stateless_history_limit=128,
+    )
+    config = store.load_session(session_ids[0])
+    config.rounds.append(
+        RoundRecord(
+            n=1,
+            status="complete",
+            error=None,
+            warnings=[],
+            agent=config.agent,
+            model=config.model,
+            effort=config.effort,
+            started_at="2026-07-19T00:00:00Z",
+            finished_at="2026-07-19T00:00:01Z",
+            source=SourceDescriptor(type="user"),
+        )
+    )
+    store.save_session(config)
+    rounds = store.rounds_dir(config.id)
+    (rounds / "round-01.prompt.md").write_text("Prompt", encoding="utf-8")
+    (rounds / "round-01.md").write_text("x" * 256, encoding="utf-8")
+
+    with pytest.raises(StorageError, match="exceeds"):
+        await manager.create(
+            project_id,
+            topic="Baseline bound",
+            participant_ids=session_ids,
+            agreement_policy="all_agree",
+            max_cycles=1,
+        )
+
+    assert factory.created == 0
+    assert store.list_auto_runs() == []
+
+
+@pytest.mark.asyncio
+async def test_auto_manager_stops_before_discussion_when_preparations_exceed_context(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("a" * 220), PlannedOutput("b" * 220)],
+        stateless_history_limit=512,
+    )
+    created = await manager.create(
+        project_id,
+        topic="Mandatory preparation bound",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+    )
+
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "error"
+    assert "mandatory Auto discussion material" in (terminal.terminal_reason or "")
+    assert factory.created == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_manager_stops_before_next_turn_when_newest_discussion_is_too_large(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("A"),
+            PlannedOutput("B"),
+            PlannedOutput("x" * 400, "continue"),
+            PlannedOutput("must not run", "agree"),
+        ],
+        stateless_history_limit=650,
+    )
+    created = await manager.create(
+        project_id,
+        topic="Newest discussion bound",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+    )
+
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "error"
+    assert "newest Auto discussion entry" in (terminal.terminal_reason or "")
+    assert len(terminal.discussion) == 1
+    assert factory.created == 3
+
+
+def test_auto_context_rejects_negative_baseline_ranges_even_with_matching_digest(
+    tmp_path: Path,
+) -> None:
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = seed_durable_auto(
+        store,
+        auto_id="9" * 32,
+        status="preparing",
+        publish=False,
+    )
+    baseline = b"0123456789"
+    (store.auto_run_dir(record.id) / "baseline.md").write_bytes(baseline)
+    record.baseline = AutoArtifact(
+        "baseline.md",
+        sha256(baseline).hexdigest(),
+    )
+    forged = baseline[-5:-2]
+    record.baseline_entries = [
+        AutoBaselineEntry(
+            session_id=session_ids[0],
+            round_n=1,
+            started_at="2026-07-19T00:00:00Z",
+            offset=-5,
+            length=3,
+            sha256=sha256(forged).hexdigest(),
+        )
+    ]
+    store.save_auto_run(record)
+
+    with pytest.raises(OwnershipError, match="range"):
+        manager._discussion_context(store, record)
 
 
 @pytest.mark.asyncio

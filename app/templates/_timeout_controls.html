@@ -13,9 +13,11 @@
     Budget {{ timeout.effective_seconds }}s
     · hard cap {{ timeout.hard_cap_seconds }}s
     · up to {{ maximum_addition_seconds }}s more
+    {% if auto_scope_available %}· future Auto turns {{ auto_future_timeout_seconds }}s{% endif %}
   </p>
   {% if timeout_active and maximum_addition_minutes > 0 %}
     <form
+      data-timeout-extension-form
       method="post"
       action="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
       hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
@@ -29,22 +31,33 @@
       <button type="submit" name="minutes" value="30"{% if maximum_addition_minutes < 30 %} disabled{% endif %}>+30 min</button>
     </form>
     <form
+      data-timeout-extension-form
       method="post"
       action="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
       hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
       hx-target="closest [data-timeout-controls]"
       hx-swap="outerHTML"
     >
-      <input type="hidden" name="scope" value="current">
       <input type="hidden" name="expected_timeout_version" value="{{ timeout.version }}">
       <label>Custom minutes
         <input type="number" name="minutes" min="1" max="240" required>
       </label>
-      <button type="submit">Extend current</button>
+      <button type="submit" name="scope" value="current">Extend current</button>
+      {% if auto_scope_available %}
+        <button type="submit" name="scope" value="current_and_future_auto">Extend current + future Auto turns</button>
+      {% endif %}
     </form>
   {% elif not timeout_active %}
     <p>Run finished; its deadline can no longer be extended.</p>
   {% else %}
     <p>The hard timeout cap has been reached.</p>
+    <div class="timeout-cap-controls" aria-disabled="true">
+      <button type="button" disabled>+5 min</button>
+      <button type="button" disabled>+15 min</button>
+      <button type="button" disabled>+30 min</button>
+      <input type="number" aria-label="Custom minutes" disabled>
+      <button type="button" disabled>Extend current</button>
+      {% if auto_scope_available %}<button type="button" disabled>Extend current + future Auto turns</button>{% endif %}
+    </div>
   {% endif %}
 </section>

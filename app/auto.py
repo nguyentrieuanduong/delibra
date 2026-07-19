@@ -788,11 +788,23 @@ class AutoManager:
             self.settings.stateless_history_limit,
         )
         baseline_entries: list[ContextEntry] = []
+        previous_end = 0
         for entry in record.baseline_entries:
             end = entry.offset + entry.length
+            if (
+                entry.offset < 0
+                or entry.length <= 0
+                or entry.offset < previous_end
+                or end > len(baseline_bytes)
+            ):
+                raise OwnershipError("Auto baseline entry range is invalid")
             contents = baseline_bytes[entry.offset:end]
-            if len(contents) != entry.length or sha256(contents).hexdigest() != entry.sha256:
+            if (
+                len(contents) != entry.length
+                or sha256(contents).hexdigest() != entry.sha256
+            ):
                 raise OwnershipError("Auto baseline entry digest does not match")
+            previous_end = end
             baseline_entries.append(
                 ContextEntry(
                     (

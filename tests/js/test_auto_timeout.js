@@ -6,6 +6,7 @@ const {
   closeAutoSetup,
   copyAutoComposerTopic,
   formatRemainingSeconds,
+  setTimeoutFormPending,
   syncAutoDisabledControls,
   updateTimeoutCountdown,
 } = require("../../app/static/app.js");
@@ -58,6 +59,27 @@ test("Auto status disables and restores only controls it owns", function () {
   assert.equal(autoControl.disabled, false);
   assert.equal(autoControl.dataset.autoDisabled, undefined);
   assert.equal(intrinsicallyDisabled.disabled, true);
+});
+
+test("timeout submissions disable and restore only controls owned by the request", function () {
+  const enabled = { disabled: false, dataset: {} };
+  const capped = { disabled: true, dataset: {} };
+  const form = {
+    querySelectorAll(selector) {
+      assert.equal(selector, "button, input");
+      return [enabled, capped];
+    },
+  };
+
+  assert.equal(setTimeoutFormPending(form, true), true);
+  assert.equal(enabled.disabled, true);
+  assert.equal(enabled.dataset.timeoutPendingDisabled, "true");
+  assert.equal(capped.dataset.timeoutPendingDisabled, undefined);
+
+  assert.equal(setTimeoutFormPending(form, false), false);
+  assert.equal(enabled.disabled, false);
+  assert.equal(enabled.dataset.timeoutPendingDisabled, undefined);
+  assert.equal(capped.disabled, true);
 });
 
 test("formats bounded relative seconds as a stable clock", function () {

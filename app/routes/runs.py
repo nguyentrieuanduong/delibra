@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from starlette.responses import Response
 
+from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import RunKey, SourceDescriptor
 from app.security import validate_field
 from app.storage import ConflictError, NotFoundError, ProjectStore, validate_id
@@ -51,6 +52,24 @@ def render_timeout_controls(request: Request, key: RunKey) -> HTMLResponse:
     manager = request.app.state.manager
     timeout = manager.timeout_snapshot(key)
     active = manager.active_key(key.project_id, key.session_id) == key
+    project = request.app.state.registry.get(key.project_id)
+    store = ProjectStore(project)
+    session = store.load_session(key.session_id)
+    round_record = next(item for item in session.rounds if item.n == key.round_n)
+    auto_record = None
+    if (
+        active
+        and round_record.auto is not None
+        and store.active_auto_run_id() == round_record.auto.auto_id
+    ):
+        candidate = store.load_auto_run(round_record.auto.auto_id)
+        if (
+            candidate.status in ACTIVE_AUTO_STATUSES
+            and candidate.active_key == key
+            and candidate.active_timeout == timeout
+            and not candidate.stop_requested
+        ):
+            auto_record = candidate
     deadline = datetime.fromisoformat(timeout.deadline_at.replace("Z", "+00:00"))
     remaining_seconds = (
         max(0, math.ceil((deadline - datetime.now(UTC)).total_seconds()))
@@ -68,6 +87,12 @@ def render_timeout_controls(request: Request, key: RunKey) -> HTMLResponse:
             "maximum_addition_seconds": maximum_addition_seconds,
             "maximum_addition_minutes": min(240, maximum_addition_seconds // 60),
             "timeout_active": active,
+            "auto_scope_available": auto_record is not None,
+            "auto_future_timeout_seconds": (
+                auto_record.future_turn_timeout_seconds
+                if auto_record is not None
+                else None
+            ),
         },
     )
 
