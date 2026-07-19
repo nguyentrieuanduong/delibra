@@ -66,10 +66,13 @@ deletes the user directory. Delibra owns only these locations:
 <project>/.delibra/sessions/<id>/rounds/round-NN.{prompt.md,partial.md,md}
 <project>/.delibra/sessions/<id>/workspace/
 <project>/.delibra/sessions/<id>/workspace/inputs/round-NN/shared-context.md
+<project>/.delibra/auto-runs/<auto-id>/config.json
+<project>/.delibra/auto-runs/<auto-id>/{topic.md,baseline.md,shared-context.md}
+<project>/.delibra/auto-runs/<auto-id>/preparations/<session-id>.md
 ```
 
 The existing project manifest stores `shared_markdown_path` when shared context is
-selected.
+selected and `active_auto_run_id` while Auto owns the project reservation.
 
 Completed output files are the source of truth. A pass-to round stages a no-follow,
 same-descriptor copy at `workspace/inputs/round-NN/source.md`, records its SHA-256,
@@ -102,6 +105,45 @@ The chat sidebar can add or edit an agent without replacing the timeline or tear
 down another agent's live SSE connection. Completed output can be sent to a different
 agent; session-namespaced fragment IDs keep simultaneous same-numbered rounds scoped
 to the correct stream.
+
+## Auto discussions and live timeouts
+
+The persistent **Auto** button beside **Send** opens project-level Auto setup. Before
+the first round, the browser copies the unsent composer text directly into the
+editable topic field; it is never added to the setup URL. Once a conversation
+exists, setup prefers its earliest direct user prompt, falling back to the earliest
+recorded Auto topic. Agents are shown in case-insensitive name order and are all
+selected by default. Select at least two unique agents, choose **All agree** or
+**First agree**, and set **Maximum discussion cycles** from 1 through 20 (default
+3).
+
+Auto calls agents sequentially. Every selected agent first gets one independent
+preparation call containing only the original topic and the creation-time shared
+Markdown snapshot. Preparations are available in a collapsed status section but
+do not appear as conversation messages or enter another agent's context until all
+preparations finish. Discussion then passes the topic, all preparations, bounded
+creation-time history, and bounded prior discussion through the selected agents.
+**First agree** stops at the first explicit agreement; **All agree** requires every
+agent to agree within the same complete cycle. Reaching the configured number of
+complete cycles records `limit_reached` without starting an extra turn.
+
+The Auto status panel survives reloads and shows progress, participant order,
+verdicts, future-turn timeout budget, terminal reason, and completed preparations.
+**Stop Auto** is the only cancellation control while Auto is active: it cancels the
+current provider when present and prevents a later turn. Manual Send, pass, retry,
+cancel, agent identity changes, and project removal remain blocked until Auto is
+terminal; file viewing and shared-Markdown editing remain available. Edits do not
+change the immutable shared snapshot already captured for that Auto run.
+
+Every live manual or Auto-owned round shows server-authoritative remaining time,
+deadline, effective budget, and hard cap. Add `+5`, `+15`, `+30`, or a custom whole
+number of minutes from 1 through 240 without restarting the provider. Auto turns
+also offer **Extend current + future Auto turns**, which atomically adds the same
+duration to the active deadline and to turns that have not started. **Extend
+current** affects only the active turn. Each later turn starts with the inherited
+budget but a fresh timeout version and extension audit. Rejected stale, late, or
+over-cap submissions refresh the authoritative controls and never revive a
+finished process.
 
 ## Isolation and security boundary
 
@@ -150,6 +192,12 @@ timeouts, and shutdown terminate the entire CLI process group and finalize the r
 On startup, a persisted running round becomes an error round with any partial output
 promoted and visible; the session remains runnable.
 
+Auto never resumes automatically after process restart. Pointer-backed and orphaned
+active Auto records become `interrupted`, active round timeout audit is retained when
+recoverable, and no provider call is started. Orderly shutdown first quiesces Auto,
+marks it interrupted, cancels its active provider, and only then shuts down the run
+manager.
+
 Known Codex missing-login, expired-token, and revoked-refresh-token failures are
 reduced to an isolated-login command before live or durable display. After running
 that command, Retry creates a new linked stateless round; Delibra neither deletes
@@ -166,6 +214,8 @@ The main environment settings are:
 
 - `DELIBRA_HOME` (default `~/.delibra`)
 - `DELIBRA_RUN_TIMEOUT` (default 900 seconds)
+- `DELIBRA_MAX_RUN_TIMEOUT` (default 14,400 seconds / four hours; must be greater
+  than or equal to `DELIBRA_RUN_TIMEOUT`)
 - `DELIBRA_OUTPUT_LIMIT` (default 10 MiB)
 - `DELIBRA_REPLAY_LIMIT` (default 5 MiB)
 - `DELIBRA_STATELESS_HISTORY_LIMIT` (default 2 MiB)
@@ -182,6 +232,7 @@ Run the suite with:
 
 ```sh
 envs/bin/python -m pytest -q
+node --test tests/js/*.js
 ```
 
 The complete MVP acceptance record, including separate Claude and Codex parity
