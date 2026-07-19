@@ -2,6 +2,7 @@ envs/
 requirements.md
 recommends.md
 .plan/
+.plans/
 .idea/
 __pycache__/
 .pytest_cache/
