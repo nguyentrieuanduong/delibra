@@ -1202,14 +1202,11 @@ class RunManager:
             active.auto_request is not None
             and active.auto_request.phase == "discussion"
         )
+        parsed_verdict: str | None = None
         if status == "complete":
             output = active.adapter.final_text()
             if auto_discussion:
-                assert record.auto is not None
-                record.auto = replace(
-                    record.auto,
-                    verdict=parse_auto_verdict(output),
-                )
+                parsed_verdict = parse_auto_verdict(output)
         else:
             output = active.captured.decode("utf-8", errors="replace")
         output_persisted = False
@@ -1222,6 +1219,9 @@ class RunManager:
             error = f"failed to persist final output: {exc}"
             LOGGER.exception("Failed to persist final output for %s", active.key)
 
+        if status == "complete" and parsed_verdict is not None:
+            assert record.auto is not None
+            record.auto = replace(record.auto, verdict=parsed_verdict)
         record.status = status
         record.error = error
         record.warnings = list(dict.fromkeys(active.warnings))
@@ -1237,6 +1237,8 @@ class RunManager:
             record.status = "error"
             record.error = f"failed to persist terminal metadata: {exc}"
             active.config.status = "error"
+            if record.auto is not None:
+                record.auto = replace(record.auto, verdict=None)
             LOGGER.exception("Failed to persist terminal metadata for %s", active.key)
 
         if output_persisted and metadata_persisted:
