@@ -5,6 +5,19 @@
   <p><a href="/">Projects</a> · <a href="/projects/{{ project.id }}/chat">Chat</a></p>
   <h1>{{ project.name }}</h1>
   <p><code>{{ project.path }}</code></p>
+  <section aria-labelledby="shared-context-heading">
+    <h2 id="shared-context-heading">Shared context</h2>
+    {% if shared_markdown_path %}
+      <p><code>{{ shared_markdown_path }}</code></p>
+      {% if shared_markdown_available %}
+        <p>Shared context is available.</p>
+      {% else %}
+        <p class="file-warning">Shared context is unavailable.</p>
+      {% endif %}
+    {% else %}
+      <p>No shared context selected.</p>
+    {% endif %}
+  </section>
   <h2>Sessions</h2>
   <details>
     <summary>Create session</summary>
