@@ -29,10 +29,10 @@
   {% endif %}
   <section aria-label="Prompt">
     <h3>Prompt</h3>
-    <div class="markdown">{{ round.prompt|md }}</div>
+    <div class="markdown">{{ round.prompt|md(project, 'focus') }}</div>
   </section>
   <section aria-label="Output">
     <h3>Output</h3>
-    <div class="markdown output">{{ round.output|md }}</div>
+    <div class="markdown output">{{ round.output|md(project, 'focus') }}</div>
   </section>
 </article>

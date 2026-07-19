@@ -39,8 +39,9 @@
     <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Retry</button>
   </form>
 {% endif %}
-<details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md }}</div></details>
-<div class="markdown output">{{ round.output|md }}</div>
+{% set markdown_link_target = 'reader' if chat_view|default(false) else none %}
+<details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md(project, markdown_link_target) }}</div></details>
+<div class="markdown output">{{ round.output|md(project, markdown_link_target) }}</div>
 {% if round.record and round.record.status == 'complete' and sessions and (not chat_view or sessions|length > 1) %}
   <details>
     <summary>{% if chat_view %}Send to…{% else %}Pass to…{% endif %}</summary>
