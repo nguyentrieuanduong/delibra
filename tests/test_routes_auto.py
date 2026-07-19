@@ -204,6 +204,15 @@ def parse_sse(response) -> list[dict[str, str]]:
     return events
 
 
+def opening_tag(contents: str, element_id: str) -> str:
+    match = re.search(
+        rf'<[^>]+\bid="{re.escape(element_id)}"[^>]*>',
+        contents,
+    )
+    assert match is not None
+    return match.group(0)
+
+
 def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     tmp_path: Path,
 ) -> None:
@@ -455,6 +464,8 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
     assert [event["event"] for event in late] == ["status"]
     assert [event["event"] for event in reset] == ["reset", "status"]
     assert all(json.loads(event["data"])["auto_id"] == terminal.id for event in reset)
+    assert f"auto-status-stream-{terminal.id}" not in status.text
+    assert "sse-connect" not in opening_tag(status.text, "auto-status")
     assert factory.created == 3
 
 
@@ -514,6 +525,24 @@ def test_hidden_preparation_exposes_auto_timeout_scopes_and_status_refresh(
     assert auto_events_after_extension == auto_events_before + 1
     assert stale.status_code == 409
     assert stale.headers["HX-Trigger"] == "timeout-refresh"
+    status_tag = opening_tag(status.text, "auto-status")
+    stream_tag = opening_tag(status.text, f"auto-status-stream-{active.id}")
+    timeout_tag = opening_tag(
+        status.text,
+        f"auto-preparation-timeout-{key.session_id}-{key.round_n}",
+    )
+    assert "sse-connect" not in status_tag
+    assert 'hx-preserve="true"' in stream_tag
+    assert 'hx-ext="sse"' in stream_tag
+    assert (
+        f'sse-connect="/projects/{project.id}/auto-runs/{active.id}/stream"'
+        in stream_tag
+    )
+    assert 'hx-preserve="true"' in timeout_tag
+    assert status.text.count(
+        f'sse-connect="/projects/{project.id}/auto-runs/{active.id}/stream"'
+    ) == 1
+    assert status.text.count('hx-trigger="sse:status, sse:reset"') == 2
 
 
 def test_discussion_places_current_timeout_in_timeline_not_auto_status(
@@ -541,3 +570,5 @@ def test_discussion_places_current_timeout_in_timeline_not_auto_status(
     assert "future turn budget 2s" in status.text
     assert "auto-preparation-timeout" not in status.text
     assert f'hx-get="{timeout_path}"' in timeline.text
+    live_tag = opening_tag(timeline.text, f"round-{key.session_id}-{key.round_n}")
+    assert 'hx-preserve="true"' in live_tag
