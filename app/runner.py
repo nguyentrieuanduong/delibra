@@ -93,6 +93,15 @@ class CompletedRun:
     snapshot: str
 
 
+@dataclass(frozen=True)
+class RunRequest:
+    prompt: str
+    source: SourceDescriptor | None = None
+    retry_of: int | None = None
+    force_stateless: bool = False
+    expected_source_sha256: str | None = None
+
+
 class RunManager:
     def __init__(
         self,
@@ -119,7 +128,6 @@ class RunManager:
         *,
         source: SourceDescriptor | None = None,
     ) -> RunKey:
-        input_root: Path | None = None
         session_ids = [session_id]
         if source is not None:
             if (
@@ -131,172 +139,229 @@ class RunManager:
                 raise StorageError("pass source descriptor is invalid")
             session_ids.append(source.from_session)
         async with self.locks.registry_project_sessions(project_id, session_ids):
+            return await self._start_locked(
+                project_id,
+                session_id,
+                RunRequest(prompt=prompt, source=source),
+            )
+
+    async def retry(
+        self,
+        project_id: str,
+        session_id: str,
+        round_n: int,
+    ) -> RunKey:
+        async with self.locks.registry_project_sessions(project_id, [session_id]):
             project = self.registry.get(project_id)
             store = ProjectStore(project)
             config = store.load_session(session_id)
-            if config.status == "running" or any(
-                key.project_id == project_id and key.session_id == session_id
-                for key in self._active
-            ):
-                raise SessionBusy("session already has a running agent")
-
-            round_n = store.allocate_round(session_id)
-            shared_document = store.read_selected_shared_markdown(
-                self.settings.file_view_limit
+            record = next(
+                (item for item in config.rounds if item.n == round_n),
+                None,
             )
-            key = RunKey(project_id, session_id, round_n)
-            workspace = store.workspace_dir(session_id)
-            strategy = "native" if round_n == 1 or config.cli_session_id else "stateless"
-            staged_history: list[Path] = []
-            staged_source: Path | None = None
-            staged_shared_context: Path | None = None
-            shared_context: SharedContextDescriptor | None = None
-            execution_prompt = prompt
-            record_source = SourceDescriptor(type="user")
+            if record is None:
+                raise StorageError("retry round does not exist")
+            if record.status != "error":
+                raise ConflictError("only an error round can be retried")
+            if record.source.type != "user":
+                raise ConflictError("pass-to retry is not available yet")
+            prompt_path = (
+                store.rounds_dir(session_id) / f"round-{round_n:02d}.prompt.md"
+            )
             try:
-                if strategy == "stateless":
-                    input_root, staged_history = self._stage_history(
+                prompt = prompt_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise StorageError("retry prompt is unavailable") from exc
+            return await self._start_locked(
+                project_id,
+                session_id,
+                RunRequest(
+                    prompt=prompt,
+                    retry_of=round_n,
+                    force_stateless=True,
+                ),
+            )
+
+    async def _start_locked(
+        self,
+        project_id: str,
+        session_id: str,
+        request: RunRequest,
+    ) -> RunKey:
+        input_root: Path | None = None
+        project = self.registry.get(project_id)
+        store = ProjectStore(project)
+        config = store.load_session(session_id)
+        if config.status == "running" or any(
+            key.project_id == project_id and key.session_id == session_id
+            for key in self._active
+        ):
+            raise SessionBusy("session already has a running agent")
+
+        round_n = store.allocate_round(session_id)
+        shared_document = store.read_selected_shared_markdown(
+            self.settings.file_view_limit
+        )
+        key = RunKey(project_id, session_id, round_n)
+        workspace = store.workspace_dir(session_id)
+        if request.force_stateless:
+            strategy = "stateless"
+            resume_id = None
+            config.cli_session_id = None
+        else:
+            strategy = (
+                "native" if round_n == 1 or config.cli_session_id else "stateless"
+            )
+            resume_id = config.cli_session_id
+        staged_history: list[Path] = []
+        staged_source: Path | None = None
+        staged_shared_context: Path | None = None
+        shared_context: SharedContextDescriptor | None = None
+        execution_prompt = request.prompt
+        record_source = SourceDescriptor(type="user")
+        try:
+            if strategy == "stateless":
+                input_root, staged_history = self._stage_history(
+                    store,
+                    config,
+                    round_n,
+                )
+            if shared_document is not None:
+                if input_root is None:
+                    input_root = self._create_input_root(
                         store,
-                        config,
+                        session_id,
                         round_n,
                     )
-                if shared_document is not None:
-                    if input_root is None:
-                        input_root = self._create_input_root(
-                            store,
-                            session_id,
-                            round_n,
-                        )
-                    staged_shared_context = (
-                        Path("inputs")
-                        / f"round-{round_n:02d}"
-                        / "shared-context.md"
-                    )
-                    atomic_write_bytes(
-                        workspace / staged_shared_context,
-                        shared_document.text.encode("utf-8"),
-                    )
-                    shared_context = SharedContextDescriptor(
-                        path=shared_document.relative_path,
-                        staged_file=staged_shared_context.as_posix(),
-                        sha256=shared_document.sha256,
-                    )
-                if source is not None:
-                    source_config, source_path = self._pass_source(
-                        store,
-                        source,
-                    )
-                    if input_root is None:
-                        input_root = self._create_input_root(store, session_id, round_n)
-                    staged_source = Path("inputs") / f"round-{round_n:02d}" / "source.md"
-                    digest = safe_copy_file(
-                        source_path,
-                        store.rounds_dir(source_config.id),
-                        workspace / staged_source,
-                        input_root,
-                    )
-                    record_source = SourceDescriptor(
-                        type="pass",
-                        from_session=source_config.id,
-                        from_round=source.from_round,
-                        staged_file=staged_source.as_posix(),
-                        source_sha256=digest,
-                    )
-                    execution_prompt = self._pass_prompt(
-                        prompt,
-                        source_config.name,
-                        source.from_round,
-                        staged_source,
-                    )
-            except Exception:
-                self._cleanup_input_root(input_root)
-                raise
-            context = RunContext(
-                user_prompt=execution_prompt,
-                resume_id=config.cli_session_id,
-                resume_strategy=strategy,
-                staged_history=staged_history,
-                staged_source=staged_source,
-                workspace=workspace,
-                staged_shared_context=staged_shared_context,
-            )
-            try:
-                adapter = self.adapter_factory(config)
-                command = adapter.build_command(config, context)
-            except Exception:
-                self._cleanup_input_root(input_root)
-                raise
-            rounds = store.rounds_dir(session_id)
-            prompt_path = rounds / f"round-{round_n:02d}.prompt.md"
-            partial_path = rounds / f"round-{round_n:02d}.partial.md"
-            output_path = rounds / f"round-{round_n:02d}.md"
-            record = RoundRecord(
-                n=round_n,
-                status="running",
-                error=None,
-                warnings=(
-                    [STATELESS_CONTINUATION_WARNING]
-                    if round_n > 1 and strategy == "stateless"
-                    else []
-                ),
-                agent=config.agent,
-                model=config.model,
-                effort=config.effort,
-                started_at=utc_now(),
-                finished_at=None,
-                source=record_source,
-                shared_context=shared_context,
-            )
-
-            try:
-                atomic_write_text(prompt_path, execution_prompt)
-                atomic_write_text(partial_path, "")
-                config.rounds.append(record)
-                config.status = "running"
-                store.save_session(config)
-            except Exception:
-                prompt_path.unlink(missing_ok=True)
-                partial_path.unlink(missing_ok=True)
-                self._cleanup_input_root(input_root)
-                raise
-
-            completion = asyncio.get_running_loop().create_future()
-            active = ActiveRun(
-                key=key,
-                project=project,
-                store=store,
-                config=config,
-                record=record,
-                adapter=adapter,
-                process=None,
-                partial_path=partial_path,
-                output_path=output_path,
-                completion=completion,
-                warnings=list(record.warnings),
-            )
-            self._active[key] = active
-            try:
-                environment = self._subprocess_environment(config, workspace)
-                active.process = await asyncio.create_subprocess_exec(
-                    *command.argv,
-                    cwd=workspace,
-                    env=environment,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                    limit=self.settings.stdout_line_limit + 1,
+                staged_shared_context = (
+                    Path("inputs") / f"round-{round_n:02d}" / "shared-context.md"
                 )
-            except (OSError, ValueError, StorageError) as exc:
-                active.errors.append(f"failed to spawn agent: {exc}")
-                await self._finalize_locked(active, None)
-                return key
+                atomic_write_bytes(
+                    workspace / staged_shared_context,
+                    shared_document.text.encode("utf-8"),
+                )
+                shared_context = SharedContextDescriptor(
+                    path=shared_document.relative_path,
+                    staged_file=staged_shared_context.as_posix(),
+                    sha256=shared_document.sha256,
+                )
+            if request.source is not None:
+                source_config, source_path = self._pass_source(
+                    store,
+                    request.source,
+                )
+                if input_root is None:
+                    input_root = self._create_input_root(store, session_id, round_n)
+                staged_source = Path("inputs") / f"round-{round_n:02d}" / "source.md"
+                digest = safe_copy_file(
+                    source_path,
+                    store.rounds_dir(source_config.id),
+                    workspace / staged_source,
+                    input_root,
+                )
+                record_source = SourceDescriptor(
+                    type="pass",
+                    from_session=source_config.id,
+                    from_round=request.source.from_round,
+                    staged_file=staged_source.as_posix(),
+                    source_sha256=digest,
+                )
+                execution_prompt = self._pass_prompt(
+                    request.prompt,
+                    source_config.name,
+                    request.source.from_round,
+                    staged_source,
+                )
+        except Exception:
+            self._cleanup_input_root(input_root)
+            raise
+        context = RunContext(
+            user_prompt=execution_prompt,
+            resume_id=resume_id,
+            resume_strategy=strategy,
+            staged_history=staged_history,
+            staged_source=staged_source,
+            workspace=workspace,
+            staged_shared_context=staged_shared_context,
+        )
+        try:
+            adapter = self.adapter_factory(config)
+            command = adapter.build_command(config, context)
+        except Exception:
+            self._cleanup_input_root(input_root)
+            raise
+        rounds = store.rounds_dir(session_id)
+        prompt_path = rounds / f"round-{round_n:02d}.prompt.md"
+        partial_path = rounds / f"round-{round_n:02d}.partial.md"
+        output_path = rounds / f"round-{round_n:02d}.md"
+        record = RoundRecord(
+            n=round_n,
+            status="running",
+            error=None,
+            warnings=(
+                [STATELESS_CONTINUATION_WARNING]
+                if round_n > 1 and strategy == "stateless"
+                else []
+            ),
+            agent=config.agent,
+            model=config.model,
+            effort=config.effort,
+            started_at=utc_now(),
+            finished_at=None,
+            source=record_source,
+            shared_context=shared_context,
+            retry_of=request.retry_of,
+        )
 
-            active.task = asyncio.create_task(
-                self._run_active(active, command.stdin),
-                name=f"delibra-run-{session_id}-{round_n}",
+        try:
+            atomic_write_text(prompt_path, execution_prompt)
+            atomic_write_text(partial_path, "")
+            config.rounds.append(record)
+            config.status = "running"
+            store.save_session(config)
+        except Exception:
+            prompt_path.unlink(missing_ok=True)
+            partial_path.unlink(missing_ok=True)
+            self._cleanup_input_root(input_root)
+            raise
+
+        completion = asyncio.get_running_loop().create_future()
+        active = ActiveRun(
+            key=key,
+            project=project,
+            store=store,
+            config=config,
+            record=record,
+            adapter=adapter,
+            process=None,
+            partial_path=partial_path,
+            output_path=output_path,
+            completion=completion,
+            warnings=list(record.warnings),
+        )
+        self._active[key] = active
+        try:
+            environment = self._subprocess_environment(config, workspace)
+            active.process = await asyncio.create_subprocess_exec(
+                *command.argv,
+                cwd=workspace,
+                env=environment,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+                limit=self.settings.stdout_line_limit + 1,
             )
+        except (OSError, ValueError, StorageError) as exc:
+            active.errors.append(f"failed to spawn agent: {exc}")
+            await self._finalize_locked(active, None)
             return key
+
+        active.task = asyncio.create_task(
+            self._run_active(active, command.stdin),
+            name=f"delibra-run-{session_id}-{round_n}",
+        )
+        return key
 
     @staticmethod
     def _pass_source(

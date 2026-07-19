@@ -139,6 +139,38 @@ async def pass_round(
     )
 
 
+@router.post(
+    "/projects/{project_id}/sessions/{session_id}/rounds/{round_n}/retry",
+    response_class=HTMLResponse,
+    status_code=202,
+)
+async def retry_round(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    round_n: int,
+    view: str | None = None,
+):
+    validate_id(project_id, "project id")
+    validate_id(session_id, "session id")
+    if round_n < 1:
+        raise HTTPException(status_code=422, detail="Round must be positive")
+    key = await request.app.state.manager.retry(project_id, session_id, round_n)
+    project = request.app.state.registry.get(project_id)
+    session = ProjectStore(project).load_session(session_id)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_live.html",
+        context={
+            "key": key,
+            "session": session,
+            "dom_id": round_dom_id(session_id, key.round_n),
+            "chat_view": view == "chat",
+        },
+        status_code=202,
+    )
+
+
 @router.get("/projects/{project_id}/sessions/{session_id}/rounds/{round_n}/stream")
 async def round_stream(
     request: Request,

@@ -510,6 +510,39 @@ def test_round_focus_fragment_is_static_and_keeps_complete_dom_ids_unique(
     assert missing_round.status_code == 404
 
 
+def test_chat_retry_targets_timeline_only_for_error_records(tmp_path: Path) -> None:
+    error_record = record(1, "2026-07-17T00:00:01Z")
+    error_record.status = "error"
+    error_record.error = "provider rejected request"
+    cancelled_record = record(2, "2026-07-17T00:00:02Z")
+    cancelled_record.status = "cancelled"
+    cancelled_record.error = "cancelled by user"
+    complete_record = record(3, "2026-07-17T00:00:03Z")
+    config = session(
+        "a" * 32,
+        "Alpha",
+        rounds=[error_record, cancelled_record, complete_record],
+    )
+    app, project, store = setup_project(tmp_path, [config])
+    (store.rounds_dir(config.id) / "round-99.md").write_text(
+        "orphan",
+        encoding="utf-8",
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{project.id}/chat")
+
+    retry_url = (
+        f"/projects/{project.id}/sessions/{config.id}/rounds/1/retry?view=chat"
+    )
+    assert page.status_code == 200
+    assert f'action="{retry_url}"' in page.text
+    assert f'hx-post="{retry_url}"' in page.text
+    assert 'hx-target=".chat-timeline"' in page.text
+    assert 'hx-swap="beforeend"' in page.text
+    assert page.text.count(">Retry</button>") == 1
+
+
 def test_chat_renders_two_concurrent_live_fragments_with_scoped_done_targets(
     tmp_path: Path,
 ) -> None:
