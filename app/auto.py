@@ -218,8 +218,7 @@ class AutoManager:
             by_id = {item.id: item for item in sessions}
             if any(session_id not in by_id for session_id in requested_ids):
                 raise StorageError("Auto participant does not belong to the project")
-            if store.active_auto_run_id() is not None:
-                raise ConflictError("project already has an active Auto run")
+            store.require_auto_inactive()
             if any(session.status == "running" for session in sessions) or any(
                 self.runner.active_key(project_id, session.id) is not None
                 for session in sessions
@@ -315,6 +314,9 @@ class AutoManager:
         project = self.registry.get(project_id)
         records = ProjectStore(project).list_auto_runs()
         return records[-1] if records else None
+
+    def publish_current_status(self, project_id: str, auto_id: str) -> AutoStatusEvent:
+        return self._publish_status(self.get(project_id, auto_id))
 
     def _build_baseline(
         self,
@@ -475,7 +477,15 @@ class AutoManager:
                 [participant.session_id],
             ):
                 current = store.load_auto_run(record.id)
-                if self._quiescing or current.stop_requested:
+                if self._quiescing:
+                    self._transition_terminal_locked(
+                        store,
+                        current,
+                        "interrupted",
+                        "application shutdown",
+                    )
+                    terminal = current
+                elif current.stop_requested:
                     self._transition_terminal_locked(
                         store,
                         current,
@@ -621,7 +631,15 @@ class AutoManager:
                 [participant.session_id],
             ):
                 current = store.load_auto_run(record.id)
-                if self._quiescing or current.stop_requested:
+                if self._quiescing:
+                    self._transition_terminal_locked(
+                        store,
+                        current,
+                        "interrupted",
+                        "application shutdown",
+                    )
+                    terminal = current
+                elif current.stop_requested:
                     self._transition_terminal_locked(
                         store,
                         current,
@@ -941,26 +959,42 @@ class AutoManager:
     async def stop(self, project_id: str, auto_id: str) -> AutoRunRecord:
         project = self.registry.get(project_id)
         store = ProjectStore(project)
-        record = store.load_auto_run(auto_id)
-        active_key = record.active_key
-        session_ids = [active_key.session_id] if active_key is not None else []
-        async with self.locks.project_sessions(project_id, session_ids):
-            record = store.load_auto_run(auto_id)
-            if record.status not in ACTIVE_AUTO_STATUSES:
-                raise ConflictError("Auto run is already terminal")
-            record.stop_requested = True
-            store.save_auto_run(record)
-            active_key = record.active_key
-            if active_key is None:
-                self._transition_terminal_locked(
-                    store,
-                    record,
-                    "stopped",
-                    "stopped by user",
-                )
+        claimed = False
+        while True:
+            expected_key = store.load_auto_run(auto_id).active_key
+            session_ids = (
+                [expected_key.session_id] if expected_key is not None else []
+            )
+            async with self.locks.project_sessions(project_id, session_ids):
+                record = store.require_auto_owner(auto_id)
+                if record.active_key != expected_key:
+                    continue
+                if expected_key is not None:
+                    claimed = self.runner.claim_auto_cancel_locked(
+                        expected_key,
+                        auto_id,
+                    )
+                    if not claimed:
+                        raise ConflictError(
+                            "Auto turn can no longer be stopped"
+                        )
+                record.stop_requested = True
+                store.save_auto_run(record)
+                active_key = expected_key
+                if active_key is None:
+                    self._transition_terminal_locked(
+                        store,
+                        record,
+                        "stopped",
+                        "stopped by user",
+                    )
+                break
         self._publish_status(record)
-        if active_key is not None:
-            await self.runner.cancel(active_key)
+        if active_key is not None and claimed:
+            await self.runner.finish_auto_cancel(active_key)
+            task = self._tasks.get((project_id, auto_id))
+            if task is not None and task is not asyncio.current_task():
+                await asyncio.shield(task)
         return self.get(project_id, auto_id)
 
     def _publish_status(self, record: AutoRunRecord) -> AutoStatusEvent:
@@ -1060,6 +1094,25 @@ class AutoManager:
                 store.load_auto_run(active_id)
             for record in records:
                 if record.status in ACTIVE_AUTO_STATUSES:
+                    if (
+                        record.active_key is not None
+                        and record.active_timeout is not None
+                    ):
+                        session = store.load_session(record.active_key.session_id)
+                        active_round = next(
+                            (
+                                item
+                                for item in session.rounds
+                                if item.n == record.active_key.round_n
+                                and item.source.type == "auto"
+                                and item.auto is not None
+                                and item.auto.auto_id == record.id
+                            ),
+                            None,
+                        )
+                        if active_round is not None:
+                            active_round.timeout = deepcopy(record.active_timeout)
+                            store.save_session(session)
                     self._transition_terminal_locked(
                         store,
                         record,
@@ -1076,9 +1129,41 @@ class AutoManager:
         tasks = list(self._tasks.values())
         for project_id, auto_id in list(self._tasks):
             try:
-                record = self.get(project_id, auto_id)
-                if record.active_key is not None:
-                    await self.runner.cancel(record.active_key)
+                project = self.registry.get(project_id)
+                store = ProjectStore(project)
+                claimed_key = None
+                while True:
+                    expected_key = store.load_auto_run(auto_id).active_key
+                    session_ids = (
+                        [expected_key.session_id]
+                        if expected_key is not None
+                        else []
+                    )
+                    async with self.locks.project_sessions(
+                        project_id,
+                        session_ids,
+                    ):
+                        record = store.load_auto_run(auto_id)
+                        if record.active_key != expected_key:
+                            continue
+                        if record.status in ACTIVE_AUTO_STATUSES:
+                            if expected_key is not None:
+                                claimed = self.runner.claim_auto_cancel_locked(
+                                    expected_key,
+                                    auto_id,
+                                )
+                                if claimed:
+                                    claimed_key = expected_key
+                            self._transition_terminal_locked(
+                                store,
+                                record,
+                                "interrupted",
+                                "application shutdown",
+                            )
+                        break
+                self._publish_status(record)
+                if claimed_key is not None:
+                    await self.runner.finish_auto_cancel(claimed_key)
             except Exception:
                 LOGGER.exception("Failed to cancel Auto run %s during shutdown", auto_id)
         if tasks:

@@ -1074,6 +1074,22 @@ class ProjectStore:
         active = self._load_manifest().get("active_auto_run_id")
         return str(active) if active is not None else None
 
+    def require_auto_inactive(self) -> None:
+        active_id = self.active_auto_run_id()
+        if active_id is None:
+            return
+        self.load_auto_run(active_id)
+        raise ConflictError("project has an active Auto run")
+
+    def require_auto_owner(self, auto_id: str) -> AutoRunRecord:
+        validate_id(auto_id, "Auto run id")
+        if self.active_auto_run_id() != auto_id:
+            raise ConflictError("Auto run does not own the active reservation")
+        record = self.load_auto_run(auto_id)
+        if record.status not in {"preparing", "discussing"}:
+            raise ConflictError("Auto reservation owner is already terminal")
+        return record
+
     def publish_auto_reservation(self, auto_id: str) -> None:
         validate_id(auto_id, "Auto run id")
         manifest = self._load_manifest()

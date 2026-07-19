@@ -138,6 +138,48 @@ def test_project_crud_path_validation_canonicalization_import_and_invalid_metada
     ]
 
 
+def test_active_auto_reservation_blocks_project_rename_and_unregister(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "reserved-project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Reserved", project_path)
+    store = ProjectStore(project)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        for index, name in enumerate(("Alpha", "Beta")):
+            store.create_session(
+                SessionConfig(
+                    id=str(index + 1) * 32,
+                    name=name,
+                    agent="fake",
+                    model="success",
+                    effort="low",
+                    role_instructions="",
+                    cli_session_id=None,
+                    status="idle",
+                    created_at="2026-07-19T00:00:00Z",
+                    rounds=[],
+                )
+            )
+        reserve_auto_run(store)
+        renamed = client.post(
+            f"/projects/{project.id}/rename",
+            data={"name": "Blocked"},
+            follow_redirects=False,
+        )
+        removed = client.post(
+            f"/projects/{project.id}/unregister",
+            follow_redirects=False,
+        )
+
+    assert renamed.status_code == 409
+    assert removed.status_code == 409
+    assert RegistryStore(settings.home).get(project.id).name == "Reserved"
+
+
 @pytest.mark.asyncio
 async def test_rename_unregister_and_run_start_are_serialized_without_stranding(
     tmp_path: Path,

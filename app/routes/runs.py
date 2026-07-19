@@ -101,7 +101,7 @@ async def extend_timeout(
 ) -> Response:
     key = validated_round_key(request, project_id, session_id, round_n)
     try:
-        await request.app.state.manager.extend_timeout(
+        result = await request.app.state.manager.extend_timeout(
             key,
             minutes,
             scope,
@@ -112,6 +112,11 @@ async def extend_timeout(
             {"detail": str(exc)},
             status_code=409,
             headers={"HX-Trigger": "timeout-refresh"},
+        )
+    if result.auto_id is not None:
+        request.app.state.auto_manager.publish_current_status(
+            project_id,
+            result.auto_id,
         )
     return render_timeout_controls(request, key)
 

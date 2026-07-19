@@ -74,6 +74,8 @@ async def create_session(
     session_id = uuid4().hex
     async with request.app.state.locks.project_sessions(project_id, [session_id]):
         project = request.app.state.registry.get(project_id)
+        store = ProjectStore(project)
+        store.require_auto_inactive()
         config = SessionConfig(
             id=session_id,
             name=name,
@@ -86,7 +88,7 @@ async def create_session(
             created_at=utc_now(),
             rounds=[],
         )
-        ProjectStore(project).create_session(config)
+        store.create_session(config)
     if request.headers.get("HX-Request") == "true":
         return sidebar_response(
             request,
@@ -121,6 +123,7 @@ async def edit_session(
     async with request.app.state.locks.project_sessions(project_id, [session_id]):
         project = request.app.state.registry.get(project_id)
         store = ProjectStore(project)
+        store.require_auto_inactive()
         config = store.load_session(session_id)
         if config.status == "running":
             raise ConflictError("cannot edit a running session")
@@ -185,7 +188,9 @@ async def delete_session(
 ):
     async with request.app.state.locks.project_sessions(project_id, [session_id]):
         project = request.app.state.registry.get(project_id)
-        ProjectStore(project).delete_session(session_id)
+        store = ProjectStore(project)
+        store.require_auto_inactive()
+        store.delete_session(session_id)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
