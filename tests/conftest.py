@@ -25,6 +25,7 @@ def reserve_auto_run():
             project_id=store.project.id,
             status="preparing",
             agreement_policy="all_agree",
+            preparation_enabled=True,
             max_cycles=3,
             current_cycle=0,
             next_participant=0,

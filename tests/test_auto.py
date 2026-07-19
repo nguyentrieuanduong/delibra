@@ -319,6 +319,7 @@ def seed_durable_auto(
         project_id=store.project.id,
         status=status,
         agreement_policy="all_agree",
+        preparation_enabled=True,
         max_cycles=1,
         current_cycle=0,
         next_participant=0,
@@ -389,6 +390,7 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
     terminal = await wait_for_auto_terminal(manager, project_id, created.id)
 
     assert terminal.status == "converged"
+    assert terminal.preparation_enabled is True
     assert len(terminal.preparations) == 2
     assert len(terminal.discussion) == 1
     assert factory.maximum_active == 1
@@ -405,6 +407,44 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
         store.load_session(session_id).cli_session_id is None
         for session_id in session_ids
     )
+
+
+@pytest.mark.asyncio
+async def test_auto_manager_skips_preparation_and_clears_native_sessions(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Direct consensus", "agree")],
+    )
+    for session_id in session_ids:
+        config = store.load_session(session_id)
+        config.cli_session_id = f"stale-{session_id}"
+        store.save_session(config)
+
+    created = await manager.create(
+        project_id,
+        topic="Direct discussion topic",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert terminal.preparation_enabled is False
+    assert terminal.preparations == []
+    assert factory.created == 1
+    assert factory.calls[0]["material"].startswith(b"# Auto discussion material")
+    assert b"Preparation:" not in factory.calls[0]["material"]
+    assert all(
+        store.load_session(session_id).cli_session_id is None
+        for session_id in session_ids
+    )
+    discussion = store.load_session(session_ids[0]).rounds[-1]
+    assert discussion.auto is not None
+    assert discussion.auto.phase == "discussion"
 
 
 @pytest.mark.asyncio
@@ -913,6 +953,7 @@ def test_auto_manager_lifecycle_is_wired_and_reconciles_restart(tmp_path: Path) 
         project_id=project.id,
         status="preparing",
         agreement_policy="all_agree",
+        preparation_enabled=True,
         max_cycles=1,
         current_cycle=0,
         next_participant=0,

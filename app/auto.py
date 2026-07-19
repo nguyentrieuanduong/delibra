@@ -159,6 +159,7 @@ class AutoManager:
         participant_ids: Sequence[str],
         agreement_policy: str,
         max_cycles: int,
+        preparation_enabled: bool = True,
     ) -> AutoRunRecord:
         if self._quiescing:
             raise ConflictError("Auto manager is shutting down")
@@ -168,6 +169,8 @@ class AutoManager:
             raise StorageError("Auto topic is invalid")
         if agreement_policy not in {"all_agree", "first_agree"}:
             raise StorageError("Auto agreement policy is invalid")
+        if type(preparation_enabled) is not bool:
+            raise StorageError("Auto preparation choice is invalid")
         if type(max_cycles) is not int or not 1 <= max_cycles <= 20:
             raise StorageError("Auto cycle limit must be from 1 through 20")
         requested_ids = list(participant_ids)
@@ -221,6 +224,7 @@ class AutoManager:
                 project_id=project_id,
                 status="preparing",
                 agreement_policy=agreement_policy,
+                preparation_enabled=preparation_enabled,
                 max_cycles=max_cycles,
                 current_cycle=0,
                 next_participant=0,
@@ -395,7 +399,9 @@ class AutoManager:
             while not self._quiescing:
                 record = self.get(project_id, auto_id)
                 if record.status == "preparing":
-                    if record.next_participant < len(record.participants):
+                    if not record.preparation_enabled:
+                        await self._begin_discussion(record)
+                    elif record.next_participant < len(record.participants):
                         await self._run_preparation(record)
                     else:
                         await self._begin_discussion(record)
@@ -569,8 +575,15 @@ class AutoManager:
                     "stopped",
                     "stopped by user",
                 )
-            elif len(current.preparations) != len(current.participants):
+            elif (
+                current.preparation_enabled
+                and len(current.preparations) != len(current.participants)
+            ):
                 raise ConflictError("Auto preparation set is incomplete")
+            elif not current.preparation_enabled and current.preparations:
+                raise ConflictError(
+                    "Auto skipped preparation but has preparation entries"
+                )
             else:
                 for participant in current.participants:
                     session = store.load_session(participant.session_id)

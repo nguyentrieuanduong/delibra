@@ -46,6 +46,7 @@ def auto_record_fixture(project_id: str) -> models.AutoRunRecord:
         project_id=project_id,
         status="preparing",
         agreement_policy="all_agree",
+        preparation_enabled=True,
         max_cycles=3,
         current_cycle=0,
         next_participant=0,
@@ -93,6 +94,19 @@ def test_auto_record_loads_legacy_token_and_omits_it_on_write(
     restored = models.AutoRunRecord.from_dict(legacy)
 
     assert "active_turn_token" not in restored.to_dict()
+
+
+def test_auto_record_loads_legacy_preparation_default_and_writes_it(
+    tmp_path: Path,
+) -> None:
+    project_id = auto_project_store(tmp_path).project.id
+    legacy = auto_record_fixture(project_id).to_dict()
+    legacy.pop("preparation_enabled", None)
+
+    restored = models.AutoRunRecord.from_dict(legacy)
+
+    assert restored.preparation_enabled is True
+    assert restored.to_dict()["preparation_enabled"] is True
 
 
 def test_round_record_loads_legacy_json_and_roundtrips_auto_timeout() -> None:
