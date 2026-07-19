@@ -171,6 +171,58 @@ async def test_missing_selected_context_creates_no_round_or_input(
     assert not (rounds / "round-01.partial.md").exists()
 
 
+@pytest.mark.asyncio
+async def test_retry_appends_stateless_round_and_clears_ambiguous_native_state(
+    tmp_path: Path,
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        mode="provider-error",
+        contexts=contexts,
+    )
+    shared_file = store.project_path / "brief.md"
+    shared_file.write_text("old requirements", encoding="utf-8")
+    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
+    failed = await manager.wait(
+        await manager.start(project_id, session_id, "Original")
+    )
+    assert failed.status == "error"
+    persisted = store.load_session(session_id)
+    assert persisted.cli_session_id == "fake-native-session"
+    persisted.model = "success"
+    store.save_session(persisted)
+    current = store.read_selected_shared_markdown(manager.settings.file_view_limit)
+    assert current is not None
+    store.save_shared_markdown(
+        "brief.md",
+        current.sha256,
+        "new requirements",
+        manager.settings.file_view_limit,
+    )
+
+    retried = await manager.wait(
+        await manager.retry(project_id, session_id, failed.n)
+    )
+
+    assert retried.status == "complete"
+    assert retried.retry_of == failed.n
+    assert retried.source.type == "user"
+    assert contexts[-1].user_prompt == "Original"
+    assert contexts[-1].resume_strategy == "stateless"
+    assert contexts[-1].resume_id is None
+    assert all("round-01" not in path.name for path in contexts[-1].staged_history)
+    assert (
+        store.rounds_dir(session_id) / "round-01.prompt.md"
+    ).read_text() == "Original"
+    shared_snapshot = (
+        store.workspace_dir(session_id) / "inputs/round-02/shared-context.md"
+    )
+    assert shared_snapshot.read_text(encoding="utf-8") == "new requirements"
+    assert retried.shared_context is not None
+    assert retried.shared_context.sha256 == sha256(b"new requirements").hexdigest()
+
+
 def test_subprocess_environment_does_not_inherit_server_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

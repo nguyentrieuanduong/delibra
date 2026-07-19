@@ -220,3 +220,35 @@ def test_restart_surfaces_partial_and_error_session_can_run_again(tmp_path: Path
     assert persisted.rounds[0].status == "error"
     assert persisted.rounds[1].status == "complete"
     assert persisted.status == "idle"
+
+
+def test_error_round_retry_appends_linked_live_round(tmp_path: Path) -> None:
+    failed = round_record(1, "error", "provider rejected request")
+    config = session_config(
+        "e" * 32,
+        status="error",
+        rounds=[failed],
+        cli_session_id="failed-native-session",
+    )
+    app, project, store, contexts = seeded_app(tmp_path, [config])
+    base = f"/projects/{project.id}/sessions/{config.id}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(base)
+        assert f"{base}/rounds/1/retry" in page.text
+        started = client.post(f"{base}/rounds/1/retry")
+        assert started.status_code == 202
+        assert f'id="round-{config.id}-2"' in started.text
+        finish_round(client, base, 2)
+        refreshed = client.get(f"{base}/rounds/2")
+
+    records = store.load_session(config.id).rounds
+    assert records[0] == failed
+    assert records[1].retry_of == 1
+    assert records[1].status == "complete"
+    assert contexts[-1].resume_strategy == "stateless"
+    assert contexts[-1].resume_id is None
+    assert "Retry of round 1" in refreshed.text
+    assert (store.rounds_dir(config.id) / "round-01.prompt.md").read_text(
+        encoding="utf-8"
+    ) == "Prompt 1"
