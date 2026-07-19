@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
+from app.auto import AutoManager
 from app.config import Settings, settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
@@ -70,9 +71,16 @@ def create_app(
             settings=app_settings,
             adapter_factory=adapter_factory,
         )
+        auto_manager = AutoManager(
+            registry=registry,
+            locks=locks,
+            settings=app_settings,
+            runner=manager,
+        )
         app.state.registry = registry
         app.state.locks = locks
         app.state.manager = manager
+        app.state.auto_manager = auto_manager
         app.state.health = checking_health(commands)
 
         async def refresh_health() -> None:
@@ -92,6 +100,7 @@ def create_app(
                 store = ProjectStore(project)
                 for session in store.list_sessions():
                     store.reconcile_session(session.id)
+                await auto_manager.reconcile_project(project.id)
             except StorageError:
                 LOGGER.exception("Startup reconciliation failed for project %s", project.id)
         try:
@@ -104,6 +113,7 @@ def create_app(
                 pass
             except TimeoutError:
                 LOGGER.error("CLI health probe did not stop within the shutdown bound")
+            await auto_manager.shutdown()
             await manager.shutdown()
 
     app = FastAPI(lifespan=lifespan)
@@ -116,6 +126,7 @@ def create_app(
     app.state.registry = None
     app.state.locks = None
     app.state.manager = None
+    app.state.auto_manager = None
     app.state.templates = templates
     app.state.health = []
     app.include_router(projects_router)

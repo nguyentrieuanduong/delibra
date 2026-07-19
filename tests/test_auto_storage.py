@@ -7,7 +7,13 @@ import random
 import pytest
 
 import app.models as models
-from app.storage import ConflictError, OwnershipError, ProjectStore, RegistryStore
+from app.storage import (
+    ConflictError,
+    OwnershipError,
+    ProjectStore,
+    RegistryStore,
+    StorageError,
+)
 
 
 def legacy_round_record() -> dict[str, object]:
@@ -196,3 +202,85 @@ def test_auto_record_decoder_rejects_generated_values_with_wrong_json_types(
             )
         with pytest.raises((TypeError, ValueError)):
             models.AutoRunRecord.from_dict(candidate)
+
+
+def test_auto_store_copies_and_verifies_preparation_and_ephemeral_context(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source = source_root / "round.md"
+    source.write_bytes(b"Prepared analysis")
+
+    digest = store.copy_auto_preparation(
+        record.id,
+        record.participants[0].session_id,
+        source,
+        source_root,
+    )
+    context_path, context_digest = store.write_auto_context(
+        record.id,
+        b"Turn context",
+    )
+
+    assert store.load_auto_preparation(
+        record.id,
+        record.participants[0].session_id,
+        digest,
+        100,
+    ) == b"Prepared analysis"
+    assert context_digest == sha256(b"Turn context").hexdigest()
+    assert context_path.read_bytes() == b"Turn context"
+    store.remove_auto_context(record.id, context_path)
+    assert not context_path.exists()
+
+
+def test_auto_store_rejects_preparation_tampering_and_bounded_round_reads(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+    participant = record.participants[0]
+    store.create_session(
+        models.SessionConfig(
+            id=participant.session_id,
+            name=participant.name,
+            agent=participant.agent,
+            model=participant.model,
+            effort=participant.effort,
+            role_instructions="Test",
+            cli_session_id=None,
+            status="idle",
+            created_at="2026-07-19T00:00:00Z",
+            rounds=[],
+        )
+    )
+    rounds = store.rounds_dir(participant.session_id)
+    output = rounds / "round-01.md"
+    output.write_bytes(b"12345")
+    digest = store.copy_auto_preparation(
+        record.id,
+        participant.session_id,
+        output,
+        rounds,
+    )
+    preparation = (
+        store.auto_run_dir(record.id) / "preparations" / f"{participant.session_id}.md"
+    )
+    preparation.write_text("tampered")
+
+    with pytest.raises(OwnershipError, match="digest"):
+        store.load_auto_preparation(record.id, participant.session_id, digest, 100)
+    with pytest.raises(StorageError, match="byte limit"):
+        store.load_round_artifact(participant.session_id, 1, "output", 4)
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside")
+    output.unlink()
+    output.symlink_to(outside)
+    with pytest.raises(OwnershipError, match="symlink"):
+        store.load_round_artifact(participant.session_id, 1, "output", 100)
