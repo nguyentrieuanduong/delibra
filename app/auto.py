@@ -43,6 +43,8 @@ ACTIVE_AUTO_STATUSES = frozenset({"preparing", "discussing"})
 TERMINAL_AUTO_STATUSES = frozenset(
     {"converged", "limit_reached", "stopped", "error", "interrupted"}
 )
+AUTO_STOP_MAX_ATTEMPTS = 100
+AUTO_STOP_RETRY_SECONDS = 0.01
 
 
 AUTO_AGREEMENT = re.compile(r"\bagree\b", re.IGNORECASE)
@@ -915,35 +917,37 @@ class AutoManager:
         project = self.registry.get(project_id)
         store = ProjectStore(project)
         claimed = False
-        while True:
+        for attempt in range(AUTO_STOP_MAX_ATTEMPTS):
             expected_key = store.load_auto_run(auto_id).active_key
             session_ids = (
                 [expected_key.session_id] if expected_key is not None else []
             )
             async with self.locks.project_sessions(project_id, session_ids):
                 record = store.require_auto_owner(auto_id)
-                if record.active_key != expected_key:
-                    continue
-                if expected_key is not None:
-                    claimed = self.runner.claim_auto_cancel_locked(
-                        expected_key,
-                        auto_id,
-                    )
-                    if not claimed:
-                        raise ConflictError(
-                            "Auto turn can no longer be stopped"
+                if record.active_key == expected_key:
+                    if expected_key is not None:
+                        claimed = self.runner.claim_auto_cancel_locked(
+                            expected_key,
+                            auto_id,
                         )
-                record.stop_requested = True
-                store.save_auto_run(record)
-                active_key = expected_key
-                if active_key is None:
-                    self._transition_terminal_locked(
-                        store,
-                        record,
-                        "stopped",
-                        "stopped by user",
-                    )
-                break
+                        if not claimed:
+                            raise ConflictError(
+                                "Auto turn can no longer be stopped"
+                            )
+                    record.stop_requested = True
+                    store.save_auto_run(record)
+                    active_key = expected_key
+                    if active_key is None:
+                        self._transition_terminal_locked(
+                            store,
+                            record,
+                            "stopped",
+                            "stopped by user",
+                        )
+                    break
+            if attempt + 1 == AUTO_STOP_MAX_ATTEMPTS:
+                raise StorageError("stop timed out")
+            await asyncio.sleep(AUTO_STOP_RETRY_SECONDS)
         self._publish_status(record)
         if active_key is not None and claimed:
             await self.runner.finish_auto_cancel(active_key)
