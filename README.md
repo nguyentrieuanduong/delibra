@@ -10,7 +10,7 @@ Requirements:
 
 - Python 3.12+
 - Claude Code 2.1.202, authenticated through its normal CLI login
-- Codex CLI 0.144.5, authenticated through its normal CLI login
+- Codex CLI 0.144.5, authenticated in Delibra's isolated home as described below
 
 Create the project environment and install the reproducible lock:
 
@@ -25,6 +25,17 @@ Confirm both providers are available:
 claude --version
 codex --version
 ```
+
+Authenticate Codex in Delibra's isolated provider home:
+
+```sh
+env CODEX_HOME="${DELIBRA_HOME:-$HOME/.delibra}/codex-home" codex login --device-auth
+```
+
+Codex authentication for Delibra is isolated from the ambient Codex profile.
+Copying `~/.codex/auth.json` into this directory is unsupported; run the command
+above for initial setup and again whenever Codex reports expired or revoked
+credentials.
 
 Run exactly one local worker, without reload:
 
@@ -54,11 +65,26 @@ deletes the user directory. Delibra owns only these locations:
 <project>/.delibra/sessions/<id>/config.json
 <project>/.delibra/sessions/<id>/rounds/round-NN.{prompt.md,partial.md,md}
 <project>/.delibra/sessions/<id>/workspace/
+<project>/.delibra/sessions/<id>/workspace/inputs/round-NN/shared-context.md
 ```
+
+The existing project manifest stores `shared_markdown_path` when shared context is
+selected.
 
 Completed output files are the source of truth. A pass-to round stages a no-follow,
 same-descriptor copy at `workspace/inputs/round-NN/source.md`, records its SHA-256,
 and leaves the source round immutable. Session names never drive filesystem paths.
+
+A project owner may select one existing `.md` or `.markdown` file as shared
+project context. The project-relative path is stored in the existing manifest.
+Delibra can edit only that selected, non-reserved file, and Save requires the
+SHA-256 digest loaded by the editor so a newer external edit is not overwritten.
+Every new round receives its own bounded, hashed workspace snapshot; changing the
+shared file affects future rounds, not one already running.
+
+Error rounds offer Retry. Retry preserves the failed round, starts a linked new
+stateless round from completed local history, uses the latest shared-context
+snapshot, and re-verifies pass-to source bytes against their recorded digest.
 
 Native provider session IDs are used for replies. If a provider supplies no native
 ID, Delibra stages at most 20 completed rounds and 2 MiB of history, newest-first for
@@ -93,11 +119,12 @@ Delibra provides write isolation, not read confidentiality:
 - The HTTP server is localhost-only, rejects non-loopback Host values and cross-site
   mutation Origins, and has no remote-user authentication. Do not bind it to LAN or
   public interfaces in the MVP.
-- The project-file browser is intentionally read-only but exposes allowed text files
-  below the **entire registered project directory** through the localhost HTTP
-  service. This includes prompts, outputs, manifests, and session metadata under
-  `.delibra/`. Any local process that can reach the service can read those displayed
-  files; register only directories whose contents may cross that boundary.
+- Project-file browsing remains read-only except for explicit, digest-guarded
+  saves to the currently selected `.md` or `.markdown` shared-context file.
+  `.delibra/`, `.git/`, `.hg/`, and `.svn/` are never selectable or writable.
+  The browser still exposes allowed text files below the entire registered project
+  directory through the localhost HTTP service; register only directories whose
+  contents may cross that boundary.
 - File paths are walked from a verified project-directory descriptor without
   following symlinks. Files are limited to the displayed text-extension allowlist,
   binary/non-regular files are rejected, and each view reads at most the configured
@@ -122,6 +149,11 @@ Prompt and partial files are written before execution. Graceful cancellation,
 timeouts, and shutdown terminate the entire CLI process group and finalize the round.
 On startup, a persisted running round becomes an error round with any partial output
 promoted and visible; the session remains runnable.
+
+Known Codex missing-login, expired-token, and revoked-refresh-token failures are
+reduced to an isolated-login command before live or durable display. After running
+that command, Retry creates a new linked stateless round; Delibra neither deletes
+the failed round nor copies or removes credential files automatically.
 
 Final-output and metadata writes are best effort under storage failure. Delibra keeps
 the partial until both are durable and emits/logs an error, but total storage loss
