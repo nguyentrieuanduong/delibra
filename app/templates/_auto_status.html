@@ -4,10 +4,6 @@
   class="auto-status {{ auto.status }}"
   data-auto-id="{{ auto.id }}"
   data-auto-active="{{ 'true' if auto_active else 'false' }}"
-  {% if auto_active %}
-    hx-ext="sse"
-    sse-connect="/projects/{{ project.id }}/auto-runs/{{ auto.id }}/stream"
-  {% endif %}
 >
   <div class="auto-status-heading">
     <h2>Auto · {{ auto.status }}</h2>
@@ -35,7 +31,9 @@
   {% endif %}
   {% if hidden_preparation_key %}
     <div
+      id="auto-preparation-timeout-{{ hidden_preparation_key.session_id }}-{{ hidden_preparation_key.round_n }}"
       class="auto-preparation-timeout"
+      hx-preserve="true"
       hx-get="/projects/{{ hidden_preparation_key.project_id }}/sessions/{{ hidden_preparation_key.session_id }}/rounds/{{ hidden_preparation_key.round_n }}/timeout"
       hx-trigger="load, timeout-refresh from:body"
       hx-target="this"
@@ -83,17 +81,25 @@
   {% if auto_active %}
     <span
       hidden
-      hx-get="/projects/{{ project.id }}/auto-runs/{{ auto.id }}"
-      hx-trigger="sse:status, sse:reset"
-      hx-target="#auto-status"
-      hx-swap="outerHTML"
-    ></span>
-    <span
-      hidden
-      hx-get="/projects/{{ project.id }}/chat/timeline"
-      hx-trigger="sse:status, sse:reset"
-      hx-target="#chat-timeline"
-      hx-swap="outerHTML"
-    ></span>
+      id="auto-status-stream-{{ auto.id }}"
+      hx-preserve="true"
+      hx-ext="sse"
+      sse-connect="/projects/{{ project.id }}/auto-runs/{{ auto.id }}/stream"
+    >
+      <span
+        hidden
+        hx-get="/projects/{{ project.id }}/auto-runs/{{ auto.id }}"
+        hx-trigger="sse:status, sse:reset"
+        hx-target="#auto-status"
+        hx-swap="outerHTML"
+      ></span>
+      <span
+        hidden
+        hx-get="/projects/{{ project.id }}/chat/timeline"
+        hx-trigger="sse:status, sse:reset"
+        hx-target="#chat-timeline"
+        hx-swap="outerHTML"
+      ></span>
+    </span>
   {% endif %}
 </section>

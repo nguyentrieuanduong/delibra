@@ -1,6 +1,7 @@
 <section
   class="live-round"
   id="{{ dom_id }}"
+  hx-preserve="true"
   hx-ext="sse"
   sse-connect="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/stream"
 >
