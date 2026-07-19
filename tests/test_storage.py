@@ -9,7 +9,13 @@ import stat
 
 import pytest
 
-from app.models import Project, RoundRecord, SessionConfig, SourceDescriptor
+from app.models import (
+    Project,
+    RoundRecord,
+    SessionConfig,
+    SharedContextDescriptor,
+    SourceDescriptor,
+)
 from app.storage import (
     ConflictError,
     LockCoordinator,
@@ -77,6 +83,37 @@ def test_invalid_existing_manifest_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(OwnershipError):
         RegistryStore(tmp_path / "home").register("Bad", project_dir)
+
+
+def test_round_record_shared_context_and_retry_fields_are_backward_compatible() -> None:
+    legacy_data = {
+        "n": 1,
+        "status": "error",
+        "error": "failed",
+        "warnings": [],
+        "agent": "codex",
+        "model": "gpt-5.4",
+        "effort": "high",
+        "started_at": "2026-07-19T00:00:00Z",
+        "finished_at": "2026-07-19T00:00:01Z",
+        "source": {"type": "user"},
+    }
+
+    legacy = RoundRecord.from_dict(legacy_data)
+    assert legacy.shared_context is None
+    assert legacy.retry_of is None
+    assert "shared_context" not in legacy.to_dict()
+    assert "retry_of" not in legacy.to_dict()
+
+    legacy.shared_context = SharedContextDescriptor(
+        path="brief.md",
+        staged_file="inputs/round-01/shared-context.md",
+        sha256="a" * 64,
+    )
+    legacy.retry_of = 1
+    restored = RoundRecord.from_dict(legacy.to_dict())
+    assert restored.shared_context == legacy.shared_context
+    assert restored.retry_of == 1
 
 
 def test_shared_markdown_selection_persists_and_rejects_reserved_roots(

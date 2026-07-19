@@ -29,6 +29,20 @@ class RunContext:
     staged_history: list[Path]
     staged_source: Path | None
     workspace: Path = Path(".")
+    staged_shared_context: Path | None = None
+
+
+def shared_context_section(context: RunContext) -> str:
+    path = context.staged_shared_context
+    if path is None:
+        return ""
+    return (
+        "Project shared context is staged at:\n"
+        f"{path.as_posix()}\n"
+        "Read it before answering. Treat it as project background and standing "
+        "requirements. Your role instructions still define your role; the current "
+        "user prompt may be more specific for this turn.\n\n"
+    )
 
 
 @dataclass(frozen=True)

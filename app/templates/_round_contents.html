@@ -7,6 +7,13 @@
       · SHA-256 {{ round.record.source.source_sha256 }}
     </p>
   {% endif %}
+  {% if round.record.shared_context %}
+    <p class="provenance">
+      Shared context {{ round.record.shared_context.path }}
+      · staged {{ round.record.shared_context.staged_file }}
+      · SHA-256 {{ round.record.shared_context.sha256 }}
+    </p>
+  {% endif %}
 {% endif %}
 {% if round.record and round.record.error %}<p class="error">{{ round.record.error }}</p>{% endif %}
 {% if round.record and round.record.warnings %}

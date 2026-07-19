@@ -13,7 +13,12 @@ from httpx import Response
 from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
 from app.main import create_app
-from app.models import RoundRecord, SessionConfig, SourceDescriptor
+from app.models import (
+    RoundRecord,
+    SessionConfig,
+    SharedContextDescriptor,
+    SourceDescriptor,
+)
 from app.storage import ProjectStore, RegistryStore
 
 
@@ -436,6 +441,11 @@ def test_round_focus_fragment_is_static_and_keeps_complete_dom_ids_unique(
 ) -> None:
     alpha_round = record(1, "2026-07-17T00:00:01Z")
     alpha_round.warnings = ["Fallback context was used."]
+    alpha_round.shared_context = SharedContextDescriptor(
+        path="docs/<brief>.md",
+        staged_file="inputs/round-01/shared-context.md",
+        sha256="b" * 64,
+    )
     alpha = session("a" * 32, "Alpha", rounds=[alpha_round])
     beta = session("b" * 32, "Beta", mode="sleep")
     app, project, store = setup_project(tmp_path, [alpha, beta])
@@ -491,6 +501,11 @@ def test_round_focus_fragment_is_static_and_keeps_complete_dom_ids_unique(
     focus_ids = re.findall(r'\bid="([^"]+)"', focused.text)
     combined_ids = page_ids + focus_ids
     assert len(combined_ids) == len(set(combined_ids))
+    for rendered in (page.text, focused.text):
+        assert "docs/&lt;brief&gt;.md" in rendered
+        assert "inputs/round-01/shared-context.md" in rendered
+        assert "b" * 64 in rendered
+        assert "docs/<brief>.md" not in rendered
     assert missing_session.status_code == 404
     assert missing_round.status_code == 404
 

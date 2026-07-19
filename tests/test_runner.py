@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -12,9 +13,21 @@ import pytest
 
 from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
-from app.models import RoundRecord, SessionConfig, SourceDescriptor
+from app.models import (
+    RoundRecord,
+    SessionConfig,
+    SharedContextDescriptor,
+    SourceDescriptor,
+)
 from app.runner import RunManager, SessionBusy
-from app.storage import LockCoordinator, ProjectStore, RegistryStore, StorageError, atomic_write_text
+from app.storage import (
+    LockCoordinator,
+    ProjectFileDisplayError,
+    ProjectStore,
+    RegistryStore,
+    StorageError,
+    atomic_write_text,
+)
 
 
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
@@ -111,6 +124,51 @@ def setup_manager(
         final_writer=final_writer,
     )
     return manager, project.id, config.id, store
+
+
+@pytest.mark.asyncio
+async def test_run_stages_and_records_selected_shared_context(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+    )
+    source = store.project_path / "brief.md"
+    source.write_text("Standing rule\n", encoding="utf-8")
+    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
+
+    record = await manager.wait(
+        await manager.start(project_id, session_id, "Question")
+    )
+
+    staged = Path("inputs/round-01/shared-context.md")
+    assert contexts[0].staged_shared_context == staged
+    assert (store.workspace_dir(session_id) / staged).read_bytes() == b"Standing rule\n"
+    assert record.shared_context == SharedContextDescriptor(
+        path="brief.md",
+        staged_file=staged.as_posix(),
+        sha256=sha256(b"Standing rule\n").hexdigest(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_selected_context_creates_no_round_or_input(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    source = store.project_path / "brief.md"
+    source.write_text("context", encoding="utf-8")
+    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
+    source.unlink()
+
+    with pytest.raises(ProjectFileDisplayError):
+        await manager.start(project_id, session_id, "Question")
+
+    assert store.load_session(session_id).rounds == []
+    assert not (store.workspace_dir(session_id) / "inputs" / "round-01").exists()
+    rounds = store.rounds_dir(session_id)
+    assert not (rounds / "round-01.prompt.md").exists()
+    assert not (rounds / "round-01.partial.md").exists()
 
 
 def test_subprocess_environment_does_not_inherit_server_secrets(
