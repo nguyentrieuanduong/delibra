@@ -106,6 +106,11 @@ down another agent's live SSE connection. Completed output can be sent to a diff
 agent; session-namespaced fragment IDs keep simultaneous same-numbered rounds scoped
 to the correct stream.
 
+Markdown links in recorded prompts and outputs open project-owned `.md` and
+`.markdown` files through Delibra's file reader. Project-relative links and
+absolute links under the registered project root are supported; external,
+non-Markdown, traversal, and out-of-project links are not rewritten.
+
 ## Auto discussions and live timeouts
 
 The persistent **Auto** button beside **Send** opens project-level Auto setup. Before
@@ -115,14 +120,18 @@ exists, setup prefers its earliest direct user prompt, falling back to the earli
 recorded Auto topic. Agents are shown in case-insensitive name order and are all
 selected by default. Select at least two unique agents, choose **All agree** or
 **First agree**, and set **Maximum discussion cycles** from 1 through 20 (default
-3).
+3). The agreement-policy default is **First agree**.
 
-Auto calls agents sequentially. Every selected agent first gets one independent
-preparation call containing only the original topic and the creation-time shared
-Markdown snapshot. Preparations are available in a collapsed status section but
-do not appear as conversation messages or enter another agent's context until all
-preparations finish. Discussion then passes the topic, all preparations, bounded
-creation-time history, and bounded prior discussion through the selected agents.
+Auto starts discussion directly by default. Select **Prepare agents
+independently first** when every chosen agent should receive one private
+preparation call containing only the original topic and the creation-time
+shared Markdown snapshot. When selected, all preparations finish before they
+enter discussion context. The setup defaults to **First agree**; **All agree**
+remains available.
+
+Auto calls agents sequentially. Discussion passes the topic, the optional complete
+preparation set, bounded creation-time history, and bounded prior discussion
+through the selected agents.
 **First agree** stops at the first agreeing response; **All agree** requires every
 agent to agree within the same complete cycle. A discussion response agrees when
 the standalone word `agree`, matched without case sensitivity, appears in its
