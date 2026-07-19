@@ -180,6 +180,7 @@ def create_runner_auto_record(
         project_id=store.project.id,
         status=status,
         agreement_policy="all_agree",
+        preparation_enabled=True,
         max_cycles=3,
         current_cycle=1 if status == "discussing" else 0,
         next_participant=0,

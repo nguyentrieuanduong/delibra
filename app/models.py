@@ -394,6 +394,7 @@ class AutoRunRecord:
     project_id: str
     status: str
     agreement_policy: str
+    preparation_enabled: bool
     max_cycles: int
     current_cycle: int
     next_participant: int
@@ -421,6 +422,11 @@ class AutoRunRecord:
             project_id=_strict_str(data, "project_id"),
             status=_strict_str(data, "status"),
             agreement_policy=_strict_str(data, "agreement_policy"),
+            preparation_enabled=(
+                _strict_bool(data, "preparation_enabled")
+                if "preparation_enabled" in data
+                else True
+            ),
             max_cycles=_strict_int(data, "max_cycles"),
             current_cycle=_strict_int(data, "current_cycle"),
             next_participant=_strict_int(data, "next_participant"),
@@ -488,6 +494,7 @@ class AutoRunRecord:
             "project_id": self.project_id,
             "status": self.status,
             "agreement_policy": self.agreement_policy,
+            "preparation_enabled": self.preparation_enabled,
             "max_cycles": self.max_cycles,
             "current_cycle": self.current_cycle,
             "next_participant": self.next_participant,
