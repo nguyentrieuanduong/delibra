@@ -120,6 +120,9 @@ def auto_status_context(
             len(record.preparations) + 1,
             len(record.participants),
         ),
+        "hidden_preparation_key": (
+            record.active_key if record.status == "preparing" else None
+        ),
         "current_participant": current_participant,
         "clear_auto_setup": clear_setup,
     }

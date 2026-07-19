@@ -33,6 +33,15 @@
   {% elif auto.status == 'discussing' %}
     <p>Cycle {{ auto.current_cycle }} of {{ auto.max_cycles }}{% if current_participant %} · {{ current_participant.name }}{% endif %}</p>
   {% endif %}
+  {% if hidden_preparation_key %}
+    <div
+      class="auto-preparation-timeout"
+      hx-get="/projects/{{ hidden_preparation_key.project_id }}/sessions/{{ hidden_preparation_key.session_id }}/rounds/{{ hidden_preparation_key.round_n }}/timeout"
+      hx-trigger="load, timeout-refresh from:body"
+      hx-target="this"
+      hx-swap="innerHTML"
+    ></div>
+  {% endif %}
   <details>
     <summary>Topic</summary>
     <pre>{{ topic }}</pre>
@@ -64,6 +73,7 @@
           <li>
             Cycle {{ turn.cycle }} · {{ auto.participants[turn.position].name }}
             · {{ turn.verdict }}
+            {% if turn.warning %}· {{ turn.warning }}{% endif %}
           </li>
         {% endfor %}
       </ol>

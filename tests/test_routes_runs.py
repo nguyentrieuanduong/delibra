@@ -58,8 +58,25 @@ class RouteFakeAdapter:
         return self._final
 
 
-def seeded_app(tmp_path: Path, *, mode: str = "success", replay_limit: int = 5 * 1024 * 1024):
-    settings = replace(Settings(home=tmp_path / "home"), replay_limit=replay_limit)
+def seeded_app(
+    tmp_path: Path,
+    *,
+    mode: str = "success",
+    replay_limit: int = 5 * 1024 * 1024,
+    run_timeout: int | None = None,
+    max_run_timeout: int | None = None,
+):
+    defaults = Settings(home=tmp_path / "home")
+    settings = replace(
+        defaults,
+        replay_limit=replay_limit,
+        run_timeout=run_timeout if run_timeout is not None else defaults.run_timeout,
+        max_run_timeout=(
+            max_run_timeout
+            if max_run_timeout is not None
+            else defaults.max_run_timeout
+        ),
+    )
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     registry = RegistryStore(settings.home)
@@ -250,3 +267,50 @@ def test_timeout_extension_replaces_fragment_and_refreshes_stale_conflict(
         assert stale.headers["HX-Trigger"] == "timeout-refresh"
         assert stale.json()["detail"] == "timeout version changed"
         client.post(f"{base}/cancel")
+
+
+def test_manual_timeout_rejects_future_auto_scope_without_changing_version(
+    tmp_path: Path,
+) -> None:
+    app, project, session, _ = seeded_app(tmp_path, mode="sleep")
+    base = f"/projects/{project.id}/sessions/{session.id}"
+    timeout_path = f"{base}/rounds/1/timeout"
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post(f"{base}/run", data={"prompt": "Long question"})
+        rejected = client.post(
+            f"{timeout_path}/extend",
+            data={
+                "minutes": "5",
+                "scope": "current_and_future_auto",
+                "expected_timeout_version": "0",
+            },
+        )
+        refreshed = client.get(timeout_path)
+        client.post(f"{base}/cancel")
+
+    assert rejected.status_code == 409
+    assert rejected.headers["HX-Trigger"] == "timeout-refresh"
+    assert rejected.json()["detail"] == "timeout extension scope is not available"
+    assert 'name="expected_timeout_version" value="0"' in refreshed.text
+    assert "future Auto turns" not in refreshed.text
+
+
+def test_timeout_fragment_disables_every_extension_at_hard_cap(
+    tmp_path: Path,
+) -> None:
+    app, project, session, _ = seeded_app(
+        tmp_path,
+        mode="sleep",
+        run_timeout=60,
+        max_run_timeout=60,
+    )
+    base = f"/projects/{project.id}/sessions/{session.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post(f"{base}/run", data={"prompt": "At cap"})
+        fragment = client.get(f"{base}/rounds/1/timeout")
+        client.post(f"{base}/cancel")
+
+    assert fragment.status_code == 200
+    assert "hard timeout cap has been reached" in fragment.text
+    assert 'class="timeout-cap-controls" aria-disabled="true"' in fragment.text
+    assert fragment.text.count(" disabled") >= 5

@@ -231,6 +231,22 @@ function syncAutoDisabledControls(documentRoot) {
   return active;
 }
 
+function setTimeoutFormPending(form, pending) {
+  if (!form || typeof form.querySelectorAll !== "function") {
+    return false;
+  }
+  form.querySelectorAll("button, input").forEach(function (control) {
+    if (pending && !control.disabled) {
+      control.disabled = true;
+      control.dataset.timeoutPendingDisabled = "true";
+    } else if (!pending && control.dataset.timeoutPendingDisabled === "true") {
+      control.disabled = false;
+      delete control.dataset.timeoutPendingDisabled;
+    }
+  });
+  return Boolean(pending);
+}
+
 function timeoutControlsWithin(root) {
   const controls = [];
   if (root && typeof root.matches === "function" && root.matches("[data-timeout-controls]")) {
@@ -282,6 +298,7 @@ if (typeof module !== "undefined" && module.exports) {
     removeConversationEmptyState,
     resetFileReader,
     renderChatError,
+    setTimeoutFormPending,
     shouldClearChatError,
     syncConversationDisclosure,
     syncAutoDisabledControls,
@@ -339,6 +356,17 @@ if (typeof document !== "undefined") {
       return;
     }
     renderChatError(region, xhr.status, xhr.responseText || "");
+  });
+
+  document.addEventListener("htmx:beforeRequest", function (event) {
+    const source = (event.detail && event.detail.elt) || event.target;
+    const form =
+      source && typeof source.closest === "function"
+        ? source.closest("[data-timeout-extension-form]")
+        : null;
+    if (form) {
+      setTimeoutFormPending(form, true);
+    }
   });
 
   document.addEventListener("htmx:afterSwap", function (event) {
@@ -401,6 +429,14 @@ if (typeof document !== "undefined") {
   }
 
   document.addEventListener("htmx:afterRequest", function (event) {
+    const source = (event.detail && event.detail.elt) || event.target;
+    const timeoutForm =
+      source && typeof source.closest === "function"
+        ? source.closest("[data-timeout-extension-form]")
+        : null;
+    if (timeoutForm) {
+      setTimeoutFormPending(timeoutForm, false);
+    }
     const region = document.getElementById("chat-errors");
     const detail = event.detail;
     const requestPath =
