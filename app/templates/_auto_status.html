@@ -23,9 +23,12 @@
     {{ 'All agree' if auto.agreement_policy == 'all_agree' else 'First agree' }}
     · up to {{ auto.max_cycles }} cycle{{ '' if auto.max_cycles == 1 else 's' }}
     · future turn budget {{ auto.future_turn_timeout_seconds }}s
+    · {{ 'preparation enabled' if auto.preparation_enabled else 'preparation skipped' }}
   </p>
-  {% if auto.status == 'preparing' %}
+  {% if auto.status == 'preparing' and auto.preparation_enabled %}
     <p>Preparing {{ preparing_number }} of {{ auto.participants|length }}{% if current_participant %} · {{ current_participant.name }}{% endif %}</p>
+  {% elif auto.status == 'preparing' %}
+    <p>Starting discussion</p>
   {% elif auto.status == 'discussing' %}
     <p>Cycle {{ auto.current_cycle }} of {{ auto.max_cycles }}{% if current_participant %} · {{ current_participant.name }}{% endif %}</p>
   {% endif %}

@@ -182,6 +182,7 @@ async def start_auto(
     participant_id: list[str] = Form(...),
     agreement_policy: str = Form(...),
     max_cycles: int = Form(...),
+    prepare_first: bool = Form(False),
 ) -> HTMLResponse:
     topic = validate_field(topic, "Topic", maximum=100_000)
     record = await request.app.state.auto_manager.create(
@@ -190,6 +191,7 @@ async def start_auto(
         participant_ids=participant_id,
         agreement_policy=agreement_policy,
         max_cycles=max_cycles,
+        preparation_enabled=prepare_first,
     )
     return _status_response(
         request,
