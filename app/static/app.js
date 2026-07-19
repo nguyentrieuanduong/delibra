@@ -147,11 +147,95 @@ function syncConversationDisclosure(timeline) {
   return true;
 }
 
+function formatRemainingSeconds(value) {
+  const parsed = Number(value);
+  const bounded = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+  const hours = Math.floor(bounded / 3600);
+  const minutes = Math.floor((bounded % 3600) / 60);
+  const seconds = bounded % 60;
+  const minuteText = hours ? String(minutes).padStart(2, "0") : String(minutes);
+  const secondText = String(seconds).padStart(2, "0");
+  return hours
+    ? `${hours}:${minuteText}:${secondText}`
+    : `${minuteText}:${secondText}`;
+}
+
+function updateTimeoutCountdown(controls, nowMilliseconds) {
+  const remainingNode = controls.querySelector("[data-timeout-remaining]");
+  if (!remainingNode) {
+    return 0;
+  }
+  const now = Number.isFinite(nowMilliseconds) ? nowMilliseconds : Date.now();
+  const supplied = Number(controls.dataset.timeoutSeconds);
+  const duration = Number.isFinite(supplied) ? Math.max(0, Math.floor(supplied)) : 0;
+  let startedAt = Number(controls.dataset.timeoutStartedAt);
+  if (!Number.isFinite(startedAt) || controls.dataset.timeoutStartedAt === "") {
+    startedAt = now;
+    controls.dataset.timeoutStartedAt = String(now);
+  }
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const remaining = Math.max(0, duration - elapsed);
+  remainingNode.textContent = formatRemainingSeconds(remaining);
+  return remaining;
+}
+
+function copyAutoComposerTopic(setup) {
+  if (!setup || setup.dataset.topicSource !== "composer") {
+    return false;
+  }
+  const topic = setup.querySelector('textarea[name="topic"]');
+  const composer = setup.ownerDocument.querySelector(
+    '#chat-composer textarea[name="prompt"]'
+  );
+  if (!topic || !composer) {
+    return false;
+  }
+  topic.value = composer.value;
+  return true;
+}
+
+function timeoutControlsWithin(root) {
+  const controls = [];
+  if (root && typeof root.matches === "function" && root.matches("[data-timeout-controls]")) {
+    controls.push(root);
+  }
+  if (root && typeof root.querySelectorAll === "function") {
+    controls.push(...root.querySelectorAll("[data-timeout-controls]"));
+  }
+  return controls;
+}
+
+function initializeTimeoutCountdown(controls) {
+  const tick = function () {
+    const remaining = updateTimeoutCountdown(controls);
+    if (remaining <= 0 || controls.isConnected === false) {
+      clearInterval(intervalId);
+    }
+  };
+  updateTimeoutCountdown(controls);
+  if (controls.dataset.timeoutActive !== "true") {
+    return;
+  }
+  const intervalId = setInterval(tick, 1000);
+}
+
+function initializeDynamicPresentation(root) {
+  timeoutControlsWithin(root).forEach(initializeTimeoutCountdown);
+  if (root && typeof root.matches === "function" && root.matches('[data-topic-source="composer"]')) {
+    copyAutoComposerTopic(root);
+  }
+  if (root && typeof root.querySelectorAll === "function") {
+    root.querySelectorAll('[data-topic-source="composer"]').forEach(copyAutoComposerTopic);
+  }
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     chatErrorMessage,
     closeFocusDialog,
     conversationTimelineForSwap,
+    copyAutoComposerTopic,
+    formatRemainingSeconds,
     handleFocusDialogCancel,
     isDialogBackdropClick,
     openFocusDialog,
@@ -160,10 +244,13 @@ if (typeof module !== "undefined" && module.exports) {
     renderChatError,
     shouldClearChatError,
     syncConversationDisclosure,
+    updateTimeoutCountdown,
   };
 }
 
 if (typeof document !== "undefined") {
+  initializeDynamicPresentation(document);
+
   document.querySelectorAll("[data-session-config-form]").forEach(function (form) {
     syncEffortOptions(form);
   });
@@ -218,6 +305,7 @@ if (typeof document !== "undefined") {
     if (!target) {
       return;
     }
+    initializeDynamicPresentation(event.target);
     const timeline = conversationTimelineForSwap(target, event.target);
     if (timeline) {
       removeConversationEmptyState(timeline);

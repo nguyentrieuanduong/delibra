@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from html import escape
+import math
 
 from fastapi import APIRouter, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
+from starlette.responses import Response
 
 from app.models import RunKey, SourceDescriptor
 from app.security import validate_field
-from app.storage import ConflictError, ProjectStore, validate_id
+from app.storage import ConflictError, NotFoundError, ProjectStore, validate_id
 from app.views import round_dom_id
 
 
@@ -25,6 +28,92 @@ def _event_data(kind: str, data: str) -> str:
     if kind in {"warning", "error"}:
         return f'<span class="{kind}">{escaped}</span>'
     return escaped
+
+
+def validated_round_key(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    round_n: int,
+) -> RunKey:
+    validate_id(project_id, "project id")
+    validate_id(session_id, "session id")
+    if round_n < 1:
+        raise HTTPException(status_code=422, detail="Round must be positive")
+    project = request.app.state.registry.get(project_id)
+    config = ProjectStore(project).load_session(session_id)
+    if not any(record.n == round_n for record in config.rounds):
+        raise NotFoundError(f"round not found: {round_n}")
+    return RunKey(project_id, session_id, round_n)
+
+
+def render_timeout_controls(request: Request, key: RunKey) -> HTMLResponse:
+    manager = request.app.state.manager
+    timeout = manager.timeout_snapshot(key)
+    active = manager.active_key(key.project_id, key.session_id) == key
+    deadline = datetime.fromisoformat(timeout.deadline_at.replace("Z", "+00:00"))
+    remaining_seconds = (
+        max(0, math.ceil((deadline - datetime.now(UTC)).total_seconds()))
+        if active
+        else 0
+    )
+    maximum_addition_seconds = timeout.hard_cap_seconds - timeout.effective_seconds
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_timeout_controls.html",
+        context={
+            "key": key,
+            "timeout": timeout,
+            "remaining_seconds": remaining_seconds,
+            "maximum_addition_seconds": maximum_addition_seconds,
+            "maximum_addition_minutes": min(240, maximum_addition_seconds // 60),
+            "timeout_active": active,
+        },
+    )
+
+
+@router.get(
+    "/projects/{project_id}/sessions/{session_id}/rounds/{round_n}/timeout",
+    response_class=HTMLResponse,
+)
+async def timeout_fragment(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    round_n: int,
+) -> HTMLResponse:
+    key = validated_round_key(request, project_id, session_id, round_n)
+    return render_timeout_controls(request, key)
+
+
+@router.post(
+    "/projects/{project_id}/sessions/{session_id}/rounds/{round_n}/timeout/extend",
+    response_class=HTMLResponse,
+)
+async def extend_timeout(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    round_n: int,
+    minutes: int = Form(...),
+    scope: str = Form(...),
+    expected_timeout_version: int = Form(...),
+) -> Response:
+    key = validated_round_key(request, project_id, session_id, round_n)
+    try:
+        await request.app.state.manager.extend_timeout(
+            key,
+            minutes,
+            scope,
+            expected_timeout_version,
+        )
+    except ConflictError as exc:
+        return JSONResponse(
+            {"detail": str(exc)},
+            status_code=409,
+            headers={"HX-Trigger": "timeout-refresh"},
+        )
+    return render_timeout_controls(request, key)
 
 
 async def start_run_fragment(

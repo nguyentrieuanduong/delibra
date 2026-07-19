@@ -5,6 +5,13 @@
   sse-connect="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/stream"
 >
   <h2>{{ session.name }} · Round {{ key.round_n }} · running</h2>
+  <div
+    class="timeout-host"
+    hx-get="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout"
+    hx-trigger="load, sse:timeout_extended, timeout-refresh from:body"
+    hx-target="this"
+    hx-swap="innerHTML"
+  ></div>
   <pre class="live-text" sse-swap="text_delta,snapshot" hx-swap="beforeend"></pre>
   <div class="live-progress" sse-swap="progress" hx-swap="beforeend"></div>
   <span class="live-reset" sse-swap="reset" hx-swap="none" hidden></span>

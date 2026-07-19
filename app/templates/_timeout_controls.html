@@ -1,0 +1,50 @@
+<section
+  class="timeout-controls"
+  data-timeout-controls
+  data-timeout-seconds="{{ remaining_seconds }}"
+  data-timeout-active="{{ 'true' if timeout_active else 'false' }}"
+>
+  <p>
+    Time remaining:
+    <strong data-timeout-remaining>{{ remaining_seconds }}s</strong>
+    · deadline {{ timeout.deadline_at }}
+  </p>
+  <p>
+    Budget {{ timeout.effective_seconds }}s
+    · hard cap {{ timeout.hard_cap_seconds }}s
+    · up to {{ maximum_addition_seconds }}s more
+  </p>
+  {% if timeout_active and maximum_addition_minutes > 0 %}
+    <form
+      method="post"
+      action="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
+      hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
+      hx-target="closest [data-timeout-controls]"
+      hx-swap="outerHTML"
+    >
+      <input type="hidden" name="scope" value="current">
+      <input type="hidden" name="expected_timeout_version" value="{{ timeout.version }}">
+      <button type="submit" name="minutes" value="5"{% if maximum_addition_minutes < 5 %} disabled{% endif %}>+5 min</button>
+      <button type="submit" name="minutes" value="15"{% if maximum_addition_minutes < 15 %} disabled{% endif %}>+15 min</button>
+      <button type="submit" name="minutes" value="30"{% if maximum_addition_minutes < 30 %} disabled{% endif %}>+30 min</button>
+    </form>
+    <form
+      method="post"
+      action="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
+      hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
+      hx-target="closest [data-timeout-controls]"
+      hx-swap="outerHTML"
+    >
+      <input type="hidden" name="scope" value="current">
+      <input type="hidden" name="expected_timeout_version" value="{{ timeout.version }}">
+      <label>Custom minutes
+        <input type="number" name="minutes" min="1" max="240" required>
+      </label>
+      <button type="submit">Extend current</button>
+    </form>
+  {% elif not timeout_active %}
+    <p>Run finished; its deadline can no longer be extended.</p>
+  {% else %}
+    <p>The hard timeout cap has been reached.</p>
+  {% endif %}
+</section>

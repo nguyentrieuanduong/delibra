@@ -188,3 +188,65 @@ def test_cancel_route_finalizes_running_round(tmp_path: Path) -> None:
             events = parse_sse(response)
     assert events[-1]["event"] == "done"
     assert store.load_session(session.id).rounds[0].status == "cancelled"
+
+
+def test_live_round_exposes_authoritative_timeout_fragment(tmp_path: Path) -> None:
+    app, project, session, _ = seeded_app(tmp_path, mode="sleep")
+    base = f"/projects/{project.id}/sessions/{session.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        started = client.post(f"{base}/run", data={"prompt": "Long question"})
+        assert started.status_code == 202
+        timeout_path = f"{base}/rounds/1/timeout"
+        assert f'hx-get="{timeout_path}"' in started.text
+        assert (
+            'hx-trigger="load, sse:timeout_extended, timeout-refresh from:body"'
+            in started.text
+        )
+
+        fragment = client.get(timeout_path)
+
+        assert fragment.status_code == 200
+        assert 'data-timeout-controls' in fragment.text
+        assert 'data-timeout-remaining' in fragment.text
+        assert 'name="expected_timeout_version" value="0"' in fragment.text
+        assert '>+5 min<' in fragment.text
+        assert '>+15 min<' in fragment.text
+        assert '>+30 min<' in fragment.text
+        assert 'name="minutes" min="1" max="240"' in fragment.text
+        client.post(f"{base}/cancel")
+
+
+def test_timeout_extension_replaces_fragment_and_refreshes_stale_conflict(
+    tmp_path: Path,
+) -> None:
+    app, project, session, _ = seeded_app(tmp_path, mode="sleep")
+    base = f"/projects/{project.id}/sessions/{session.id}"
+    extension = f"{base}/rounds/1/timeout/extend"
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post(f"{base}/run", data={"prompt": "Long question"})
+
+        extended = client.post(
+            extension,
+            data={
+                "minutes": "5",
+                "scope": "current",
+                "expected_timeout_version": "0",
+            },
+        )
+
+        assert extended.status_code == 200
+        assert 'name="expected_timeout_version" value="1"' in extended.text
+        assert "Budget 1200s" in extended.text
+
+        stale = client.post(
+            extension,
+            data={
+                "minutes": "5",
+                "scope": "current",
+                "expected_timeout_version": "0",
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.headers["HX-Trigger"] == "timeout-refresh"
+        assert stale.json()["detail"] == "timeout version changed"
+        client.post(f"{base}/cancel")
