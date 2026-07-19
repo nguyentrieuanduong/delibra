@@ -49,6 +49,7 @@ AUTO_STATUSES = frozenset(
     }
 )
 AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
+AUTO_CONTEXT_PATTERN = re.compile(r"^\.turn-context-[0-9a-f]{32}\.md$")
 
 
 class StorageError(RuntimeError):
@@ -947,6 +948,111 @@ class ProjectStore:
         if sha256(contents.data).hexdigest() != artifact.sha256:
             raise OwnershipError("Auto artifact digest does not match")
         return contents.data
+
+    def load_round_artifact(
+        self,
+        session_id: str,
+        round_n: int,
+        kind: Literal["prompt", "output"],
+        maximum_bytes: int,
+    ) -> bytes:
+        if round_n < 1 or kind not in {"prompt", "output"} or maximum_bytes < 1:
+            raise ValueError("round artifact request is invalid")
+        suffix = ".prompt.md" if kind == "prompt" else ".md"
+        root = self.rounds_dir(session_id)
+        path = root / f"round-{round_n:02d}{suffix}"
+        return self._load_owned_bytes(path, root, maximum_bytes, "round artifact")
+
+    @staticmethod
+    def _load_owned_bytes(
+        path: Path,
+        root: Path,
+        maximum_bytes: int,
+        label: str,
+    ) -> bytes:
+        _assert_no_symlink_components(path, root, allow_missing_leaf=False)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise OwnershipError(f"{label} is not a regular file")
+            contents = _read_bounded_descriptor(descriptor, maximum_bytes)
+        except OwnershipError:
+            raise
+        except OSError as exc:
+            raise StorageError(f"{label} is unavailable") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if contents.truncated:
+            raise StorageError(f"{label} exceeds its byte limit")
+        return contents.data
+
+    def copy_auto_preparation(
+        self,
+        auto_id: str,
+        session_id: str,
+        source: Path,
+        source_root: Path,
+    ) -> str:
+        validate_id(session_id, "Auto participant id")
+        run_dir = self.auto_run_dir(auto_id)
+        _assert_no_symlink_components(run_dir, self.auto_runs_root, allow_missing_leaf=False)
+        preparations = run_dir / "preparations"
+        _assert_no_symlink_components(preparations, run_dir, allow_missing_leaf=False)
+        return safe_copy_file(
+            source,
+            source_root,
+            preparations / f"{session_id}.md",
+            preparations,
+        )
+
+    def load_auto_preparation(
+        self,
+        auto_id: str,
+        session_id: str,
+        expected_sha256: str,
+        maximum_bytes: int,
+    ) -> bytes:
+        validate_id(session_id, "Auto participant id")
+        if not SHA256_PATTERN.fullmatch(expected_sha256):
+            raise OwnershipError("Auto preparation digest is invalid")
+        run_dir = self.auto_run_dir(auto_id)
+        _assert_no_symlink_components(
+            run_dir,
+            self.auto_runs_root,
+            allow_missing_leaf=False,
+        )
+        preparations = run_dir / "preparations"
+        _assert_no_symlink_components(
+            preparations,
+            run_dir,
+            allow_missing_leaf=False,
+        )
+        contents = self._load_owned_bytes(
+            preparations / f"{session_id}.md",
+            preparations,
+            maximum_bytes,
+            "Auto preparation",
+        )
+        if sha256(contents).hexdigest() != expected_sha256:
+            raise OwnershipError("Auto preparation digest does not match")
+        return contents
+
+    def write_auto_context(self, auto_id: str, contents: bytes) -> tuple[Path, str]:
+        run_dir = self.auto_run_dir(auto_id)
+        _assert_no_symlink_components(run_dir, self.auto_runs_root, allow_missing_leaf=False)
+        path = run_dir / f".turn-context-{uuid4().hex}.md"
+        atomic_write_bytes(path, contents)
+        return path, sha256(contents).hexdigest()
+
+    def remove_auto_context(self, auto_id: str, path: Path) -> None:
+        run_dir = self.auto_run_dir(auto_id)
+        if path.parent != run_dir or AUTO_CONTEXT_PATTERN.fullmatch(path.name) is None:
+            raise OwnershipError("Auto context cleanup path is invalid")
+        _assert_no_symlink_components(path, run_dir, allow_missing_leaf=True)
+        path.unlink(missing_ok=True)
 
     def save_auto_run(self, record: AutoRunRecord) -> None:
         self._validate_auto_record(record, self.project.id)
