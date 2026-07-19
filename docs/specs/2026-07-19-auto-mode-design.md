@@ -1,16 +1,17 @@
 # Auto Mode with Independent Preparation and Deterministic Convergence
 
-**Status:** Proposed for approval
+**Status:** Implemented
 
 **Date:** 2026-07-19
 
 ## Goal
 
 Add a project-level Auto mode that lets a user select at least two existing
-agents, gives each agent an independent preparation turn on an editable original
-topic, and then passes the discussion through those agents automatically. Auto
-mode stops when its configured agreement rule succeeds, the user stops it, an
-agent fails, or the configured number of complete discussion cycles is reached.
+agents, optionally gives each agent an independent preparation turn on an
+editable original topic, and then passes the discussion through those agents
+automatically. Auto mode stops when its configured agreement rule succeeds, the
+user stops it, an agent fails, or the configured number of complete discussion
+cycles is reached.
 
 The same Auto control must work before the first conversation message and after a
 manual conversation already exists. All Auto activity must remain durable,
@@ -29,15 +30,16 @@ shortening the task.
   non-Auto user prompt. If the conversation began in Auto mode, it is prefilled
   from the earliest Auto-run topic instead. The prefill remains editable. Editing
   it creates the new Auto-run topic; it does not rewrite prior rounds.
-- Preparation is independent: an agent receives the topic but no other agent's
-  preparation and no prior conversation during its preparation turn.
-- After every preparation succeeds, the complete preparation set becomes
-  available to every participant for discussion.
+- Independent preparation is opt-in and defaults off. When enabled, an agent
+  receives the topic but no other agent's preparation and no prior conversation
+  during its preparation turn. After every preparation succeeds, the complete
+  preparation set becomes available to every participant for discussion.
 - The user chooses one of two agreement policies:
   - `all_agree`: stop only when every participant's response is classified as
     `agree` in the same completed discussion cycle.
   - `first_agree`: stop immediately when any discussion response is classified
     as `agree`.
+- The setup defaults to `first_agree`; `all_agree` remains available.
 - Agreement is inferred from a bounded response tail, not from output equality or
   semantic similarity. Minor editorial changes can still be paired with `agree`
   when the agent has no substantive objection.
@@ -48,6 +50,13 @@ shortening the task.
   Auto turn.
 - Runtime remains bounded by a server-configurable per-turn cap whose default is
   four hours.
+
+Independent preparation is opt-in per Auto run and defaults off. When it is
+disabled, discussion begins without preparation provider calls or preparation
+context, after the normal locked native-session reset. When enabled, every
+selected participant completes one sequential independent preparation before
+discussion. Legacy records without the durable choice load preparation as
+enabled.
 
 ## Chosen approach
 
@@ -86,12 +95,13 @@ errors remain attached to the round.
 wakes the wait loop and moves only that deadline, never the process start time or
 hard cap. The same mechanism serves manual, preparation, and discussion rounds.
 
-Preparation calls see only the Auto topic, their role instructions, and the
-shared-Markdown snapshot captured once when the Auto run is created. Discussion
-calls see the Auto topic, all preparations, the bounded conversation baseline
-captured at Auto start, and the bounded Auto discussion so far. Preparation
-preserves the session's existing `cli_session_id`. Immediately before the first
-discussion call, Auto acquires all participant locks and clears every participant's
+When enabled, preparation calls see only the Auto topic, their role instructions,
+and the shared-Markdown snapshot captured once when the Auto run is created.
+Discussion calls see the Auto topic, the preparation set when enabled, the bounded
+conversation baseline captured at Auto start, and the bounded Auto discussion so
+far. Preparation preserves the session's existing `cli_session_id`. Whether
+preparation is enabled or skipped, immediately before the first discussion call
+Auto acquires all participant locks and clears every participant's
 `cli_session_id`, because those native contexts no longer represent the
 conversation Auto is about to append. Each session file remains an independent
 atomic write; a partial storage failure stops Auto before discussion starts, and
@@ -118,13 +128,15 @@ The chat composer has a persistent `Auto` button next to `Send`.
   session ID)`, preselects all agents, and requires at least two unique project
   sessions. The checked subset retains that displayed speaking order. Custom
   drag-and-drop speaking order is outside this version.
-- The panel offers `All agree` and `First agree`, with text warning that `First
-  agree` may stop before the remaining agents speak.
+- `Prepare agents independently first` is unchecked by default. Selecting it
+  enables one sequential private preparation call per participant.
+- The panel offers `All agree` and `First agree`, defaults to `First agree`, and
+  warns that `First agree` may stop before the remaining agents speak.
 - `Maximum discussion cycles` accepts an integer from 1 through 20 and defaults
   to 3.
-- Before confirmation, the panel displays the maximum provider-call budget:
-  one preparation call per participant plus up to one call per participant per
-  discussion cycle. `First agree` can finish with fewer calls.
+- Before confirmation, the panel displays the maximum discussion-call budget and
+  states that enabling preparation adds one call per participant. `First agree`
+  can finish with fewer calls.
 
 The server validates the edited topic with the existing prompt rules: non-empty,
 valid text, and at most 100,000 characters. It also revalidates every participant
@@ -139,16 +151,19 @@ returns a conflict before capturing the baseline or creating an Auto directory.
 Starting Auto appends an Auto status panel above the conversation timeline. It
 shows:
 
-- the topic, policy, participant order, and cycle limit;
-- `Preparing X of Y`, or `Cycle C of N · agent X`;
+- the topic, policy, participant order, cycle limit, and whether preparation was
+  enabled or skipped;
+- `Starting discussion`, `Preparing X of Y`, or `Cycle C of N · agent X`;
 - each completed discussion verdict;
 - the terminal reason: converged, cycle limit reached, stopped, provider error,
   or interrupted by restart; and
 - a `Stop Auto` control while work is active.
 
-Preparation outputs are available to the user in a collapsed `Preparations`
-section after they complete, but do not appear as conversation messages. They are
-not supplied to another agent until every preparation has completed successfully.
+When enabled, preparation outputs are available to the user in a collapsed
+`Preparations` section after they complete, but do not appear as conversation
+messages. They are not supplied to another agent until every preparation has
+completed successfully. Skipped runs have no preparation rounds or preparation
+section.
 Discussion outputs append to the existing timeline using the producing agent's
 normal card and round rendering. Agent-card conversation previews and “latest
 round” links ignore preparation rounds; session detail may show them only with an
@@ -231,7 +246,9 @@ The Auto config stores at least:
 - format version, Auto ID, project ID, created/started/finished timestamps;
 - status: `preparing`, `discussing`, `converged`, `limit_reached`, `stopped`,
   `error`, or `interrupted`;
-- agreement policy, maximum cycles, current cycle, and next participant index;
+- agreement policy, durable preparation choice, maximum cycles, current cycle,
+  and next participant index; legacy records without the choice load preparation
+  as enabled;
 - ordered participant session IDs plus immutable name/agent/model/effort snapshots;
 - topic, baseline, and optional shared-context source/snapshot paths and SHA-256
   digests, plus the baseline's ordered source/byte-range/entry-digest table;
@@ -305,11 +322,12 @@ staged at its existing per-round path. The Auto descriptor stores workspace-rela
 paths and digests; adapters receive only those relative paths, never the
 app-controlled Auto-run root.
 
-After preparation, every discussion turn receives one owned staged context file
+Every discussion turn receives one owned staged context file
 containing, in this order:
 
 1. the edited Auto topic;
-2. each participant's labeled preparation in speaking order;
+2. when preparation is enabled, each participant's labeled preparation in
+   speaking order;
 3. the bounded baseline conversation; and
 4. prior Auto discussion turns in chronological order.
 
@@ -319,26 +337,31 @@ final three non-empty response lines. Role instructions and the normal
 shared-Markdown instruction remain adapter-owned and apply as they do for manual
 rounds.
 
-Topic and all preparation texts are mandatory and are never silently truncated.
+The topic is mandatory and never silently truncated. When preparation is enabled,
+all preparation texts are also mandatory and never silently truncated; when it is
+skipped, no preparation context section is rendered.
 For each discussion turn, baseline entries and prior discussion entries form one
 history pool under Delibra's existing 20-entry limit and the space remaining from
 the 2 MiB stateless-history limit after mandatory material. Delibra selects the
 newest entries first and presents the selected entries chronologically. The
 creation-time baseline file remains immutable; later turns only select from it.
-If the topic, full preparation set, or newest required discussion entry cannot
+If the topic, enabled preparation set, or newest required discussion entry cannot
 fit, Auto stops with a bounded-context error before starting another provider
 process.
 
 ## Preparation and discussion state machine
 
-Preparation runs sequentially in participant order. Sequential execution avoids
-an unbounded local CLI/process spike while still preserving independent reasoning,
-because preparation prompts contain no earlier preparation output. Each successful
-preparation is copied, hashed, linked to its normal round, and committed to the Auto
-record before the next participant starts. A preparation provider error stops the
-Auto run; discussion never begins with an incomplete preparation set.
+When preparation is enabled, it runs sequentially in participant order.
+Sequential execution avoids an unbounded local CLI/process spike while preserving
+independent reasoning, because preparation prompts contain no earlier preparation
+output. Each successful preparation is copied, hashed, linked to its normal round,
+and committed to the Auto record before the next participant starts. A preparation
+provider error stops the Auto run; discussion never begins with an incomplete
+enabled preparation set. When preparation is disabled, the state machine starts no
+preparation provider and proceeds through the same locked native-session reset.
 
-After all preparations succeed, discussion starts at cycle 1 and participant 1.
+After all enabled preparations succeed, or immediately after the skipped-phase
+transition, discussion starts at cycle 1 and participant 1.
 Each successful turn is durably linked and parsed before the state machine decides
 whether to stop or advances to the next participant. After the last participant,
 the cycle is complete. Delibra evaluates convergence first, then records
@@ -622,11 +645,14 @@ large enough for intentionally long agent work.
    subset, rejects fewer than two, offers both agreement policies, and accepts 1–20
    maximum discussion cycles. Start is rejected unless every project session is
    idle and the project has no active normal run.
-4. Every selected agent completes exactly one independent preparation before any
-   discussion turn starts. No preparation prompt contains the baseline or another
-   preparation.
-5. Once preparation completes, every discussion agent receives the topic and the
-   complete hashed preparation set plus bounded baseline/discussion context. The
+4. Preparation is unchecked by default. A skipped run starts no preparation
+   provider, records no preparation round or context section, and clears every
+   participant's native session ID through the normal locked transition before
+   discussion. When selected, every agent completes exactly one independent
+   sequential preparation before discussion, and no preparation prompt contains
+   the baseline or another preparation.
+5. Every discussion agent receives the topic, the complete hashed preparation set
+   when enabled, and bounded baseline/discussion context. The
    baseline is selected newest-first within the configured limits, rendered as a
    chronological untrusted transcript, and excludes generated Auto execution
    prompts, staged paths, and agreement instructions.
@@ -662,11 +688,11 @@ large enough for intentionally long agent work.
 15. Every turn in one Auto run receives the same creation-time shared-Markdown
     snapshot, while a shared-file edit during Auto remains available to future
     runs.
-16. Auto calls never resume or retain provider-native session IDs; preparation
-    preserves the pre-Auto ID, and discussion clears participant IDs before its
-    first call so later manual work cannot resume stale context. Intentional Auto
-    stateless execution and ignored provider IDs do not emit the corresponding
-    manual-continuation warnings.
+16. Auto calls never resume or retain provider-native session IDs; enabled
+    preparation preserves the pre-Auto ID, and discussion clears participant IDs
+    before its first call in both preparation modes so later manual work cannot
+    resume stale context. Intentional Auto stateless execution and ignored provider
+    IDs do not emit the corresponding manual-continuation warnings.
 17. Every manual and Auto-owned live round shows server-derived remaining time and
     permits `+5`, `+15`, `+30`, or a custom 1–240 whole-minute extension without
     restarting or shortening the process. Hidden preparation exposes the same
@@ -686,10 +712,10 @@ large enough for intentionally long agent work.
     storage failure, reconnect, and finalization races have deterministic outcomes;
     an already-observed provider exit beats timeout, and no request revives a
     timed-out, exited, or completed process.
-22. Automated tests cover both Auto start states, independent preparation, context
-    sharing, both convergence policies, cycle limits, bounded response-tail
-    classification, Stop races, provider failure, restart reconciliation,
-    native-ID isolation, locking, storage bounds, baseline
+22. Automated tests cover both Auto start states, skipped and enabled independent
+    preparation, context sharing, both convergence policies, cycle limits,
+    bounded response-tail classification, Stop races, provider failure, restart
+    reconciliation, native-ID isolation, locking, storage bounds, baseline
     normalization/selection, shared-context snapshot stability, hostile content,
     unchanged response streaming, timeout fragment refresh, timeout persistence
     and race boundaries, SSE reconnect, and backward-compatible deserialization.
@@ -699,6 +725,8 @@ large enough for intentionally long agent work.
 - Semantic or embedding-based convergence detection.
 - A judge/coordinator model, dynamic speaker selection, or agent-selected targets.
 - Parallel preparation or parallel discussion turns.
+- Choosing preparation separately per participant or changing the preparation
+  choice after a run starts.
 - Custom drag-and-drop speaking order in the first version.
 - Automatic synthesis after convergence or after the cycle limit.
 - Automatic continuation of an interrupted or failed Auto run.
