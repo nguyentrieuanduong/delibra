@@ -11,6 +11,10 @@ footer { border-top: 1px solid #8885; display: flex; gap: 1rem; margin-top: 3rem
 .live-round { border: 1px solid #3b82c4; border-radius: .5rem; margin: 1rem 0; padding: 1rem; }
 .live-text { white-space: pre-wrap; }
 .live-progress { display: flex; flex-direction: column; font-size: .9rem; opacity: .8; }
+.timeout-controls { border-left: .2rem solid #3b82c4; margin: .75rem 0; padding-left: .75rem; }
+.timeout-controls p { margin: .25rem 0; }
+.timeout-controls form { align-items: end; display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0; }
+.timeout-controls label { min-width: 9rem; }
 .session-card { border-bottom: 1px solid #8885; padding: .75rem 0; }
 form { display: grid; gap: .75rem; margin: 1rem 0; }
 label { display: grid; gap: .25rem; }
