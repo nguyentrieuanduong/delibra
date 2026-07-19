@@ -18,15 +18,22 @@ FAKE_CLI = Path(__file__).with_name("fake_cli.py")
 
 
 class PassAdapter:
-    def __init__(self, mode: str, contexts: list[RunContext]) -> None:
+    def __init__(
+        self,
+        mode: str,
+        contexts: list[RunContext],
+        *,
+        mutate_source: bool,
+    ) -> None:
         self.mode = mode
         self.contexts = contexts
+        self.mutate_source = mutate_source
         self._final = ""
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
         self.contexts.append(context)
         argv = [sys.executable, str(FAKE_CLI), "--mode", self.mode]
-        if context.staged_source is not None:
+        if self.mutate_source and context.staged_source is not None:
             argv.extend(["--source", context.staged_source.as_posix()])
         return Command(argv, context.user_prompt)
 
@@ -39,6 +46,8 @@ class PassAdapter:
             return [AgentEvent("text_delta", payload.get("text", ""))]
         if kind == "progress":
             return [AgentEvent("progress", "Inspected staged source")]
+        if kind == "error":
+            return [AgentEvent("error", payload.get("text", "provider error"))]
         if kind == "result":
             self._final = payload.get("text", "")
             return [AgentEvent("result", self._final)]
@@ -108,7 +117,11 @@ def setup(tmp_path: Path):
     app = create_app(
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
-        adapter_factory_override=lambda session: PassAdapter(session.model, contexts),
+        adapter_factory_override=lambda session: PassAdapter(
+            session.model,
+            contexts,
+            mutate_source=session.model == "success",
+        ),
     )
     return app, settings, project, store, source, target, failed, contexts
 
@@ -117,6 +130,184 @@ def finish(client: TestClient, base: str, number: int) -> None:
     with client.stream("GET", f"{base}/rounds/{number}/stream") as response:
         assert response.status_code == 200
         response.read()
+
+
+def create_failed_pass(
+    client: TestClient,
+    project,
+    store: ProjectStore,
+    source: SessionConfig,
+    target: SessionConfig,
+) -> RoundRecord:
+    target_config = store.load_session(target.id)
+    target_config.model = "provider-error"
+    store.save_session(target_config)
+    response = client.post(
+        f"/projects/{project.id}/sessions/{source.id}/pass",
+        data={
+            "source_round": 1,
+            "target_session_id": target.id,
+            "instruction": "Review.",
+        },
+    )
+    assert response.status_code == 202
+    finish(
+        client,
+        f"/projects/{project.id}/sessions/{target.id}",
+        1,
+    )
+    failed = store.load_session(target.id).rounds[0]
+    assert failed.status == "error"
+    return failed
+
+
+def make_target_retryable(store: ProjectStore, target: SessionConfig) -> None:
+    target_config = store.load_session(target.id)
+    target_config.model = "success"
+    store.save_session(target_config)
+
+
+def test_failed_pass_retry_restages_verified_source_and_rewrites_prompt(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, source, target, _, contexts = setup(tmp_path)
+    target_config = store.load_session(target.id)
+    target_config.model = "provider-error"
+    store.save_session(target_config)
+    source_base = f"/projects/{project.id}/sessions/{source.id}"
+    target_base = f"/projects/{project.id}/sessions/{target.id}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post(
+            f"{source_base}/pass",
+            data={
+                "source_round": 1,
+                "target_session_id": target.id,
+                "instruction": "Review.",
+            },
+        )
+        finish(client, target_base, 1)
+        failed = store.load_session(target.id).rounds[0]
+        assert failed.status == "error"
+        old_stage = store.workspace_dir(target.id) / failed.source.staged_file
+        old_stage.write_text("tampered workspace copy", encoding="utf-8")
+        target_config = store.load_session(target.id)
+        target_config.model = "success"
+        store.save_session(target_config)
+        retried = client.post(f"{target_base}/rounds/1/retry")
+        assert retried.status_code == 202
+        finish(client, target_base, 2)
+
+    record = store.load_session(target.id).rounds[1]
+    assert record.retry_of == 1
+    assert record.source.from_session == source.id
+    assert record.source.from_round == 1
+    assert record.source.staged_file == "inputs/round-02/source.md"
+    assert record.source.source_sha256 == failed.source.source_sha256
+    prompt = (store.rounds_dir(target.id) / "round-02.prompt.md").read_text()
+    assert "inputs/round-02/source.md" in prompt
+    assert "inputs/round-01/source.md" not in prompt
+    assert contexts[-1].resume_strategy == "stateless"
+
+
+def test_pass_retry_uses_verified_stage_only_after_source_session_deletion(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, source, target, _, _ = setup(tmp_path)
+    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        failed = create_failed_pass(client, project, store, source, target)
+        original_prompt = (
+            store.rounds_dir(target.id) / "round-01.prompt.md"
+        ).read_bytes()
+        original_output = (
+            store.rounds_dir(target.id) / "round-01.md"
+        ).read_bytes()
+        store.delete_session(source.id)
+        make_target_retryable(store, target)
+        response = client.post(f"{target_base}/rounds/1/retry")
+        assert response.status_code == 202
+        finish(client, target_base, 2)
+
+    records = store.load_session(target.id).rounds
+    assert records[0] == failed
+    assert records[1].retry_of == 1
+    assert records[1].source.from_session == source.id
+    assert records[1].source.staged_file == "inputs/round-02/source.md"
+    assert records[1].source.source_sha256 == failed.source.source_sha256
+    assert (
+        store.rounds_dir(target.id) / "round-01.prompt.md"
+    ).read_bytes() == original_prompt
+    assert (
+        store.rounds_dir(target.id) / "round-01.md"
+    ).read_bytes() == original_output
+
+
+def test_pass_retry_rejects_changed_original_even_when_stage_still_matches(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, source, target, _, _ = setup(tmp_path)
+    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        create_failed_pass(client, project, store, source, target)
+        (store.rounds_dir(source.id) / "round-01.md").write_text(
+            "changed original",
+            encoding="utf-8",
+        )
+        prompt_path = store.rounds_dir(target.id) / "round-01.prompt.md"
+        output_path = store.rounds_dir(target.id) / "round-01.md"
+        original_prompt = prompt_path.read_bytes()
+        original_output = output_path.read_bytes()
+        make_target_retryable(store, target)
+        response = client.post(f"{target_base}/rounds/1/retry")
+
+    assert response.status_code == 409
+    assert len(store.load_session(target.id).rounds) == 1
+    assert not (store.workspace_dir(target.id) / "inputs/round-02").exists()
+    assert not (store.rounds_dir(target.id) / "round-02.prompt.md").exists()
+    assert prompt_path.read_bytes() == original_prompt
+    assert output_path.read_bytes() == original_output
+
+
+def test_pass_retry_rejects_tampered_stage_after_source_session_deletion(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, source, target, _, _ = setup(tmp_path)
+    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        failed = create_failed_pass(client, project, store, source, target)
+        store.delete_session(source.id)
+        (store.workspace_dir(target.id) / failed.source.staged_file).write_text(
+            "changed staged copy",
+            encoding="utf-8",
+        )
+        make_target_retryable(store, target)
+        response = client.post(f"{target_base}/rounds/1/retry")
+
+    assert response.status_code == 409
+    assert len(store.load_session(target.id).rounds) == 1
+    assert not (store.workspace_dir(target.id) / "inputs/round-02").exists()
+
+
+def test_pass_retry_rejects_ambiguous_staged_path_in_prompt(tmp_path: Path) -> None:
+    app, _, project, store, source, target, _, _ = setup(tmp_path)
+    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        failed = create_failed_pass(client, project, store, source, target)
+        prompt_path = store.rounds_dir(target.id) / "round-01.prompt.md"
+        prompt_path.write_text(
+            prompt_path.read_text(encoding="utf-8")
+            + f"\n{failed.source.staged_file}\n",
+            encoding="utf-8",
+        )
+        modified_prompt = prompt_path.read_bytes()
+        make_target_retryable(store, target)
+        response = client.post(f"{target_base}/rounds/1/retry")
+
+    assert response.status_code == 409
+    assert len(store.load_session(target.id).rounds) == 1
+    assert not (store.workspace_dir(target.id) / "inputs/round-02").exists()
+    assert prompt_path.read_bytes() == modified_prompt
 
 
 def test_pass_stages_exact_bytes_composes_prompt_records_provenance_and_renders(
