@@ -13,6 +13,7 @@ from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
 from app.main import create_app
 from app.models import SessionConfig
+from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
 from app.storage import NotFoundError, ProjectStore, RegistryStore
 
 
@@ -288,3 +289,82 @@ def test_project_chat_is_primary_and_settings_remains_available(tmp_path: Path) 
     assert created.headers["location"] == (
         f"/projects/{project.id}/chat?agent={session.id}"
     )
+
+
+def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "pass-settings"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Pass settings", project_path)
+    store = ProjectStore(project)
+    for index, name in enumerate(("Alpha", "Beta")):
+        store.create_session(
+            SessionConfig(
+                id=str(index + 1) * 32,
+                name=name,
+                agent="fake",
+                model="success",
+                effort="low",
+                role_instructions="",
+                cli_session_id=None,
+                status="idle",
+                created_at="2026-07-19T00:00:00Z",
+                rounds=[],
+            )
+        )
+    custom = "Review </textarea><script>alert(1)</script> at {source_path}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        reserve_auto_run(store, auto_id="f" * 32)
+        initial = client.get(f"/projects/{project.id}/settings")
+        saved = client.post(
+            f"/projects/{project.id}/pass-prompt",
+            data={"pass_prompt_template": custom},
+            follow_redirects=False,
+        )
+        rendered = client.get(f"/projects/{project.id}/settings")
+        reset = client.post(
+            f"/projects/{project.id}/pass-prompt/reset",
+            follow_redirects=False,
+        )
+
+    assert "Review the following document and give your critique." in initial.text
+    assert "{source_path}" in initial.text
+    assert saved.status_code == 303
+    assert saved.headers["location"] == f"/projects/{project.id}/settings"
+    assert "&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in rendered.text
+    assert "</textarea><script>" not in rendered.text
+    assert store.active_auto_run_id() == "f" * 32
+    assert reset.status_code == 303
+    assert store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
+
+    with TestClient(app, base_url="http://localhost") as client:
+        after_reset = client.get(f"/projects/{project.id}/settings")
+    assert "Review the following document" in after_reset.text
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["", "missing path", "{source_path} {source_path}", "x" * 10_001],
+)
+def test_project_pass_prompt_rejects_invalid_update_without_mutation(
+    tmp_path: Path,
+    template: str,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "invalid-pass-settings"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Pass settings", project_path)
+    store = ProjectStore(project)
+    original = "Keep {source_path}"
+    store.set_pass_prompt_template(original)
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{project.id}/pass-prompt",
+            data={"pass_prompt_template": template},
+        )
+    assert response.status_code == 422
+    assert store.effective_pass_prompt_template() == original

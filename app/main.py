@@ -203,6 +203,7 @@ def create_app(
                     "codex": CodexAdapter.EFFORT_LEVELS,
                 },
                 "auto_active": store.active_auto_run_id() is not None,
+                "pass_prompt_template": store.effective_pass_prompt_template(),
             },
         )
 
