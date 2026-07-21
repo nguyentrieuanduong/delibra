@@ -8,6 +8,11 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
+from app.pass_prompts import (
+    PASS_PROMPT_TEMPLATE_MAX_CHARS,
+    PassPromptTemplateError,
+    validate_pass_prompt_template,
+)
 from app.storage import sanitize_name
 
 
@@ -182,4 +187,16 @@ def validate_name(value: str, label: str = "Name") -> str:
     try:
         return sanitize_name(value)
     except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def validate_pass_prompt_template_field(value: str) -> str:
+    validate_field(
+        value,
+        "Pass prompt",
+        maximum=PASS_PROMPT_TEMPLATE_MAX_CHARS,
+    )
+    try:
+        return validate_pass_prompt_template(value)
+    except PassPromptTemplateError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
