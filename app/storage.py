@@ -26,6 +26,11 @@ from typing import Any, AsyncIterator, Iterable, Iterator, Literal
 from uuid import uuid4
 
 from app.models import AutoArtifact, AutoRunRecord, Project, RoundRecord, SessionConfig
+from app.pass_prompts import (
+    BUILT_IN_PASS_PROMPT_TEMPLATE,
+    PassPromptTemplateError,
+    validate_pass_prompt_template,
+)
 
 
 FORMAT = "delibra/1"
@@ -799,7 +804,30 @@ class ProjectStore:
             not isinstance(active_auto, str) or not ID_PATTERN.fullmatch(active_auto)
         ):
             raise OwnershipError("project active Auto run id is invalid")
+        if "pass_prompt_template" in manifest:
+            try:
+                validate_pass_prompt_template(manifest["pass_prompt_template"])
+            except PassPromptTemplateError as exc:
+                raise OwnershipError("project Pass prompt template is invalid") from exc
         return manifest
+
+    def effective_pass_prompt_template(self) -> str:
+        return self._load_manifest().get(
+            "pass_prompt_template",
+            BUILT_IN_PASS_PROMPT_TEMPLATE,
+        )
+
+    def set_pass_prompt_template(self, template: object) -> str:
+        validated = validate_pass_prompt_template(template)
+        manifest = self._load_manifest()
+        manifest["pass_prompt_template"] = validated
+        atomic_write_json(self.manifest_path, manifest)
+        return validated
+
+    def reset_pass_prompt_template(self) -> None:
+        manifest = self._load_manifest()
+        manifest.pop("pass_prompt_template", None)
+        atomic_write_json(self.manifest_path, manifest)
 
     @property
     def auto_runs_root(self) -> Path:
