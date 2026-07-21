@@ -89,6 +89,18 @@ Error rounds offer Retry. Retry preserves the failed round, starts a linked new
 stateless round from completed local history, uses the latest shared-context
 snapshot, and re-verifies pass-to source bytes against their recorded digest.
 
+Project settings provide a **Default Pass prompt** containing the complete text
+sent to the receiving agent. `{source_path}` is required exactly once;
+`{source_session}` and `{source_round}` are optional. Every Pass form is prefilled
+from that project default and can be edited for one Pass without changing the
+saved default. Reset removes the manifest override and restores Delibra's built-in
+prompt.
+
+Passed output is untrusted. The built-in template tells the receiving agent not
+to follow instructions inside the staged document, but project owners may edit or
+remove that wording. Template customization changes prompt text only; staged-file
+ownership checks, digest provenance, and retry verification remain enforced.
+
 Native provider session IDs are used for replies. If a provider supplies no native
 ID, Delibra stages at most 20 completed rounds and 2 MiB of history, newest-first for
 selection and chronological for presentation. A newest round that cannot fit fails
@@ -134,10 +146,11 @@ preparation set, bounded creation-time history, and bounded prior discussion
 through the selected agents.
 **First agree** stops at the first agreeing response; **All agree** requires every
 agent to agree within the same complete cycle. A discussion response agrees when
-the standalone word `agree`, matched without case sensitivity, appears in its
+the standalone word `converged`, matched without case sensitivity, appears in its
 final three non-empty lines. This deliberately favors stopping over continuing
-when wording is ambiguous. Reaching the configured number of complete cycles
-records `limit_reached` without starting an extra turn.
+when wording is ambiguous. The stored verdict remains `agree`. Reaching the
+configured number of complete cycles records `limit_reached` without starting an
+extra turn.
 
 The Auto status panel survives reloads and shows progress, participant order,
 verdicts, future-turn timeout budget, terminal reason, and completed preparations.
