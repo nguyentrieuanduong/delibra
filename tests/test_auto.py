@@ -51,16 +51,14 @@ FAKE_CLI = Path(__file__).with_name("fake_cli.py")
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("AGREE", "agree"),
-        ("Recommendation\nAgree.", "agree"),
-        ("Analysis\nLine two\nI do not aGrEe\n", "agree"),
-        ("prefix\nAgree\nsecond\nthird", "agree"),
-        ("first\nsecond\nthird\n(Agree)", "agree"),
-        ("agree\nline two\nline three\nline four", "continue"),
-        ("agree\n\nline two\nline three\nline four", "continue"),
-        ("disagree\nagreement\nagreed", "continue"),
-        ("agreeing", "continue"),
-        ("The proposal is agreeable", "continue"),
+        ("CONVERGED", "agree"),
+        ("Recommendation\nConverged.", "agree"),
+        ("Analysis\nLine two\nI am cOnVeRgEd\n", "agree"),
+        ("prefix\nConverged\nsecond\nthird", "agree"),
+        ("first\nsecond\nthird\n(Converged)", "agree"),
+        ("converged\nline two\nline three\nline four", "continue"),
+        ("unconverged\nconvergence\nconverge", "continue"),
+        ("agree", "continue"),
         ("continue", "continue"),
         ("\n \t\n", "continue"),
     ],
@@ -73,9 +71,9 @@ def test_parse_auto_verdict_uses_only_final_three_nonempty_lines(
 
 
 def test_parse_auto_verdict_counts_nonempty_lines_only() -> None:
-    assert parse_auto_verdict("prefix\nAgree\n\nsecond\n \nthird") == "agree"
+    assert parse_auto_verdict("prefix\nConverged\n\nsecond\n \nthird") == "agree"
     assert (
-        parse_auto_verdict("Agree\n\nsecond\n \nthird\n\tfourth")
+        parse_auto_verdict("Converged\n\nsecond\n \nthird\n\tfourth")
         == "continue"
     )
 
@@ -137,7 +135,7 @@ class RecordingAutoAdapter:
         verdict_line = ""
         if self.output.decision is not None:
             verdict_line = (
-                "AGREE" if self.output.decision == "agree" else "Continue"
+                "CONVERGED" if self.output.decision == "agree" else "Continue"
             )
         self._verdict_line = verdict_line
         self.factory.active += 1
@@ -407,6 +405,9 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
         store.load_session(session_id).cli_session_id is None
         for session_id in session_ids
     )
+    discussion_prompt = factory.calls[-1]["prompt"]
+    assert "standalone word Converged" in discussion_prompt
+    assert "do not use Converged" in discussion_prompt
 
 
 @pytest.mark.asyncio
