@@ -16,6 +16,7 @@ from app.models import (
     SharedContextDescriptor,
     SourceDescriptor,
 )
+from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
 from app.storage import (
     ConflictError,
     LockCoordinator,
@@ -537,3 +538,50 @@ async def test_lock_coordinator_order_is_stable_and_mixed_contention_has_no_dead
     assert locks.session_lock(project_id, session_a) is locks.session_lock(
         project_id, session_a
     )
+
+
+def test_pass_prompt_template_is_backward_compatible_persistent_and_resettable(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    registry = RegistryStore(tmp_path / "home")
+    project = registry.register("Alpha", project_dir)
+    store = ProjectStore(project)
+    manifest_path = project_dir / ".delibra" / "manifest.json"
+    legacy_bytes = manifest_path.read_bytes()
+
+    assert store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
+    assert manifest_path.read_bytes() == legacy_bytes
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["shared_markdown_path"] = "brief.md"
+    manifest["future_key"] = {"keep": True}
+    atomic_write_json(manifest_path, manifest)
+    custom = "Use {source_path}; session={source_session}; round={source_round}"
+    assert store.set_pass_prompt_template(custom) == custom
+    registry.unregister(project.id)
+    imported = registry.register("Imported", project_dir)
+    imported_store = ProjectStore(imported)
+    assert imported_store.effective_pass_prompt_template() == custom
+
+    imported_store.reset_pass_prompt_template()
+    reset = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert imported_store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
+    assert "pass_prompt_template" not in reset
+    assert reset["shared_markdown_path"] == "brief.md"
+    assert reset["future_key"] == {"keep": True}
+
+
+@pytest.mark.parametrize("invalid", [None, 42, "missing token"])
+def test_project_store_rejects_invalid_manifest_pass_prompt_template(
+    tmp_path: Path,
+    invalid: object,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    manifest_path = project_dir / ".delibra" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["pass_prompt_template"] = invalid
+    atomic_write_json(manifest_path, manifest)
+    with pytest.raises(OwnershipError, match="Pass prompt template"):
+        ProjectStore(project)
