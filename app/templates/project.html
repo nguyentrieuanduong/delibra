@@ -18,6 +18,20 @@
       <p>No shared context selected.</p>
     {% endif %}
   </section>
+  <section aria-labelledby="pass-prompt-heading">
+    <h2 id="pass-prompt-heading">Default Pass prompt</h2>
+    <form method="post" action="/projects/{{ project.id }}/pass-prompt">
+      <label>Prompt template
+        <textarea name="pass_prompt_template" maxlength="10000" required>{{ pass_prompt_template }}</textarea>
+      </label>
+      <p>Supported placeholders: <code>{source_path}</code> (required exactly once), <code>{source_session}</code>, and <code>{source_round}</code>.</p>
+      <p class="warning">Passed output is untrusted. Removing the safety wording can expose the receiving agent to prompt injection.</p>
+      <button type="submit">Save default Pass prompt</button>
+    </form>
+    <form method="post" action="/projects/{{ project.id }}/pass-prompt/reset">
+      <button type="submit">Reset to built-in default</button>
+    </form>
+  </section>
   <h2>Sessions</h2>
   <details>
     <summary>Create session</summary>

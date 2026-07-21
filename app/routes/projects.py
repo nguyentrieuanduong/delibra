@@ -7,7 +7,11 @@ from pathlib import Path
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app.security import validate_field, validate_name
+from app.security import (
+    validate_field,
+    validate_name,
+    validate_pass_prompt_template_field,
+)
 from app.storage import ConflictError, ProjectStore
 
 
@@ -64,3 +68,30 @@ async def unregister_project(request: Request, project_id: str):
         _reject_running_sessions(project)
         request.app.state.registry.unregister(project_id)
     return RedirectResponse("/", status_code=303)
+
+
+@router.post("/projects/{project_id}/pass-prompt")
+async def save_pass_prompt(
+    request: Request,
+    project_id: str,
+    pass_prompt_template: str = Form(...),
+):
+    validated = validate_pass_prompt_template_field(pass_prompt_template)
+    async with request.app.state.locks.registry_project_sessions(project_id):
+        project = request.app.state.registry.get(project_id)
+        ProjectStore(project).set_pass_prompt_template(validated)
+    return RedirectResponse(
+        f"/projects/{project_id}/settings",
+        status_code=303,
+    )
+
+
+@router.post("/projects/{project_id}/pass-prompt/reset")
+async def reset_pass_prompt(request: Request, project_id: str):
+    async with request.app.state.locks.registry_project_sessions(project_id):
+        project = request.app.state.registry.get(project_id)
+        ProjectStore(project).reset_pass_prompt_template()
+    return RedirectResponse(
+        f"/projects/{project_id}/settings",
+        status_code=303,
+    )
