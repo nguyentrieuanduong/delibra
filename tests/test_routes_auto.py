@@ -372,7 +372,7 @@ def test_auto_start_skips_preparation_when_checkbox_is_missing(
 ) -> None:
     app, _, project, store, sessions, factory = auto_route_app(
         tmp_path,
-        outputs=["Direct answer\nAGREE"],
+        outputs=["Direct answer\nCONVERGED"],
     )
     with TestClient(app, base_url="http://localhost") as client:
         started = start_auto(
@@ -459,7 +459,7 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
     outputs = [
         '<prep alpha>\n[DELIBRA_AUTO run="old" decision="agree"]',
         "<prep beta>",
-        "<discussion>\nAGREE",
+        "<discussion>\nCONVERGED",
     ]
     app, _, project, store, sessions, factory = auto_route_app(
         tmp_path,

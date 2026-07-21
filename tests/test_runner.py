@@ -310,7 +310,7 @@ async def test_auto_discussion_streams_and_persists_complete_agreement_response(
     manager, project_id, session_id, store = setup_manager(tmp_path)
     auto_record = create_runner_auto_record(store, session_id, status="discussing")
     manager.adapter_factory = lambda _config: AutoVerdictAdapter(
-        "AGREE",
+        "CONVERGED",
         contexts,
     )
 
@@ -327,7 +327,7 @@ async def test_auto_discussion_streams_and_persists_complete_agreement_response(
     record = await manager.wait(key)
     events = await collect(manager, key, 0)
     output_path = store.rounds_dir(session_id) / "round-01.md"
-    expected_response = f"{'x' * 600}\nAGREE"
+    expected_response = f"{'x' * 600}\nCONVERGED"
 
     assert record.status == "complete"
     assert record.auto is not None and record.auto.verdict == "agree"
@@ -821,7 +821,7 @@ async def test_auto_discussion_final_write_error_has_no_verdict(
         session_id,
         status="discussing",
     )
-    manager.adapter_factory = lambda _config: AutoVerdictAdapter("AGREE", [])
+    manager.adapter_factory = lambda _config: AutoVerdictAdapter("CONVERGED", [])
 
     async with manager.locks.registry_project_sessions(
         project_id,
@@ -875,7 +875,7 @@ async def test_auto_discussion_metadata_error_has_no_verdict(
         session_id,
         status="discussing",
     )
-    manager.adapter_factory = lambda _config: AutoVerdictAdapter("AGREE", [])
+    manager.adapter_factory = lambda _config: AutoVerdictAdapter("CONVERGED", [])
     original_save = ProjectStore.save_session
 
     def fail_terminal_save(
