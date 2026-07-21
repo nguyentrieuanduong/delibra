@@ -131,6 +131,7 @@ async def chat_page(
             ),
             "auto_active": auto_active,
             "health": request.app.state.health,
+            "pass_prompt_template": store.effective_pass_prompt_template(),
             **sidebar,
         },
     )
@@ -151,6 +152,7 @@ async def chat_timeline(request: Request, project_id: str) -> HTMLResponse:
             "sessions": store.list_sessions(),
             "timeline": _timeline(request, project_id, store),
             "auto_active": store.active_auto_run_id() is not None,
+            "pass_prompt_template": store.effective_pass_prompt_template(),
         },
     )
 

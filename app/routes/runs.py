@@ -13,7 +13,7 @@ from starlette.responses import Response
 
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import RunKey, SourceDescriptor
-from app.security import validate_field
+from app.security import validate_field, validate_pass_prompt_template_field
 from app.storage import ConflictError, NotFoundError, ProjectStore, validate_id
 from app.views import round_dom_id
 
@@ -202,19 +202,14 @@ async def pass_round(
     source_session_id: str,
     source_round: int = Form(...),
     target_session_id: str = Form(...),
-    instruction: str = Form(""),
+    pass_prompt_template: str = Form(...),
     view: str | None = None,
 ):
     validate_id(source_session_id, "source session id")
     validate_id(target_session_id, "target session id")
     if source_round < 1:
         raise HTTPException(status_code=422, detail="Source round must be positive")
-    instruction = validate_field(
-        instruction,
-        "Instruction",
-        maximum=10_000,
-        allow_empty=True,
-    )
+    pass_prompt_template = validate_pass_prompt_template_field(pass_prompt_template)
     project = request.app.state.registry.get(project_id)
     store = ProjectStore(project)
     sessions = {session.id: session for session in store.list_sessions()}
@@ -242,7 +237,7 @@ async def pass_round(
     key = await request.app.state.manager.start(
         project_id,
         target_session_id,
-        instruction,
+        pass_prompt_template,
         source=descriptor,
     )
     return request.app.state.templates.TemplateResponse(

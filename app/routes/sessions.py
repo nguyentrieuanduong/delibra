@@ -212,6 +212,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
             "active_key": active_key,
             "auto_active": store.active_auto_run_id() is not None,
             "health": request.app.state.health,
+            "pass_prompt_template": store.effective_pass_prompt_template(),
         },
     )
 
@@ -245,5 +246,6 @@ async def round_fragment(
             "sessions": sessions,
             "chat_view": display == "chat",
             "auto_active": store.active_auto_run_id() is not None,
+            "pass_prompt_template": store.effective_pass_prompt_template(),
         },
     )
