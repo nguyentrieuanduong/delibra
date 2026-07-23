@@ -73,13 +73,7 @@ def conversation_round_views(
 ) -> list[dict[str, Any]]:
     """Project rounds visible as shared conversation messages."""
 
-    return [
-        view
-        for view in round_views(store, session_id)
-        if view["record"] is None
-        or view["record"].auto is None
-        or view["record"].auto.phase != "preparation"
-    ]
+    return round_views(store, session_id)
 
 
 def effort_levels() -> dict[str, list[str]]:

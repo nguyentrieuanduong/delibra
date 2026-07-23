@@ -923,7 +923,7 @@ def test_sidebar_preview_is_plain_truncated_and_send_targets_exclude_source(
     assert f'<option value="{beta.id}">' in alpha_bubble.group()
 
 
-def test_preparation_is_hidden_from_chat_timeline_and_sidebar_but_kept_in_session(
+def test_preparation_is_visible_in_chat_timeline_but_hidden_from_sidebar_preview(
     tmp_path: Path,
 ) -> None:
     manual = record(1, "2026-07-17T00:00:01Z")
@@ -941,16 +941,21 @@ def test_preparation_is_hidden_from_chat_timeline_and_sidebar_but_kept_in_sessio
     app, project, store = setup_project(tmp_path, [alpha])
     rounds = store.rounds_dir(alpha.id)
     (rounds / "round-01.md").write_text("Public answer", encoding="utf-8")
-    (rounds / "round-02.md").write_text("Private preparation", encoding="utf-8")
+    (rounds / "round-02.md").write_text(
+        "Visible preparation",
+        encoding="utf-8",
+    )
 
     with TestClient(app, base_url="http://localhost") as client:
         chat = client.get(f"/projects/{project.id}/chat")
         detail = client.get(f"/projects/{project.id}/sessions/{alpha.id}")
 
-    assert "Public answer" in chat.text
-    assert "Private preparation" not in chat.text
+    assert chat.text.index("Public answer") < chat.text.index(
+        "Visible preparation"
+    )
+    assert "Auto preparation" in chat.text
     assert "Latest round 1" in chat.text
-    assert "Private preparation" in detail.text
+    assert "Visible preparation" in detail.text
 
 
 def test_chat_error_javascript_contract_runs_under_node() -> None:
