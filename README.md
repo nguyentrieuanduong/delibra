@@ -135,11 +135,13 @@ selected by default. Select at least two unique agents, choose **All agree** or
 3). The agreement-policy default is **First agree**.
 
 Auto starts discussion directly by default. Select **Prepare agents
-independently first** when every chosen agent should receive one private
+independently first** when every chosen agent should receive one independent
 preparation call containing only the original topic and the creation-time
 shared Markdown snapshot. When selected, all preparations finish before they
-enter discussion context. The setup defaults to **First agree**; **All agree**
-remains available.
+enter discussion context. Active preparations stream as labeled **Auto
+preparation** messages in the merged conversation and remain there when
+complete. This browser visibility does not add a preparation to another
+agent's sidebar preview or provider conversation history.
 
 Auto calls agents sequentially. Discussion passes the topic, the optional complete
 preparation set, bounded creation-time history, and bounded prior discussion

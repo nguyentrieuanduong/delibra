@@ -453,7 +453,7 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
     assert factory.created == 1
 
 
-def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_timeline(
+def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messages(
     tmp_path: Path,
 ) -> None:
     outputs = [
@@ -510,7 +510,13 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
     assert 'data-topic-source="durable"' in fallback_setup.text
     assert "&lt;unsafe topic&gt;" in fallback_setup.text
     assert "&lt;discussion&gt;" in timeline.text
-    assert "&lt;prep alpha&gt;" not in timeline.text
+    assert timeline.text.index("&lt;prep alpha&gt;") < timeline.text.index(
+        "&lt;prep beta&gt;"
+    )
+    assert timeline.text.index("&lt;prep beta&gt;") < timeline.text.index(
+        "&lt;discussion&gt;"
+    )
+    assert timeline.text.count("Auto preparation") == 2
     assert "Auto preparation" in preparation_session.text
     assert f"/projects/{project.id}/auto-runs/{terminal.id}" in preparation_session.text
     assert "Retry" not in preparation_session.text
@@ -522,7 +528,7 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_filters_time
     assert factory.created == 3
 
 
-def test_hidden_preparation_exposes_auto_timeout_scopes_and_status_refresh(
+def test_live_preparation_uses_timeline_message_and_timeout_scopes(
     tmp_path: Path,
 ) -> None:
     app, _, project, store, sessions, _ = auto_route_app(tmp_path, sleep=True)
@@ -544,6 +550,7 @@ def test_hidden_preparation_exposes_auto_timeout_scopes_and_status_refresh(
         extension_path = f"{timeout_path}/extend"
 
         status = client.get(f"/projects/{project.id}/auto-runs/{active.id}")
+        timeline = client.get(f"/projects/{project.id}/chat/timeline")
         timeout = client.get(timeout_path)
         auto_events_before = len(
             app.state.auto_manager._events[(project.id, active.id)].replay
@@ -597,6 +604,17 @@ def test_hidden_preparation_exposes_auto_timeout_scopes_and_status_refresh(
         in stream_tag
     )
     assert 'hx-preserve="true"' in timeout_tag
+    live_tag = opening_tag(
+        timeline.text,
+        f"round-{key.session_id}-{key.round_n}",
+    )
+    assert 'class="live-round"' in live_tag
+    assert (
+        f'sse-connect="/projects/{project.id}/sessions/{key.session_id}'
+        f'/rounds/{key.round_n}/stream"'
+    ) in live_tag
+    assert "Auto preparation" in timeline.text
+    assert f'hx-get="{timeout_path}"' in timeline.text
     assert status.text.count(
         f'sse-connect="/projects/{project.id}/auto-runs/{active.id}/stream"'
     ) == 1
