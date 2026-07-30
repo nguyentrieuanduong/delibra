@@ -14,7 +14,7 @@
     </p>
   {% endif %}
   <label>Message
-    <textarea name="prompt" maxlength="100000" required{% if not selected_session or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}></textarea>
+    <textarea name="prompt" maxlength="100000" required data-disable-during-auto{% if not selected_session or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}></textarea>
   </label>
   <div class="composer-actions">
     <button
