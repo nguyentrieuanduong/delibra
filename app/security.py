@@ -13,7 +13,7 @@ from app.pass_prompts import (
     PassPromptTemplateError,
     validate_pass_prompt_template,
 )
-from app.storage import sanitize_name
+from app.storage import normalize_agent_name, sanitize_name
 
 
 Scope = dict[str, Any]
@@ -186,6 +186,13 @@ def validate_name(value: str, label: str = "Name") -> str:
     validate_field(value, label, maximum=200)
     try:
         return sanitize_name(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def validate_agent_name(value: str) -> str:
+    try:
+        return normalize_agent_name(value)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

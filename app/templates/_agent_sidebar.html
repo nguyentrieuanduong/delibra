@@ -15,7 +15,12 @@
       data-session-config-form
       data-agent="claude"
     >
-      <label>Name <input name="name" maxlength="200" required></label>
+      <label>Name
+        <input name="name" maxlength="200" required>
+        <small>
+          Up to 200 UTF-8 bytes; non-ASCII characters may use multiple bytes.
+        </small>
+      </label>
       <label>Agent
         <select name="agent" required data-agent-select>
           <option value="claude">Claude</option>

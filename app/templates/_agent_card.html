@@ -43,7 +43,8 @@
         data-session-config-form
         data-agent="{{ agent.agent }}"
       >
-        <label>Name <input name="name" maxlength="200" value="{{ agent.name }}" required></label>
+        <p class="immutable-agent-name">{{ agent.name }}</p>
+        <p class="immutability-hint">Agent name and directory are permanent.</p>
         {% if not agent.rounds %}
           <label>Agent
             <select name="agent" data-agent-select>

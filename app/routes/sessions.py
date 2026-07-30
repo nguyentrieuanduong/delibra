@@ -11,8 +11,14 @@ from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import SessionConfig
 from app.routes.chat import sidebar_response
-from app.security import validate_field, validate_name
-from app.storage import ConflictError, NotFoundError, ProjectStore, utc_now
+from app.security import validate_agent_name, validate_field
+from app.storage import (
+    ConflictError,
+    NotFoundError,
+    ProjectStore,
+    utc_now,
+    validate_id,
+)
 from app.views import round_views
 
 
@@ -67,7 +73,7 @@ async def create_session(
     effort: str = Form(...),
     role_instructions: str = Form(""),
 ):
-    name = validate_name(name)
+    name = validate_agent_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
         agent, model, effort, role_instructions
     )
@@ -110,7 +116,7 @@ async def edit_session(
     request: Request,
     project_id: str,
     session_id: str,
-    name: str = Form(...),
+    name: str | None = Form(None),
     agent: str | None = Form(None),
     model: str | None = Form(None),
     effort: str | None = Form(None),
@@ -127,7 +133,8 @@ async def edit_session(
         config = store.load_session(session_id)
         if config.status == "running":
             raise ConflictError("cannot edit a running session")
-        name = validate_name(name)
+        if name is not None and validate_agent_name(name) != config.name:
+            raise ConflictError("agent name is immutable")
         if config.rounds:
             if agent is not None and agent != config.agent:
                 raise ConflictError("the agent cannot change after the first round")
@@ -165,7 +172,6 @@ async def edit_session(
                 ),
             )
             config.agent, config.model, config.effort, config.role_instructions = updated
-        config.name = name
         store.save_session(config)
     if request.headers.get("HX-Request") == "true":
         return sidebar_response(
@@ -176,6 +182,29 @@ async def edit_session(
         )
     return RedirectResponse(
         f"/projects/{project_id}/sessions/{session_id}",
+        status_code=303,
+    )
+
+
+@router.post("/projects/{project_id}/sessions/{session_id}/permanent-name")
+async def set_permanent_session_name(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    name: str = Form(...),
+):
+    validate_id(session_id, "session id")
+    name = validate_agent_name(name)
+    async with request.app.state.locks.project_sessions(project_id, [session_id]):
+        project = request.app.state.registry.get(project_id)
+        store = ProjectStore(project)
+        store.require_auto_inactive()
+        config = store.load_session(session_id)
+        if config.status == "running":
+            raise ConflictError("cannot name a running session")
+        store.set_legacy_session_name(session_id, name)
+    return RedirectResponse(
+        f"/projects/{project_id}/settings",
         status_code=303,
     )
 

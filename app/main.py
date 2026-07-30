@@ -99,6 +99,13 @@ def create_app(
         for project in registry.list_projects():
             try:
                 store = ProjectStore(project)
+                migration = store.migrate_session_directories()
+                if migration.issues:
+                    LOGGER.warning(
+                        "Agent directory migration needs input for project %s: %s",
+                        project.id,
+                        ", ".join(issue.session_id for issue in migration.issues),
+                    )
                 for session in store.list_sessions():
                     store.reconcile_session(session.id)
                 await auto_manager.reconcile_project(project.id)
@@ -203,6 +210,9 @@ def create_app(
                     "codex": CodexAdapter.EFFORT_LEVELS,
                 },
                 "auto_active": store.active_auto_run_id() is not None,
+                "legacy_session_ids": frozenset(
+                    store.session_migration_status().legacy_session_ids
+                ),
                 "pass_prompt_template": store.effective_pass_prompt_template(),
             },
         )
