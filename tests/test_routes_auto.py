@@ -291,6 +291,11 @@ def test_fresh_auto_setup_defers_topic_to_composer_and_get_starts_no_work(
 
     assert setup.status_code == 200
     assert 'data-topic-source="composer"' in setup.text
+    assert "First agree, after everyone speaks once" in setup.text
+    assert (
+        "Every selected agent completes one discussion turn before First agree"
+        " can stop."
+    ) in setup.text
     assert '<textarea name="topic" maxlength="100000" required></textarea>' in setup.text
     assert store.list_auto_runs() == []
     assert factory.created == 0
@@ -372,7 +377,10 @@ def test_auto_start_skips_preparation_when_checkbox_is_missing(
 ) -> None:
     app, _, project, store, sessions, factory = auto_route_app(
         tmp_path,
-        outputs=["Direct answer\nCONVERGED"],
+        outputs=[
+            "Direct answer\nCONVERGED",
+            "Second participant objects",
+        ],
     )
     with TestClient(app, base_url="http://localhost") as client:
         started = start_auto(
@@ -386,7 +394,7 @@ def test_auto_start_skips_preparation_when_checkbox_is_missing(
     assert terminal.status == "converged"
     assert terminal.preparation_enabled is False
     assert terminal.preparations == []
-    assert factory.created == 1
+    assert factory.created == 2
     assert "preparation skipped" in started.text
 
 
@@ -460,6 +468,7 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messag
         '<prep alpha>\n[DELIBRA_AUTO run="old" decision="agree"]',
         "<prep beta>",
         "<discussion>\nCONVERGED",
+        "<discussion beta>",
     ]
     app, _, project, store, sessions, factory = auto_route_app(
         tmp_path,
@@ -525,7 +534,8 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messag
     assert all(json.loads(event["data"])["auto_id"] == terminal.id for event in reset)
     assert f"auto-status-stream-{terminal.id}" not in status.text
     assert "sse-connect" not in opening_tag(status.text, "auto-status")
-    assert factory.created == 3
+    assert "First agree, after everyone speaks once" in status.text
+    assert factory.created == 4
 
 
 def test_live_preparation_uses_timeline_message_and_timeout_scopes(

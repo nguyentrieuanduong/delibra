@@ -20,7 +20,7 @@
     {% endif %}
   </div>
   <p>
-    {{ 'All agree' if auto.agreement_policy == 'all_agree' else 'First agree' }}
+    {{ 'All agree' if auto.agreement_policy == 'all_agree' else 'First agree, after everyone speaks once' }}
     · up to {{ auto.max_cycles }} cycle{{ '' if auto.max_cycles == 1 else 's' }}
     · future turn budget {{ auto.future_turn_timeout_seconds }}s
     · {{ 'preparation enabled' if auto.preparation_enabled else 'preparation skipped' }}
