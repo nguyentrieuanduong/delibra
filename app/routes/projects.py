@@ -12,7 +12,7 @@ from app.security import (
     validate_name,
     validate_pass_prompt_template_field,
 )
-from app.storage import ConflictError, ProjectStore
+from app.storage import ConflictError, ProjectStore, StorageError
 
 
 router = APIRouter()
@@ -60,12 +60,55 @@ async def rename_project(
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
+@router.post("/projects/{project_id}/rebind")
+async def rebind_project(
+    request: Request,
+    project_id: str,
+    path: str = Form(...),
+):
+    candidate_path = _project_path(path)
+    registry = request.app.state.registry
+    candidate = registry.preview_rebind(project_id, candidate_path)
+    candidate_store = ProjectStore(candidate)
+    session_ids = [session.id for session in candidate_store.list_sessions()]
+    async with request.app.state.locks.registry_project_sessions(
+        project_id,
+        session_ids,
+    ):
+        if (
+            request.app.state.manager.has_active_project(project_id)
+            or request.app.state.auto_manager.has_active_project(project_id)
+        ):
+            raise ConflictError("project has active work")
+        candidate = registry.preview_rebind(project_id, candidate_path)
+        candidate_store = ProjectStore(candidate)
+        candidate_store.clear_native_session_ids_for_relocation()
+        candidate_store.migrate_session_directories()
+        for session in candidate_store.list_sessions():
+            candidate_store.reconcile_session(session.id)
+        request.app.state.auto_manager.reconcile_store_locked(candidate_store)
+        rebound = registry.rebind(project_id, candidate_path)
+    return RedirectResponse(
+        f"/projects/{rebound.id}/chat",
+        status_code=303,
+    )
+
+
 @router.post("/projects/{project_id}/unregister")
 async def unregister_project(request: Request, project_id: str):
     async with request.app.state.locks.registry_project_sessions(project_id):
         project = request.app.state.registry.get(project_id)
-        ProjectStore(project).require_auto_inactive()
-        _reject_running_sessions(project)
+        try:
+            store = ProjectStore(project)
+        except StorageError:
+            if (
+                request.app.state.manager.has_active_project(project_id)
+                or request.app.state.auto_manager.has_active_project(project_id)
+            ):
+                raise ConflictError("project has active work")
+        else:
+            store.require_auto_inactive()
+            _reject_running_sessions(project)
         request.app.state.registry.unregister(project_id)
     return RedirectResponse("/", status_code=303)
 

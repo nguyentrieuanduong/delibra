@@ -1471,6 +1471,16 @@ class ProjectStore:
             )
         ]
 
+    def has_legacy_session_directories(self) -> bool:
+        for child in self.sessions_root.iterdir():
+            try:
+                info = child.lstat()
+            except OSError as exc:
+                raise StorageError("failed to inspect session storage") from exc
+            if stat.S_ISDIR(info.st_mode) and ID_PATTERN.fullmatch(child.name):
+                return True
+        return False
+
     def session_migration_status(self) -> SessionMigrationStatus:
         entries = self._scan_session_directories()
         issues: list[SessionMigrationIssue] = []

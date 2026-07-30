@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import shutil
 import sys
 
 import httpx
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
 from app.main import create_app
-from app.models import SessionConfig
+from app.models import RoundRecord, SessionConfig, SourceDescriptor
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
 from app.storage import NotFoundError, ProjectStore, RegistryStore
 
@@ -368,3 +369,250 @@ def test_project_pass_prompt_rejects_invalid_update_without_mutation(
         )
     assert response.status_code == 422
     assert store.effective_pass_prompt_template() == original
+
+
+def test_index_renders_a_stale_project_and_rebinds_its_moved_directory(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    original = tmp_path / "original"
+    original.mkdir()
+    registry = RegistryStore(settings.home)
+    project = registry.register("Movable", original)
+    store = ProjectStore(project)
+    session = SessionConfig(
+        id="a" * 32,
+        name="Researcher",
+        agent="claude",
+        model="sonnet",
+        effort="high",
+        role_instructions="",
+        cli_session_id="old-location-native-id",
+        status="idle",
+        created_at="2026-07-29T00:00:00Z",
+        rounds=[
+            RoundRecord(
+                n=1,
+                status="complete",
+                error=None,
+                warnings=[],
+                agent="claude",
+                model="sonnet",
+                effort="high",
+                started_at="2026-07-29T00:00:00Z",
+                finished_at="2026-07-29T00:00:01Z",
+                source=SourceDescriptor(type="user"),
+            )
+        ],
+    )
+    store.create_session(session)
+    (store.rounds_dir(session.id) / "round-01.prompt.md").write_text(
+        "Initial prompt",
+        encoding="utf-8",
+    )
+    (store.rounds_dir(session.id) / "round-01.md").write_text(
+        "Initial output",
+        encoding="utf-8",
+    )
+    moved = tmp_path / "moved"
+    original.rename(moved)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        index = client.get("/")
+        rebound = client.post(
+            f"/projects/{project.id}/rebind",
+            data={"path": str(moved)},
+            follow_redirects=False,
+        )
+        chat = client.get(f"/projects/{project.id}/chat")
+
+    assert index.status_code == 200
+    assert "Registered path unavailable" in index.text
+    assert f'action="/projects/{project.id}/rebind"' in index.text
+    assert rebound.status_code == 303
+    assert rebound.headers["location"] == f"/projects/{project.id}/chat"
+    assert registry.get(project.id).path == str(moved.resolve())
+    rebound_store = ProjectStore(registry.get(project.id))
+    assert rebound_store.load_session(session.id).cli_session_id is None
+    assert rebound_store.load_round_artifact(
+        session.id,
+        1,
+        "output",
+        1_024,
+    ) == b"Initial output"
+    assert chat.status_code == 200
+    assert "Researcher" in chat.text
+
+
+def test_index_renders_every_stale_project_card(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    registry = RegistryStore(settings.home)
+    names = ("First stale", "Second stale")
+    for index, name in enumerate(names):
+        original = tmp_path / f"original-{index}"
+        original.mkdir()
+        registry.register(name, original)
+        original.rename(tmp_path / f"moved-{index}")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.text.count("Registered path unavailable") == 2
+    for name in names:
+        assert name in response.text
+
+
+def test_copy_then_rebind_leaves_the_old_directory_untouched(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    registry = RegistryStore(settings.home)
+    original = tmp_path / "original"
+    original.mkdir()
+    project = registry.register("Copied move", original)
+    original_store = ProjectStore(project)
+    session = SessionConfig(
+        id="a" * 32,
+        name="Researcher",
+        agent="claude",
+        model="sonnet",
+        effort="high",
+        role_instructions="",
+        cli_session_id="old-location-native-id",
+        status="idle",
+        created_at="2026-07-29T00:00:00Z",
+        rounds=[],
+    )
+    original_store.create_session(session)
+    copied = tmp_path / "copied"
+    shutil.copytree(original, copied)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        old_paths = sorted(
+            path.relative_to(original).as_posix() for path in original.rglob("*")
+        )
+        old_files = {
+            path.relative_to(original).as_posix(): path.read_bytes()
+            for path in original.rglob("*")
+            if path.is_file()
+        }
+        response = client.post(
+            f"/projects/{project.id}/rebind",
+            data={"path": str(copied)},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert registry.get(project.id).path == str(copied.resolve())
+    assert original.is_dir()
+    assert sorted(
+        path.relative_to(original).as_posix() for path in original.rglob("*")
+    ) == old_paths
+    assert {
+        path.relative_to(original).as_posix(): path.read_bytes()
+        for path in original.rglob("*")
+        if path.is_file()
+    } == old_files
+    rebound = ProjectStore(registry.get(project.id))
+    assert rebound.load_session(session.id).cli_session_id is None
+
+
+def test_failed_rebind_keeps_the_stale_registry_path(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    original = tmp_path / "original"
+    wrong = tmp_path / "wrong"
+    original.mkdir()
+    wrong.mkdir()
+    registry = RegistryStore(settings.home)
+    project = registry.register("Movable", original)
+    registry.register("Wrong", wrong)
+    original.rename(tmp_path / "moved")
+    before = registry.get(project.id).path
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{project.id}/rebind",
+            data={"path": str(wrong)},
+        )
+
+    assert response.status_code == 409
+    assert registry.get(project.id).path == before
+
+
+def test_index_does_not_parse_every_session_for_migration_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Index", project_path)
+    ProjectStore(project).create_session(
+        SessionConfig(
+            id="a" * 32,
+            name="Researcher",
+            agent="claude",
+            model="sonnet",
+            effort="high",
+            role_instructions="",
+            cli_session_id=None,
+            status="idle",
+            created_at="2026-07-29T00:00:00Z",
+            rounds=[],
+        )
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        def forbidden_full_scan(_store: ProjectStore):
+            raise AssertionError("index parsed full session configs")
+
+        monkeypatch.setattr(
+            ProjectStore,
+            "session_migration_status",
+            forbidden_full_scan,
+        )
+        response = client.get("/")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_rebind_is_serialized_against_a_running_session(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(home=tmp_path / "home", run_timeout=2)
+    original = tmp_path / "original"
+    original.mkdir()
+    registry = RegistryStore(settings.home)
+    project = registry.register("Busy", original)
+    store = ProjectStore(project)
+    session = SessionConfig(
+        id="a" * 32,
+        name="Researcher",
+        agent="fake",
+        model="sleep",
+        effort="low",
+        role_instructions="",
+        cli_session_id=None,
+        status="idle",
+        created_at="2026-07-29T00:00:00Z",
+        rounds=[],
+    )
+    store.create_session(session)
+    app = create_app(
+        settings_override=settings,
+        adapter_factory_override=lambda config: SleepingAdapter(),
+    )
+    async with app.router.lifespan_context(app):
+        key = await app.state.manager.start(project.id, session.id, "Wait")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+        ) as client:
+            response = await client.post(
+                f"/projects/{project.id}/rebind",
+                data={"path": str(original)},
+            )
+        assert response.status_code == 409
+        await app.state.manager.cancel(key)

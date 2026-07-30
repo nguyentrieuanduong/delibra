@@ -35,6 +35,7 @@ from app.storage import (
     RegistryStore,
     StorageError,
 )
+from app.views import project_card
 
 
 LOGGER = logging.getLogger(__name__)
@@ -164,12 +165,7 @@ def create_app(
             request=request,
             name="index.html",
             context={
-                "projects": projects,
-                "active_auto_projects": {
-                    project.id
-                    for project in projects
-                    if ProjectStore(project).active_auto_run_id() is not None
-                },
+                "project_cards": [project_card(project) for project in projects],
                 "health": request.app.state.health,
             },
         )

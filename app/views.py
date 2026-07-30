@@ -6,8 +6,35 @@ from typing import Any
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
-from app.models import SessionConfig
-from app.storage import NotFoundError, ProjectStore, validate_id
+from app.models import Project, SessionConfig
+from app.storage import (
+    NotFoundError,
+    ProjectStore,
+    StorageError,
+    validate_id,
+)
+
+
+def project_card(project: Project) -> dict[str, Any]:
+    try:
+        store = ProjectStore(project)
+        has_legacy_sessions = store.has_legacy_session_directories()
+        auto_active = store.active_auto_run_id() is not None
+    except StorageError as exc:
+        return {
+            "project": project,
+            "available": False,
+            "error": str(exc),
+            "auto_active": False,
+            "has_legacy_sessions": False,
+        }
+    return {
+        "project": project,
+        "available": True,
+        "error": None,
+        "auto_active": auto_active,
+        "has_legacy_sessions": has_legacy_sessions,
+    }
 
 
 def round_dom_id(session_id: str, round_n: int) -> str:
