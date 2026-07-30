@@ -124,7 +124,7 @@ class AutoVerdictAdapter(FakeAdapter):
 def session(session_id: str = "a" * 32, *, mode: str = "success") -> SessionConfig:
     return SessionConfig(
         id=session_id,
-        name="runner test",
+        name=f"runner test {session_id[:4]}",
         agent="fake",
         model=mode,
         effort="low",
@@ -185,8 +185,20 @@ def create_runner_auto_record(
         current_cycle=1 if status == "discussing" else 0,
         next_participant=0,
         participants=[
-            AutoParticipant(session_id, "runner test", "fake", "success", "low"),
-            AutoParticipant(second_id, "runner test", "fake", "success", "low"),
+            AutoParticipant(
+                session_id,
+                f"runner test {session_id[:4]}",
+                "fake",
+                "success",
+                "low",
+            ),
+            AutoParticipant(
+                second_id,
+                f"runner test {second_id[:4]}",
+                "fake",
+                "success",
+                "low",
+            ),
         ],
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(b"").hexdigest()),
@@ -1180,3 +1192,39 @@ def test_stateless_history_excludes_auto_preparation_rounds(tmp_path: Path) -> N
 
     assert [path.name for path in staged] == ["round-01.prompt.md", "round-01.md"]
     manager._cleanup_input_root(input_root)
+
+
+@pytest.mark.asyncio
+async def test_migrated_legacy_workspace_continues_statelessly(
+    tmp_path: Path,
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+    )
+    named_directory = store.session_dir(session_id)
+    os.replace(named_directory, store.sessions_root / session_id)
+    store._invalidate_session_directory_cache()
+
+    first_key = await manager.start(project_id, session_id, "First")
+    first = await manager.wait(first_key)
+    assert first.status == "complete"
+    assert store.load_session(session_id).cli_session_id == "fake-native-session"
+
+    migrated = store.migrate_session_directories()
+    assert migrated.complete
+    assert store.load_session(session_id).cli_session_id is None
+
+    second_key = await manager.start(project_id, session_id, "Continue")
+    second = await manager.wait(second_key)
+
+    assert second.status == "complete"
+    assert contexts[-1].resume_strategy == "stateless"
+    assert contexts[-1].resume_id is None
+    assert [path.name for path in contexts[-1].staged_history] == [
+        "round-01.prompt.md",
+        "round-01.md",
+    ]
+    assert STATELESS_CONTINUATION_WARNING in second.warnings
+    assert store.load_session(session_id).cli_session_id == "fake-native-session"

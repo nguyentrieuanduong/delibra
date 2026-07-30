@@ -23,6 +23,7 @@ import re
 import shutil
 import stat
 from typing import Any, AsyncIterator, Iterable, Iterator, Literal
+import unicodedata
 from uuid import uuid4
 
 from app.models import AutoArtifact, AutoRunRecord, Project, RoundRecord, SessionConfig
@@ -55,6 +56,17 @@ AUTO_STATUSES = frozenset(
 )
 AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
 AUTO_CONTEXT_PATTERN = re.compile(r"^\.turn-context-[0-9a-f]{32}\.md$")
+AGENT_NAME_MAX_BYTES = 200
+WINDOWS_DEVICE_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+)
 
 
 class StorageError(RuntimeError):
@@ -119,6 +131,41 @@ def sanitize_name(value: str, *, maximum: int = 200) -> str:
     if any(ord(character) < 32 or ord(character) == 127 for character in cleaned):
         raise ValueError("name must not contain control characters")
     return cleaned
+
+
+def normalize_agent_name(value: str) -> str:
+    cleaned = unicodedata.normalize("NFC", value.strip())
+    if not cleaned:
+        raise ValueError("agent name must not be empty")
+    if "/" in cleaned or "\\" in cleaned:
+        raise ValueError("agent name must be one directory component")
+    if cleaned in {".", ".."} or cleaned.startswith("."):
+        raise ValueError("agent name must not be hidden")
+    if "\x00" in cleaned or any(
+        ord(character) < 32 or ord(character) == 127 for character in cleaned
+    ):
+        raise ValueError("agent name must not contain control characters")
+    if cleaned.endswith("."):
+        raise ValueError("agent name must not end with a dot")
+    basename = cleaned.split(".", 1)[0].casefold()
+    if basename in WINDOWS_DEVICE_NAMES:
+        raise ValueError("agent name uses a reserved filesystem name")
+    if ID_PATTERN.fullmatch(cleaned.casefold()):
+        raise ValueError("agent name must not look like a session UUID")
+    if len(cleaned.encode("utf-8")) > AGENT_NAME_MAX_BYTES:
+        raise ValueError("agent name must be at most 200 UTF-8 bytes")
+    return cleaned
+
+
+def agent_name_key(value: str) -> str:
+    return normalize_agent_name(value).casefold()
+
+
+def _agent_directory_name_matches(
+    directory_name: str,
+    normalized_agent_name: str,
+) -> bool:
+    return unicodedata.normalize("NFC", directory_name) == normalized_agent_name
 
 
 def validate_id(value: str, label: str = "id") -> str:
@@ -660,6 +707,36 @@ class RoundScan:
     orphans: list[RoundFile]
 
 
+@dataclass(frozen=True)
+class _SessionDirectory:
+    path: Path
+    config: SessionConfig
+    legacy: bool
+
+
+@dataclass(frozen=True)
+class _SessionLocation:
+    path: Path
+    legacy: bool
+
+
+@dataclass(frozen=True)
+class SessionMigrationIssue:
+    session_id: str
+    name: str
+    message: str
+
+
+@dataclass(frozen=True)
+class SessionMigrationStatus:
+    legacy_session_ids: tuple[str, ...]
+    issues: tuple[SessionMigrationIssue, ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.legacy_session_ids and not self.issues
+
+
 class RegistryStore:
     def __init__(self, home: Path):
         self.home = home.expanduser().absolute()
@@ -789,6 +866,7 @@ class ProjectStore:
         self._load_manifest()
         self.sessions_root = self.root / "sessions"
         ensure_owned_directory(self.sessions_root, self.root)
+        self._session_directory_cache: dict[str, _SessionLocation] | None = None
 
     def _load_manifest(self) -> dict[str, Any]:
         manifest = load_json_recover(self.manifest_path)
@@ -1192,8 +1270,66 @@ class ProjectStore:
         return read_project_markdown(self.project_path, normalized, limit)
 
     def session_dir(self, session_id: str) -> Path:
-        validate_id(session_id, "session id")
-        return self.sessions_root / session_id
+        return self._session_location(session_id).path
+
+    def is_legacy_session(self, session_id: str) -> bool:
+        return self._session_location(session_id).legacy
+
+    def _invalidate_session_directory_cache(self) -> None:
+        self._session_directory_cache = None
+
+    def _scan_session_directories(self) -> dict[str, _SessionDirectory]:
+        discovered: dict[str, _SessionDirectory] = {}
+        for child in sorted(self.sessions_root.iterdir(), key=lambda item: item.name):
+            if child.name.startswith("."):
+                continue
+            try:
+                child_info = child.lstat()
+            except OSError as exc:
+                raise StorageError("failed to inspect session storage") from exc
+            if stat.S_ISLNK(child_info.st_mode):
+                raise OwnershipError("session directory must not be a symlink")
+            if not stat.S_ISDIR(child_info.st_mode):
+                continue
+            _assert_no_symlink_components(
+                child,
+                self.sessions_root,
+                allow_missing_leaf=False,
+            )
+            data = load_json_recover(child / "config.json")
+            config = SessionConfig.from_dict(data)
+            validate_id(config.id, "session id")
+            if config.id in discovered:
+                raise OwnershipError("session UUID is stored more than once")
+            legacy = child.name == config.id
+            if not legacy:
+                try:
+                    expected = normalize_agent_name(config.name)
+                except ValueError as exc:
+                    raise OwnershipError("named session directory is invalid") from exc
+                if config.name != expected or not _agent_directory_name_matches(
+                    child.name,
+                    expected,
+                ):
+                    raise OwnershipError(
+                        "session directory does not match its immutable agent name"
+                    )
+            discovered[config.id] = _SessionDirectory(child, config, legacy)
+        self._session_directory_cache = {
+            session_id: _SessionLocation(entry.path, entry.legacy)
+            for session_id, entry in discovered.items()
+        }
+        return dict(discovered)
+
+    def _session_location(self, session_id: str) -> _SessionLocation:
+        session_id = validate_id(session_id, "session id")
+        if self._session_directory_cache is None:
+            self._scan_session_directories()
+        assert self._session_directory_cache is not None
+        location = self._session_directory_cache.get(session_id)
+        if location is None:
+            raise NotFoundError(f"session not found: {session_id}")
+        return location
 
     def rounds_dir(self, session_id: str) -> Path:
         path = self.session_dir(session_id) / "rounds"
@@ -1207,10 +1343,26 @@ class ProjectStore:
 
     def create_session(self, config: SessionConfig) -> SessionConfig:
         validate_id(config.id, "session id")
-        config.name = sanitize_name(config.name)
-        destination = self.session_dir(config.id)
-        if destination.exists():
+        config.name = normalize_agent_name(config.name)
+        entries = self._scan_session_directories()
+        if config.id in entries:
             raise ConflictError(f"session already exists: {config.id}")
+        wanted_key = agent_name_key(config.name)
+        for entry in entries.values():
+            try:
+                existing_key = agent_name_key(entry.config.name)
+            except ValueError:
+                continue
+            if existing_key == wanted_key:
+                raise ConflictError("agent name is already in use")
+        destination = self.sessions_root / config.name
+        _assert_no_symlink_components(
+            destination,
+            self.sessions_root,
+            allow_missing_leaf=True,
+        )
+        if destination.exists():
+            raise ConflictError("agent directory already exists")
         try:
             destination.mkdir(mode=0o700)
             (destination / "rounds").mkdir(mode=0o700)
@@ -1223,36 +1375,206 @@ class ProjectStore:
             if destination.exists():
                 shutil.rmtree(destination)
             raise
+        self._invalidate_session_directory_cache()
         return config
 
     def load_session(self, session_id: str) -> SessionConfig:
-        destination = self.session_dir(session_id)
-        try:
-            destination.lstat()
-        except FileNotFoundError as exc:
-            raise NotFoundError(f"session not found: {session_id}") from exc
-        except OSError as exc:
-            raise StorageError(f"failed to inspect session: {session_id}") from exc
-        _assert_no_symlink_components(destination, self.sessions_root, allow_missing_leaf=False)
-        data = load_json_recover(destination / "config.json")
-        config = SessionConfig.from_dict(data)
+        session_id = validate_id(session_id, "session id")
+        location = self._session_location(session_id)
+        _assert_no_symlink_components(
+            location.path,
+            self.sessions_root,
+            allow_missing_leaf=False,
+        )
+        config = SessionConfig.from_dict(
+            load_json_recover(location.path / "config.json")
+        )
         if config.id != session_id:
             raise OwnershipError("session config identity does not match directory")
+        if not location.legacy and (
+            not _agent_directory_name_matches(location.path.name, config.name)
+            or normalize_agent_name(config.name) != config.name
+        ):
+            raise OwnershipError(
+                "session directory does not match its immutable agent name"
+            )
         return config
 
     def save_session(self, config: SessionConfig) -> None:
-        destination = self.session_dir(config.id)
-        _assert_no_symlink_components(destination, self.sessions_root, allow_missing_leaf=False)
-        atomic_write_json(destination / "config.json", config.to_dict())
+        validate_id(config.id, "session id")
+        location = self._session_location(config.id)
+        if not location.legacy:
+            try:
+                normalized = normalize_agent_name(config.name)
+            except ValueError as exc:
+                raise ConflictError("agent name is immutable") from exc
+            if normalized != config.name or not _agent_directory_name_matches(
+                location.path.name,
+                config.name,
+            ):
+                raise ConflictError("agent name is immutable")
+        _assert_no_symlink_components(
+            location.path,
+            self.sessions_root,
+            allow_missing_leaf=False,
+        )
+        atomic_write_json(location.path / "config.json", config.to_dict())
 
     def list_sessions(self) -> list[SessionConfig]:
-        sessions: list[SessionConfig] = []
-        if not self.sessions_root.exists():
-            return sessions
-        for child in sorted(self.sessions_root.iterdir(), key=lambda item: item.name):
-            if ID_PATTERN.fullmatch(child.name):
-                sessions.append(self.load_session(child.name))
-        return sessions
+        entries = self._scan_session_directories()
+        return [
+            SessionConfig.from_dict(entry.config.to_dict())
+            for entry in sorted(
+                entries.values(),
+                key=lambda item: (item.config.name.casefold(), item.config.id),
+            )
+        ]
+
+    def session_migration_status(self) -> SessionMigrationStatus:
+        entries = self._scan_session_directories()
+        issues: list[SessionMigrationIssue] = []
+        name_owners: dict[str, list[_SessionDirectory]] = {}
+        for entry in entries.values():
+            try:
+                normalized = normalize_agent_name(entry.config.name)
+            except ValueError as exc:
+                if entry.legacy:
+                    issues.append(
+                        SessionMigrationIssue(
+                            entry.config.id,
+                            entry.config.name,
+                            str(exc),
+                        )
+                    )
+                continue
+            name_owners.setdefault(agent_name_key(normalized), []).append(entry)
+            target = self.sessions_root / normalized
+            if entry.legacy and target.exists() and target != entry.path:
+                issues.append(
+                    SessionMigrationIssue(
+                        entry.config.id,
+                        entry.config.name,
+                        "agent directory name already exists",
+                    )
+                )
+        for owners in name_owners.values():
+            if len(owners) > 1:
+                for entry in owners:
+                    if entry.legacy:
+                        issues.append(
+                            SessionMigrationIssue(
+                                entry.config.id,
+                                entry.config.name,
+                                "agent name is duplicated",
+                            )
+                        )
+        unique = {
+            (issue.session_id, issue.name, issue.message): issue for issue in issues
+        }
+        return SessionMigrationStatus(
+            legacy_session_ids=tuple(
+                sorted(entry.config.id for entry in entries.values() if entry.legacy)
+            ),
+            issues=tuple(unique[key] for key in sorted(unique)),
+        )
+
+    def migrate_session_directories(self) -> SessionMigrationStatus:
+        status = self.session_migration_status()
+        if status.issues:
+            return status
+        entries = self._scan_session_directories()
+        for session_id in status.legacy_session_ids:
+            entry = entries[session_id]
+            if entry.config.cli_session_id is not None:
+                config = SessionConfig.from_dict(entry.config.to_dict())
+                config.cli_session_id = None
+                _assert_no_symlink_components(
+                    entry.path,
+                    self.sessions_root,
+                    allow_missing_leaf=False,
+                )
+                atomic_write_json(entry.path / "config.json", config.to_dict())
+            destination = self.sessions_root / normalize_agent_name(entry.config.name)
+            try:
+                os.replace(entry.path, destination)
+            except OSError as exc:
+                raise StorageError(
+                    f"failed to migrate agent directory: {entry.config.name}"
+                ) from exc
+            _fsync_directory(self.sessions_root)
+            self._invalidate_session_directory_cache()
+        verified = self.session_migration_status()
+        if not verified.complete:
+            raise StorageError("agent directory migration did not complete")
+        return verified
+
+    def clear_native_session_ids_for_relocation(self) -> int:
+        cleared = 0
+        for entry in self._scan_session_directories().values():
+            if entry.config.cli_session_id is None:
+                continue
+            config = SessionConfig.from_dict(entry.config.to_dict())
+            config.cli_session_id = None
+            _assert_no_symlink_components(
+                entry.path,
+                self.sessions_root,
+                allow_missing_leaf=False,
+            )
+            atomic_write_json(entry.path / "config.json", config.to_dict())
+            cleared += 1
+        return cleared
+
+    def set_legacy_session_name(
+        self,
+        session_id: str,
+        name: str,
+    ) -> SessionMigrationStatus:
+        session_id = validate_id(session_id, "session id")
+        entries = self._scan_session_directories()
+        entry = entries.get(session_id)
+        if entry is None:
+            raise NotFoundError(f"session not found: {session_id}")
+        if not entry.legacy:
+            raise ConflictError("agent name is immutable")
+        normalized = normalize_agent_name(name)
+        wanted_key = agent_name_key(normalized)
+        for other in entries.values():
+            if other.config.id == session_id:
+                continue
+            try:
+                other_key = agent_name_key(other.config.name)
+            except ValueError:
+                continue
+            if other_key == wanted_key:
+                raise ConflictError("agent name is already in use")
+        destination = self.sessions_root / normalized
+        if destination.exists() and destination != entry.path:
+            raise ConflictError("agent directory already exists")
+        config = self.load_session(session_id)
+        config.name = normalized
+        config.cli_session_id = None
+        _assert_no_symlink_components(
+            entry.path,
+            self.sessions_root,
+            allow_missing_leaf=False,
+        )
+        atomic_write_json(entry.path / "config.json", config.to_dict())
+        try:
+            os.replace(entry.path, destination)
+        except OSError as exc:
+            raise StorageError(
+                f"failed to migrate agent directory: {normalized}"
+            ) from exc
+        _fsync_directory(self.sessions_root)
+        self._invalidate_session_directory_cache()
+        migrated = self._scan_session_directories().get(session_id)
+        if (
+            migrated is None
+            or migrated.legacy
+            or not _agent_directory_name_matches(migrated.path.name, normalized)
+        ):
+            raise StorageError("agent directory migration did not complete")
+        return self.session_migration_status()
 
     def delete_session(self, session_id: str) -> None:
         destination = self.session_dir(session_id)
@@ -1262,6 +1584,7 @@ class ProjectStore:
         if config.status == "running":
             raise ConflictError("cannot delete a running session")
         shutil.rmtree(destination)
+        self._invalidate_session_directory_cache()
 
     def scan_round_files(self, session_id: str) -> RoundScan:
         rounds_path = self.rounds_dir(session_id)

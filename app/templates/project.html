@@ -36,7 +36,12 @@
   <details>
     <summary>Create session</summary>
     <form method="post" action="/projects/{{ project.id }}/sessions" data-session-config-form data-agent="claude">
-      <label>Name <input name="name" maxlength="200" required></label>
+      <label>Name
+        <input name="name" maxlength="200" required>
+        <small>
+          Up to 200 UTF-8 bytes; non-ASCII characters may use multiple bytes.
+        </small>
+      </label>
       <label>Agent
         <select name="agent" required data-agent-select>
           <option value="claude">Claude</option>
@@ -64,7 +69,8 @@
           <details>
             <summary>Edit</summary>
             <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/edit" data-session-config-form data-agent="{{ session.agent }}">
-              <label>Name <input name="name" maxlength="200" value="{{ session.name }}" required></label>
+              <p class="immutable-agent-name">{{ session.name }}</p>
+              <p class="immutability-hint">Agent name and directory are permanent.</p>
               {% if not session.rounds %}
                 <label>Agent
                   <select name="agent" data-agent-select>
@@ -91,6 +97,20 @@
               <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
             </form>
           </details>
+          {% if session.id in legacy_session_ids %}
+            <form
+              method="post"
+              action="/projects/{{ project.id }}/sessions/{{ session.id }}/permanent-name"
+            >
+              <label>Permanent agent name
+                <input name="name" maxlength="200" value="{{ session.name }}" required>
+                <small>
+                  Up to 200 UTF-8 bytes; non-ASCII characters may use multiple bytes.
+                </small>
+              </label>
+              <button type="submit">Set permanent name and migrate directory</button>
+            </form>
+          {% endif %}
           <form method="post" action="/projects/{{ project.id }}/sessions/{{ session.id }}/delete">
             <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Delete</button>
           </form>

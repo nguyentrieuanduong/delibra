@@ -154,15 +154,15 @@ async def test_invalid_pass_template_fails_before_any_content_staging(
 
 
 @pytest.mark.asyncio
-async def test_pass_rejects_path_duplicated_by_source_name_before_staging(tmp_path: Path) -> None:
-    manager, project_id, store, source, target, descriptor, _ = manager_setup(tmp_path)
-    source.name = "inputs/round-01/source.md"
-    store.save_session(source)
+async def test_pass_rejects_path_duplicated_by_template_literal_before_staging(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, store, _, target, descriptor, _ = manager_setup(tmp_path)
     with pytest.raises(StorageError, match="exactly once"):
         await manager.start(
             project_id,
             target.id,
-            "{source_session}\n{source_path}",
+            "inputs/round-01/source.md\n{source_path}",
             source=descriptor,
         )
     assert store.load_session(target.id).rounds == []

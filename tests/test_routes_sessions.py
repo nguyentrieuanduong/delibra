@@ -14,10 +14,38 @@ from app.agents.claude import ClaudeAdapter
 from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
-from app.storage import ProjectStore, RegistryStore
+from app.storage import ProjectStore, RegistryStore, atomic_write_json
 
 
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
+
+
+def session_config(session_id: str, name: str) -> SessionConfig:
+    return SessionConfig(
+        id=session_id,
+        name=name,
+        agent="claude",
+        model="sonnet",
+        effort="high",
+        role_instructions="",
+        cli_session_id=None,
+        status="idle",
+        created_at="2026-07-29T00:00:00Z",
+        rounds=[],
+    )
+
+
+def create_legacy_session(store: ProjectStore, config: SessionConfig) -> Path:
+    destination = store.sessions_root / config.id
+    destination.mkdir(mode=0o700)
+    (destination / "rounds").mkdir(mode=0o700)
+    workspace = destination / "workspace"
+    workspace.mkdir(mode=0o700)
+    (workspace / ".tmp").mkdir(mode=0o700)
+    (workspace / "inputs").mkdir(mode=0o700)
+    atomic_write_json(destination / "config.json", config.to_dict())
+    store._invalidate_session_directory_cache()
+    return destination
 
 
 class RecordingAdapter:
@@ -172,7 +200,9 @@ def test_create_session_validates_provider_specific_effort_and_renders_controls(
     assert 'data-effort-select' in page.text
 
 
-def test_edit_all_fields_before_first_round_then_name_only(tmp_path: Path) -> None:
+def test_edit_configuration_before_first_round_then_name_is_immutable(
+    tmp_path: Path,
+) -> None:
     client, project, store = seeded_client(tmp_path)
     with client:
         created = create_session(client, project.id)
@@ -181,7 +211,6 @@ def test_edit_all_fields_before_first_round_then_name_only(tmp_path: Path) -> No
         edited = client.post(
             edit_path,
             data={
-                "name": "Codex critic",
                 "agent": "codex",
                 "model": "gpt-5.4",
                 "effort": "xhigh",
@@ -198,7 +227,7 @@ def test_edit_all_fields_before_first_round_then_name_only(tmp_path: Path) -> No
             config.effort,
             config.role_instructions,
         ) == (
-            "Codex critic",
+            "Researcher",
             "codex",
             "gpt-5.4",
             "xhigh",
@@ -223,7 +252,7 @@ def test_edit_all_fields_before_first_round_then_name_only(tmp_path: Path) -> No
 
         rejected = client.post(
             edit_path,
-            data={"name": "Wrong", "agent": "claude"},
+            data={"agent": "claude"},
             follow_redirects=False,
         )
         assert rejected.status_code == 409
@@ -232,9 +261,9 @@ def test_edit_all_fields_before_first_round_then_name_only(tmp_path: Path) -> No
             data={"name": "Final name"},
             follow_redirects=False,
         )
-        assert renamed.status_code == 303
+        assert renamed.status_code == 409
     persisted = store.load_session(session_id)
-    assert persisted.name == "Final name"
+    assert persisted.name == "Researcher"
     assert persisted.agent == "codex"
     assert persisted.role_instructions == "Challenge assumptions."
 
@@ -252,7 +281,7 @@ def test_post_round_model_effort_edit_drives_next_run_and_preserves_native_id(
 
         edited = client.post(
             edit_path,
-            data={"name": "Updated", "model": "opus", "effort": "medium"},
+            data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         )
         assert edited.status_code == 303
@@ -260,7 +289,7 @@ def test_post_round_model_effort_edit_drives_next_run_and_preserves_native_id(
 
         identical = client.post(
             edit_path,
-            data={"name": "Updated", "model": "opus", "effort": "medium"},
+            data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         )
         assert identical.status_code == 303
@@ -275,12 +304,12 @@ def test_post_round_model_effort_edit_drives_next_run_and_preserves_native_id(
 
         assert client.post(
             edit_path,
-            data={"name": "Updated", "agent": "codex"},
+            data={"agent": "codex"},
             follow_redirects=False,
         ).status_code == 409
         assert client.post(
             edit_path,
-            data={"name": "Updated", "role_instructions": "New role"},
+            data={"role_instructions": "New role"},
             follow_redirects=False,
         ).status_code == 409
 
@@ -306,7 +335,7 @@ def test_unsupported_config_change_clears_resume_then_warns_and_adopts_new_id(
         seed_completed_round(store, session_id)
         edited = client.post(
             f"/projects/{project.id}/sessions/{session_id}/edit",
-            data={"name": "Fallback", "model": "opus", "effort": "medium"},
+            data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         )
         assert edited.status_code == 303
@@ -362,7 +391,7 @@ def test_any_edit_while_running_is_409_and_leaves_snapshot_unchanged(
 
         response = client.post(
             f"/projects/{project.id}/sessions/{session_id}/edit",
-            data={"name": "Changed", "model": "opus", "effort": "medium"},
+            data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         )
         assert response.status_code == 409
@@ -389,7 +418,7 @@ def test_delete_rejects_running_session_and_removes_idle_owned_session(
         deleted = client.post(delete_path, follow_redirects=False)
         assert deleted.status_code == 303
         assert deleted.headers["location"] == f"/projects/{project.id}"
-    assert not store.session_dir(session_id).exists()
+    assert not (store.sessions_root / "Researcher").exists()
 
 
 def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_files(
@@ -407,7 +436,7 @@ def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_file
         assert create_session(client, project.id, name="Blocked").status_code == 409
         assert client.post(
             f"/projects/{project.id}/sessions/{first}/edit",
-            data={"name": "Blocked edit"},
+            data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         ).status_code == 409
         assert client.post(
@@ -434,3 +463,77 @@ def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_file
 
     assert shared.read_text(encoding="utf-8") == "Updated during Auto"
     assert len(store.list_sessions()) == 2
+
+
+def test_create_uses_a_unique_permanent_agent_name(tmp_path: Path) -> None:
+    client, project, store = seeded_client(tmp_path)
+    with client:
+        created = create_session(client, project.id, name="Researcher")
+        page = client.get(f"/projects/{project.id}/chat")
+        duplicate = client.post(
+            f"/projects/{project.id}/sessions",
+            headers={"HX-Request": "true"},
+            data={
+                "name": "researcher",
+                "agent": "claude",
+                "model": "sonnet",
+                "effort": "max",
+                "role_instructions": "",
+            },
+            follow_redirects=False,
+        )
+    session_id = created_session_id(created)
+    assert created.status_code == 303
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {"detail": "agent name is already in use"}
+    assert 'id="chat-errors"' in page.text
+    assert store.session_dir(session_id).name == "Researcher"
+
+
+def test_agent_edit_rejects_name_changes_and_keeps_other_edits(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    with client:
+        created = create_session(client, project.id, name="Researcher")
+        session_id = created_session_id(created)
+        rejected = client.post(
+            f"/projects/{project.id}/sessions/{session_id}/edit",
+            data={
+                "name": "Renamed",
+                "model": "opus",
+                "effort": "medium",
+            },
+            follow_redirects=False,
+        )
+        accepted = client.post(
+            f"/projects/{project.id}/sessions/{session_id}/edit",
+            data={"model": "opus", "effort": "medium"},
+            follow_redirects=False,
+        )
+    assert rejected.status_code == 409
+    assert accepted.status_code == 303
+    config = store.load_session(session_id)
+    assert config.name == "Researcher"
+    assert config.model == "opus"
+    assert config.effort == "medium"
+
+
+def test_legacy_agent_can_set_one_permanent_name(tmp_path: Path) -> None:
+    client, project, store = seeded_client(tmp_path)
+    legacy = session_config("a" * 32, "bad/name")
+    create_legacy_session(store, legacy)
+    with client:
+        resolved = client.post(
+            f"/projects/{project.id}/sessions/{legacy.id}/permanent-name",
+            data={"name": "Archivist"},
+            follow_redirects=False,
+        )
+        repeated = client.post(
+            f"/projects/{project.id}/sessions/{legacy.id}/permanent-name",
+            data={"name": "Another"},
+            follow_redirects=False,
+        )
+    assert resolved.status_code == 303
+    assert repeated.status_code == 409
+    assert store.session_dir(legacy.id).name == "Archivist"

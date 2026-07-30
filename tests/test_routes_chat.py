@@ -760,12 +760,12 @@ def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs
         selected_edit = client.post(
             f"/projects/{project.id}/sessions/{new_agent.id}/edit?agent={new_agent.id}",
             headers={"HX-Request": "true"},
-            data={"name": "New agent renamed", "model": "success", "effort": "medium"},
+            data={"model": "success", "effort": "medium"},
         )
         unselected_edit = client.post(
             f"/projects/{project.id}/sessions/{observer.id}/edit?agent={new_agent.id}",
             headers={"HX-Request": "true"},
-            data={"name": "Observer renamed"},
+            data={"model": "success", "effort": "high"},
         )
         assert client.post(f"{claude_base}/cancel").status_code == 200
         assert client.post(f"{codex_base}/cancel").status_code == 200
@@ -775,8 +775,11 @@ def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs
     assert created.headers["hx-push-url"] == (
         f"/projects/{project.id}/chat?agent={new_agent.id}"
     )
-    assert "New agent renamed" in selected_edit.text
-    assert "Observer renamed" in unselected_edit.text
+    assert '<p class="immutable-agent-name">New agent</p>' in selected_edit.text
+    assert '<p class="immutable-agent-name">Observer</p>' in unselected_edit.text
+    assert 'label>Name <input name="name"' not in selected_edit.text
+    assert store.load_session(new_agent.id).effort == "medium"
+    assert store.load_session(observer.id).effort == "high"
     assert store.load_session(claude.id).status == "idle"
     assert store.load_session(codex.id).status == "idle"
 
@@ -849,7 +852,7 @@ def test_hx_edit_preserves_selection_without_replacing_another_live_stream(
     tmp_path: Path,
 ) -> None:
     alpha = session("a" * 32, "Alpha", mode="sleep")
-    beta = session("b" * 32, "Beta")
+    beta = session("b" * 32, "Beta", agent="claude")
     app, project, store = setup_project(tmp_path, [alpha, beta])
     alpha_base = f"/projects/{project.id}/sessions/{alpha.id}"
 
@@ -858,11 +861,12 @@ def test_hx_edit_preserves_selection_without_replacing_another_live_stream(
         edited = client.post(
             f"/projects/{project.id}/sessions/{beta.id}/edit?agent={beta.id}",
             headers={"HX-Request": "true"},
-            data={"name": "Beta renamed"},
+            data={"model": "success", "effort": "medium"},
             follow_redirects=False,
         )
         assert_synchronized_selection_fragment(edited, beta)
-        assert "Beta renamed" in edited.text
+        assert '<p class="immutable-agent-name">Beta</p>' in edited.text
+        assert store.load_session(beta.id).effort == "medium"
         assert store.load_session(alpha.id).status == "running"
         assert client.post(f"{alpha_base}/cancel").status_code == 200
 
