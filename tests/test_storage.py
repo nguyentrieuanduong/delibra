@@ -941,3 +941,18 @@ def test_rebind_keeps_relative_round_artifacts_readable(
         "output",
         1_024,
     ) == b"Portable output"
+
+
+def test_registry_rebind_rejects_the_current_canonical_path(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = registry.register("Already bound", project_path)
+    before = registry.get(project.id)
+
+    with pytest.raises(ConflictError, match="already bound to this path"):
+        registry.preview_rebind(project.id, project_path / ".")
+
+    assert registry.get(project.id) == before

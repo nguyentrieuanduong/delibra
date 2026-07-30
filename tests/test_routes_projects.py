@@ -600,6 +600,9 @@ async def test_rebind_is_serialized_against_a_running_session(
         rounds=[],
     )
     store.create_session(session)
+    # Rebind to a copy so the same-path guard cannot mask the active-work guard.
+    moved = tmp_path / "moved"
+    shutil.copytree(original, moved)
     app = create_app(
         settings_override=settings,
         adapter_factory_override=lambda config: SleepingAdapter(),
@@ -612,7 +615,55 @@ async def test_rebind_is_serialized_against_a_running_session(
         ) as client:
             response = await client.post(
                 f"/projects/{project.id}/rebind",
-                data={"path": str(original)},
+                data={"path": str(moved)},
             )
         assert response.status_code == 409
+        assert response.json() == {"detail": "project has active work"}
+        assert registry.get(project.id).path == str(original.resolve())
         await app.state.manager.cancel(key)
+
+
+def test_same_path_rebind_rejects_without_clearing_native_resume(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    registry = RegistryStore(settings.home)
+    project = registry.register("Already bound", project_path)
+    store = ProjectStore(project)
+    session = SessionConfig(
+        id="a" * 32,
+        name="Researcher",
+        agent="claude",
+        model="sonnet",
+        effort="high",
+        role_instructions="",
+        cli_session_id="live-native",
+        status="idle",
+        created_at="2026-07-30T00:00:00Z",
+        rounds=[],
+    )
+    store.create_session(session)
+    config_path = store.session_dir(session.id) / "config.json"
+    backup_path = config_path.with_name("config.json.bak")
+    before_config = config_path.read_bytes()
+    before_backup = backup_path.read_bytes() if backup_path.exists() else None
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{project.id}/rebind",
+            data={"path": str(project_path)},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "project is already bound to this path"}
+    assert registry.get(project.id) == project
+    assert config_path.read_bytes() == before_config
+    assert (
+        backup_path.read_bytes() if backup_path.exists() else None
+    ) == before_backup
+    assert ProjectStore(project).load_session(session.id).cli_session_id == (
+        "live-native"
+    )
