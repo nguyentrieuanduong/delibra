@@ -847,7 +847,12 @@ class AutoManager:
         record: AutoRunRecord,
     ) -> None:
         latest = record.discussion[-1]
-        if record.agreement_policy == "first_agree" and latest.verdict == "agree":
+        last_participant = record.next_participant == len(record.participants) - 1
+        if (
+            record.agreement_policy == "first_agree"
+            and record.current_cycle > 1
+            and latest.verdict == "agree"
+        ):
             self._transition_terminal_locked(
                 store,
                 record,
@@ -855,7 +860,6 @@ class AutoManager:
                 "first participant agreement",
             )
             return
-        last_participant = record.next_participant == len(record.participants) - 1
         if not last_participant:
             record.next_participant += 1
             store.save_auto_run(record)
@@ -866,7 +870,20 @@ class AutoManager:
         unanimous = len(cycle_turns) == len(record.participants) and all(
             turn.verdict == "agree" for turn in cycle_turns
         )
-        if record.agreement_policy == "all_agree" and unanimous:
+        initial_first_agreement = (
+            record.agreement_policy == "first_agree"
+            and record.current_cycle == 1
+            and len(cycle_turns) == len(record.participants)
+            and any(turn.verdict == "agree" for turn in cycle_turns)
+        )
+        if initial_first_agreement:
+            self._transition_terminal_locked(
+                store,
+                record,
+                "converged",
+                "first participant agreement after initial cycle",
+            )
+        elif record.agreement_policy == "all_agree" and unanimous:
             self._transition_terminal_locked(
                 store,
                 record,

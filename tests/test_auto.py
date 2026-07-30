@@ -369,6 +369,7 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
         PlannedOutput("Preparation A"),
         PlannedOutput("Preparation B"),
         PlannedOutput("Consensus", "agree"),
+        PlannedOutput("Second participant", "continue"),
     ]
     manager, factory, project_id, session_ids, store = auto_manager_fixture(
         tmp_path,
@@ -390,7 +391,7 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
     assert terminal.status == "converged"
     assert terminal.preparation_enabled is True
     assert len(terminal.preparations) == 2
-    assert len(terminal.discussion) == 1
+    assert len(terminal.discussion) == 2
     assert factory.maximum_active == 1
     preparation_materials = [factory.calls[index]["material"] for index in (0, 1)]
     assert all(b"Original topic" in material for material in preparation_materials)
@@ -416,7 +417,10 @@ async def test_auto_manager_skips_preparation_and_clears_native_sessions(
 ) -> None:
     manager, factory, project_id, session_ids, store = auto_manager_fixture(
         tmp_path,
-        [PlannedOutput("Direct consensus", "agree")],
+        [
+            PlannedOutput("Direct consensus", "agree"),
+            PlannedOutput("Second participant", "continue"),
+        ],
     )
     for session_id in session_ids:
         config = store.load_session(session_id)
@@ -436,7 +440,7 @@ async def test_auto_manager_skips_preparation_and_clears_native_sessions(
     assert terminal.status == "converged"
     assert terminal.preparation_enabled is False
     assert terminal.preparations == []
-    assert factory.created == 1
+    assert factory.created == 2
     assert factory.calls[0]["material"].startswith(b"# Auto discussion material")
     assert b"Preparation:" not in factory.calls[0]["material"]
     assert all(
@@ -452,7 +456,22 @@ async def test_auto_manager_skips_preparation_and_clears_native_sessions(
 @pytest.mark.parametrize(
     "policy,max_cycles,participants,decisions,expected_status,expected_turns",
     [
-        ("first_agree", 3, 3, ["agree"], "converged", 1),
+        (
+            "first_agree",
+            3,
+            3,
+            ["agree", "continue", "continue"],
+            "converged",
+            3,
+        ),
+        (
+            "first_agree",
+            3,
+            3,
+            ["continue", "continue", "continue", "agree"],
+            "converged",
+            4,
+        ),
         ("all_agree", 3, 2, ["agree", "agree"], "converged", 2),
         (
             "all_agree",
@@ -509,6 +528,72 @@ async def test_auto_manager_policy_and_cycle_boundaries(
 
 
 @pytest.mark.asyncio
+async def test_first_agree_waits_for_every_initial_discussion_turn(
+    tmp_path: Path,
+) -> None:
+    outputs = [
+        PlannedOutput("Alpha\nConverged", "agree"),
+        PlannedOutput("Beta objects", "continue"),
+        PlannedOutput("Gamma objects", "continue"),
+    ]
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        outputs,
+        participants=3,
+    )
+    created = await manager.create(
+        project_id,
+        topic="Warm-up",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=3,
+        preparation_enabled=False,
+    )
+
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert [turn.session_id for turn in terminal.discussion] == session_ids
+    assert (
+        terminal.terminal_reason
+        == "first participant agreement after initial cycle"
+    )
+    assert factory.created == 3
+
+
+@pytest.mark.asyncio
+async def test_first_agree_does_not_override_a_later_cycle_one_failure(
+    tmp_path: Path,
+) -> None:
+    outputs = [
+        PlannedOutput("Alpha agrees", "agree"),
+        PlannedOutput("Beta failed", provider_error=True),
+    ]
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        outputs,
+        participants=3,
+    )
+    created = await manager.create(
+        project_id,
+        topic="Failure precedence",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=3,
+        preparation_enabled=False,
+    )
+
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "error"
+    assert len(terminal.discussion) == 1
+    assert terminal.discussion[0].verdict == "agree"
+    assert terminal.terminal_reason is not None
+    assert "discussion provider failed" in terminal.terminal_reason
+    assert factory.created == 2
+
+
+@pytest.mark.asyncio
 async def test_auto_manager_provider_failure_stops_without_skipping(
     tmp_path: Path,
 ) -> None:
@@ -543,6 +628,7 @@ async def test_auto_manager_creation_snapshots_bounded_verified_baseline(
         PlannedOutput("Preparation A"),
         PlannedOutput("Preparation B"),
         PlannedOutput("Done", "agree"),
+        PlannedOutput("Second participant", "continue"),
     ]
     manager, factory, project_id, session_ids, store = auto_manager_fixture(
         tmp_path,
@@ -871,6 +957,7 @@ async def test_auto_manager_status_replay_and_reads_never_start_more_calls(
         PlannedOutput("Preparation A"),
         PlannedOutput("Preparation B"),
         PlannedOutput("Done", "agree"),
+        PlannedOutput("Second participant", "continue"),
     ]
     manager, factory, project_id, session_ids, _ = auto_manager_fixture(tmp_path, outputs)
     created = await manager.create(
@@ -1270,6 +1357,7 @@ async def test_auto_stop_does_not_override_a_turn_that_already_won_finalization(
         PlannedOutput("Preparation A", delay=0.25),
         PlannedOutput("Preparation B"),
         PlannedOutput("Consensus", "agree"),
+        PlannedOutput("Second participant", "continue"),
     ]
     manager, factory, project_id, session_ids, _ = auto_manager_fixture(
         tmp_path,
@@ -1301,7 +1389,7 @@ async def test_auto_stop_does_not_override_a_turn_that_already_won_finalization(
     terminal = await wait_for_auto_terminal(manager, project_id, created.id)
     assert terminal.status == "converged"
     assert terminal.stop_requested is False
-    assert factory.created == 3
+    assert factory.created == 4
 
 
 @pytest.mark.asyncio
