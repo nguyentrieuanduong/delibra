@@ -62,21 +62,42 @@ deletes the user directory. Delibra owns only these locations:
 ```text
 ~/.delibra/registry.json
 <project>/.delibra/manifest.json
-<project>/.delibra/sessions/<id>/config.json
-<project>/.delibra/sessions/<id>/rounds/round-NN.{prompt.md,partial.md,md}
-<project>/.delibra/sessions/<id>/workspace/
-<project>/.delibra/sessions/<id>/workspace/inputs/round-NN/shared-context.md
+<project>/.delibra/sessions/<immutable-agent-name>/config.json
+<project>/.delibra/sessions/<immutable-agent-name>/rounds/round-NN.{prompt.md,partial.md,md}
+<project>/.delibra/sessions/<immutable-agent-name>/workspace/
+<project>/.delibra/sessions/<immutable-agent-name>/workspace/inputs/round-NN/shared-context.md
 <project>/.delibra/auto-runs/<auto-id>/config.json
 <project>/.delibra/auto-runs/<auto-id>/{topic.md,baseline.md,shared-context.md}
 <project>/.delibra/auto-runs/<auto-id>/preparations/<session-id>.md
 ```
+
+The registry keeps each project's canonical absolute location. If a project
+directory is moved, use **Rebind location** on the Projects page and select
+the moved directory. Delibra accepts the new location only when its existing
+manifest identity matches the registered project; it neither searches the
+filesystem nor rewrites recorded content. Provider resume lookup can be
+scoped or filtered by the old absolute working directory, so rebind clears
+native resume IDs deterministically. The next manual round continues from
+bounded staged history, shows the stateless continuation warning, and
+adopts the provider's new native ID.
+
+Agent names are validated, unique within a project, and immutable because
+each exact name is also its session directory. Session UUIDs remain the
+internal identity used by routes, Auto records, locks, and provenance.
+Existing UUID directories migrate on startup; unsafe or duplicate legacy
+names require one permanent name in project settings. Directory migration
+also clears the moved agent's native resume ID for the same reason. Agent
+names may encode to at most 200 UTF-8 bytes and may not themselves look like
+32-character hexadecimal session UUIDs in any letter case. Unrelated dotfiles and
+non-directory files under the sessions root are ignored.
 
 The existing project manifest stores `shared_markdown_path` when shared context is
 selected and `active_auto_run_id` while Auto owns the project reservation.
 
 Completed output files are the source of truth. A pass-to round stages a no-follow,
 same-descriptor copy at `workspace/inputs/round-NN/source.md`, records its SHA-256,
-and leaves the source round immutable. Session names never drive filesystem paths.
+and leaves the source round immutable. Every app-owned path recorded inside a
+session is relative to that session, so moving a project never invalidates one.
 
 A project owner may select one existing `.md` or `.markdown` file as shared
 project context. The project-relative path is stored in the existing manifest.
@@ -146,8 +167,12 @@ agent's sidebar preview or provider conversation history.
 Auto calls agents sequentially. Discussion passes the topic, the optional complete
 preparation set, bounded creation-time history, and bounded prior discussion
 through the selected agents.
-**First agree** stops at the first agreeing response; **All agree** requires every
-agent to agree within the same complete cycle. A discussion response agrees when
+**First agree** does not converge until every selected agent has completed
+one discussion turn. At the end of that initial cycle, any agreeing response
+converges the run. If nobody agrees, later cycles stop on the first agreeing
+response. **All agree** requires every agent to agree within the same
+complete cycle. Preparation calls do not count as discussion turns.
+A discussion response agrees when
 the standalone word `converged`, matched without case sensitivity, appears in its
 final three non-empty lines. This deliberately favors stopping over continuing
 when wording is ambiguous. The stored verdict remains `agree`. Reaching the
