@@ -14,7 +14,13 @@ from app.agents.claude import ClaudeAdapter
 from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
-from app.storage import ProjectStore, RegistryStore, atomic_write_json
+from app.storage import (
+    ProjectStore,
+    RegistryStore,
+    SessionMigrationIssue,
+    SessionMigrationStatus,
+    atomic_write_json,
+)
 
 
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
@@ -537,3 +543,50 @@ def test_legacy_agent_can_set_one_permanent_name(tmp_path: Path) -> None:
     assert resolved.status_code == 303
     assert repeated.status_code == 409
     assert store.session_dir(legacy.id).name == "Archivist"
+
+
+def test_project_settings_explains_a_blocked_legacy_migration(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    legacy = session_config("a" * 32, "bad/name")
+    create_legacy_session(store, legacy)
+
+    with client:
+        response = client.get(f"/projects/{project.id}/settings")
+
+    assert response.status_code == 200
+    assert "agent name must be one directory component" in response.text
+    assert response.text.index(legacy.name) < response.text.index(
+        "agent name must be one directory component"
+    )
+
+
+def test_project_settings_escapes_migration_issue_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    legacy = session_config("a" * 32, "bad/name")
+    create_legacy_session(store, legacy)
+
+    with client:
+        monkeypatch.setattr(
+            ProjectStore,
+            "session_migration_status",
+            lambda _store: SessionMigrationStatus(
+                legacy_session_ids=(legacy.id,),
+                issues=(
+                    SessionMigrationIssue(
+                        legacy.id,
+                        legacy.name,
+                        "<script>alert(1)</script>",
+                    ),
+                ),
+            ),
+        )
+        response = client.get(f"/projects/{project.id}/settings")
+
+    assert response.status_code == 200
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
+    assert "<script>alert(1)</script>" not in response.text

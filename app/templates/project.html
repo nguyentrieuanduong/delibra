@@ -98,6 +98,9 @@
             </form>
           </details>
           {% if session.id in legacy_session_ids %}
+            {% for issue in migration_issues.get(session.id, ()) %}
+              <p class="error migration-issue">{{ issue }}</p>
+            {% endfor %}
             <form
               method="post"
               action="/projects/{{ project.id }}/sessions/{{ session.id }}/permanent-name"
