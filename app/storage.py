@@ -552,6 +552,26 @@ def atomic_write_json(path: Path, data: Any) -> None:
         raise StorageError(f"failed to atomically write JSON {path}") from exc
 
 
+def atomic_write_json_recovery_pair(path: Path, data: Any) -> None:
+    """Replace recovery first when the previous JSON is unsafe to restore.
+
+    Backup-first ordering means an interruption leaves either the old valid
+    current file beside the transformed backup, or both transformed. It never
+    leaves a transformed current file whose fallback restores the invalidated
+    state. Callers use this only when the previous configuration is unsafe or
+    structurally invalid after the transformation; ordinary saves keep
+    `atomic_write_json`'s rotate-the-last-good-current behavior.
+    """
+
+    try:
+        encoded = (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise StorageError(f"failed to encode recovery JSON {path}") from exc
+    backup = path.with_name(f"{path.name}.bak")
+    atomic_write_bytes(backup, encoded)
+    atomic_write_bytes(path, encoded)
+
+
 def load_json_recover(path: Path) -> Any:
     errors: list[str] = []
     for candidate in (path, path.with_name(f"{path.name}.bak")):
@@ -1538,15 +1558,19 @@ class ProjectStore:
         entries = self._scan_session_directories()
         for session_id in status.legacy_session_ids:
             entry = entries[session_id]
-            if entry.config.cli_session_id is not None:
-                config = SessionConfig.from_dict(entry.config.to_dict())
-                config.cli_session_id = None
-                _assert_no_symlink_components(
-                    entry.path,
-                    self.sessions_root,
-                    allow_missing_leaf=False,
-                )
-                atomic_write_json(entry.path / "config.json", config.to_dict())
+            # Unconditional: this also repairs a directory left between the two
+            # pair writes by an interrupted earlier attempt.
+            config = SessionConfig.from_dict(entry.config.to_dict())
+            config.cli_session_id = None
+            _assert_no_symlink_components(
+                entry.path,
+                self.sessions_root,
+                allow_missing_leaf=False,
+            )
+            atomic_write_json_recovery_pair(
+                entry.path / "config.json",
+                config.to_dict(),
+            )
             destination = self.sessions_root / normalize_agent_name(entry.config.name)
             try:
                 os.replace(entry.path, destination)
@@ -1564,17 +1588,21 @@ class ProjectStore:
     def clear_native_session_ids_for_relocation(self) -> int:
         cleared = 0
         for entry in self._scan_session_directories().values():
-            if entry.config.cli_session_id is None:
-                continue
+            # Rewrite every pair, including sessions already holding None, so an
+            # interrupted relocation cannot leave a stale recoverable fallback.
             config = SessionConfig.from_dict(entry.config.to_dict())
+            if config.cli_session_id is not None:
+                cleared += 1
             config.cli_session_id = None
             _assert_no_symlink_components(
                 entry.path,
                 self.sessions_root,
                 allow_missing_leaf=False,
             )
-            atomic_write_json(entry.path / "config.json", config.to_dict())
-            cleared += 1
+            atomic_write_json_recovery_pair(
+                entry.path / "config.json",
+                config.to_dict(),
+            )
         return cleared
 
     def set_legacy_session_name(
@@ -1611,7 +1639,10 @@ class ProjectStore:
             self.sessions_root,
             allow_missing_leaf=False,
         )
-        atomic_write_json(entry.path / "config.json", config.to_dict())
+        atomic_write_json_recovery_pair(
+            entry.path / "config.json",
+            config.to_dict(),
+        )
         try:
             os.replace(entry.path, destination)
         except OSError as exc:
