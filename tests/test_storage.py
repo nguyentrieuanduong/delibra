@@ -29,6 +29,7 @@ from app.storage import (
     RegistryStore,
     StorageError,
     _agent_directory_name_matches,
+    atomic_write_bytes,
     atomic_write_json,
     load_json_recover,
     normalize_agent_name,
@@ -956,3 +957,99 @@ def test_registry_rebind_rejects_the_current_canonical_path(
         registry.preview_rebind(project.id, project_path / ".")
 
     assert registry.get(project.id) == before
+
+
+def test_relocation_clear_cannot_recover_a_stale_native_id(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = registry.register("Relocation recovery", project_path)
+    store = ProjectStore(project)
+    config = session_config("a" * 32, "Researcher")
+    config.cli_session_id = "stale-native"
+    store.create_session(config)
+
+    assert store.clear_native_session_ids_for_relocation() == 1
+
+    config_path = store.session_dir(config.id) / "config.json"
+    backup = json.loads(
+        config_path.with_name("config.json.bak").read_text(encoding="utf-8")
+    )
+    assert backup["cli_session_id"] is None
+    config_path.write_text("{", encoding="utf-8")
+    recovered = ProjectStore(project).load_session(config.id)
+    assert recovered.cli_session_id is None
+
+
+def test_legacy_migration_cannot_recover_a_stale_native_id(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = registry.register("Migration recovery", project_path)
+    store = ProjectStore(project)
+    config = session_config("a" * 32, "Researcher")
+    config.cli_session_id = "stale-native"
+    create_legacy_session(store, config)
+
+    assert store.migrate_session_directories().complete
+
+    config_path = store.session_dir(config.id) / "config.json"
+    config_path.write_text("{", encoding="utf-8")
+    recovered = ProjectStore(project).load_session(config.id)
+    assert recovered.name == "Researcher"
+    assert recovered.cli_session_id is None
+
+
+def test_permanent_name_backup_keeps_the_whole_project_loadable(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = registry.register("Permanent-name recovery", project_path)
+    store = ProjectStore(project)
+    healthy = session_config("b" * 32, "Healthy")
+    store.create_session(healthy)
+    legacy = session_config("a" * 32, "bad/name")
+    legacy.cli_session_id = "stale-native"
+    create_legacy_session(store, legacy)
+
+    store.set_legacy_session_name(legacy.id, "Archivist")
+
+    config_path = store.session_dir(legacy.id) / "config.json"
+    config_path.write_text("{", encoding="utf-8")
+    reopened = ProjectStore(project)
+    sessions = reopened.list_sessions()
+    assert [session.name for session in sessions] == ["Archivist", "Healthy"]
+    assert reopened.load_session(legacy.id).cli_session_id is None
+
+
+def test_recovery_pair_replaces_backup_before_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = registry.register("Write order", project_path)
+    store = ProjectStore(project)
+    config = session_config("a" * 32, "Researcher")
+    config.cli_session_id = "stale-native"
+    store.create_session(config)
+    observed: list[str] = []
+    real_atomic_write_bytes = atomic_write_bytes
+
+    def recording_write(path: Path, contents: bytes, *, mode: int = 0o600) -> None:
+        if path.name in {"config.json", "config.json.bak"}:
+            observed.append(path.name)
+        real_atomic_write_bytes(path, contents, mode=mode)
+
+    monkeypatch.setattr("app.storage.atomic_write_bytes", recording_write)
+
+    store.clear_native_session_ids_for_relocation()
+
+    assert observed[-2:] == ["config.json.bak", "config.json"]
