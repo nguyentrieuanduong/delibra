@@ -192,6 +192,14 @@ def create_app(
                 shared_markdown_available = False
             else:
                 shared_markdown_available = True
+        migration = store.session_migration_status()
+        migration_issue_lists: dict[str, list[str]] = {}
+        for issue in migration.issues:
+            migration_issue_lists.setdefault(issue.session_id, []).append(issue.message)
+        migration_issues = {
+            session_id: tuple(messages)
+            for session_id, messages in migration_issue_lists.items()
+        }
         return templates.TemplateResponse(
             request=request,
             name="project.html",
@@ -206,9 +214,8 @@ def create_app(
                     "codex": CodexAdapter.EFFORT_LEVELS,
                 },
                 "auto_active": store.active_auto_run_id() is not None,
-                "legacy_session_ids": frozenset(
-                    store.session_migration_status().legacy_session_ids
-                ),
+                "legacy_session_ids": frozenset(migration.legacy_session_ids),
+                "migration_issues": migration_issues,
                 "pass_prompt_template": store.effective_pass_prompt_template(),
             },
         )
