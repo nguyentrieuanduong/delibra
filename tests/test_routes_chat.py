@@ -287,6 +287,24 @@ def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> No
     )
 
 
+def test_active_auto_puts_the_message_textarea_in_the_disable_lifecycle(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    alpha = session("a" * 32, "Alpha")
+    beta = session("b" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+    with TestClient(app, base_url="http://localhost") as client:
+        reserve_auto_run(store)
+        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+    assert response.status_code == 200
+    assert 'data-auto-active="true"' in response.text
+    assert re.search(
+        r'<textarea name="prompt"[^>]+data-disable-during-auto[^>]+disabled',
+        response.text,
+    )
+
+
 def test_chat_workspace_renders_four_regions_and_full_agent_information(
     tmp_path: Path,
 ) -> None:
