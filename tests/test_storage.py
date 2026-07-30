@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import unicodedata
 
@@ -823,3 +824,120 @@ def test_invalid_or_duplicate_legacy_names_block_renames_but_stay_loadable(
 
     assert completed.complete
     assert store.session_dir(alpha.id).name == "Alpha"
+
+
+def test_registry_rebinds_the_same_project_identity_at_a_new_path(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    original = tmp_path / "original"
+    original.mkdir()
+    project = registry.register("Movable", original)
+    moved = tmp_path / "moved"
+    original.rename(moved)
+
+    preview = registry.preview_rebind(project.id, moved)
+    rebound = registry.rebind(project.id, moved)
+
+    assert preview.path == str(moved.resolve())
+    assert rebound.id == project.id
+    assert rebound.name == project.name
+    assert rebound.created_at == project.created_at
+    assert registry.get(project.id).path == str(moved.resolve())
+
+
+def test_rebind_rejects_wrong_identity_duplicate_and_symlinked_metadata(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    first_path = tmp_path / "first"
+    second_path = tmp_path / "second"
+    first_path.mkdir()
+    second_path.mkdir()
+    first = registry.register("First", first_path)
+    second = registry.register("Second", second_path)
+    before = registry.get(first.id)
+
+    wrong = tmp_path / "wrong"
+    shutil.copytree(second_path, wrong)
+    with pytest.raises(ConflictError, match="different project identity"):
+        registry.rebind(first.id, wrong)
+    with pytest.raises(ConflictError, match="already registered"):
+        registry.rebind(first.id, second_path)
+
+    copied = tmp_path / "copied"
+    shutil.copytree(first_path, copied)
+    metadata = copied / ".delibra"
+    real_metadata = copied / "real-metadata"
+    metadata.rename(real_metadata)
+    metadata.symlink_to(real_metadata, target_is_directory=True)
+    with pytest.raises(OwnershipError, match="not an owned directory"):
+        registry.rebind(first.id, copied)
+
+    assert registry.get(first.id) == before
+    assert registry.get(second.id).path == str(second_path.resolve())
+
+
+def test_rebind_keeps_relative_round_artifacts_readable(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    original = tmp_path / "original"
+    original.mkdir()
+    project = registry.register("Portable metadata", original)
+    store = ProjectStore(project)
+    config = session_config("a" * 32, "Researcher")
+    store.create_session(config)
+    config = store.load_session(config.id)
+    config.rounds.append(
+        RoundRecord(
+            n=1,
+            status="complete",
+            error=None,
+            warnings=[],
+            agent="claude",
+            model="sonnet",
+            effort="high",
+            started_at="2026-07-29T00:00:00Z",
+            finished_at="2026-07-29T00:00:01Z",
+            source=SourceDescriptor(
+                type="pass",
+                from_session="b" * 32,
+                from_round=1,
+                staged_file="inputs/round-01/source.md",
+                source_sha256="f" * 64,
+            ),
+        )
+    )
+    store.save_session(config)
+    rounds = store.rounds_dir(config.id)
+    (rounds / "round-01.prompt.md").write_text(
+        "Portable prompt",
+        encoding="utf-8",
+    )
+    (rounds / "round-01.md").write_text(
+        "Portable output",
+        encoding="utf-8",
+    )
+    moved = tmp_path / "moved"
+    original.rename(moved)
+
+    rebound = registry.rebind(project.id, moved)
+    rebound_store = ProjectStore(rebound)
+    loaded = rebound_store.load_session(config.id)
+    staged = loaded.rounds[0].source.staged_file
+
+    assert staged == "inputs/round-01/source.md"
+    assert not Path(staged).is_absolute()
+    assert rebound_store.load_round_artifact(
+        config.id,
+        1,
+        "prompt",
+        1_024,
+    ) == b"Portable prompt"
+    assert rebound_store.load_round_artifact(
+        config.id,
+        1,
+        "output",
+        1_024,
+    ) == b"Portable output"

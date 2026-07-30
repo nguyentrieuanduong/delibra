@@ -737,6 +737,41 @@ class SessionMigrationStatus:
         return not self.legacy_session_ids and not self.issues
 
 
+def _canonical_project_directory(path: Path) -> Path:
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise StorageError(f"project path does not exist: {path}") from exc
+    if not resolved.is_dir():
+        raise StorageError(f"project path is not a directory: {resolved}")
+    return resolved
+
+
+def _existing_project_identity(resolved: Path) -> tuple[str, str]:
+    metadata = resolved / ".delibra"
+    manifest_path = metadata / "manifest.json"
+    if metadata.is_symlink() or not metadata.is_dir():
+        raise OwnershipError("existing .delibra is not an owned directory")
+    _assert_no_symlink_components(
+        manifest_path,
+        metadata,
+        allow_missing_leaf=False,
+    )
+    try:
+        manifest = load_json_recover(manifest_path)
+    except StorageError as exc:
+        raise OwnershipError("existing .delibra manifest is invalid") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("format") != FORMAT
+        or not isinstance(manifest.get("id"), str)
+        or not ID_PATTERN.fullmatch(manifest["id"])
+        or not isinstance(manifest.get("created_at"), str)
+    ):
+        raise OwnershipError("existing .delibra manifest is invalid")
+    return manifest["id"], manifest["created_at"]
+
+
 class RegistryStore:
     def __init__(self, home: Path):
         self.home = home.expanduser().absolute()
@@ -765,14 +800,37 @@ class RegistryStore:
                 return project
         raise NotFoundError(f"project not found: {project_id}")
 
+    def preview_rebind(self, project_id: str, path: Path) -> Project:
+        current = self.get(project_id)
+        resolved = _canonical_project_directory(path)
+        projects = self._load()
+        if any(
+            item.id != project_id and Path(item.path) == resolved for item in projects
+        ):
+            raise ConflictError(f"project path is already registered: {resolved}")
+        candidate_id, candidate_created_at = _existing_project_identity(resolved)
+        if candidate_id != current.id or candidate_created_at != current.created_at:
+            raise ConflictError("rebind target has a different project identity")
+        return Project(
+            id=current.id,
+            name=current.name,
+            path=str(resolved),
+            created_at=current.created_at,
+        )
+
+    def rebind(self, project_id: str, path: Path) -> Project:
+        rebound = self.preview_rebind(project_id, path)
+        projects = self._load()
+        for index, project in enumerate(projects):
+            if project.id == project_id:
+                projects[index] = rebound
+                self._save(projects)
+                return rebound
+        raise NotFoundError(f"project not found: {project_id}")
+
     def register(self, name: str, path: Path) -> Project:
         name = sanitize_name(name)
-        try:
-            resolved = path.expanduser().resolve(strict=True)
-        except OSError as exc:
-            raise StorageError(f"project path does not exist: {path}") from exc
-        if not resolved.is_dir():
-            raise StorageError(f"project path is not a directory: {resolved}")
+        resolved = _canonical_project_directory(path)
 
         projects = self._load()
         if any(Path(item.path) == resolved for item in projects):
@@ -781,27 +839,7 @@ class RegistryStore:
         metadata = resolved / ".delibra"
         manifest_path = metadata / "manifest.json"
         if metadata.exists():
-            if metadata.is_symlink() or not metadata.is_dir():
-                raise OwnershipError("existing .delibra is not an owned directory")
-            _assert_no_symlink_components(
-                manifest_path,
-                metadata,
-                allow_missing_leaf=False,
-            )
-            try:
-                manifest = load_json_recover(manifest_path)
-            except StorageError as exc:
-                raise OwnershipError("existing .delibra manifest is invalid") from exc
-            if (
-                not isinstance(manifest, dict)
-                or manifest.get("format") != FORMAT
-                or not isinstance(manifest.get("id"), str)
-                or not ID_PATTERN.fullmatch(manifest["id"])
-                or not isinstance(manifest.get("created_at"), str)
-            ):
-                raise OwnershipError("existing .delibra manifest is invalid")
-            project_id = manifest["id"]
-            created_at = manifest["created_at"]
+            project_id, created_at = _existing_project_identity(resolved)
         else:
             project_id = uuid4().hex
             created_at = utc_now()
@@ -854,7 +892,10 @@ class ProjectStore:
     def __init__(self, project: Project):
         validate_id(project.id, "project id")
         self.project = project
-        self.project_path = Path(project.path).resolve(strict=True)
+        try:
+            self.project_path = Path(project.path).resolve(strict=True)
+        except OSError as exc:
+            raise StorageError("registered project path is unavailable") from exc
         self.root = self.project_path / ".delibra"
         _assert_no_symlink_components(self.root, self.root, allow_missing_leaf=False)
         self.manifest_path = self.root / "manifest.json"
