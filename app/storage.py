@@ -803,6 +803,8 @@ class RegistryStore:
     def preview_rebind(self, project_id: str, path: Path) -> Project:
         current = self.get(project_id)
         resolved = _canonical_project_directory(path)
+        if Path(current.path) == resolved:
+            raise ConflictError("project is already bound to this path")
         projects = self._load()
         if any(
             item.id != project_id and Path(item.path) == resolved for item in projects
