@@ -74,18 +74,23 @@ deletes the user directory. Delibra owns only these locations:
 The registry keeps each project's canonical absolute location. If a project
 directory is moved, use **Rebind location** on the Projects page and select
 the moved directory. Delibra accepts the new location only when its existing
-manifest identity matches the registered project; it neither searches the
-filesystem nor rewrites recorded content. Provider resume lookup can be
+manifest identity matches the registered project and its canonical path differs
+from the current registered location. A same-path submission is rejected without
+changing session state. Delibra neither searches the filesystem nor rewrites
+recorded content. Provider resume lookup can be
 scoped or filtered by the old absolute working directory, so rebind clears
 native resume IDs deterministically. The next manual round continues from
 bounded staged history, shows the stateless continuation warning, and
-adopts the provider's new native ID.
+adopts the provider's new native ID. Delibra writes the cleared configuration to
+its recovery backup before the primary file so backup recovery cannot restore an
+invalid native resume ID.
 
 Agent names are validated, unique within a project, and immutable because
 each exact name is also its session directory. Session UUIDs remain the
 internal identity used by routes, Auto records, locks, and provenance.
-Existing UUID directories migrate on startup; unsafe or duplicate legacy
-names require one permanent name in project settings. Directory migration
+Existing UUID directories migrate on startup; project settings explains each
+unsafe, duplicate, or colliding legacy name and accepts one permanent
+replacement name. Directory migration
 also clears the moved agent's native resume ID for the same reason. Agent
 names may encode to at most 200 UTF-8 bytes and may not themselves look like
 32-character hexadecimal session UUIDs in any letter case. Unrelated dotfiles and

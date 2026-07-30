@@ -29,7 +29,8 @@ directory path. Rebind will:
 2. Read its existing `.delibra/manifest.json` without following symlinks.
 3. Require the manifest format, project ID, and creation timestamp to match the
    registered project. Rebind never creates a new manifest.
-4. Reject a path already assigned to another registered project.
+4. Reject the selected project's current canonical path and any path already
+   assigned to another registered project.
 5. Reject while an in-memory manual or Auto run for the project is active.
 6. Clear every stored native provider session ID at the verified target,
    migrate any valid legacy session directories, and reconcile persisted
@@ -57,6 +58,13 @@ resume ID. Those target mutations are idempotent and resumable. If the final
 registry write fails, the registry still points to the old path, while the
 already-verified target may retain safe resume-ID clearing, completed directory
 migration, or restart reconciliation.
+
+A configuration transition whose old native resume ID or agent name would be
+unsafe after relocation replaces the recovery backup before replacing the
+current configuration. An interruption may therefore leave the old current
+configuration with the transformed backup, but it cannot leave a transformed
+current configuration whose fallback restores the invalidated state. Retrying
+the idempotent relocation or migration completes the pair.
 
 The Projects page will show whether each path is available. Links that require a
 `ProjectStore` will not be offered for an unavailable path, while Rebind and
@@ -280,8 +288,10 @@ Cons:
    paths no longer exist.
 2. Rebinding to the moved directory succeeds only when its manifest identity
    matches the selected registry entry.
-3. Rebind rejects relative, missing, wrong-identity, duplicate, actively-running,
-   and symlinked `.delibra` metadata targets without changing the registry.
+3. Rebind rejects the selected project's current canonical path and every
+   relative, missing, wrong-identity, duplicate, actively-running, or symlinked
+   `.delibra` metadata target without changing the registry or session
+   configuration.
 4. A successful rebind preserves all sessions, rounds, Auto records, project
    settings, and the project ID, and does not modify or delete the old
    directory during a copy-then-rebind move.
@@ -308,13 +318,17 @@ Cons:
     history, shows the existing warning, and adopts a fresh provider ID.
 14. Interrupted migrations resume safely, and each invalid or duplicate legacy
     name remains accessible and can be migrated independently through the
-    one-time naming flow.
+    one-time naming flow. After permanent naming, corrupting the current
+    `config.json` recovers the permanent name and cleared native provider ID
+    from `config.json.bak` without making another session unloadable.
 15. A dot-prefixed file such as `.DS_Store` does not prevent session loading.
     A pure canonical-equivalence test proves an NFD directory name matches its
     stored NFC agent name independently of the host filesystem's rename
     semantics, and a non-ASCII named session resolves after reopening its store.
-16. A successful project rebind clears every native provider session ID before
-    the new registry path becomes observable.
+16. A successful project rebind clears every native provider session ID in both
+    `config.json` and `config.json.bak` before the new registry path becomes
+    observable. Corrupting the current configuration after rebind recovers
+    `cli_session_id = null` from the backup.
 17. The complete Python suite and `node --test tests/js/*.js` pass, including
     storage-security coverage.
 
