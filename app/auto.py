@@ -1072,46 +1072,53 @@ class AutoManager:
             if state is not None and queue is not None:
                 state.subscribers.discard(queue)
 
+    def has_active_project(self, project_id: str) -> bool:
+        validate_id(project_id, "project id")
+        return any(
+            candidate_project_id == project_id and not task.done()
+            for (candidate_project_id, _), task in self._tasks.items()
+        )
+
+    def reconcile_store_locked(self, store: ProjectStore) -> None:
+        records = store.list_auto_runs()
+        active_id = store.active_auto_run_id()
+        if active_id is not None:
+            store.load_auto_run(active_id)
+        for record in records:
+            if record.status in ACTIVE_AUTO_STATUSES:
+                if record.active_key is not None and record.active_timeout is not None:
+                    session = store.load_session(record.active_key.session_id)
+                    active_round = next(
+                        (
+                            item
+                            for item in session.rounds
+                            if item.n == record.active_key.round_n
+                            and item.source.type == "auto"
+                            and item.auto is not None
+                            and item.auto.auto_id == record.id
+                        ),
+                        None,
+                    )
+                    if active_round is not None:
+                        active_round.timeout = deepcopy(record.active_timeout)
+                        store.save_session(session)
+                self._transition_terminal_locked(
+                    store,
+                    record,
+                    "interrupted",
+                    "interrupted by restart",
+                )
+        if active_id is not None and store.active_auto_run_id() == active_id:
+            terminal = store.load_auto_run(active_id)
+            if terminal.status in TERMINAL_AUTO_STATUSES:
+                store.clear_auto_reservation(active_id)
+
     async def reconcile_project(self, project_id: str) -> None:
         project = self.registry.get(project_id)
         store = ProjectStore(project)
-        records = store.list_auto_runs()
         session_ids = [session.id for session in store.list_sessions()]
         async with self.locks.project_sessions(project_id, session_ids):
-            active_id = store.active_auto_run_id()
-            if active_id is not None:
-                store.load_auto_run(active_id)
-            for record in records:
-                if record.status in ACTIVE_AUTO_STATUSES:
-                    if (
-                        record.active_key is not None
-                        and record.active_timeout is not None
-                    ):
-                        session = store.load_session(record.active_key.session_id)
-                        active_round = next(
-                            (
-                                item
-                                for item in session.rounds
-                                if item.n == record.active_key.round_n
-                                and item.source.type == "auto"
-                                and item.auto is not None
-                                and item.auto.auto_id == record.id
-                            ),
-                            None,
-                        )
-                        if active_round is not None:
-                            active_round.timeout = deepcopy(record.active_timeout)
-                            store.save_session(session)
-                    self._transition_terminal_locked(
-                        store,
-                        record,
-                        "interrupted",
-                        "interrupted by restart",
-                    )
-            if active_id is not None and store.active_auto_run_id() == active_id:
-                terminal = store.load_auto_run(active_id)
-                if terminal.status in TERMINAL_AUTO_STATUSES:
-                    store.clear_auto_reservation(active_id)
+            self.reconcile_store_locked(store)
 
     async def shutdown(self) -> None:
         self._quiescing = True

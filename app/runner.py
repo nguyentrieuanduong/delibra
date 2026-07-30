@@ -175,6 +175,10 @@ class RunManager:
         self._active: dict[RunKey, ActiveRun] = {}
         self._completed: dict[RunKey, CompletedRun] = {}
 
+    def has_active_project(self, project_id: str) -> bool:
+        validate_id(project_id, "project id")
+        return any(key.project_id == project_id for key in self._active)
+
     @staticmethod
     def _display_deadline_after(seconds: int) -> str:
         return (

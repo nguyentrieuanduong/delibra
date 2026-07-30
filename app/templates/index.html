@@ -10,18 +10,43 @@
       <button type="submit">Register project</button>
     </form>
   </details>
-  {% if projects %}
+  {% if project_cards %}
     <div class="projects">
-      {% for project in projects %}
+      {% for card in project_cards %}
+        {% set project = card.project %}
         <article class="project-card">
-          <h2><a href="/projects/{{ project.id }}">{{ project.name }}</a></h2>
+          <h2>
+            {% if card.available %}
+              <a href="/projects/{{ project.id }}">{{ project.name }}</a>
+            {% else %}
+              {{ project.name }}
+            {% endif %}
+          </h2>
           <p><small>{{ project.path }}</small></p>
-          <form method="post" action="/projects/{{ project.id }}/rename">
-            <label>Rename <input name="name" maxlength="200" value="{{ project.name }}" required></label>
-            <button type="submit"{% if project.id in active_auto_projects %} disabled{% endif %}>Rename</button>
+          {% if not card.available %}
+            <p class="error">Registered path unavailable</p>
+          {% endif %}
+          {% if card.has_legacy_sessions %}
+            <p class="warning">
+              Agent directory migration needs permanent names in Manage.
+            </p>
+          {% endif %}
+          <form method="post" action="/projects/{{ project.id }}/rebind">
+            <label>New absolute location
+              <input name="path" maxlength="4096" required>
+            </label>
+            <button type="submit">Rebind location</button>
           </form>
+          {% if card.available %}
+            <form method="post" action="/projects/{{ project.id }}/rename">
+              <label>Rename
+                <input name="name" maxlength="200" value="{{ project.name }}" required>
+              </label>
+              <button type="submit"{% if card.auto_active %} disabled{% endif %}>Rename</button>
+            </form>
+          {% endif %}
           <form method="post" action="/projects/{{ project.id }}/unregister">
-            <button type="submit"{% if project.id in active_auto_projects %} disabled{% endif %}>Unregister</button>
+            <button type="submit"{% if card.auto_active %} disabled{% endif %}>Unregister</button>
           </form>
         </article>
       {% endfor %}
