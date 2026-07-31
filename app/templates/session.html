@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ session.name }} · Delibra{% endblock %}
 {% block content %}
-  <p><a href="/projects/{{ project.id }}">{{ project.name }}</a></p>
+  <p><a href="{{ project_url(project.id) }}">{{ project.name }}</a></p>
   <h1>{{ session.name }}</h1>
   <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
   <form
-    hx-post="/projects/{{ project.id }}/sessions/{{ session.id }}/run"
+    hx-post="{{ project_url(project.id, '/sessions/' ~ session.id ~ '/run') }}"
     hx-target=".rounds"
     hx-swap="beforeend"
   >

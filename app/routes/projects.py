@@ -13,6 +13,7 @@ from app.security import (
     validate_pass_prompt_template_field,
 )
 from app.storage import ConflictError, ProjectStore, StorageError
+from app.urls import project_url
 
 
 router = APIRouter()
@@ -42,7 +43,7 @@ async def register_project(
     candidate = _project_path(path)
     async with request.app.state.locks.registry_lock:
         project = request.app.state.registry.register(name, candidate)
-    return RedirectResponse(f"/projects/{project.id}/chat", status_code=303)
+    return RedirectResponse(project_url(project.id, "/chat"), status_code=303)
 
 
 @router.post("/projects/{project_id}/rename")
@@ -57,7 +58,7 @@ async def rename_project(
         ProjectStore(project).require_auto_inactive()
         _reject_running_sessions(project)
         request.app.state.registry.rename(project_id, name)
-    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+    return RedirectResponse(project_url(project_id), status_code=303)
 
 
 @router.post("/projects/{project_id}/rebind")
@@ -89,7 +90,7 @@ async def rebind_project(
         request.app.state.auto_manager.reconcile_store_locked(candidate_store)
         rebound = registry.rebind(project_id, candidate_path)
     return RedirectResponse(
-        f"/projects/{rebound.id}/chat",
+        project_url(rebound.id, "/chat"),
         status_code=303,
     )
 
@@ -124,7 +125,7 @@ async def save_pass_prompt(
         project = request.app.state.registry.get(project_id)
         ProjectStore(project).set_pass_prompt_template(validated)
     return RedirectResponse(
-        f"/projects/{project_id}/settings",
+        project_url(project_id, "/settings"),
         status_code=303,
     )
 
@@ -135,6 +136,6 @@ async def reset_pass_prompt(request: Request, project_id: str):
         project = request.app.state.registry.get(project_id)
         ProjectStore(project).reset_pass_prompt_template()
     return RedirectResponse(
-        f"/projects/{project_id}/settings",
+        project_url(project_id, "/settings"),
         status_code=303,
     )

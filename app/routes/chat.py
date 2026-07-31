@@ -11,6 +11,7 @@ from app.routes.auto import auto_status_context, project_auto_record
 from app.routes.runs import start_run_fragment
 from app.security import validate_field
 from app.storage import ProjectStore, validate_id
+from app.urls import project_url
 from app.views import (
     agent_views,
     conversation_round_views,
@@ -182,7 +183,12 @@ async def chat_select(
     sessions = ProjectStore(project).list_sessions()
     selected = selected_session(sessions, agent)
     headers = (
-        {"HX-Push-Url": f"/projects/{project_id}/chat?agent={selected.id}"}
+        {
+            "HX-Push-Url": project_url(
+                project.id,
+                f"/chat?agent={selected.id}",
+            )
+        }
         if selected is not None
         else None
     )

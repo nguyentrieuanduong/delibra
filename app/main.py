@@ -35,6 +35,7 @@ from app.storage import (
     RegistryStore,
     StorageError,
 )
+from app.urls import project_url
 from app.views import project_card
 
 
@@ -62,6 +63,7 @@ def create_app(
 
     templates = Jinja2Templates(directory=APP_ROOT / "templates")
     templates.env.filters["md"] = render_markdown
+    templates.env.globals["project_url"] = project_url
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -172,8 +174,8 @@ def create_app(
 
     @app.get("/projects/{project_id}")
     async def project_primary(request: Request, project_id: str):
-        request.app.state.registry.get(project_id)
-        return RedirectResponse(f"/projects/{project_id}/chat", status_code=303)
+        project = request.app.state.registry.get(project_id)
+        return RedirectResponse(project_url(project.id, "/chat"), status_code=303)
 
     @app.get("/projects/{project_id}/settings", response_class=HTMLResponse)
     async def project_settings(request: Request, project_id: str):

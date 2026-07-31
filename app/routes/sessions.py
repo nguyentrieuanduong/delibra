@@ -19,6 +19,7 @@ from app.storage import (
     utc_now,
     validate_id,
 )
+from app.urls import project_url
 from app.views import round_views
 
 
@@ -102,11 +103,14 @@ async def create_session(
             selected_id=session_id,
             composer_oob=True,
             headers={
-                "HX-Push-Url": f"/projects/{project_id}/chat?agent={session_id}"
+                "HX-Push-Url": project_url(
+                    project.id,
+                    f"/chat?agent={session_id}",
+                )
             },
         )
     return RedirectResponse(
-        f"/projects/{project_id}/chat?agent={session_id}",
+        project_url(project.id, f"/chat?agent={session_id}"),
         status_code=303,
     )
 
@@ -181,7 +185,7 @@ async def edit_session(
             composer_oob=True,
         )
     return RedirectResponse(
-        f"/projects/{project_id}/sessions/{session_id}",
+        project_url(project.id, f"/sessions/{session_id}"),
         status_code=303,
     )
 
@@ -204,7 +208,7 @@ async def set_permanent_session_name(
             raise ConflictError("cannot name a running session")
         store.set_legacy_session_name(session_id, name)
     return RedirectResponse(
-        f"/projects/{project_id}/settings",
+        project_url(project.id, "/settings"),
         status_code=303,
     )
 
@@ -220,7 +224,7 @@ async def delete_session(
         store = ProjectStore(project)
         store.require_auto_inactive()
         store.delete_session(session_id)
-    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+    return RedirectResponse(project_url(project.id), status_code=303)
 
 
 @router.get("/projects/{project_id}/sessions/{session_id}")

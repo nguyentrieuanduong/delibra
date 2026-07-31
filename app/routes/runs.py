@@ -81,6 +81,7 @@ def render_timeout_controls(request: Request, key: RunKey) -> HTMLResponse:
         request=request,
         name="_timeout_controls.html",
         context={
+            "project": project,
             "key": key,
             "timeout": timeout,
             "remaining_seconds": remaining_seconds,
@@ -161,6 +162,7 @@ async def start_run_fragment(
         request=request,
         name="_live.html",
         context={
+            "project": project,
             "key": key,
             "session": session,
             "dom_id": round_dom_id(session_id, key.round_n),
@@ -244,6 +246,7 @@ async def pass_round(
         request=request,
         name="_live.html",
         context={
+            "project": project,
             "key": key,
             "session": sessions[target_session_id],
             "dom_id": round_dom_id(target_session_id, key.round_n),
@@ -276,6 +279,7 @@ async def retry_round(
         request=request,
         name="_live.html",
         context={
+            "project": project,
             "key": key,
             "session": session,
             "dom_id": round_dom_id(session_id, key.round_n),
