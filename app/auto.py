@@ -219,9 +219,11 @@ class AutoManager:
             )
             topic_bytes = topic.encode("utf-8")
             auto_id = uuid4().hex
+            number = store.reserve_auto_run_number()
             record = AutoRunRecord(
                 id=auto_id,
-                project_id=project_id,
+                project_id=project.id,
+                number=number,
                 status="preparing",
                 agreement_policy=agreement_policy,
                 preparation_enabled=preparation_enabled,

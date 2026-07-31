@@ -178,6 +178,7 @@ def create_runner_auto_record(
     record = AutoRunRecord(
         id="c" * 32,
         project_id=store.project.id,
+        number=None,
         status=status,
         agreement_policy="all_agree",
         preparation_enabled=True,
@@ -220,6 +221,7 @@ def create_runner_auto_record(
         finished_at=None,
         terminal_reason=None,
     )
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(
         record,
         topic=topic,

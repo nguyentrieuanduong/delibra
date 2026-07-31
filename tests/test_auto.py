@@ -315,6 +315,7 @@ def seed_durable_auto(
     record = AutoRunRecord(
         id=auto_id,
         project_id=store.project.id,
+        number=None,
         status=status,
         agreement_policy="all_agree",
         preparation_enabled=True,
@@ -355,6 +356,7 @@ def seed_durable_auto(
             else None
         ),
     )
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(record, topic=topic, baseline=baseline)
     if publish:
         store.publish_auto_reservation(auto_id)
@@ -1039,6 +1041,7 @@ def test_auto_manager_lifecycle_is_wired_and_reconciles_restart(tmp_path: Path) 
     record = AutoRunRecord(
         id="f" * 32,
         project_id=project.id,
+        number=None,
         status="preparing",
         agreement_policy="all_agree",
         preparation_enabled=True,
@@ -1062,6 +1065,7 @@ def test_auto_manager_lifecycle_is_wired_and_reconciles_restart(tmp_path: Path) 
         finished_at=None,
         terminal_reason=None,
     )
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(record, topic=topic, baseline=baseline)
     store.publish_auto_reservation(record.id)
     app = create_app(
