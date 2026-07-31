@@ -1,8 +1,8 @@
 <form
   id="chat-composer"
   method="post"
-  action="/projects/{{ project.id }}/chat/run"
-  hx-post="/projects/{{ project.id }}/chat/run"
+  action="{{ project_url(project.id, '/chat/run') }}"
+  hx-post="{{ project_url(project.id, '/chat/run') }}"
   hx-target=".chat-timeline"
   hx-swap="beforeend"
   {% if composer_oob %}hx-swap-oob="outerHTML:#chat-composer"{% endif %}
@@ -27,7 +27,7 @@
       type="button"
       data-auto-open
       data-disable-during-auto
-      hx-get="/projects/{{ project.id }}/auto/setup"
+      hx-get="{{ project_url(project.id, '/auto/setup') }}"
       hx-target="#auto-setup-host"
       hx-swap="innerHTML"
       {% if auto_active or sessions|length < 2 %}disabled{% endif %}

@@ -9,8 +9,8 @@
     <h3>
       <a
         id="agent-select-{{ agent.id }}"
-        href="/projects/{{ project.id }}/chat?agent={{ agent.id }}"
-        hx-get="/projects/{{ project.id }}/chat/select?agent={{ agent.id }}"
+        href="{{ project_url(project.id, '/chat?agent=' ~ agent.id) }}"
+        hx-get="{{ project_url(project.id, '/chat/select?agent=' ~ agent.id) }}"
         hx-target="#agent-sidebar"
         hx-swap="outerHTML"
         {% if agent_view.selected %}aria-current="true"{% endif %}
@@ -36,8 +36,8 @@
       <summary>Edit</summary>
       <form
         method="post"
-        action="/projects/{{ project.id }}/sessions/{{ agent.id }}/edit?agent={{ selected_session.id if selected_session else agent.id }}"
-        hx-post="/projects/{{ project.id }}/sessions/{{ agent.id }}/edit?agent={{ selected_session.id if selected_session else agent.id }}"
+        action="{{ project_url(project.id, '/sessions/' ~ agent.id ~ '/edit?agent=' ~ (selected_session.id if selected_session else agent.id)) }}"
+        hx-post="{{ project_url(project.id, '/sessions/' ~ agent.id ~ '/edit?agent=' ~ (selected_session.id if selected_session else agent.id)) }}"
         hx-target="#agent-sidebar"
         hx-swap="outerHTML"
         data-session-config-form

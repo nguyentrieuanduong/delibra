@@ -19,8 +19,8 @@
     <form
       data-timeout-extension-form
       method="post"
-      action="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
-      hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
+      action="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/timeout/extend') }}"
+      hx-post="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/timeout/extend') }}"
       hx-target="closest [data-timeout-controls]"
       hx-swap="outerHTML"
     >
@@ -33,8 +33,8 @@
     <form
       data-timeout-extension-form
       method="post"
-      action="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
-      hx-post="/projects/{{ key.project_id }}/sessions/{{ key.session_id }}/rounds/{{ key.round_n }}/timeout/extend"
+      action="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/timeout/extend') }}"
+      hx-post="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/timeout/extend') }}"
       hx-target="closest [data-timeout-controls]"
       hx-swap="outerHTML"
     >

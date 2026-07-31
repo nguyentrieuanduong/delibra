@@ -14,6 +14,7 @@ from markdown_it.token import Token
 
 from app.models import Project
 from app.storage import ProjectFileSecurityError, project_path_parts
+from app.urls import project_url
 
 
 LinkTarget = Literal["reader", "focus"]
@@ -79,7 +80,10 @@ def _project_file_url(
         if link_target is not None
         else ("view", None)
     )
-    url = f"/projects/{project.id}/files/{endpoint}?{urlencode({'path': path})}"
+    url = project_url(
+        project.id,
+        f"/files/{endpoint}?{urlencode({'path': path})}",
+    )
     if fragment:
         url = f"{url}#{fragment}"
     return url, target

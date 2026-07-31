@@ -22,6 +22,7 @@ from app.storage import (
     shared_markdown_path_parts,
 )
 from app.structured import StructuredKind, pretty_structured_text
+from app.urls import project_url
 
 
 router = APIRouter()
@@ -48,17 +49,17 @@ STRUCTURED_EXTENSIONS: dict[str, StructuredKind] = {
 
 def _listing_url(project_id: str, path: str) -> str:
     query = urlencode({"path": path})
-    return f"/projects/{project_id}/files?{query}"
+    return project_url(project_id, f"/files?{query}")
 
 
 def _view_url(project_id: str, path: str) -> str:
     query = urlencode({"path": path})
-    return f"/projects/{project_id}/files/view?{query}"
+    return project_url(project_id, f"/files/view?{query}")
 
 
 def _focus_url(project_id: str, path: str) -> str:
     query = urlencode({"path": path})
-    return f"/projects/{project_id}/files/focus?{query}"
+    return project_url(project_id, f"/files/focus?{query}")
 
 
 @contextmanager
