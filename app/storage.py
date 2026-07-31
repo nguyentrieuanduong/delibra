@@ -133,28 +133,52 @@ def sanitize_name(value: str, *, maximum: int = 200) -> str:
     return cleaned
 
 
-def normalize_agent_name(value: str) -> str:
+def _normalize_component_name(value: str, *, project_url_rules: bool) -> str:
+    label = "project" if project_url_rules else "agent"
     cleaned = unicodedata.normalize("NFC", value.strip())
     if not cleaned:
-        raise ValueError("agent name must not be empty")
+        raise ValueError(f"{label} name must not be empty")
     if "/" in cleaned or "\\" in cleaned:
-        raise ValueError("agent name must be one directory component")
+        raise ValueError(f"{label} name must be one directory component")
     if cleaned in {".", ".."} or cleaned.startswith("."):
-        raise ValueError("agent name must not be hidden")
-    if "\x00" in cleaned or any(
-        ord(character) < 32 or ord(character) == 127 for character in cleaned
+        raise ValueError(f"{label} name must not be hidden")
+    if any(
+        ord(character) < 32
+        or ord(character) == 127
+        or (
+            project_url_rules
+            and (
+                128 <= ord(character) <= 159
+                or character in {"\u2028", "\u2029"}
+                or unicodedata.category(character) == "Cf"
+            )
+        )
+        for character in cleaned
     ):
-        raise ValueError("agent name must not contain control characters")
+        raise ValueError(f"{label} name must not contain control characters")
     if cleaned.endswith("."):
-        raise ValueError("agent name must not end with a dot")
+        raise ValueError(f"{label} name must not end with a dot")
     basename = cleaned.split(".", 1)[0].casefold()
     if basename in WINDOWS_DEVICE_NAMES:
-        raise ValueError("agent name uses a reserved filesystem name")
+        raise ValueError(f"{label} name uses a reserved filesystem name")
     if ID_PATTERN.fullmatch(cleaned.casefold()):
-        raise ValueError("agent name must not look like a session UUID")
+        identity = "UUID" if project_url_rules else "session UUID"
+        raise ValueError(f"{label} name must not look like a {identity}")
     if len(cleaned.encode("utf-8")) > AGENT_NAME_MAX_BYTES:
-        raise ValueError("agent name must be at most 200 UTF-8 bytes")
+        raise ValueError(f"{label} name must be at most 200 UTF-8 bytes")
     return cleaned
+
+
+def normalize_agent_name(value: str) -> str:
+    return _normalize_component_name(value, project_url_rules=False)
+
+
+def normalize_project_name(value: str) -> str:
+    return _normalize_component_name(value, project_url_rules=True)
+
+
+def project_name_key(value: str) -> str:
+    return normalize_project_name(value).casefold()
 
 
 def agent_name_key(value: str) -> str:
@@ -767,7 +791,7 @@ def _canonical_project_directory(path: Path) -> Path:
     return resolved
 
 
-def _existing_project_identity(resolved: Path) -> tuple[str, str]:
+def _existing_project_manifest(resolved: Path) -> dict[str, Any]:
     metadata = resolved / ".delibra"
     manifest_path = metadata / "manifest.json"
     if metadata.is_symlink() or not metadata.is_dir():
@@ -789,7 +813,119 @@ def _existing_project_identity(resolved: Path) -> tuple[str, str]:
         or not isinstance(manifest.get("created_at"), str)
     ):
         raise OwnershipError("existing .delibra manifest is invalid")
+    return manifest
+
+
+def _existing_project_identity(resolved: Path) -> tuple[str, str]:
+    manifest = _existing_project_manifest(resolved)
     return manifest["id"], manifest["created_at"]
+
+
+def _raw_project(value: object) -> Project:
+    if not isinstance(value, dict):
+        raise StorageError("registry project has an invalid shape")
+    fields = ("id", "name", "path", "created_at")
+    if any(not isinstance(value.get(field), str) for field in fields):
+        raise StorageError("registry project has an invalid shape")
+    project_id = value["id"]
+    name = value["name"]
+    path = value["path"]
+    created_at = value["created_at"]
+    validate_id(project_id, "project id")
+    if not created_at:
+        raise StorageError("registry project timestamp is invalid")
+    if not Path(path).is_absolute():
+        raise StorageError("registry project path is invalid")
+    return Project(
+        id=project_id,
+        name=name,
+        path=path,
+        created_at=created_at,
+    )
+
+
+def _truncate_utf8(value: str, maximum_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum_bytes:
+        return value
+    return encoded[:maximum_bytes].decode("utf-8", errors="ignore")
+
+
+def _derived_project_name(value: str) -> str:
+    candidate = unicodedata.normalize("NFC", value).strip()
+    candidate = re.sub(r"\s*[/\\]+\s*", "-", candidate)
+    candidate = "".join(
+        (
+            "-"
+            if unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
+            else character
+        )
+        for character in candidate
+    )
+    candidate = re.sub(r"-{2,}", "-", candidate)
+    candidate = candidate.lstrip(".").rstrip(".")
+    if not candidate:
+        candidate = "Project"
+    if ID_PATTERN.fullmatch(candidate.casefold()):
+        candidate = f"Project-{candidate}"
+    if candidate.split(".", 1)[0].casefold() in WINDOWS_DEVICE_NAMES:
+        candidate = f"{candidate}-Project"
+    candidate = _truncate_utf8(candidate, AGENT_NAME_MAX_BYTES).strip().rstrip(".")
+    return candidate or "Project"
+
+
+def _available_project_name(base: str, used: set[str]) -> str:
+    if project_name_key(base) not in used:
+        return base
+    number = 2
+    while True:
+        suffix = f"-{number}"
+        stem = _truncate_utf8(
+            base,
+            AGENT_NAME_MAX_BYTES - len(suffix.encode("utf-8")),
+        ).strip().rstrip(".")
+        candidate = f"{stem or 'Project'}{suffix}"
+        if project_name_key(candidate) not in used:
+            return candidate
+        number += 1
+
+
+def _migrated_project_names(projects: list[Project]) -> dict[str, str]:
+    ids = [project.id for project in projects]
+    if len(ids) != len(set(ids)):
+        raise StorageError("project UUID is registered more than once")
+    normalized: dict[str, str] = {}
+    key_counts: dict[str, int] = {}
+    for project in projects:
+        try:
+            selected = normalize_project_name(project.name)
+        except ValueError:
+            continue
+        if selected != project.name:
+            continue
+        normalized[project.id] = selected
+        key = project_name_key(selected)
+        key_counts[key] = key_counts.get(key, 0) + 1
+
+    migrated: dict[str, str] = {}
+    used: set[str] = set()
+    for project in projects:
+        selected = normalized.get(project.id)
+        if selected is None or key_counts[project_name_key(selected)] != 1:
+            continue
+        migrated[project.id] = selected
+        used.add(project_name_key(selected))
+
+    for project in sorted(projects, key=lambda item: (item.created_at, item.id)):
+        if project.id in migrated:
+            continue
+        selected = _available_project_name(
+            _derived_project_name(project.name),
+            used,
+        )
+        migrated[project.id] = selected
+        used.add(project_name_key(selected))
+    return migrated
 
 
 class RegistryStore:
@@ -800,15 +936,51 @@ class RegistryStore:
         self.path = self.home / "registry.json"
         if not self.path.exists():
             atomic_write_json(self.path, {"projects": []})
+        self.migrate_project_names()
 
-    def _load(self) -> list[Project]:
+    def _load_raw_projects(self) -> list[Project]:
         data = load_json_recover(self.path)
         if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
             raise StorageError("registry has an invalid shape")
-        return [Project.from_dict(item) for item in data["projects"]]
+        return [_raw_project(item) for item in data["projects"]]
+
+    def _load(self) -> list[Project]:
+        projects = self._load_raw_projects()
+        seen_ids: set[str] = set()
+        seen_names: set[str] = set()
+        for project in projects:
+            validate_id(project.id, "project id")
+            try:
+                name_key = project_name_key(project.name)
+            except ValueError as exc:
+                raise StorageError("registered project name is invalid") from exc
+            if project.id in seen_ids:
+                raise StorageError("project UUID is registered more than once")
+            if name_key in seen_names:
+                raise StorageError("project name is registered more than once")
+            seen_ids.add(project.id)
+            seen_names.add(name_key)
+        return projects
 
     def _save(self, projects: list[Project]) -> None:
         atomic_write_json(self.path, {"projects": [item.to_dict() for item in projects]})
+
+    def migrate_project_names(self) -> bool:
+        projects = self._load_raw_projects()
+        migrated = _migrated_project_names(projects)
+        if all(item.name == migrated[item.id] for item in projects):
+            return False
+        rewritten = [
+            Project(
+                id=item.id,
+                name=migrated[item.id],
+                path=item.path,
+                created_at=item.created_at,
+            )
+            for item in projects
+        ]
+        self._save(rewritten)
+        return True
 
     def list_projects(self) -> list[Project]:
         return self._load()
@@ -819,6 +991,18 @@ class RegistryStore:
             if project.id == project_id:
                 return project
         raise NotFoundError(f"project not found: {project_id}")
+
+    def resolve(self, reference: str) -> Project:
+        if ID_PATTERN.fullmatch(reference):
+            return self.get(reference)
+        try:
+            wanted = project_name_key(reference)
+        except ValueError as exc:
+            raise NotFoundError(f"project not found: {reference}") from exc
+        for project in self._load():
+            if project_name_key(project.name) == wanted:
+                return project
+        raise NotFoundError(f"project not found: {reference}")
 
     def preview_rebind(self, project_id: str, path: Path) -> Project:
         current = self.get(project_id)
@@ -842,6 +1026,7 @@ class RegistryStore:
 
     def rebind(self, project_id: str, path: Path) -> Project:
         rebound = self.preview_rebind(project_id, path)
+        ProjectStore(rebound).sync_manifest_name(rebound.name)
         projects = self._load()
         for index, project in enumerate(projects):
             if project.id == project_id:
@@ -851,7 +1036,7 @@ class RegistryStore:
         raise NotFoundError(f"project not found: {project_id}")
 
     def register(self, name: str, path: Path) -> Project:
-        name = sanitize_name(name)
+        requested_name = normalize_project_name(name)
         resolved = _canonical_project_directory(path)
 
         projects = self._load()
@@ -860,45 +1045,54 @@ class RegistryStore:
 
         metadata = resolved / ".delibra"
         manifest_path = metadata / "manifest.json"
+        used_names = {project_name_key(item.name) for item in projects}
         if metadata.exists():
-            project_id, created_at = _existing_project_identity(resolved)
+            manifest = _existing_project_manifest(resolved)
+            project_id = manifest["id"]
+            created_at = manifest["created_at"]
+            try:
+                preferred_name = normalize_project_name(manifest.get("name"))
+            except (TypeError, ValueError):
+                preferred_name = None
+            if preferred_name is None:
+                if project_name_key(requested_name) in used_names:
+                    raise ConflictError("project name is already in use")
+                selected_name = requested_name
+            else:
+                selected_name = _available_project_name(
+                    preferred_name,
+                    used_names,
+                )
         else:
             project_id = uuid4().hex
             created_at = utc_now()
+            if project_name_key(requested_name) in used_names:
+                raise ConflictError("project name is already in use")
+            selected_name = requested_name
             metadata.mkdir(mode=0o700)
             os.chmod(metadata, 0o700)
             atomic_write_json(
                 manifest_path,
-                {"format": FORMAT, "id": project_id, "created_at": created_at},
+                {
+                    "format": FORMAT,
+                    "id": project_id,
+                    "created_at": created_at,
+                    "name": selected_name,
+                },
             )
 
         if any(item.id == project_id for item in projects):
             raise ConflictError(f"project identity is already registered: {project_id}")
         project = Project(
             id=project_id,
-            name=name,
+            name=selected_name,
             path=str(resolved),
             created_at=created_at,
         )
+        ProjectStore(project).sync_manifest_name(selected_name)
         projects.append(project)
         self._save(projects)
         return project
-
-    def rename(self, project_id: str, name: str) -> Project:
-        name = sanitize_name(name)
-        projects = self._load()
-        for index, project in enumerate(projects):
-            if project.id == project_id:
-                renamed = Project(
-                    id=project.id,
-                    name=name,
-                    path=project.path,
-                    created_at=project.created_at,
-                )
-                projects[index] = renamed
-                self._save(projects)
-                return renamed
-        raise NotFoundError(f"project not found: {project_id}")
 
     def unregister(self, project_id: str) -> Project:
         projects = self._load()
@@ -935,7 +1129,11 @@ class ProjectStore:
         manifest = load_json_recover(self.manifest_path)
         if not isinstance(manifest, dict):
             raise OwnershipError("project manifest has an invalid shape")
-        if manifest.get("format") != FORMAT or manifest.get("id") != self.project.id:
+        if (
+            manifest.get("format") != FORMAT
+            or manifest.get("id") != self.project.id
+            or manifest.get("created_at") != self.project.created_at
+        ):
             raise OwnershipError("project manifest identity does not match registry")
         selected = manifest.get("shared_markdown_path")
         if selected is not None and not isinstance(selected, str):
@@ -951,6 +1149,14 @@ class ProjectStore:
             except PassPromptTemplateError as exc:
                 raise OwnershipError("project Pass prompt template is invalid") from exc
         return manifest
+
+    def sync_manifest_name(self, name: str) -> None:
+        selected = normalize_project_name(name)
+        manifest = self._load_manifest()
+        if manifest.get("name") == selected:
+            return
+        manifest["name"] = selected
+        atomic_write_json(self.manifest_path, manifest)
 
     def effective_pass_prompt_template(self) -> str:
         return self._load_manifest().get(
