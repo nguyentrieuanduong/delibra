@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
+import os
 from pathlib import Path
 import random
 
 import pytest
 
 import app.models as models
+import app.storage as storage
 from app.storage import (
     ConflictError,
     OwnershipError,
@@ -44,6 +47,7 @@ def auto_record_fixture(project_id: str) -> models.AutoRunRecord:
     return models.AutoRunRecord(
         id="a" * 32,
         project_id=project_id,
+        number=None,
         status="preparing",
         agreement_policy="all_agree",
         preparation_enabled=True,
@@ -84,11 +88,128 @@ def auto_record_fixture(project_id: str) -> models.AutoRunRecord:
     )
 
 
+def test_auto_number_is_additive_strict_and_legacy_compatible(
+    tmp_path: Path,
+) -> None:
+    record = auto_record_fixture(auto_project_store(tmp_path).project.id)
+    encoded = record.to_dict()
+    encoded.pop("number")
+    assert models.AutoRunRecord.from_dict(encoded).number is None
+
+    for bad in (True, False, 0, -1, 1.0, "1"):
+        candidate = dict(record.to_dict())
+        candidate["number"] = bad
+        with pytest.raises((TypeError, ValueError)):
+            models.AutoRunRecord.from_dict(candidate)
+
+
+def test_auto_number_reservation_survives_backup_recovery(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    assert store.reserve_auto_run_number() == 1
+    index = store.auto_runs_root / ".index.json"
+    index.write_text("{", encoding="utf-8")
+    reopened = ProjectStore(store.project)
+    assert reopened.reserve_auto_run_number() == 2
+
+
+def test_auto_creation_publishes_complete_numeric_directory(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    assert store.auto_runs_root.joinpath("1").is_dir()
+    assert not store.auto_runs_root.joinpath(record.id).exists()
+    assert store.load_auto_run(record.id).number == 1
+    assert json.loads(
+        (store.auto_runs_root / ".index.json").read_text(encoding="utf-8")
+    )["runs"] == {record.id: 1}
+
+
+def test_interrupted_auto_publication_consumes_number_without_visible_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    original_replace = os.replace
+
+    def interrupt(source: Path, destination: Path) -> None:
+        if destination == store.auto_runs_root / "1":
+            raise OSError("publication interrupted")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", interrupt)
+
+    with pytest.raises(OSError, match="publication interrupted"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+    assert not (store.auto_runs_root / "1").exists()
+    assert store.reserve_auto_run_number() == 2
+
+
+def test_auto_index_parser_rejects_generated_invalid_shapes() -> None:
+    valid = {
+        "format": "delibra-auto-index/1",
+        "next_number": 3,
+        "runs": {"a" * 32: 1, "b" * 32: 2},
+    }
+    assert storage._parse_auto_index(valid) == valid
+
+    generator = random.Random(20260731)
+    for _ in range(500):
+        candidate = {
+            "format": valid["format"],
+            "next_number": valid["next_number"],
+            "runs": dict(valid["runs"]),
+        }
+        corruption = generator.choice(
+            ("format", "next_number", "runs", "key", "value", "duplicate")
+        )
+        if corruption == "format":
+            candidate["format"] = generator.choice((None, True, 1, "wrong"))
+        elif corruption == "next_number":
+            candidate["next_number"] = generator.choice(
+                (None, True, False, 0, -1, 1.0, "3", [])
+            )
+        elif corruption == "runs":
+            candidate["runs"] = generator.choice((None, True, 1, [], "runs"))
+        elif corruption == "key":
+            candidate["runs"] = {
+                generator.choice(("bad", "g" * 32, "A" * 32, 1)): 1
+            }
+        elif corruption == "value":
+            candidate["runs"] = {
+                "a" * 32: generator.choice(
+                    (None, True, False, 0, -1, 1.0, "1", [])
+                )
+            }
+        else:
+            candidate["runs"] = {"a" * 32: 1, "b" * 32: 1}
+
+        with pytest.raises(StorageError):
+            storage._parse_auto_index(candidate)
+
+
+def test_auto_number_reservation_rejects_legacy_layout(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    legacy = store.auto_runs_root / ("a" * 32)
+    legacy.mkdir(mode=0o700)
+
+    with pytest.raises(ConflictError, match="migration"):
+        store.reserve_auto_run_number()
+
+
 def test_auto_record_loads_legacy_token_and_omits_it_on_write(
     tmp_path: Path,
 ) -> None:
     project_id = auto_project_store(tmp_path).project.id
     legacy = auto_record_fixture(project_id).to_dict()
+    legacy.pop("number")
     legacy["active_turn_token"] = "T" * 43
 
     restored = models.AutoRunRecord.from_dict(legacy)
@@ -101,6 +222,7 @@ def test_auto_record_loads_legacy_preparation_default_and_writes_it(
 ) -> None:
     project_id = auto_project_store(tmp_path).project.id
     legacy = auto_record_fixture(project_id).to_dict()
+    legacy.pop("number")
     legacy.pop("preparation_enabled", None)
 
     restored = models.AutoRunRecord.from_dict(legacy)
@@ -163,6 +285,7 @@ def test_auto_store_publishes_and_clears_exact_manifest_reservation(
 ) -> None:
     store = auto_project_store(tmp_path)
     record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(record, topic=b"Original topic", baseline=b"")
     assert store.active_auto_run_id() is None
 
@@ -182,6 +305,7 @@ def test_auto_store_reservation_guards_require_inactive_or_exact_active_owner(
 ) -> None:
     store = auto_project_store(tmp_path)
     record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(record, topic=b"Original topic", baseline=b"")
 
     store.require_auto_inactive()
@@ -200,6 +324,7 @@ def test_auto_store_reservation_guards_require_inactive_or_exact_active_owner(
 def test_auto_store_rejects_digest_and_symlink_tampering(tmp_path: Path) -> None:
     store = auto_project_store(tmp_path)
     record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(record, topic=b"Original topic", baseline=b"")
     assert store.load_auto_artifact(record.id, record.topic, 100_000) == b"Original topic"
 
@@ -254,6 +379,7 @@ def test_auto_store_copies_and_verifies_preparation_and_ephemeral_context(
 ) -> None:
     store = auto_project_store(tmp_path)
     record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(record, topic=b"Original topic", baseline=b"")
     source_root = tmp_path / "source"
     source_root.mkdir()
@@ -288,6 +414,7 @@ def test_auto_store_rejects_preparation_tampering_and_bounded_round_reads(
 ) -> None:
     store = auto_project_store(tmp_path)
     record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
     store.create_auto_run(record, topic=b"Original topic", baseline=b"")
     participant = record.participants[0]
     store.create_session(

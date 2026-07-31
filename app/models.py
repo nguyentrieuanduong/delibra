@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
+AUTO_FORMAT = "delibra-auto/1"
+
+
 def _strict_int(data: dict[str, Any], key: str, *, default: int | None = None) -> int:
     if key not in data:
         if default is None:
@@ -392,6 +395,7 @@ class RunKey:
 class AutoRunRecord:
     id: str
     project_id: str
+    number: int | None
     status: str
     agreement_policy: str
     preparation_enabled: bool
@@ -417,9 +421,13 @@ class AutoRunRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoRunRecord":
+        number = _strict_int(data, "number") if "number" in data else None
+        if number is not None and number < 1:
+            raise ValueError("number must be positive")
         return cls(
             id=_strict_str(data, "id"),
             project_id=_strict_str(data, "project_id"),
+            number=number,
             status=_strict_str(data, "status"),
             agreement_policy=_strict_str(data, "agreement_policy"),
             preparation_enabled=(
@@ -489,9 +497,10 @@ class AutoRunRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "format": "delibra-auto/1",
+            "format": AUTO_FORMAT,
             "id": self.id,
             "project_id": self.project_id,
+            "number": self.number,
             "status": self.status,
             "agreement_policy": self.agreement_policy,
             "preparation_enabled": self.preparation_enabled,

@@ -26,7 +26,14 @@ from typing import Any, AsyncIterator, Iterable, Iterator, Literal
 import unicodedata
 from uuid import uuid4
 
-from app.models import AutoArtifact, AutoRunRecord, Project, RoundRecord, SessionConfig
+from app.models import (
+    AUTO_FORMAT,
+    AutoArtifact,
+    AutoRunRecord,
+    Project,
+    RoundRecord,
+    SessionConfig,
+)
 from app.pass_prompts import (
     BUILT_IN_PASS_PROMPT_TEMPLATE,
     PassPromptTemplateError,
@@ -42,7 +49,6 @@ PARTIAL_PATTERN = re.compile(r"^round-(\d{2,})\.partial\.md$")
 SHARED_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 RESERVED_SHARED_ROOTS = frozenset({".delibra", ".git", ".hg", ".svn"})
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-AUTO_FORMAT = "delibra-auto/1"
 AUTO_STATUSES = frozenset(
     {
         "preparing",
@@ -55,6 +61,7 @@ AUTO_STATUSES = frozenset(
     }
 )
 AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
+AUTO_INDEX_FORMAT = "delibra-auto-index/1"
 AUTO_CONTEXT_PATTERN = re.compile(r"^\.turn-context-[0-9a-f]{32}\.md$")
 AGENT_NAME_MAX_BYTES = 200
 WINDOWS_DEVICE_NAMES = frozenset(
@@ -67,6 +74,40 @@ WINDOWS_DEVICE_NAMES = frozenset(
         *(f"lpt{number}" for number in range(1, 10)),
     }
 )
+
+
+def _empty_auto_index() -> dict[str, object]:
+    return {
+        "format": AUTO_INDEX_FORMAT,
+        "next_number": 1,
+        "runs": {},
+    }
+
+
+def _parse_auto_index(data: object) -> dict[str, object]:
+    if not isinstance(data, dict) or data.get("format") != AUTO_INDEX_FORMAT:
+        raise StorageError("Auto run index is invalid")
+    next_number = data.get("next_number")
+    runs = data.get("runs")
+    if type(next_number) is not int or next_number < 1 or not isinstance(runs, dict):
+        raise StorageError("Auto run index is invalid")
+    parsed_runs: dict[str, int] = {}
+    for auto_id, number in runs.items():
+        if (
+            type(auto_id) is not str
+            or ID_PATTERN.fullmatch(auto_id) is None
+            or type(number) is not int
+            or number < 1
+        ):
+            raise StorageError("Auto run index is invalid")
+        parsed_runs[auto_id] = number
+    if len(parsed_runs.values()) != len(set(parsed_runs.values())):
+        raise StorageError("Auto run index is invalid")
+    return {
+        "format": AUTO_INDEX_FORMAT,
+        "next_number": next_number,
+        "runs": parsed_runs,
+    }
 
 
 class StorageError(RuntimeError):
@@ -1124,6 +1165,7 @@ class ProjectStore:
         self.sessions_root = self.root / "sessions"
         ensure_owned_directory(self.sessions_root, self.root)
         self._session_directory_cache: dict[str, _SessionLocation] | None = None
+        self._auto_directory_cache: dict[str, Path] | None = None
 
     def _load_manifest(self) -> dict[str, Any]:
         manifest = load_json_recover(self.manifest_path)
@@ -1180,9 +1222,101 @@ class ProjectStore:
     def auto_runs_root(self) -> Path:
         return ensure_owned_directory(self.root / "auto-runs", self.root)
 
+    @property
+    def auto_index_path(self) -> Path:
+        return self.auto_runs_root / ".index.json"
+
+    def _load_auto_index(self) -> dict[str, object]:
+        for candidate in (
+            self.auto_index_path,
+            self.auto_index_path.with_name(f"{self.auto_index_path.name}.bak"),
+        ):
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                return _parse_auto_index(data)
+            except (OSError, UnicodeError, json.JSONDecodeError, StorageError):
+                continue
+        raise StorageError("Auto run index has no valid recovery copy")
+
+    def _rebuild_auto_index(self) -> dict[str, object]:
+        runs: dict[str, int] = {}
+        for child in self.auto_runs_root.iterdir():
+            if not child.name.isdecimal() or str(int(child.name)) != child.name:
+                continue
+            number = int(child.name)
+            if number < 1:
+                raise StorageError("Auto run directory number is invalid")
+            _assert_no_symlink_components(
+                child,
+                self.auto_runs_root,
+                allow_missing_leaf=False,
+            )
+            data = load_json_recover(child / "config.json")
+            if not isinstance(data, dict) or data.get("format") != AUTO_FORMAT:
+                raise StorageError("Auto run config is invalid")
+            try:
+                record = AutoRunRecord.from_dict(data)
+                self._validate_auto_record(record, self.project.id)
+            except (KeyError, TypeError, ValueError, StorageError) as exc:
+                raise StorageError("Auto run config is invalid") from exc
+            if record.number != number or record.id in runs:
+                raise StorageError("Auto run numeric identity is invalid")
+            runs[record.id] = number
+        return {
+            "format": AUTO_INDEX_FORMAT,
+            "next_number": max(runs.values(), default=0) + 1,
+            "runs": runs,
+        }
+
+    def _load_or_rebuild_auto_index(self) -> dict[str, object]:
+        try:
+            return self._load_auto_index()
+        except StorageError:
+            index = self._rebuild_auto_index()
+            atomic_write_json_recovery_pair(self.auto_index_path, index)
+            return index
+
+    def require_auto_migration_complete(self) -> None:
+        for child in self.auto_runs_root.iterdir():
+            if child.name.startswith("."):
+                continue
+            canonical_number = (
+                child.name.isdecimal()
+                and int(child.name) > 0
+                and str(int(child.name)) == child.name
+            )
+            try:
+                info = child.lstat()
+            except OSError as exc:
+                raise StorageError("Auto run layout is unavailable") from exc
+            if canonical_number and stat.S_ISDIR(info.st_mode):
+                continue
+            raise ConflictError("Auto run migration is incomplete")
+
+    def reserve_auto_run_number(self) -> int:
+        self.require_auto_migration_complete()
+        index = self._load_or_rebuild_auto_index()
+        number = index["next_number"]
+        assert type(number) is int
+        index["next_number"] = number + 1
+        atomic_write_json_recovery_pair(self.auto_index_path, index)
+        return number
+
+    def _invalidate_auto_directory_cache(self) -> None:
+        self._auto_directory_cache = None
+
     def auto_run_dir(self, auto_id: str) -> Path:
         validate_id(auto_id, "Auto run id")
-        return self.auto_runs_root / auto_id
+        index = self._load_or_rebuild_auto_index()
+        runs = index["runs"]
+        assert isinstance(runs, dict)
+        number = runs.get(auto_id)
+        if type(number) is int:
+            return self.auto_runs_root / str(number)
+        legacy = self.auto_runs_root / auto_id
+        if legacy.exists():
+            return legacy
+        raise NotFoundError(f"Auto run not found: {auto_id}")
 
     @staticmethod
     def _validate_auto_record(record: AutoRunRecord, project_id: str) -> None:
@@ -1227,6 +1361,8 @@ class ProjectStore:
         shared_context: bytes | None = None,
     ) -> AutoRunRecord:
         self._validate_auto_record(record, self.project.id)
+        if type(record.number) is not int or record.number < 1:
+            raise OwnershipError("Auto run number is invalid")
         if sha256(topic).hexdigest() != record.topic.sha256:
             raise OwnershipError("Auto topic digest does not match")
         if sha256(baseline).hexdigest() != record.baseline.sha256:
@@ -1240,35 +1376,68 @@ class ProjectStore:
         ):
             raise OwnershipError("Auto shared-context digest does not match")
 
-        run_dir = self.auto_run_dir(record.id)
-        if run_dir.exists():
+        self.require_auto_migration_complete()
+        index = self._load_or_rebuild_auto_index()
+        runs = index["runs"]
+        next_number = index["next_number"]
+        assert isinstance(runs, dict)
+        assert type(next_number) is int
+        if record.number != next_number - 1:
+            raise ConflictError("Auto run number was not the latest reservation")
+        if record.id in runs or record.number in runs.values():
             raise ConflictError(f"Auto run already exists: {record.id}")
+        temporary = self.auto_runs_root / f".creating-{record.id}-{record.number}"
+        destination = self.auto_runs_root / str(record.number)
+        if temporary.exists() or destination.exists():
+            raise ConflictError(f"Auto run already exists: {record.id}")
+        published = False
         try:
-            run_dir.mkdir(mode=0o700)
-            os.chmod(run_dir, 0o700)
-            preparations = run_dir / "preparations"
+            temporary.mkdir(mode=0o700)
+            os.chmod(temporary, 0o700)
+            preparations = temporary / "preparations"
             preparations.mkdir(mode=0o700)
             atomic_write_bytes(
-                self._auto_artifact_path(run_dir, record.topic, "topic.md"),
+                self._auto_artifact_path(temporary, record.topic, "topic.md"),
                 topic,
             )
             atomic_write_bytes(
-                self._auto_artifact_path(run_dir, record.baseline, "baseline.md"),
+                self._auto_artifact_path(temporary, record.baseline, "baseline.md"),
                 baseline,
             )
             if record.shared_context is not None and shared_context is not None:
                 atomic_write_bytes(
                     self._auto_artifact_path(
-                        run_dir,
+                        temporary,
                         record.shared_context,
                         "shared-context.md",
                     ),
                     shared_context,
                 )
-            atomic_write_json(run_dir / "config.json", record.to_dict())
+            atomic_write_json(temporary / "config.json", record.to_dict())
+            os.replace(temporary, destination)
+            published = True
+            current_index = self._load_or_rebuild_auto_index()
+            current_runs = dict(current_index["runs"])
+            current_runs[record.id] = record.number
+            current_index["runs"] = current_runs
+            atomic_write_json(self.auto_index_path, current_index)
+            self._invalidate_auto_directory_cache()
         except Exception:
-            if run_dir.exists():
-                shutil.rmtree(run_dir)
+            if not published:
+                try:
+                    info = temporary.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if stat.S_ISLNK(info.st_mode):
+                        temporary.unlink()
+                    elif stat.S_ISDIR(info.st_mode):
+                        _assert_no_symlink_components(
+                            temporary,
+                            self.auto_runs_root,
+                            allow_missing_leaf=False,
+                        )
+                        shutil.rmtree(temporary)
             raise
         return record
 
@@ -1439,9 +1608,16 @@ class ProjectStore:
         atomic_write_json(run_dir / "config.json", record.to_dict())
 
     def list_auto_runs(self) -> list[AutoRunRecord]:
-        records: list[AutoRunRecord] = []
+        index = self._load_or_rebuild_auto_index()
+        runs = index["runs"]
+        assert isinstance(runs, dict)
+        records = [self.load_auto_run(auto_id) for auto_id in runs]
         for child in self.auto_runs_root.iterdir():
-            if child.is_dir() and ID_PATTERN.fullmatch(child.name):
+            if (
+                child.name not in runs
+                and child.is_dir()
+                and ID_PATTERN.fullmatch(child.name)
+            ):
                 records.append(self.load_auto_run(child.name))
         return sorted(records, key=lambda item: (item.created_at, item.id))
 
