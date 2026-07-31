@@ -9,6 +9,10 @@
       <label>Absolute directory path <input name="path" maxlength="4096" required></label>
       <button type="submit">Register project</button>
     </form>
+    <p class="hint">
+      Names are immutable while registered and limited to 200 UTF-8 bytes.
+      Re-registering a Delibra directory reuses its stored name when available.
+    </p>
   </details>
   {% if project_cards %}
     <div class="projects">
@@ -37,14 +41,6 @@
             </label>
             <button type="submit">Rebind location</button>
           </form>
-          {% if card.available %}
-            <form method="post" action="{{ project_url(project.id, '/rename') }}">
-              <label>Rename
-                <input name="name" maxlength="200" value="{{ project.name }}" required>
-              </label>
-              <button type="submit"{% if card.auto_active %} disabled{% endif %}>Rename</button>
-            </form>
-          {% endif %}
           <form method="post" action="{{ project_url(project.id, '/unregister') }}">
             <button type="submit"{% if card.auto_active %} disabled{% endif %}>Unregister</button>
           </form>

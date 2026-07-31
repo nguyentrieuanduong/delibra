@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import random
 import shutil
 import stat
 import unicodedata
@@ -33,6 +34,7 @@ from app.storage import (
     atomic_write_json,
     load_json_recover,
     normalize_agent_name,
+    normalize_project_name,
     safe_copy_file,
     sanitize_name,
 )
@@ -68,6 +70,130 @@ def make_session(session_id: str = "a" * 32) -> SessionConfig:
     )
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ".hidden",
+        "trailing.",
+        "a/b",
+        "a\\b",
+        "CON",
+        "a" * 32,
+        "line\u2028break",
+        "bidi\u202ename",
+        "control\u0085name",
+    ],
+)
+def test_project_name_rejects_unsafe_url_components(bad: str) -> None:
+    with pytest.raises(ValueError):
+        normalize_project_name(bad)
+
+
+def test_project_names_are_nfc_casefold_unique(tmp_path: Path) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    registry.register("Café", first)
+    with pytest.raises(ConflictError, match="project name is already in use"):
+        registry.register("CAFE\u0301", second)
+
+
+def test_project_name_generated_inputs_only_return_safe_components() -> None:
+    generator = random.Random(20260731)
+    alphabet = (
+        "ABCxyz09 .-_/"
+        "\\\x00\x1f\x7f\x85"
+        "\u0301\u2028\u2029\u202e"
+        "é中"
+    )
+    for _ in range(500):
+        value = "".join(
+            generator.choice(alphabet)
+            for _ in range(generator.randrange(0, 230))
+        )
+        try:
+            normalized = normalize_project_name(value)
+        except ValueError:
+            continue
+        assert normalized == unicodedata.normalize("NFC", normalized)
+        assert normalized == normalized.strip()
+        assert normalized not in {".", ".."}
+        assert not normalized.startswith(".")
+        assert not normalized.endswith(".")
+        assert "/" not in normalized
+        assert "\\" not in normalized
+        assert len(normalized.encode("utf-8")) <= 200
+        assert not any(
+            ord(character) < 32
+            or 127 <= ord(character) <= 159
+            or character in {"\u2028", "\u2029"}
+            or unicodedata.category(character) == "Cf"
+            for character in normalized
+        )
+
+
+def test_legacy_registry_names_migrate_once_in_created_id_order(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    path = home / "registry.json"
+    path.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {
+                        "id": "b" * 32,
+                        "name": "bad/name",
+                        "path": str(tmp_path / "b"),
+                        "created_at": "2026-01-02T00:00:00Z",
+                    },
+                    {
+                        "id": "a" * 32,
+                        "name": "bad\\name",
+                        "path": str(tmp_path / "a"),
+                        "created_at": "2026-01-01T00:00:00Z",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = RegistryStore(home)
+    assert [(item.id, item.name) for item in registry.list_projects()] == [
+        ("b" * 32, "bad-name-2"),
+        ("a" * 32, "bad-name"),
+    ]
+    before = path.read_bytes()
+    assert registry.migrate_project_names() is False
+    assert path.read_bytes() == before
+
+
+def test_reregister_prefers_manifest_name_and_suffixes_collision(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    original_path = tmp_path / "original"
+    claimant_path = tmp_path / "claimant"
+    original_path.mkdir()
+    claimant_path.mkdir()
+    original = registry.register("Research", original_path)
+    registry.unregister(original.id)
+    registry.register("Research", claimant_path)
+
+    restored = registry.register("Ignored form value", original_path)
+
+    assert restored.id == original.id
+    assert restored.name == "Research-2"
+    manifest = json.loads(
+        (original_path / ".delibra/manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["name"] == "Research-2"
+
+
 def test_registry_crud_manifest_import_and_resolved_path_uniqueness(tmp_path: Path) -> None:
     home = tmp_path / "home"
     project_dir = tmp_path / "project"
@@ -82,9 +208,8 @@ def test_registry_crud_manifest_import_and_resolved_path_uniqueness(tmp_path: Pa
     manifest = json.loads((project_dir / ".delibra" / "manifest.json").read_text())
     assert manifest["format"] == "delibra/1"
     assert manifest["id"] == project.id
+    assert manifest["name"] == "Alpha"
 
-    registry.rename(project.id, "Renamed")
-    assert registry.get(project.id).name == "Renamed"
     with pytest.raises(ConflictError):
         registry.register("Duplicate", project_dir / ".")
 
@@ -94,6 +219,7 @@ def test_registry_crud_manifest_import_and_resolved_path_uniqueness(tmp_path: Pa
 
     imported = registry.register("Imported", project_dir)
     assert imported.id == project.id
+    assert imported.name == "Alpha"
 
 
 def test_invalid_existing_manifest_is_rejected(tmp_path: Path) -> None:

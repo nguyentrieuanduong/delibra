@@ -9,10 +9,14 @@ from fastapi.responses import RedirectResponse
 
 from app.security import (
     validate_field,
-    validate_name,
     validate_pass_prompt_template_field,
 )
-from app.storage import ConflictError, ProjectStore, StorageError
+from app.storage import (
+    ConflictError,
+    ProjectStore,
+    StorageError,
+    normalize_project_name,
+)
 from app.urls import project_url
 
 
@@ -39,26 +43,14 @@ async def register_project(
     name: str = Form(...),
     path: str = Form(...),
 ):
-    name = validate_name(name)
+    try:
+        name = normalize_project_name(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     candidate = _project_path(path)
     async with request.app.state.locks.registry_lock:
         project = request.app.state.registry.register(name, candidate)
     return RedirectResponse(project_url(project.id, "/chat"), status_code=303)
-
-
-@router.post("/projects/{project_id}/rename")
-async def rename_project(
-    request: Request,
-    project_id: str,
-    name: str = Form(...),
-):
-    name = validate_name(name)
-    async with request.app.state.locks.registry_project_sessions(project_id):
-        project = request.app.state.registry.get(project_id)
-        ProjectStore(project).require_auto_inactive()
-        _reject_running_sessions(project)
-        request.app.state.registry.rename(project_id, name)
-    return RedirectResponse(project_url(project_id), status_code=303)
 
 
 @router.post("/projects/{project_id}/rebind")

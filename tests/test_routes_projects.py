@@ -105,12 +105,12 @@ def test_project_crud_path_validation_canonicalization_import_and_invalid_metada
             data={"name": "Renamed"},
             follow_redirects=False,
         )
-        assert renamed.status_code == 303
-        assert registry.get(project_id).name == "Renamed"
+        assert renamed.status_code == 404
+        assert registry.get(project_id).name == "Canonical"
 
         index = client.get("/")
         assert "Register project" in index.text
-        assert "Renamed" in index.text
+        assert "Canonical" in index.text
         unregistered = client.post(
             f"/projects/{project_id}/unregister", follow_redirects=False
         )
@@ -140,7 +140,56 @@ def test_project_crud_path_validation_canonicalization_import_and_invalid_metada
     ]
 
 
-def test_active_auto_reservation_blocks_project_rename_and_unregister(
+@pytest.mark.parametrize("name", [".hidden", "a/b", "CON", "a" * 32])
+def test_project_registration_rejects_unsafe_name(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "unsafe-name"
+    project_path.mkdir()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            "/projects",
+            data={"name": name, "path": str(project_path)},
+        )
+
+    assert response.status_code == 422
+    assert RegistryStore(settings.home).list_projects() == []
+
+
+def test_registered_project_name_is_immutable_and_rebind_keeps_it(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    registry = RegistryStore(settings.home)
+    project = registry.register("Immutable", source)
+    shutil.copytree(source, target)
+    source.rename(tmp_path / "moved-away")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        assert client.post(
+            f"/projects/{project.id}/rename",
+            data={"name": "Changed"},
+        ).status_code == 404
+        response = client.post(
+            f"/projects/{project.id}/rebind",
+            data={"path": str(target)},
+            follow_redirects=False,
+        )
+        index = client.get("/")
+
+    assert response.status_code == 303
+    assert RegistryStore(settings.home).get(project.id).name == "Immutable"
+    assert "200 UTF-8 bytes" in index.text
+    assert "Rename" not in index.text
+
+
+def test_active_auto_reservation_blocks_project_unregister(
     tmp_path: Path,
     reserve_auto_run,
 ) -> None:
@@ -167,23 +216,17 @@ def test_active_auto_reservation_blocks_project_rename_and_unregister(
                 )
             )
         reserve_auto_run(store)
-        renamed = client.post(
-            f"/projects/{project.id}/rename",
-            data={"name": "Blocked"},
-            follow_redirects=False,
-        )
         removed = client.post(
             f"/projects/{project.id}/unregister",
             follow_redirects=False,
         )
 
-    assert renamed.status_code == 409
     assert removed.status_code == 409
     assert RegistryStore(settings.home).get(project.id).name == "Reserved"
 
 
 @pytest.mark.asyncio
-async def test_rename_unregister_and_run_start_are_serialized_without_stranding(
+async def test_unregister_and_run_start_are_serialized_without_stranding(
     tmp_path: Path,
 ) -> None:
     settings = Settings(home=tmp_path / "home", run_timeout=2)
@@ -215,21 +258,6 @@ async def test_rename_unregister_and_run_start_are_serialized_without_stranding(
         async with httpx.AsyncClient(
             transport=transport, base_url="http://localhost"
         ) as client:
-            start, renamed = await asyncio.wait_for(
-                asyncio.gather(
-                    app.state.manager.start(project.id, session.id, "Race rename"),
-                    client.post(
-                        f"/projects/{project.id}/rename",
-                        data={"name": "Race renamed"},
-                        follow_redirects=False,
-                    ),
-                ),
-                timeout=3,
-            )
-            assert renamed.status_code in {303, 409}
-            assert app.state.manager.active_key(project.id, session.id) == start
-            await app.state.manager.cancel(start)
-
             start_result, unregistered = await asyncio.wait_for(
                 asyncio.gather(
                     app.state.manager.start(project.id, session.id, "Race unregister"),
