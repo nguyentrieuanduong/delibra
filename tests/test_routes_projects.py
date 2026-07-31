@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import sys
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -15,7 +16,13 @@ from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
-from app.storage import NotFoundError, ProjectStore, RegistryStore
+from app.storage import (
+    LockCoordinator,
+    NotFoundError,
+    ProjectStore,
+    RegistryStore,
+    StorageError,
+)
 
 
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
@@ -55,9 +62,9 @@ def test_project_settings_reports_selected_and_broken_shared_markdown(
     ProjectStore(project).select_shared_markdown("brief.md", 512 * 1024)
 
     with TestClient(app, base_url="http://localhost") as client:
-        selected = client.get(f"/projects/{project.id}/settings")
+        selected = client.get(f"/projects/{quote(project.name, safe='')}/settings")
         source.unlink()
-        broken = client.get(f"/projects/{project.id}/settings")
+        broken = client.get(f"/projects/{quote(project.name, safe='')}/settings")
 
     assert "brief.md" in selected.text
     assert "Shared context is available" in selected.text
@@ -92,9 +99,10 @@ def test_project_crud_path_validation_canonicalization_import_and_invalid_metada
             follow_redirects=False,
         )
         assert registered.status_code == 303
-        assert registered.headers["location"].endswith("/chat")
-        project_id = registered.headers["location"].split("/")[-2]
         registry = RegistryStore(settings.home)
+        project = registry.resolve("Canonical")
+        project_id = project.id
+        assert registered.headers["location"] == "/projects/Canonical/chat"
         assert registry.get(project_id).path == str(real.resolve())
         assert client.post(
             "/projects", data={"name": "Duplicate", "path": str(real)}
@@ -124,7 +132,7 @@ def test_project_crud_path_validation_canonicalization_import_and_invalid_metada
             follow_redirects=False,
         )
         assert imported.status_code == 303
-        assert imported.headers["location"] == f"/projects/{project_id}/chat"
+        assert imported.headers["location"] == "/projects/Canonical/chat"
 
         invalid = tmp_path / "invalid-project"
         (invalid / ".delibra").mkdir(parents=True)
@@ -159,6 +167,191 @@ def test_project_registration_rejects_unsafe_name(
     assert RegistryStore(settings.home).list_projects() == []
 
 
+def test_project_name_urls_encode_reserved_characters_and_uuid_get_redirects(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register(
+        "50% #?&+ off",
+        project_path,
+    )
+    legacy_project_prefix = "/projects/" + project.id
+
+    with TestClient(app, base_url="http://localhost") as client:
+        index = client.get("/")
+        legacy = client.get(
+            f"{legacy_project_prefix}/chat?agent={'a' * 32}",
+            follow_redirects=False,
+        )
+        canonical = client.get(
+            "/projects/50%25%20%23%3F%26%2B%20off/chat"
+        )
+
+    assert "/projects/50%25%20%23%3F%26%2B%20off" in index.text
+    assert legacy.status_code == 302
+    assert legacy.headers["location"] == (
+        "/projects/50%25%20%23%3F%26%2B%20off/chat"
+        f"?agent={'a' * 32}"
+    )
+    assert canonical.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_name_and_uuid_mutations_share_the_project_uuid_lock(
+    tmp_path: Path,
+) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = registry.register("Shared Lock", project_path)
+    locks = LockCoordinator()
+    entered: list[str] = []
+    active = 0
+    maximum_active = 0
+
+    async def hold(reference: str) -> None:
+        nonlocal active, maximum_active
+        resolved = registry.resolve(reference)
+        async with locks.project_lock(resolved.id):
+            active += 1
+            maximum_active = max(maximum_active, active)
+            entered.append(reference)
+            await asyncio.sleep(0.01)
+            active -= 1
+
+    await asyncio.gather(
+        hold(project.name),
+        hold(project.id),
+    )
+
+    assert set(entered) == {project.name, project.id}
+    assert maximum_active == 1
+
+
+def test_legacy_uuid_pass_prompt_redirects_to_canonical_project_name(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Route Matrix", project_path)
+    legacy_project_prefix = "/projects/" + project.id
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"{legacy_project_prefix}/pass-prompt",
+            data={"pass_prompt_template": "Review {source_path}"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/projects/Route%20Matrix/settings"
+
+
+def test_canonical_project_request_resolves_registry_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "once"
+    project_path.mkdir()
+    RegistryStore(settings.home).register("Resolve Once", project_path)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        calls = 0
+        original = app.state.registry.resolve
+
+        def counted(reference: str):
+            nonlocal calls
+            calls += 1
+            return original(reference)
+
+        monkeypatch.setattr(app.state.registry, "resolve", counted)
+        response = client.get("/projects/Resolve%20Once/chat")
+
+    assert response.status_code == 200
+    assert calls == 1
+
+
+def test_canonicalizer_defers_registry_storage_error_to_422_handler(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    RegistryStore(settings.home).register("Duplicate", first)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        registry_path = app.state.registry.path
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        duplicate = dict(data["projects"][0])
+        duplicate["id"] = "f" * 32
+        duplicate["path"] = str(second)
+        data["projects"].append(duplicate)
+        registry_path.write_text(json.dumps(data), encoding="utf-8")
+        response = client.get("/projects/Duplicate/chat")
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "project name is registered more than once"
+    }
+
+
+def test_startup_synchronizes_manifest_name_from_registry(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Registry Name", project_path)
+    manifest_path = project_path / ".delibra" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = "Stale Name"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with TestClient(app, base_url="http://localhost"):
+        pass
+
+    synchronized = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert synchronized["name"] == project.name
+
+
+def test_startup_reconciles_project_after_manifest_name_sync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Read Only Carrier", project_path)
+    sync_calls: list[tuple[str, str]] = []
+    reconciliation_calls: list[str] = []
+    original_migrate = ProjectStore.migrate_session_directories
+
+    def fail_sync(store: ProjectStore, name: str) -> None:
+        sync_calls.append((store.project.id, name))
+        raise StorageError("carrier is read-only")
+
+    def record_reconciliation(store: ProjectStore):
+        reconciliation_calls.append(store.project.id)
+        return original_migrate(store)
+
+    monkeypatch.setattr(ProjectStore, "sync_manifest_name", fail_sync)
+    monkeypatch.setattr(
+        ProjectStore,
+        "migrate_session_directories",
+        record_reconciliation,
+    )
+
+    with TestClient(app, base_url="http://localhost"):
+        pass
+
+    assert sync_calls == [(project.id, project.name)]
+    assert reconciliation_calls == [project.id]
+
+
 def test_registered_project_name_is_immutable_and_rebind_keeps_it(
     tmp_path: Path,
 ) -> None:
@@ -173,11 +366,11 @@ def test_registered_project_name_is_immutable_and_rebind_keeps_it(
 
     with TestClient(app, base_url="http://localhost") as client:
         assert client.post(
-            f"/projects/{project.id}/rename",
+            f"/projects/{quote(project.name, safe='')}/rename",
             data={"name": "Changed"},
         ).status_code == 404
         response = client.post(
-            f"/projects/{project.id}/rebind",
+            f"/projects/{quote(project.name, safe='')}/rebind",
             data={"path": str(target)},
             follow_redirects=False,
         )
@@ -217,7 +410,7 @@ def test_active_auto_reservation_blocks_project_unregister(
             )
         reserve_auto_run(store)
         removed = client.post(
-            f"/projects/{project.id}/unregister",
+            f"/projects/{quote(project.name, safe='')}/unregister",
             follow_redirects=False,
         )
 
@@ -262,7 +455,7 @@ async def test_unregister_and_run_start_are_serialized_without_stranding(
                 asyncio.gather(
                     app.state.manager.start(project.id, session.id, "Race unregister"),
                     client.post(
-                        f"/projects/{project.id}/unregister",
+                        f"/projects/{quote(project.name, safe='')}/unregister",
                         follow_redirects=False,
                     ),
                     return_exceptions=True,
@@ -278,7 +471,7 @@ async def test_unregister_and_run_start_are_serialized_without_stranding(
                 assert not isinstance(start_result, BaseException)
                 await app.state.manager.cancel(start_result)
                 removed = await client.post(
-                    f"/projects/{project.id}/unregister", follow_redirects=False
+                    f"/projects/{quote(project.name, safe='')}/unregister", follow_redirects=False
                 )
                 assert removed.status_code == 303
     assert not RegistryStore(settings.home).list_projects()
@@ -292,11 +485,11 @@ def test_project_chat_is_primary_and_settings_remains_available(tmp_path: Path) 
     project = RegistryStore(settings.home).register("Primary", project_path)
 
     with TestClient(app, base_url="http://localhost") as client:
-        primary = client.get(f"/projects/{project.id}", follow_redirects=False)
-        chat = client.get(f"/projects/{project.id}/chat")
-        management = client.get(f"/projects/{project.id}/settings")
+        primary = client.get(f"/projects/{quote(project.name, safe='')}", follow_redirects=False)
+        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        management = client.get(f"/projects/{quote(project.name, safe='')}/settings")
         created = client.post(
-            f"/projects/{project.id}/sessions",
+            f"/projects/{quote(project.name, safe='')}/sessions",
             data={
                 "name": "Claude",
                 "agent": "claude",
@@ -309,14 +502,14 @@ def test_project_chat_is_primary_and_settings_remains_available(tmp_path: Path) 
 
     session = ProjectStore(project).list_sessions()[0]
     assert primary.status_code == 303
-    assert primary.headers["location"] == f"/projects/{project.id}/chat"
+    assert primary.headers["location"] == f"/projects/{quote(project.name, safe='')}/chat"
     assert chat.status_code == 200
-    assert f'href="/projects/{project.id}/settings"' in chat.text
+    assert f'href="/projects/{quote(project.name, safe='')}/settings"' in chat.text
     assert "Manage" in chat.text
     assert management.status_code == 200
     assert "Sessions" in management.text
     assert created.headers["location"] == (
-        f"/projects/{project.id}/chat?agent={session.id}"
+        f"/projects/{quote(project.name, safe='')}/chat?agent={session.id}"
     )
 
 
@@ -348,22 +541,22 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
 
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store, auto_id="f" * 32)
-        initial = client.get(f"/projects/{project.id}/settings")
+        initial = client.get(f"/projects/{quote(project.name, safe='')}/settings")
         saved = client.post(
-            f"/projects/{project.id}/pass-prompt",
+            f"/projects/{quote(project.name, safe='')}/pass-prompt",
             data={"pass_prompt_template": custom},
             follow_redirects=False,
         )
-        rendered = client.get(f"/projects/{project.id}/settings")
+        rendered = client.get(f"/projects/{quote(project.name, safe='')}/settings")
         reset = client.post(
-            f"/projects/{project.id}/pass-prompt/reset",
+            f"/projects/{quote(project.name, safe='')}/pass-prompt/reset",
             follow_redirects=False,
         )
 
     assert "Review the following document and give your critique." in initial.text
     assert "{source_path}" in initial.text
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"/projects/{project.id}/settings"
+    assert saved.headers["location"] == f"/projects/{quote(project.name, safe='')}/settings"
     assert "&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in rendered.text
     assert "</textarea><script>" not in rendered.text
     assert store.active_auto_run_id() == "f" * 32
@@ -371,7 +564,7 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
     assert store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
 
     with TestClient(app, base_url="http://localhost") as client:
-        after_reset = client.get(f"/projects/{project.id}/settings")
+        after_reset = client.get(f"/projects/{quote(project.name, safe='')}/settings")
     assert "Review the following document" in after_reset.text
 
 
@@ -392,7 +585,7 @@ def test_project_pass_prompt_rejects_invalid_update_without_mutation(
     store.set_pass_prompt_template(original)
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
-            f"/projects/{project.id}/pass-prompt",
+            f"/projects/{quote(project.name, safe='')}/pass-prompt",
             data={"pass_prompt_template": template},
         )
     assert response.status_code == 422
@@ -448,17 +641,17 @@ def test_index_renders_a_stale_project_and_rebinds_its_moved_directory(
     with TestClient(app, base_url="http://localhost") as client:
         index = client.get("/")
         rebound = client.post(
-            f"/projects/{project.id}/rebind",
+            f"/projects/{quote(project.name, safe='')}/rebind",
             data={"path": str(moved)},
             follow_redirects=False,
         )
-        chat = client.get(f"/projects/{project.id}/chat")
+        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
 
     assert index.status_code == 200
     assert "Registered path unavailable" in index.text
-    assert f'action="/projects/{project.id}/rebind"' in index.text
+    assert f'action="/projects/{quote(project.name, safe='')}/rebind"' in index.text
     assert rebound.status_code == 303
-    assert rebound.headers["location"] == f"/projects/{project.id}/chat"
+    assert rebound.headers["location"] == f"/projects/{quote(project.name, safe='')}/chat"
     assert registry.get(project.id).path == str(moved.resolve())
     rebound_store = ProjectStore(registry.get(project.id))
     assert rebound_store.load_session(session.id).cli_session_id is None
@@ -526,7 +719,7 @@ def test_copy_then_rebind_leaves_the_old_directory_untouched(
             if path.is_file()
         }
         response = client.post(
-            f"/projects/{project.id}/rebind",
+            f"/projects/{quote(project.name, safe='')}/rebind",
             data={"path": str(copied)},
             follow_redirects=False,
         )
@@ -560,7 +753,7 @@ def test_failed_rebind_keeps_the_stale_registry_path(tmp_path: Path) -> None:
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
-            f"/projects/{project.id}/rebind",
+            f"/projects/{quote(project.name, safe='')}/rebind",
             data={"path": str(wrong)},
         )
 
@@ -642,7 +835,7 @@ async def test_rebind_is_serialized_against_a_running_session(
             base_url="http://localhost",
         ) as client:
             response = await client.post(
-                f"/projects/{project.id}/rebind",
+                f"/projects/{quote(project.name, safe='')}/rebind",
                 data={"path": str(moved)},
             )
         assert response.status_code == 409
@@ -680,7 +873,7 @@ def test_same_path_rebind_rejects_without_clearing_native_resume(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
-            f"/projects/{project.id}/rebind",
+            f"/projects/{quote(project.name, safe='')}/rebind",
             data={"path": str(project_path)},
             follow_redirects=False,
         )

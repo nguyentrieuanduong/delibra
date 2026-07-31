@@ -10,6 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import AutoRunRecord
+from app.project_routing import request_project
 from app.security import validate_field
 from app.storage import ProjectStore, StorageError, validate_id
 
@@ -21,12 +22,13 @@ def project_auto_record(
     request: Request,
     project_id: str,
 ) -> AutoRunRecord | None:
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     store = ProjectStore(project)
     active_id = store.active_auto_run_id()
     if active_id is not None:
         return store.load_auto_run(active_id)
-    return request.app.state.auto_manager.latest(project_id)
+    return request.app.state.auto_manager.latest(resolved_project_id)
 
 
 def _decode_text(contents: bytes, label: str) -> str:
@@ -78,7 +80,7 @@ def auto_status_context(
     *,
     clear_setup: bool = False,
 ) -> dict:
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     store = ProjectStore(project)
     topic = _decode_text(
         store.load_auto_artifact(
@@ -151,7 +153,7 @@ def _status_response(
 
 @router.get("/projects/{project_id}/auto/setup", response_class=HTMLResponse)
 async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     store = ProjectStore(project)
     sessions = sorted(
         store.list_sessions(),
@@ -185,8 +187,10 @@ async def start_auto(
     prepare_first: bool = Form(False),
 ) -> HTMLResponse:
     topic = validate_field(topic, "Topic", maximum=100_000)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     record = await request.app.state.auto_manager.create(
-        project_id,
+        resolved_project_id,
         topic=topic,
         participant_ids=participant_id,
         agreement_policy=agreement_policy,
@@ -195,8 +199,8 @@ async def start_auto(
     )
     return _status_response(
         request,
-        project_id,
-        request.app.state.auto_manager.get(project_id, record.id),
+        resolved_project_id,
+        request.app.state.auto_manager.get(resolved_project_id, record.id),
         status_code=202,
         clear_setup=True,
     )
@@ -212,10 +216,12 @@ async def auto_status(
     auto_id: str,
 ) -> HTMLResponse:
     validate_id(auto_id, "Auto run id")
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     return _status_response(
         request,
-        project_id,
-        request.app.state.auto_manager.get(project_id, auto_id),
+        resolved_project_id,
+        request.app.state.auto_manager.get(resolved_project_id, auto_id),
     )
 
 
@@ -227,11 +233,13 @@ async def auto_stream(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> EventSourceResponse:
     validate_id(auto_id, "Auto run id")
-    request.app.state.auto_manager.get(project_id, auto_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    request.app.state.auto_manager.get(resolved_project_id, auto_id)
 
     async def events():
         async for event in request.app.state.auto_manager.subscribe(
-            project_id,
+            resolved_project_id,
             auto_id,
             last_event_id,
         ):
@@ -257,5 +265,7 @@ async def stop_auto(
     auto_id: str,
 ) -> HTMLResponse:
     validate_id(auto_id, "Auto run id")
-    record = await request.app.state.auto_manager.stop(project_id, auto_id)
-    return _status_response(request, project_id, record)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    record = await request.app.state.auto_manager.stop(resolved_project_id, auto_id)
+    return _status_response(request, resolved_project_id, record)

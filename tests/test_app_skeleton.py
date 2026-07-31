@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -50,7 +52,7 @@ def test_session_page_renders_seeded_rounds_and_safe_markdown(tmp_path) -> None:
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
     )
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/sessions/{session.id}")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/sessions/{session.id}")
     assert response.status_code == 200
     assert "Researcher" in response.text
     assert "<strong>rendered</strong>" in response.text
@@ -84,21 +86,21 @@ def test_invalid_route_ids_and_missing_round_are_client_errors(tmp_path) -> None
     )
     with TestClient(app, base_url="http://localhost") as client:
         invalid_project = client.get("/projects/not-an-id")
-        invalid_session = client.get(f"/projects/{project.id}/sessions/not-an-id")
-        missing_session = client.get(f"/projects/{project.id}/sessions/{'b' * 32}")
+        invalid_session = client.get(f"/projects/{quote(project.name, safe='')}/sessions/not-an-id")
+        missing_session = client.get(f"/projects/{quote(project.name, safe='')}/sessions/{'b' * 32}")
         missing_round = client.get(
-            f"/projects/{project.id}/sessions/{session.id}/rounds/99"
+            f"/projects/{quote(project.name, safe='')}/sessions/{session.id}/rounds/99"
         )
         invalid_stream = client.get(
-            f"/projects/{project.id}/sessions/not-an-id/rounds/1/stream"
+            f"/projects/{quote(project.name, safe='')}/sessions/not-an-id/rounds/1/stream"
         )
         missing_stream = client.get(
-            f"/projects/{project.id}/sessions/{session.id}/rounds/99/stream"
+            f"/projects/{quote(project.name, safe='')}/sessions/{session.id}/rounds/99/stream"
         )
         invalid_cancel = client.post(
-            f"/projects/{project.id}/sessions/not-an-id/cancel"
+            f"/projects/{quote(project.name, safe='')}/sessions/not-an-id/cancel"
         )
-    assert invalid_project.status_code == 422
+    assert invalid_project.status_code == 404
     assert invalid_session.status_code == 422
     assert missing_session.status_code == 404
     assert missing_round.status_code == 404

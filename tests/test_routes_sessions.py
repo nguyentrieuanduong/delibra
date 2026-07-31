@@ -4,7 +4,7 @@ import json
 from hashlib import sha256
 from pathlib import Path
 import sys
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi.testclient import TestClient
 import pytest
@@ -93,12 +93,17 @@ class RecordingAdapter:
         return self._final
 
 
-def seeded_client(tmp_path: Path, *, observations: list[dict] | None = None):
+def seeded_client(
+    tmp_path: Path,
+    *,
+    observations: list[dict] | None = None,
+    project_name: str = "Sessions",
+):
     settings = Settings(home=tmp_path / "home")
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     registry = RegistryStore(settings.home)
-    project = registry.register("Sessions", project_dir)
+    project = registry.register(project_name, project_dir)
     app = create_app(
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
@@ -162,6 +167,24 @@ def finish_stream(client: TestClient, project_id: str, session_id: str, round_n:
         assert any(line == "event: done" for line in response.iter_lines())
 
 
+def test_canonical_project_name_session_urls_and_legacy_uuid_mutation(
+    tmp_path: Path,
+) -> None:
+    client, project, _ = seeded_client(tmp_path, project_name="Route Matrix")
+    project_prefix = "/projects/Route%20Matrix"
+
+    with client:
+        created = create_session(client, project.id)
+        session_id = created_session_id(created)
+        page = client.get(f"{project_prefix}/sessions/{session_id}")
+
+    assert created.status_code == 303
+    assert created.headers["location"] == f"{project_prefix}/chat?agent={session_id}"
+    assert page.status_code == 200
+    assert f'href="{project_prefix}"' in page.text
+    assert f'hx-post="{project_prefix}/sessions/{session_id}/run"' in page.text
+
+
 def test_create_session_validates_provider_specific_effort_and_renders_controls(
     tmp_path: Path,
 ) -> None:
@@ -190,7 +213,7 @@ def test_create_session_validates_provider_specific_effort_and_renders_controls(
             client, project.id, role_instructions="x" * 20_001
         ).status_code == 422
 
-        page = client.get(f"/projects/{project.id}/settings")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
     sessions = store.list_sessions()
     assert {(item.agent, item.effort) for item in sessions} == {
         ("codex", "minimal"),
@@ -213,7 +236,7 @@ def test_edit_configuration_before_first_round_then_name_is_immutable(
     with client:
         created = create_session(client, project.id)
         session_id = created_session_id(created)
-        edit_path = f"/projects/{project.id}/sessions/{session_id}/edit"
+        edit_path = f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit"
         edited = client.post(
             edit_path,
             data={
@@ -283,7 +306,7 @@ def test_post_round_model_effort_edit_drives_next_run_and_preserves_native_id(
         created = create_session(client, project.id, effort="low")
         session_id = created_session_id(created)
         seed_completed_round(store, session_id)
-        edit_path = f"/projects/{project.id}/sessions/{session_id}/edit"
+        edit_path = f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit"
 
         edited = client.post(
             edit_path,
@@ -302,7 +325,7 @@ def test_post_round_model_effort_edit_drives_next_run_and_preserves_native_id(
         assert store.load_session(session_id).cli_session_id == "original-native-id"
 
         started = client.post(
-            f"/projects/{project.id}/sessions/{session_id}/run",
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/run",
             data={"prompt": "Continue"},
         )
         assert started.status_code == 202
@@ -340,7 +363,7 @@ def test_unsupported_config_change_clears_resume_then_warns_and_adopts_new_id(
         session_id = created_session_id(created)
         seed_completed_round(store, session_id)
         edited = client.post(
-            f"/projects/{project.id}/sessions/{session_id}/edit",
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
             data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         )
@@ -348,7 +371,7 @@ def test_unsupported_config_change_clears_resume_then_warns_and_adopts_new_id(
         assert store.load_session(session_id).cli_session_id is None
 
         started = client.post(
-            f"/projects/{project.id}/sessions/{session_id}/run",
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/run",
             data={"prompt": "Continue statelessly"},
         )
         assert started.status_code == 202
@@ -396,7 +419,7 @@ def test_any_edit_while_running_is_409_and_leaves_snapshot_unchanged(
         before = store.load_session(session_id).to_dict()
 
         response = client.post(
-            f"/projects/{project.id}/sessions/{session_id}/edit",
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
             data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         )
@@ -412,7 +435,7 @@ def test_delete_rejects_running_session_and_removes_idle_owned_session(
     with client:
         created = create_session(client, project.id)
         session_id = created_session_id(created)
-        delete_path = f"/projects/{project.id}/sessions/{session_id}/delete"
+        delete_path = f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/delete"
         config = store.load_session(session_id)
         config.status = "running"
         store.save_session(config)
@@ -423,7 +446,7 @@ def test_delete_rejects_running_session_and_removes_idle_owned_session(
         store.save_session(config)
         deleted = client.post(delete_path, follow_redirects=False)
         assert deleted.status_code == 303
-        assert deleted.headers["location"] == f"/projects/{project.id}"
+        assert deleted.headers["location"] == f"/projects/{quote(project.name, safe='')}"
     assert not (store.sessions_root / "Researcher").exists()
 
 
@@ -441,22 +464,22 @@ def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_file
 
         assert create_session(client, project.id, name="Blocked").status_code == 409
         assert client.post(
-            f"/projects/{project.id}/sessions/{first}/edit",
+            f"/projects/{quote(project.name, safe='')}/sessions/{first}/edit",
             data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         ).status_code == 409
         assert client.post(
-            f"/projects/{project.id}/sessions/{first}/delete",
+            f"/projects/{quote(project.name, safe='')}/sessions/{first}/delete",
             follow_redirects=False,
         ).status_code == 409
 
         selected = client.post(
-            f"/projects/{project.id}/files/shared/select",
+            f"/projects/{quote(project.name, safe='')}/files/shared/select",
             data={"path": "shared.md"},
         )
         assert selected.status_code == 200
         saved = client.post(
-            f"/projects/{project.id}/files/shared/save",
+            f"/projects/{quote(project.name, safe='')}/files/shared/save",
             data={
                 "path": "shared.md",
                 "expected_sha256": sha256(
@@ -475,9 +498,9 @@ def test_create_uses_a_unique_permanent_agent_name(tmp_path: Path) -> None:
     client, project, store = seeded_client(tmp_path)
     with client:
         created = create_session(client, project.id, name="Researcher")
-        page = client.get(f"/projects/{project.id}/chat")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
         duplicate = client.post(
-            f"/projects/{project.id}/sessions",
+            f"/projects/{quote(project.name, safe='')}/sessions",
             headers={"HX-Request": "true"},
             data={
                 "name": "researcher",
@@ -504,7 +527,7 @@ def test_agent_edit_rejects_name_changes_and_keeps_other_edits(
         created = create_session(client, project.id, name="Researcher")
         session_id = created_session_id(created)
         rejected = client.post(
-            f"/projects/{project.id}/sessions/{session_id}/edit",
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
             data={
                 "name": "Renamed",
                 "model": "opus",
@@ -513,7 +536,7 @@ def test_agent_edit_rejects_name_changes_and_keeps_other_edits(
             follow_redirects=False,
         )
         accepted = client.post(
-            f"/projects/{project.id}/sessions/{session_id}/edit",
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
             data={"model": "opus", "effort": "medium"},
             follow_redirects=False,
         )
@@ -531,12 +554,12 @@ def test_legacy_agent_can_set_one_permanent_name(tmp_path: Path) -> None:
     create_legacy_session(store, legacy)
     with client:
         resolved = client.post(
-            f"/projects/{project.id}/sessions/{legacy.id}/permanent-name",
+            f"/projects/{quote(project.name, safe='')}/sessions/{legacy.id}/permanent-name",
             data={"name": "Archivist"},
             follow_redirects=False,
         )
         repeated = client.post(
-            f"/projects/{project.id}/sessions/{legacy.id}/permanent-name",
+            f"/projects/{quote(project.name, safe='')}/sessions/{legacy.id}/permanent-name",
             data={"name": "Another"},
             follow_redirects=False,
         )
@@ -553,7 +576,7 @@ def test_project_settings_explains_a_blocked_legacy_migration(
     create_legacy_session(store, legacy)
 
     with client:
-        response = client.get(f"/projects/{project.id}/settings")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/settings")
 
     assert response.status_code == 200
     assert "agent name must be one directory component" in response.text
@@ -585,7 +608,7 @@ def test_project_settings_escapes_migration_issue_messages(
                 ),
             ),
         )
-        response = client.get(f"/projects/{project.id}/settings")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/settings")
 
     assert response.status_code == 200
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text

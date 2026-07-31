@@ -27,8 +27,8 @@
     {% if structured_warning %}<p class="file-warning" role="status">{{ structured_warning }}</p>{% endif %}
     {% if shared_status %}<p class="file-warning" role="status">{{ shared_status }}</p>{% endif %}
     {% if shared_controls and shared_selectable and not shared_selected %}
-      <form method="post" action="{{ project_url(project.id, '/files/shared/select') }}"
-            hx-post="{{ project_url(project.id, '/files/shared/select') }}"
+      <form method="post" action="{{ project_url(project.name, '/files/shared/select') }}"
+            hx-post="{{ project_url(project.name, '/files/shared/select') }}"
             hx-target="#file-reader" hx-swap="innerHTML">
         <input type="hidden" name="path" value="{{ path }}">
         <button type="submit">Use as shared context</button>
@@ -36,8 +36,8 @@
     {% elif shared_controls and shared_selected and not file_error %}
       <section class="shared-context-editor" aria-label="Shared project context editor">
         <p><strong>Selected as shared context</strong></p>
-        <form method="post" action="{{ project_url(project.id, '/files/shared/save') }}"
-              hx-post="{{ project_url(project.id, '/files/shared/save') }}"
+        <form method="post" action="{{ project_url(project.name, '/files/shared/save') }}"
+              hx-post="{{ project_url(project.name, '/files/shared/save') }}"
               hx-target="#file-reader" hx-swap="innerHTML">
           <input type="hidden" name="path" value="{{ path }}">
           <input type="hidden" name="expected_sha256" value="{{ shared_digest }}">
@@ -46,8 +46,8 @@
         </form>
         <div class="shared-context-actions">
           <a href="#file-browser-list">Choose another</a>
-          <form method="post" action="{{ project_url(project.id, '/files/shared/clear') }}"
-                hx-post="{{ project_url(project.id, '/files/shared/clear') }}"
+          <form method="post" action="{{ project_url(project.name, '/files/shared/clear') }}"
+                hx-post="{{ project_url(project.name, '/files/shared/clear') }}"
                 hx-target="#file-reader" hx-swap="innerHTML">
             <input type="hidden" name="path" value="{{ path }}">
             <button type="submit">Stop sharing</button>

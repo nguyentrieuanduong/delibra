@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -93,14 +94,19 @@ def session(
     )
 
 
-def setup_project(tmp_path: Path, sessions: list[SessionConfig]):
+def setup_project(
+    tmp_path: Path,
+    sessions: list[SessionConfig],
+    *,
+    project_name: str = "Chat",
+):
     settings = Settings(home=tmp_path / "home", run_timeout=2)
     project_path = tmp_path / "project"
     project_path.mkdir()
     registry = RegistryStore(settings.home)
     settings.codex_home.mkdir(mode=0o700)
     (settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
-    project = registry.register("Chat", project_path)
+    project = registry.register(project_name, project_path)
     store = ProjectStore(project)
     for config in sessions:
         store.create_session(config)
@@ -146,6 +152,24 @@ def assert_synchronized_selection_fragment(
     assert 'class="live-round"' not in response.text
 
 
+def test_canonical_project_name_chat_urls(tmp_path: Path) -> None:
+    alpha = session("a" * 32, "Alpha")
+    app, _, _ = setup_project(
+        tmp_path,
+        [alpha],
+        project_name="Route Matrix",
+    )
+    project_prefix = "/projects/Route%20Matrix"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"{project_prefix}/chat")
+
+    assert response.status_code == 200
+    assert f'href="{project_prefix}/settings"' in response.text
+    assert f'hx-get="{project_prefix}/files"' in response.text
+    assert f'hx-post="{project_prefix}/sessions"' in response.text
+
+
 def test_chat_merges_rounds_deterministically_with_unique_composite_fragments(
     tmp_path: Path,
 ) -> None:
@@ -168,15 +192,15 @@ def test_chat_merges_rounds_deterministically_with_unique_composite_fragments(
     app, project, _ = setup_project(tmp_path, [alpha, beta, gamma])
 
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/chat")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat")
         fragment = client.get(
-            f"/projects/{project.id}/sessions/{alpha.id}/rounds/1"
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}/rounds/1"
         )
         chat_fragment = client.get(
-            f"/projects/{project.id}/sessions/{alpha.id}/rounds/1?view=chat"
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}/rounds/1?view=chat"
         )
         session_page = client.get(
-            f"/projects/{project.id}/sessions/{alpha.id}"
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}"
         )
 
     assert response.status_code == 200
@@ -241,14 +265,14 @@ def test_message_markdown_links_open_owned_files_in_reader_and_focus(
         f"[Relative](docs/review.md) [Absolute]({linked}:12)",
         encoding="utf-8",
     )
-    view_url = f"/projects/{project.id}/files/view?path=docs%2Freview.md"
-    focus_url = f"/projects/{project.id}/files/focus?path=docs%2Freview.md"
+    view_url = f"/projects/{quote(project.name, safe='')}/files/view?path=docs%2Freview.md"
+    focus_url = f"/projects/{quote(project.name, safe='')}/files/focus?path=docs%2Freview.md"
 
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"/projects/{project.id}/chat")
-        session_page = client.get(f"/projects/{project.id}/sessions/{alpha.id}")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        session_page = client.get(f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}")
         focused = client.get(
-            f"/projects/{project.id}/sessions/{alpha.id}/rounds/1/focus"
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}/rounds/1/focus"
         )
         opened = client.get(view_url)
 
@@ -271,7 +295,7 @@ def test_message_markdown_links_open_owned_files_in_reader_and_focus(
 def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> None:
     app, project, _ = setup_project(tmp_path, [])
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/chat")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat")
     assert response.status_code == 200
     assert '<p data-conversation-empty>No conversation yet.</p>' in response.text
     assert "Oldest → newest" in response.text
@@ -296,7 +320,7 @@ def test_active_auto_puts_the_message_textarea_in_the_disable_lifecycle(
     app, project, store = setup_project(tmp_path, [alpha, beta])
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store)
-        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
     assert response.status_code == 200
     assert 'data-auto-active="true"' in response.text
     assert re.search(
@@ -324,7 +348,7 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
     app, project, _ = setup_project(tmp_path, [alpha, beta])
 
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
         stylesheet = client.get("/static/app.css")
 
     assert response.status_code == 200
@@ -350,7 +374,7 @@ def test_chat_uses_compact_composer_and_wider_agent_rail(
     alpha = session("a" * 32, "Alpha", agent="claude")
     app, project, _ = setup_project(tmp_path, [alpha])
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
         css = client.get("/static/app.css")
 
     assert response.status_code == 200
@@ -392,9 +416,9 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
     beta = session("b" * 32, "Beta", agent="codex")
     app, project, _ = setup_project(tmp_path, [alpha, beta])
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/chat?agent={beta.id}")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={beta.id}")
         selected = client.get(
-            f"/projects/{project.id}/chat/select", params={"agent": alpha.id}
+            f"/projects/{quote(project.name, safe='')}/chat/select", params={"agent": alpha.id}
         )
         css = client.get("/static/app.css")
 
@@ -435,7 +459,7 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
     assert beta_card is not None
     assert f'id="agent-select-{beta.id}"' in beta_card.group()
     assert (
-        f'hx-get="/projects/{project.id}/chat/select?agent={beta.id}"'
+        f'hx-get="/projects/{quote(project.name, safe='')}/chat/select?agent={beta.id}"'
         in beta_card.group()
     )
     assert 'hx-target="#agent-sidebar"' in beta_card.group()
@@ -448,7 +472,7 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
     )
     assert_synchronized_selection_fragment(selected, alpha)
     assert selected.headers["hx-push-url"] == (
-        f"/projects/{project.id}/chat?agent={alpha.id}"
+        f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}"
     )
     assert '"agents conversation files";' in css.text
     assert (
@@ -480,15 +504,15 @@ def test_file_browser_links_target_only_the_reader_for_display_errors(
     (Path(project.path) / "archive.bin").write_bytes(b"not rendered")
 
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"/projects/{project.id}/chat")
-        listing = client.get(f"/projects/{project.id}/files")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        listing = client.get(f"/projects/{quote(project.name, safe='')}/files")
         error = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "archive.bin"},
         )
 
     assert page.status_code == 200
-    assert f'hx-get="/projects/{project.id}/files"' in page.text
+    assert f'hx-get="/projects/{quote(project.name, safe='')}/files"' in page.text
     archive_link = re.search(
         rf'<a\s+href="([^"]*archive\.bin)".*?</a>',
         listing.text,
@@ -517,20 +541,20 @@ def test_round_focus_fragment_is_static_and_keeps_complete_dom_ids_unique(
     alpha = session("a" * 32, "Alpha", rounds=[alpha_round])
     beta = session("b" * 32, "Beta", mode="sleep")
     app, project, store = setup_project(tmp_path, [alpha, beta])
-    beta_base = f"/projects/{project.id}/sessions/{beta.id}"
+    beta_base = f"/projects/{quote(project.name, safe='')}/sessions/{beta.id}"
     focus_url = (
-        f"/projects/{project.id}/sessions/{alpha.id}/rounds/1/focus"
+        f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}/rounds/1/focus"
     )
 
     with TestClient(app, base_url="http://localhost") as client:
         assert client.post(f"{beta_base}/run", data={"prompt": "B"}).status_code == 202
-        page = client.get(f"/projects/{project.id}/chat")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
         focused = client.get(focus_url)
         missing_session = client.get(
-            f"/projects/{project.id}/sessions/{'c' * 32}/rounds/1/focus"
+            f"/projects/{quote(project.name, safe='')}/sessions/{'c' * 32}/rounds/1/focus"
         )
         missing_round = client.get(
-            f"/projects/{project.id}/sessions/{alpha.id}/rounds/2/focus"
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}/rounds/2/focus"
         )
         assert store.load_session(beta.id).status == "running"
         assert client.post(f"{beta_base}/cancel").status_code == 200
@@ -598,10 +622,10 @@ def test_chat_retry_targets_timeline_only_for_error_records(tmp_path: Path) -> N
     )
 
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"/projects/{project.id}/chat")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
 
     retry_url = (
-        f"/projects/{project.id}/sessions/{config.id}/rounds/1/retry?view=chat"
+        f"/projects/{quote(project.name, safe='')}/sessions/{config.id}/rounds/1/retry?view=chat"
     )
     assert page.status_code == 200
     assert f'action="{retry_url}"' in page.text
@@ -617,13 +641,13 @@ def test_chat_renders_two_concurrent_live_fragments_with_scoped_done_targets(
     alpha = session("a" * 32, "Alpha", mode="sleep")
     beta = session("b" * 32, "Beta", mode="sleep")
     app, project, _ = setup_project(tmp_path, [alpha, beta])
-    alpha_base = f"/projects/{project.id}/sessions/{alpha.id}"
-    beta_base = f"/projects/{project.id}/sessions/{beta.id}"
+    alpha_base = f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}"
+    beta_base = f"/projects/{quote(project.name, safe='')}/sessions/{beta.id}"
 
     with TestClient(app, base_url="http://localhost") as client:
         alpha_started = client.post(f"{alpha_base}/run", data={"prompt": "A"})
         beta_started = client.post(f"{beta_base}/run", data={"prompt": "B"})
-        response = client.get(f"/projects/{project.id}/chat")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat")
 
         alpha_dom_id = f"round-{alpha.id}-1"
         beta_dom_id = f"round-{beta.id}-1"
@@ -650,13 +674,13 @@ def test_chat_selection_is_deterministic_and_invalid_selection_is_rejected(
     app, project, _ = setup_project(tmp_path, [zulu, alpha])
 
     with TestClient(app, base_url="http://localhost") as client:
-        default = client.get(f"/projects/{project.id}/chat")
-        explicit = client.get(f"/projects/{project.id}/chat?agent={zulu.id}")
+        default = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        explicit = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={zulu.id}")
         sidebar = client.get(
-            f"/projects/{project.id}/chat/sidebar?agent={zulu.id}"
+            f"/projects/{quote(project.name, safe='')}/chat/sidebar?agent={zulu.id}"
         )
-        malformed = client.get(f"/projects/{project.id}/chat?agent=not-an-id")
-        missing = client.get(f"/projects/{project.id}/chat?agent={'c' * 32}")
+        malformed = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent=not-an-id")
+        missing = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={'c' * 32}")
 
     for response, selected in ((default, alpha), (explicit, zulu)):
         assert response.text.count('id="agent-sidebar"') == 1
@@ -703,19 +727,19 @@ def test_selection_transaction_supports_both_providers_and_rejects_invalid_ids(
 
     with TestClient(app, base_url="http://localhost") as client:
         claude_selected = client.get(
-            f"/projects/{project.id}/chat/select",
+            f"/projects/{quote(project.name, safe='')}/chat/select",
             params={"agent": claude.id},
         )
         codex_selected = client.get(
-            f"/projects/{project.id}/chat/select",
+            f"/projects/{quote(project.name, safe='')}/chat/select",
             params={"agent": codex.id},
         )
         malformed = client.get(
-            f"/projects/{project.id}/chat/select",
+            f"/projects/{quote(project.name, safe='')}/chat/select",
             params={"agent": "bad"},
         )
         cross_project = client.get(
-            f"/projects/{project.id}/chat/select",
+            f"/projects/{quote(project.name, safe='')}/chat/select",
             params={"agent": outsider.id},
         )
 
@@ -725,7 +749,7 @@ def test_selection_transaction_supports_both_providers_and_rejects_invalid_ids(
     ):
         assert_synchronized_selection_fragment(response, selected)
         assert response.headers["hx-push-url"] == (
-            f"/projects/{project.id}/chat?agent={selected.id}"
+            f"/projects/{quote(project.name, safe='')}/chat?agent={selected.id}"
         )
         assert f"{selected.agent} · {selected.model}" in response.text
     assert malformed.status_code == 422
@@ -739,14 +763,14 @@ def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs
     codex = session("b" * 32, "Codex", agent="codex", mode="sleep")
     observer = session("c" * 32, "Observer", agent="claude")
     app, project, store = setup_project(tmp_path, [claude, codex, observer])
-    claude_base = f"/projects/{project.id}/sessions/{claude.id}"
-    codex_base = f"/projects/{project.id}/sessions/{codex.id}"
+    claude_base = f"/projects/{quote(project.name, safe='')}/sessions/{claude.id}"
+    codex_base = f"/projects/{quote(project.name, safe='')}/sessions/{codex.id}"
 
     with TestClient(app, base_url="http://localhost") as client:
         assert client.post(f"{claude_base}/run", data={"prompt": "A"}).status_code == 202
         assert client.post(f"{codex_base}/run", data={"prompt": "B"}).status_code == 202
         created = client.post(
-            f"/projects/{project.id}/sessions",
+            f"/projects/{quote(project.name, safe='')}/sessions",
             headers={"HX-Request": "true"},
             data={
                 "name": "New agent",
@@ -758,12 +782,12 @@ def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs
         )
         new_agent = next(item for item in store.list_sessions() if item.name == "New agent")
         selected_edit = client.post(
-            f"/projects/{project.id}/sessions/{new_agent.id}/edit?agent={new_agent.id}",
+            f"/projects/{quote(project.name, safe='')}/sessions/{new_agent.id}/edit?agent={new_agent.id}",
             headers={"HX-Request": "true"},
             data={"model": "success", "effort": "medium"},
         )
         unselected_edit = client.post(
-            f"/projects/{project.id}/sessions/{observer.id}/edit?agent={new_agent.id}",
+            f"/projects/{quote(project.name, safe='')}/sessions/{observer.id}/edit?agent={new_agent.id}",
             headers={"HX-Request": "true"},
             data={"model": "success", "effort": "high"},
         )
@@ -773,7 +797,7 @@ def test_create_and_edit_keep_all_selection_projections_in_sync_during_live_runs
     for response in (created, selected_edit, unselected_edit):
         assert_synchronized_selection_fragment(response, new_agent)
     assert created.headers["hx-push-url"] == (
-        f"/projects/{project.id}/chat?agent={new_agent.id}"
+        f"/projects/{quote(project.name, safe='')}/chat?agent={new_agent.id}"
     )
     assert '<p class="immutable-agent-name">New agent</p>' in selected_edit.text
     assert '<p class="immutable-agent-name">Observer</p>' in unselected_edit.text
@@ -790,7 +814,7 @@ def test_chat_dispatch_validates_membership_and_runs_the_selected_agent(
     alpha = session("a" * 32, "Alpha")
     beta = session("b" * 32, "Beta")
     app, project, store = setup_project(tmp_path, [alpha, beta])
-    run_url = f"/projects/{project.id}/chat/run"
+    run_url = f"/projects/{quote(project.name, safe='')}/chat/run"
     other_path = tmp_path / "other-project"
     other_path.mkdir()
     registry = RegistryStore(tmp_path / "home")
@@ -812,7 +836,7 @@ def test_chat_dispatch_validates_membership_and_runs_the_selected_agent(
         assert f'id="round-{beta.id}-1"' in started.text
         with client.stream(
             "GET",
-            f"/projects/{project.id}/sessions/{beta.id}/rounds/1/stream",
+            f"/projects/{quote(project.name, safe='')}/sessions/{beta.id}/rounds/1/stream",
         ) as response:
             response.read()
 
@@ -828,7 +852,7 @@ def test_hx_create_selects_first_agent_and_updates_sidebar_composer_and_url(
     app, project, store = setup_project(tmp_path, [])
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
-            f"/projects/{project.id}/sessions",
+            f"/projects/{quote(project.name, safe='')}/sessions",
             headers={"HX-Request": "true"},
             data={
                 "name": "Researcher",
@@ -843,7 +867,7 @@ def test_hx_create_selects_first_agent_and_updates_sidebar_composer_and_url(
     created = store.list_sessions()[0]
     assert_synchronized_selection_fragment(response, created)
     assert response.headers["hx-push-url"] == (
-        f"/projects/{project.id}/chat?agent={created.id}"
+        f"/projects/{quote(project.name, safe='')}/chat?agent={created.id}"
     )
     assert 'name="prompt"' in response.text
 
@@ -854,12 +878,12 @@ def test_hx_edit_preserves_selection_without_replacing_another_live_stream(
     alpha = session("a" * 32, "Alpha", mode="sleep")
     beta = session("b" * 32, "Beta", agent="claude")
     app, project, store = setup_project(tmp_path, [alpha, beta])
-    alpha_base = f"/projects/{project.id}/sessions/{alpha.id}"
+    alpha_base = f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}"
 
     with TestClient(app, base_url="http://localhost") as client:
         assert client.post(f"{alpha_base}/run", data={"prompt": "Keep running"}).status_code == 202
         edited = client.post(
-            f"/projects/{project.id}/sessions/{beta.id}/edit?agent={beta.id}",
+            f"/projects/{quote(project.name, safe='')}/sessions/{beta.id}/edit?agent={beta.id}",
             headers={"HX-Request": "true"},
             data={"model": "success", "effort": "medium"},
             follow_redirects=False,
@@ -876,9 +900,9 @@ def test_busy_and_validation_errors_have_safe_visible_chat_contract(
 ) -> None:
     alpha = session("a" * 32, "Alpha", mode="sleep")
     app, project, _ = setup_project(tmp_path, [alpha])
-    run_url = f"/projects/{project.id}/chat/run"
+    run_url = f"/projects/{quote(project.name, safe='')}/chat/run"
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"/projects/{project.id}/chat")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
         assert 'id="chat-errors"' in page.text
         assert 'aria-live="polite"' in page.text
         assert client.post(
@@ -894,7 +918,7 @@ def test_busy_and_validation_errors_have_safe_visible_chat_contract(
             data={"session_id": alpha.id, "prompt": "   "},
         )
         assert client.post(
-            f"/projects/{project.id}/sessions/{alpha.id}/cancel"
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}/cancel"
         ).status_code == 200
 
     assert busy.status_code == 409
@@ -919,7 +943,7 @@ def test_sidebar_preview_is_plain_truncated_and_send_targets_exclude_source(
     )
 
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
 
     assert "&lt;b&gt;unsafe&lt;/b&gt;" in response.text
     assert "<b>unsafe</b>" not in response.text
@@ -969,8 +993,8 @@ def test_preparation_is_visible_in_chat_timeline_but_hidden_from_sidebar_preview
     )
 
     with TestClient(app, base_url="http://localhost") as client:
-        chat = client.get(f"/projects/{project.id}/chat")
-        detail = client.get(f"/projects/{project.id}/sessions/{alpha.id}")
+        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        detail = client.get(f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}")
 
     assert chat.text.index("Public answer") < chat.text.index(
         "Visible preparation"

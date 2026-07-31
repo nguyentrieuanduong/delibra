@@ -19,7 +19,7 @@
   {% endif %}
   {% if round.record.auto %}
     <p class="provenance auto-provenance">
-      <a href="{{ project_url(project.id, '/auto-runs/' ~ round.record.auto.auto_id) }}">Auto {{ round.record.auto.auto_id }}</a>
+      <a href="{{ project_url(project.name, '/auto-runs/' ~ round.record.auto.auto_id) }}">Auto {{ round.record.auto.auto_id }}</a>
       · {% if round.record.auto.phase == 'preparation' %}Auto preparation{% else %}discussion cycle {{ round.record.auto.cycle }}{% endif %}
       · position {{ round.record.auto.position + 1 }}
       {% if round.record.auto.verdict %}· verdict {{ round.record.auto.verdict }}{% endif %}
@@ -32,8 +32,8 @@
 {% endif %}
 {% if round.record and round.record.status == 'error' and round.record.source.type != 'auto' %}
   <form method="post"
-        action="{{ project_url(project.id, '/sessions/' ~ session.id ~ '/rounds/' ~ round.n ~ '/retry' ~ ('?view=chat' if chat_view else '')) }}"
-        hx-post="{{ project_url(project.id, '/sessions/' ~ session.id ~ '/rounds/' ~ round.n ~ '/retry' ~ ('?view=chat' if chat_view else '')) }}"
+        action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/rounds/' ~ round.n ~ '/retry' ~ ('?view=chat' if chat_view else '')) }}"
+        hx-post="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/rounds/' ~ round.n ~ '/retry' ~ ('?view=chat' if chat_view else '')) }}"
         hx-target="{{ '.chat-timeline' if chat_view else '.rounds' }}"
         hx-swap="beforeend">
     <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Retry</button>
@@ -47,8 +47,8 @@
     <summary>{% if chat_view %}Send to…{% else %}Pass to…{% endif %}</summary>
     <form
       method="post"
-      action="{{ project_url(project.id, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
-      hx-post="{{ project_url(project.id, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
+      action="{{ project_url(project.name, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
+      hx-post="{{ project_url(project.name, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
       hx-target="{{ '.chat-timeline' if chat_view else '.rounds' }}"
       hx-swap="beforeend"
     >

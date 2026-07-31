@@ -21,7 +21,7 @@
         <article class="project-card">
           <h2>
             {% if card.available %}
-              <a href="{{ project_url(project.id) }}">{{ project.name }}</a>
+              <a href="{{ project_url(project.name) }}">{{ project.name }}</a>
             {% else %}
               {{ project.name }}
             {% endif %}
@@ -35,13 +35,13 @@
               Agent directory migration needs permanent names in Manage.
             </p>
           {% endif %}
-          <form method="post" action="{{ project_url(project.id, '/rebind') }}">
+          <form method="post" action="{{ project_url(project.name, '/rebind') }}">
             <label>New absolute location
               <input name="path" maxlength="4096" required>
             </label>
             <button type="submit">Rebind location</button>
           </form>
-          <form method="post" action="{{ project_url(project.id, '/unregister') }}">
+          <form method="post" action="{{ project_url(project.name, '/unregister') }}">
             <button type="submit"{% if card.auto_active %} disabled{% endif %}>Unregister</button>
           </form>
         </article>

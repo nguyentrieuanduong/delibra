@@ -10,7 +10,7 @@
         aria-label="Topic information"
       >
         <div>
-          <p><a href="/">Projects</a> · <a href="{{ project_url(project.id, '/settings') }}">Manage</a></p>
+          <p><a href="/">Projects</a> · <a href="{{ project_url(project.name, '/settings') }}">Manage</a></p>
           <h1>{{ project.name }}</h1>
           <p class="project-path">{{ project.path }}</p>
         </div>
@@ -50,7 +50,7 @@
     >
       <div
         id="file-browser-host"
-        hx-get="{{ project_url(project.id, '/files') }}"
+        hx-get="{{ project_url(project.name, '/files') }}"
         hx-trigger="load"
         hx-target="this"
         hx-swap="innerHTML"

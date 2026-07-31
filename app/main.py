@@ -17,6 +17,7 @@ from app.auto import AutoManager
 from app.config import Settings, settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
+from app.project_routing import CanonicalProjectMiddleware, request_project
 from app.routes.auto import router as auto_router
 from app.routes.chat import router as chat_router
 from app.routes.files import router as files_router
@@ -101,6 +102,13 @@ def create_app(
         )
         for project in registry.list_projects():
             try:
+                ProjectStore(project).sync_manifest_name(project.name)
+            except StorageError:
+                LOGGER.exception(
+                    "Project name carrier synchronization failed for project %s",
+                    project.id,
+                )
+            try:
                 store = ProjectStore(project)
                 migration = store.migrate_session_directories()
                 if migration.issues:
@@ -128,6 +136,7 @@ def create_app(
             await manager.shutdown()
 
     app = FastAPI(lifespan=lifespan)
+    app.add_middleware(CanonicalProjectMiddleware)
     app.add_middleware(
         LocalSecurityMiddleware,
         body_limit=app_settings.request_body_limit,
@@ -174,13 +183,12 @@ def create_app(
 
     @app.get("/projects/{project_id}")
     async def project_primary(request: Request, project_id: str):
-        project = request.app.state.registry.get(project_id)
-        return RedirectResponse(project_url(project.id, "/chat"), status_code=303)
+        project = request_project(request, project_id)
+        return RedirectResponse(project_url(project.name, "/chat"), status_code=303)
 
     @app.get("/projects/{project_id}/settings", response_class=HTMLResponse)
     async def project_settings(request: Request, project_id: str):
-        registry = request.app.state.registry
-        project = registry.get(project_id)
+        project = request_project(request, project_id)
         store = ProjectStore(project)
         sessions = store.list_sessions()
         shared_markdown_path = store.selected_shared_markdown_path()

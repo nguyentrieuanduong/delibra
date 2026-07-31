@@ -81,7 +81,7 @@ def _project_file_url(
         else ("view", None)
     )
     url = project_url(
-        project.id,
+        project.name,
         f"/files/{endpoint}?{urlencode({'path': path})}",
     )
     if fragment:

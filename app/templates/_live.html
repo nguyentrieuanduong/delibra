@@ -3,17 +3,17 @@
   id="{{ dom_id }}"
   hx-preserve="true"
   hx-ext="sse"
-  sse-connect="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/stream') }}"
+  sse-connect="{{ project_url(project.name, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/stream') }}"
 >
   <h2>
     {{ session.name }} · Round {{ key.round_n }} · running
     {% if round is defined and round.record and round.record.auto %}
-      · <a href="{{ project_url(project.id, '/auto-runs/' ~ round.record.auto.auto_id) }}">Auto {{ 'preparation' if round.record.auto.phase == 'preparation' else 'discussion' }}</a>
+      · <a href="{{ project_url(project.name, '/auto-runs/' ~ round.record.auto.auto_id) }}">Auto {{ 'preparation' if round.record.auto.phase == 'preparation' else 'discussion' }}</a>
     {% endif %}
   </h2>
   <div
     class="timeout-host"
-    hx-get="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/timeout') }}"
+    hx-get="{{ project_url(project.name, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ '/timeout') }}"
     hx-trigger="load, sse:timeout_extended, timeout-refresh from:body"
     hx-target="this"
     hx-swap="innerHTML"
@@ -24,13 +24,13 @@
   <button
     type="button"
     data-disable-during-auto
-    hx-post="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/cancel') }}"
+    hx-post="{{ project_url(project.name, '/sessions/' ~ key.session_id ~ '/cancel') }}"
     hx-target="#{{ dom_id }}"
     hx-swap="none"
     {% if auto_active %}disabled data-auto-disabled="true"{% endif %}
   >Cancel</button>
   <span
-    hx-get="{{ project_url(project.id, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ ('?view=chat' if chat_view else '')) }}"
+    hx-get="{{ project_url(project.name, '/sessions/' ~ key.session_id ~ '/rounds/' ~ key.round_n ~ ('?view=chat' if chat_view else '')) }}"
     hx-trigger="sse:done once"
     hx-target="#{{ dom_id }}"
     hx-swap="outerHTML"

@@ -13,6 +13,7 @@ from starlette.responses import Response
 
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import RunKey, SourceDescriptor
+from app.project_routing import request_project
 from app.security import validate_field, validate_pass_prompt_template_field
 from app.storage import ConflictError, NotFoundError, ProjectStore, validate_id
 from app.views import round_dom_id
@@ -37,15 +38,15 @@ def validated_round_key(
     session_id: str,
     round_n: int,
 ) -> RunKey:
-    validate_id(project_id, "project id")
     validate_id(session_id, "session id")
     if round_n < 1:
         raise HTTPException(status_code=422, detail="Round must be positive")
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     config = ProjectStore(project).load_session(session_id)
     if not any(record.n == round_n for record in config.rounds):
         raise NotFoundError(f"round not found: {round_n}")
-    return RunKey(project_id, session_id, round_n)
+    return RunKey(resolved_project_id, session_id, round_n)
 
 
 def render_timeout_controls(request: Request, key: RunKey) -> HTMLResponse:
@@ -141,7 +142,7 @@ async def extend_timeout(
         )
     if result.auto_id is not None:
         request.app.state.auto_manager.publish_current_status(
-            project_id,
+            key.project_id,
             result.auto_id,
         )
     return render_timeout_controls(request, key)
@@ -184,9 +185,10 @@ async def run_session(
     prompt: str = Form(...),
 ):
     prompt = validate_field(prompt, "Prompt", maximum=100_000)
+    project = request_project(request, project_id)
     return await start_run_fragment(
         request,
-        project_id,
+        project.id,
         session_id,
         prompt,
         chat_view=False,
@@ -212,7 +214,8 @@ async def pass_round(
     if source_round < 1:
         raise HTTPException(status_code=422, detail="Source round must be positive")
     pass_prompt_template = validate_pass_prompt_template_field(pass_prompt_template)
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     store = ProjectStore(project)
     sessions = {session.id: session for session in store.list_sessions()}
     source_config = sessions.get(source_session_id)
@@ -237,7 +240,7 @@ async def pass_round(
         from_round=source_round,
     )
     key = await request.app.state.manager.start(
-        project_id,
+        resolved_project_id,
         target_session_id,
         pass_prompt_template,
         source=descriptor,
@@ -268,12 +271,17 @@ async def retry_round(
     round_n: int,
     view: str | None = None,
 ):
-    validate_id(project_id, "project id")
     validate_id(session_id, "session id")
     if round_n < 1:
         raise HTTPException(status_code=422, detail="Round must be positive")
-    key = await request.app.state.manager.retry(project_id, session_id, round_n)
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    key = await request.app.state.manager.retry(
+        resolved_project_id,
+        session_id,
+        round_n,
+    )
+    project = request.app.state.registry.get(resolved_project_id)
     session = ProjectStore(project).load_session(session_id)
     return request.app.state.templates.TemplateResponse(
         request=request,
@@ -297,15 +305,15 @@ async def round_stream(
     round_n: int,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
-    validate_id(project_id, "project id")
     validate_id(session_id, "session id")
     if round_n < 1:
         raise HTTPException(status_code=422, detail="Round must be positive")
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     config = ProjectStore(project).load_session(session_id)
     if not any(record.n == round_n for record in config.rounds):
         raise HTTPException(status_code=404, detail="round not found")
-    key = RunKey(project_id, session_id, round_n)
+    key = RunKey(resolved_project_id, session_id, round_n)
 
     async def events():
         async for event in request.app.state.manager.subscribe(key, last_event_id):
@@ -325,12 +333,12 @@ async def round_stream(
 
 @router.post("/projects/{project_id}/sessions/{session_id}/cancel")
 async def cancel_session(request: Request, project_id: str, session_id: str):
-    validate_id(project_id, "project id")
     validate_id(session_id, "session id")
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     ProjectStore(project).load_session(session_id)
     manager = request.app.state.manager
-    key = manager.active_key(project_id, session_id)
+    key = manager.active_key(resolved_project_id, session_id)
     if key is None:
         raise HTTPException(status_code=409, detail="session has no running agent")
     await manager.cancel(key)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -132,7 +133,7 @@ def test_reply_uses_native_then_stateless_history_and_snapshots_config(
         cli_session_id="native-thread",
     )
     app, project, store, contexts = seeded_app(tmp_path, [config])
-    base = f"/projects/{project.id}/sessions/{config.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{config.id}"
     with TestClient(app, base_url="http://localhost") as client:
         page = client.get(base)
         assert 'name="prompt"' in page.text
@@ -176,7 +177,7 @@ def test_history_distinguishes_errors_cancellation_warnings_and_orphans(
         "Orphan output", encoding="utf-8"
     )
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"/projects/{project.id}/sessions/{config.id}")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/sessions/{config.id}")
     assert page.status_code == 200
     assert 'class="round error"' in page.text
     assert 'class="round cancelled"' in page.text
@@ -190,7 +191,7 @@ def test_history_distinguishes_errors_cancellation_warnings_and_orphans(
 def test_running_page_attaches_live_pane_and_cancel_button(tmp_path: Path) -> None:
     config = session_config("c" * 32, mode="sleep")
     app, project, store, _ = seeded_app(tmp_path, [config])
-    base = f"/projects/{project.id}/sessions/{config.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{config.id}"
     with TestClient(app, base_url="http://localhost") as client:
         assert client.post(f"{base}/run", data={"prompt": "Long"}).status_code == 202
         page = client.get(base)
@@ -207,7 +208,7 @@ def test_restart_surfaces_partial_and_error_session_can_run_again(tmp_path: Path
         rounds=[round_record(1, "running")],
     )
     app, project, store, _ = seeded_app(tmp_path, [config])
-    base = f"/projects/{project.id}/sessions/{config.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{config.id}"
     with TestClient(app, base_url="http://localhost") as client:
         page = client.get(base)
         assert "interrupted by restart" in page.text
@@ -231,7 +232,7 @@ def test_error_round_retry_appends_linked_live_round(tmp_path: Path) -> None:
         cli_session_id="failed-native-session",
     )
     app, project, store, contexts = seeded_app(tmp_path, [config])
-    base = f"/projects/{project.id}/sessions/{config.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{config.id}"
 
     with TestClient(app, base_url="http://localhost") as client:
         page = client.get(base)
