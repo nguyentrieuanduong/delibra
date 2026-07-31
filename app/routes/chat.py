@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import Project, SessionConfig
+from app.project_routing import request_project
 from app.routes.auto import auto_status_context, project_auto_record
 from app.routes.runs import start_run_fragment
 from app.security import validate_field
@@ -103,10 +104,11 @@ async def chat_page(
     project_id: str,
     agent: str | None = Query(None),
 ):
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     store = ProjectStore(project)
     sessions = store.list_sessions()
-    auto_record = project_auto_record(request, project_id)
+    auto_record = project_auto_record(request, resolved_project_id)
     auto_active = (
         auto_record is not None
         and auto_record.status in ACTIVE_AUTO_STATUSES
@@ -124,9 +126,9 @@ async def chat_page(
         context={
             "project": project,
             "sessions": sessions,
-            "timeline": _timeline(request, project_id, store),
+            "timeline": _timeline(request, resolved_project_id, store),
             "auto_status": (
-                auto_status_context(request, project_id, auto_record)
+                auto_status_context(request, resolved_project_id, auto_record)
                 if auto_record is not None
                 else None
             ),
@@ -143,7 +145,8 @@ async def chat_page(
     response_class=HTMLResponse,
 )
 async def chat_timeline(request: Request, project_id: str) -> HTMLResponse:
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     store = ProjectStore(project)
     return request.app.state.templates.TemplateResponse(
         request=request,
@@ -151,7 +154,7 @@ async def chat_timeline(request: Request, project_id: str) -> HTMLResponse:
         context={
             "project": project,
             "sessions": store.list_sessions(),
-            "timeline": _timeline(request, project_id, store),
+            "timeline": _timeline(request, resolved_project_id, store),
             "auto_active": store.active_auto_run_id() is not None,
             "pass_prompt_template": store.effective_pass_prompt_template(),
         },
@@ -164,7 +167,7 @@ async def chat_sidebar(
     project_id: str,
     agent: str | None = Query(None),
 ):
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     return sidebar_response(
         request,
         project,
@@ -179,13 +182,13 @@ async def chat_select(
     project_id: str,
     agent: str | None = Query(None),
 ) -> HTMLResponse:
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     sessions = ProjectStore(project).list_sessions()
     selected = selected_session(sessions, agent)
     headers = (
         {
             "HX-Push-Url": project_url(
-                project.id,
+                project.name,
                 f"/chat?agent={selected.id}",
             )
         }
@@ -212,7 +215,7 @@ async def round_focus(
     round_n: int,
 ) -> HTMLResponse:
     validate_id(session_id, "session id")
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     store = ProjectStore(project)
     session = store.load_session(session_id)
     focused = next(
@@ -251,7 +254,8 @@ async def chat_run(
 ):
     validate_id(session_id, "session id")
     prompt = validate_field(prompt, "Prompt", maximum=100_000)
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     sessions = {item.id: item for item in ProjectStore(project).list_sessions()}
     if session_id not in sessions:
         raise HTTPException(
@@ -260,7 +264,7 @@ async def chat_run(
         )
     return await start_run_fragment(
         request,
-        project_id,
+        resolved_project_id,
         session_id,
         prompt,
         chat_view=True,

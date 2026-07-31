@@ -6,7 +6,7 @@
         type="button"
         class="focus-round"
         aria-haspopup="dialog"
-        hx-get="{{ project_url(project.id, '/sessions/' ~ session_id ~ '/rounds/' ~ round.n ~ '/focus') }}"
+        hx-get="{{ project_url(project.name, '/sessions/' ~ session_id ~ '/rounds/' ~ round.n ~ '/focus') }}"
         hx-target="#focus-dialog-content"
         hx-swap="innerHTML"
       >Focus</button>

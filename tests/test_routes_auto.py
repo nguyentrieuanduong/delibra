@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import sys
 import time
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -84,12 +85,13 @@ def auto_route_app(
     outputs: list[str] | None = None,
     sleep: bool = False,
     sleep_at: set[int] | None = None,
+    project_name: str = "Auto routes",
 ):
     settings = Settings(home=tmp_path / "home", run_timeout=2)
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     registry = RegistryStore(settings.home)
-    project = registry.register("Auto routes", project_dir)
+    project = registry.register(project_name, project_dir)
     store = ProjectStore(project)
     sessions = [
         SessionConfig(
@@ -218,6 +220,21 @@ def named_input(contents: str, name: str, value: str | None = None) -> str:
     raise AssertionError(f"input {name!r} with value {value!r} not found")
 
 
+def test_canonical_project_name_auto_setup_urls(tmp_path: Path) -> None:
+    app, _, _, _, _, _ = auto_route_app(
+        tmp_path,
+        project_name="Route Matrix",
+    )
+    project_prefix = "/projects/Route%20Matrix"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"{project_prefix}/auto/setup")
+
+    assert response.status_code == 200
+    assert f'action="{project_prefix}/auto-runs"' in response.text
+    assert f'hx-post="{project_prefix}/auto-runs"' in response.text
+
+
 def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     tmp_path: Path,
 ) -> None:
@@ -249,10 +266,10 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
 
     with TestClient(app, base_url="http://localhost") as client:
         setup = client.get(
-            f"/projects/{project.id}/auto/setup",
+            f"/projects/{quote(project.name, safe='')}/auto/setup",
             params={"topic": "must not leak"},
         )
-        chat = client.get(f"/projects/{project.id}/chat")
+        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
 
     assert setup.status_code == 200
     assert "Durable &lt;topic&gt;" in setup.text
@@ -276,7 +293,7 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
         r'<input[^>]*name="max_cycles"[^>]*min="1"[^>]*max="20"[^>]*value="3"',
         setup.text,
     )
-    assert f'hx-get="/projects/{project.id}/auto/setup"' in chat.text
+    assert f'hx-get="/projects/{quote(project.name, safe='')}/auto/setup"' in chat.text
     assert "?topic=" not in chat.text
 
 
@@ -286,8 +303,8 @@ def test_fresh_auto_setup_defers_topic_to_composer_and_get_starts_no_work(
     app, _, project, store, _, factory = auto_route_app(tmp_path)
 
     with TestClient(app, base_url="http://localhost") as client:
-        setup = client.get(f"/projects/{project.id}/auto/setup")
-        chat = client.get(f"/projects/{project.id}/chat")
+        setup = client.get(f"/projects/{quote(project.name, safe='')}/auto/setup")
+        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
 
     assert setup.status_code == 200
     assert 'data-topic-source="composer"' in setup.text
@@ -322,7 +339,7 @@ def test_auto_start_rejects_invalid_participants_policy_and_cycles_before_creati
         rounds=[],
     )
     ProjectStore(other).create_session(foreign)
-    base = f"/projects/{project.id}/auto-runs"
+    base = f"/projects/{quote(project.name, safe='')}/auto-runs"
     valid_ids = [session.id for session in sessions]
     invalid_forms = [
         (valid_ids[:1], "all_agree", "3"),
@@ -358,12 +375,12 @@ def test_auto_start_rejects_busy_project_before_creating_auto_directory(
     first = sessions[0]
     with TestClient(app, base_url="http://localhost") as client:
         running = client.post(
-            f"/projects/{project.id}/sessions/{first.id}/run",
+            f"/projects/{quote(project.name, safe='')}/sessions/{first.id}/run",
             data={"prompt": "Busy"},
         )
         blocked = start_auto(client, project.id, [session.id for session in sessions])
         cancelled = client.post(
-            f"/projects/{project.id}/sessions/{first.id}/cancel"
+            f"/projects/{quote(project.name, safe='')}/sessions/{first.id}/cancel"
         )
 
     assert running.status_code == 202
@@ -421,18 +438,18 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
             prepare_first=True,
         )
         active = wait_for_auto(store, terminal=False)
-        chat = client.get(f"/projects/{project.id}/chat")
-        status = client.get(f"/projects/{project.id}/auto-runs/{active.id}")
+        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        status = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{active.id}")
         session_page = client.get(
-            f"/projects/{project.id}/sessions/{active.active_key.session_id}"
+            f"/projects/{quote(project.name, safe='')}/sessions/{active.active_key.session_id}"
         )
-        settings_page = client.get(f"/projects/{project.id}/settings")
+        settings_page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
         index = client.get("/")
 
         stopped = client.post(
-            f"/projects/{project.id}/auto-runs/{active.id}/stop"
+            f"/projects/{quote(project.name, safe='')}/auto-runs/{active.id}/stop"
         )
-        terminal_chat = client.get(f"/projects/{project.id}/chat")
+        terminal_chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
 
     assert started.status_code == 202
     assert f'data-auto-id="{active.id}"' in started.text
@@ -488,13 +505,13 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messag
         terminal.terminal_reason = '<error data-value="unsafe">'
         terminal.discussion[0].warning = '<warning data-value="unsafe">'
         store.save_auto_run(terminal)
-        status = client.get(f"/projects/{project.id}/auto-runs/{terminal.id}")
-        fallback_setup = client.get(f"/projects/{project.id}/auto/setup")
-        timeline = client.get(f"/projects/{project.id}/chat/timeline")
+        status = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.id}")
+        fallback_setup = client.get(f"/projects/{quote(project.name, safe='')}/auto/setup")
+        timeline = client.get(f"/projects/{quote(project.name, safe='')}/chat/timeline")
         preparation_session = client.get(
-            f"/projects/{project.id}/sessions/{terminal.preparations[0].session_id}"
+            f"/projects/{quote(project.name, safe='')}/sessions/{terminal.preparations[0].session_id}"
         )
-        stream_url = f"/projects/{project.id}/auto-runs/{terminal.id}/stream"
+        stream_url = f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.id}/stream"
         with client.stream("GET", stream_url) as response:
             late = parse_sse(response)
         with client.stream(
@@ -527,7 +544,7 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messag
     )
     assert timeline.text.count("Auto preparation") == 2
     assert "Auto preparation" in preparation_session.text
-    assert f"/projects/{project.id}/auto-runs/{terminal.id}" in preparation_session.text
+    assert f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.id}" in preparation_session.text
     assert "Retry" not in preparation_session.text
     assert [event["event"] for event in late] == ["status"]
     assert [event["event"] for event in reset] == ["reset", "status"]
@@ -554,13 +571,13 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
         key = active.active_key
         assert key is not None
         timeout_path = (
-            f"/projects/{project.id}/sessions/{key.session_id}"
+            f"/projects/{quote(project.name, safe='')}/sessions/{key.session_id}"
             f"/rounds/{key.round_n}/timeout"
         )
         extension_path = f"{timeout_path}/extend"
 
-        status = client.get(f"/projects/{project.id}/auto-runs/{active.id}")
-        timeline = client.get(f"/projects/{project.id}/chat/timeline")
+        status = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{active.id}")
+        timeline = client.get(f"/projects/{quote(project.name, safe='')}/chat/timeline")
         timeout = client.get(timeout_path)
         auto_events_before = len(
             app.state.auto_manager._events[(project.id, active.id)].replay
@@ -574,7 +591,7 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
             },
         )
         refreshed_status = client.get(
-            f"/projects/{project.id}/auto-runs/{active.id}"
+            f"/projects/{quote(project.name, safe='')}/auto-runs/{active.id}"
         )
         auto_events_after_extension = len(
             app.state.auto_manager._events[(project.id, active.id)].replay
@@ -587,7 +604,7 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
                 "expected_timeout_version": "0",
             },
         )
-        client.post(f"/projects/{project.id}/auto-runs/{active.id}/stop")
+        client.post(f"/projects/{quote(project.name, safe='')}/auto-runs/{active.id}/stop")
 
     assert f'hx-get="{timeout_path}"' in status.text
     assert 'class="auto-preparation-timeout"' in status.text
@@ -610,7 +627,7 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
     assert 'hx-preserve="true"' in stream_tag
     assert 'hx-ext="sse"' in stream_tag
     assert (
-        f'sse-connect="/projects/{project.id}/auto-runs/{active.id}/stream"'
+        f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.id}/stream"'
         in stream_tag
     )
     assert 'hx-preserve="true"' in timeout_tag
@@ -620,13 +637,13 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
     )
     assert 'class="live-round"' in live_tag
     assert (
-        f'sse-connect="/projects/{project.id}/sessions/{key.session_id}'
+        f'sse-connect="/projects/{quote(project.name, safe='')}/sessions/{key.session_id}'
         f'/rounds/{key.round_n}/stream"'
     ) in live_tag
     assert "Auto preparation" in timeline.text
     assert f'hx-get="{timeout_path}"' in timeline.text
     assert status.text.count(
-        f'sse-connect="/projects/{project.id}/auto-runs/{active.id}/stream"'
+        f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.id}/stream"'
     ) == 1
     assert status.text.count('hx-trigger="sse:status, sse:reset"') == 2
 
@@ -651,12 +668,12 @@ def test_discussion_places_current_timeout_in_timeline_not_auto_status(
         key = discussing.active_key
         assert key is not None
         timeout_path = (
-            f"/projects/{project.id}/sessions/{key.session_id}"
+            f"/projects/{quote(project.name, safe='')}/sessions/{key.session_id}"
             f"/rounds/{key.round_n}/timeout"
         )
-        status = client.get(f"/projects/{project.id}/auto-runs/{discussing.id}")
-        timeline = client.get(f"/projects/{project.id}/chat/timeline")
-        client.post(f"/projects/{project.id}/auto-runs/{discussing.id}/stop")
+        status = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{discussing.id}")
+        timeline = client.get(f"/projects/{quote(project.name, safe='')}/chat/timeline")
+        client.post(f"/projects/{quote(project.name, safe='')}/auto-runs/{discussing.id}/stop")
 
     assert "future turn budget 2s" in status.text
     assert "auto-preparation-timeout" not in status.text

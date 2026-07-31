@@ -6,6 +6,7 @@ import os
 import random
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 import pytest
@@ -24,12 +25,17 @@ from app.storage import (
 )
 
 
-def setup_file_project(tmp_path: Path, *, file_view_limit: int = 512 * 1024):
+def setup_file_project(
+    tmp_path: Path,
+    *,
+    file_view_limit: int = 512 * 1024,
+    project_name: str = "Files",
+):
     settings = Settings(home=tmp_path / "home", file_view_limit=file_view_limit)
     project_path = tmp_path / "project"
     project_path.mkdir()
     registry = RegistryStore(settings.home)
-    project = registry.register("Files", project_path)
+    project = registry.register(project_name, project_path)
     app = create_app(
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
@@ -68,6 +74,27 @@ def structured_pre_text(response_text: str, kind: str) -> str:
     return unescape(match["text"])
 
 
+def test_canonical_project_name_file_urls_and_forms(
+    tmp_path: Path,
+) -> None:
+    app, _, project_path = setup_file_project(
+        tmp_path,
+        project_name="Route Matrix",
+    )
+    (project_path / "brief.md").write_text("# Brief", encoding="utf-8")
+    project_prefix = "/projects/Route%20Matrix"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"{project_prefix}/files/view",
+            params={"path": "brief.md"},
+        )
+
+    assert response.status_code == 200
+    assert f'hx-get="{project_prefix}/files/focus?path=brief.md"' in response.text
+    assert f'action="{project_prefix}/files/shared/select"' in response.text
+
+
 def test_project_path_parser_handles_generated_safe_and_unsafe_inputs() -> None:
     generator = random.Random(20260717)
     alphabet = "abcdefghijklmnopqrstuvwxyz0123456789-_."
@@ -95,7 +122,7 @@ def test_file_browser_lists_directories_then_files_with_root_breadcrumb(
     (project_path / "a.md").write_text("a", encoding="utf-8")
 
     with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{project.id}/files")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/files")
 
     assert response.status_code == 200
     assert 'id="file-browser-list"' in response.text
@@ -113,7 +140,7 @@ def test_file_browser_has_an_explicit_empty_directory_state(tmp_path: Path) -> N
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files",
+            f"/projects/{quote(project.name, safe='')}/files",
             params={"path": "empty"},
         )
 
@@ -138,11 +165,11 @@ def test_file_view_renders_markdown_safely_and_escapes_plain_text(
 
     with TestClient(app, base_url="http://localhost") as client:
         markdown = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "unsafe.MD"},
         )
         plain = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "example.py"},
         )
 
@@ -161,11 +188,11 @@ def test_user_selects_edits_and_clears_shared_markdown(tmp_path: Path) -> None:
 
     with TestClient(app, base_url="http://localhost") as client:
         opened = client.get(
-            f"/projects/{project.id}/files/view", params={"path": "brief.md"}
+            f"/projects/{quote(project.name, safe='')}/files/view", params={"path": "brief.md"}
         )
         assert "Use as shared context" in opened.text
         selected = client.post(
-            f"/projects/{project.id}/files/shared/select",
+            f"/projects/{quote(project.name, safe='')}/files/shared/select",
             data={"path": "brief.md"},
         )
         digest = re.search(
@@ -175,12 +202,12 @@ def test_user_selects_edits_and_clears_shared_markdown(tmp_path: Path) -> None:
         assert "Selected as shared context" in selected.text
         assert "<script>" not in selected.text
         focused = client.get(
-            f"/projects/{project.id}/files/focus",
+            f"/projects/{quote(project.name, safe='')}/files/focus",
             params={"path": "brief.md"},
         )
         assert "/files/shared/" not in focused.text
         saved = client.post(
-            f"/projects/{project.id}/files/shared/save",
+            f"/projects/{quote(project.name, safe='')}/files/shared/save",
             data={
                 "path": "brief.md",
                 "expected_sha256": digest.group(1),
@@ -190,7 +217,7 @@ def test_user_selects_edits_and_clears_shared_markdown(tmp_path: Path) -> None:
         assert saved.status_code == 200
         assert "Shared context saved" in saved.text
         cleared = client.post(
-            f"/projects/{project.id}/files/shared/clear",
+            f"/projects/{quote(project.name, safe='')}/files/shared/clear",
             data={"path": "brief.md"},
         )
 
@@ -212,7 +239,7 @@ def test_shared_markdown_save_rejects_external_edit_and_reserved_selection(
 
     with TestClient(app, base_url="http://localhost") as client:
         selected = client.post(
-            f"/projects/{project.id}/files/shared/select",
+            f"/projects/{quote(project.name, safe='')}/files/shared/select",
             data={"path": "brief.md"},
         )
         digest = re.search(
@@ -221,7 +248,7 @@ def test_shared_markdown_save_rejects_external_edit_and_reserved_selection(
         assert digest is not None
         source.write_text("external", encoding="utf-8")
         stale = client.post(
-            f"/projects/{project.id}/files/shared/save",
+            f"/projects/{quote(project.name, safe='')}/files/shared/save",
             data={
                 "path": "brief.md",
                 "expected_sha256": digest.group(1),
@@ -229,15 +256,15 @@ def test_shared_markdown_save_rejects_external_edit_and_reserved_selection(
             },
         )
         reserved = client.post(
-            f"/projects/{project.id}/files/shared/select",
+            f"/projects/{quote(project.name, safe='')}/files/shared/select",
             data={"path": ".delibra/owned.md"},
         )
         client.post(
-            f"/projects/{project.id}/files/shared/select",
+            f"/projects/{quote(project.name, safe='')}/files/shared/select",
             data={"path": "other.md"},
         )
         stale_clear = client.post(
-            f"/projects/{project.id}/files/shared/clear",
+            f"/projects/{quote(project.name, safe='')}/files/shared/clear",
             data={"path": "brief.md"},
         )
 
@@ -265,7 +292,7 @@ def test_generated_structured_file_values_are_pretty_and_safe(
             json_source = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
             (project_path / "value.json").write_text(json_source, encoding="utf-8")
             json_response = client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "value.json"},
             )
 
@@ -278,7 +305,7 @@ def test_generated_structured_file_values_are_pretty_and_safe(
             (project_path / "value.yaml").write_text(yaml_source, encoding="utf-8")
             yaml_route = "focus" if index == 0 else "view"
             yaml_response = client.get(
-                f"/projects/{project.id}/files/{yaml_route}",
+                f"/projects/{quote(project.name, safe='')}/files/{yaml_route}",
                 params={"path": "value.yaml"},
             )
 
@@ -305,7 +332,7 @@ def test_yml_extension_uses_the_yaml_pretty_view(tmp_path: Path) -> None:
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "value.yml"},
         )
 
@@ -324,7 +351,7 @@ def test_invalid_structured_file_shows_escaped_source_and_warning(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "invalid.json"},
         )
 
@@ -344,7 +371,7 @@ def test_structured_output_limit_falls_back_to_compact_source(tmp_path: Path) ->
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "compact.json"},
         )
 
@@ -367,7 +394,7 @@ def test_truncated_structured_file_stays_raw_with_format_warning(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "truncated.json"},
         )
 
@@ -389,19 +416,19 @@ def test_file_view_offers_close_and_descriptor_safe_focus(tmp_path: Path) -> Non
 
     with TestClient(app, base_url="http://localhost") as client:
         reader = client.get(
-            f"/projects/{project.id}/files/view", params={"path": "notes.md"}
+            f"/projects/{quote(project.name, safe='')}/files/view", params={"path": "notes.md"}
         )
         focused = client.get(
-            f"/projects/{project.id}/files/focus", params={"path": "notes.md"}
+            f"/projects/{quote(project.name, safe='')}/files/focus", params={"path": "notes.md"}
         )
         traversal = client.get(
-            f"/projects/{project.id}/files/focus",
+            f"/projects/{quote(project.name, safe='')}/files/focus",
             params={"path": "../outside.md"},
         )
 
     assert reader.status_code == 200
     assert (
-        f'hx-get="/projects/{project.id}/files/focus?path=notes.md"'
+        f'hx-get="/projects/{quote(project.name, safe='')}/files/focus?path=notes.md"'
         in reader.text
     )
     assert 'hx-target="#focus-dialog-content"' in reader.text
@@ -446,11 +473,11 @@ def test_file_view_bounds_the_descriptor_read_and_reports_display_warnings(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "invalid.txt"},
         )
         focused = client.get(
-            f"/projects/{project.id}/files/focus",
+            f"/projects/{quote(project.name, safe='')}/files/focus",
             params={"path": "invalid.txt"},
         )
 
@@ -479,20 +506,20 @@ def test_file_routes_reject_traversal_absolute_and_symlink_paths_without_detail(
     with TestClient(app, base_url="http://localhost") as client:
         responses = [
             client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "../outside/secret.bin"},
             ),
             client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "/etc/passwd"},
             ),
-            client.get(f"/projects/{project.id}/files/view?path=%2e%2e%2Fsecret.md"),
+            client.get(f"/projects/{quote(project.name, safe='')}/files/view?path=%2e%2e%2Fsecret.md"),
             client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "linked/secret.md"},
             ),
             client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "leaf.md"},
             ),
         ]
@@ -517,7 +544,7 @@ def test_file_browser_rejects_a_project_root_replaced_with_a_symlink(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "secret.md"},
         )
 
@@ -593,7 +620,7 @@ def test_valid_replacement_character_does_not_trigger_invalid_utf8_warning(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": "valid.txt"},
         )
 
@@ -671,13 +698,13 @@ def test_file_browser_encodes_names_and_marks_symlinks_and_fifos_nonopenable(
     os.mkfifo(fifo)
 
     with TestClient(app, base_url="http://localhost") as client:
-        listing = client.get(f"/projects/{project.id}/files")
+        listing = client.get(f"/projects/{quote(project.name, safe='')}/files")
         opened = client.get(
-            f"/projects/{project.id}/files/view",
+            f"/projects/{quote(project.name, safe='')}/files/view",
             params={"path": special.name},
         )
         metadata = client.get(
-            f"/projects/{project.id}/files",
+            f"/projects/{quote(project.name, safe='')}/files",
             params={"path": ".delibra"},
         )
 
@@ -688,7 +715,7 @@ def test_file_browser_encodes_names_and_marks_symlinks_and_fifos_nonopenable(
     assert opened.status_code == 200
     assert "encoded path" in opened.text
     assert (
-        f'hx-get="/projects/{project.id}/files/focus?path=notes+%231.md"'
+        f'hx-get="/projects/{quote(project.name, safe='')}/files/focus?path=notes+%231.md"'
         in opened.text
     )
     assert metadata.status_code == 200
@@ -710,34 +737,34 @@ def test_displayability_failures_are_scoped_http_200_fragments_and_routes_are_ge
     try:
         with TestClient(app, base_url="http://localhost") as client:
             unsupported = client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "archive.bin"},
             )
             binary = client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "binary.txt"},
             )
             focused_binary = client.get(
-                f"/projects/{project.id}/files/focus",
+                f"/projects/{quote(project.name, safe='')}/files/focus",
                 params={"path": "binary.txt"},
             )
             non_regular = client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "blocked.log"},
             )
             unreadable = client.get(
-                f"/projects/{project.id}/files/view",
+                f"/projects/{quote(project.name, safe='')}/files/view",
                 params={"path": "unreadable.txt"},
             )
             missing_listing = client.get(
-                f"/projects/{project.id}/files",
+                f"/projects/{quote(project.name, safe='')}/files",
                 params={"path": "missing-directory"},
             )
-            listing_markup = client.get(f"/projects/{project.id}/files")
-            post_listing = client.post(f"/projects/{project.id}/files")
-            post_view = client.post(f"/projects/{project.id}/files/view")
+            listing_markup = client.get(f"/projects/{quote(project.name, safe='')}/files")
+            post_listing = client.post(f"/projects/{quote(project.name, safe='')}/files")
+            post_view = client.post(f"/projects/{quote(project.name, safe='')}/files/view")
             post_focus = client.post(
-                f"/projects/{project.id}/files/focus",
+                f"/projects/{quote(project.name, safe='')}/files/focus",
                 params={"path": "notes.md"},
             )
     finally:

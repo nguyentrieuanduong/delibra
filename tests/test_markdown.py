@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -57,7 +58,7 @@ def test_project_markdown_links_use_owned_file_routes(tmp_path: Path) -> None:
             "reader",
         )
     )
-    reader_url = f"/projects/{project.id}/files/view?path=docs%2Freview.md"
+    reader_url = f"/projects/{quote(project.name, safe='')}/files/view?path=docs%2Freview.md"
 
     assert rendered.count(f'href="{reader_url}"') == 2
     assert rendered.count(f'hx-get="{reader_url}"') == 2

@@ -6,8 +6,8 @@
 >
   <form
     method="post"
-    action="{{ project_url(project.id, '/auto-runs') }}"
-    hx-post="{{ project_url(project.id, '/auto-runs') }}"
+    action="{{ project_url(project.name, '/auto-runs') }}"
+    hx-post="{{ project_url(project.name, '/auto-runs') }}"
     hx-target="#auto-status-host"
     hx-swap="innerHTML"
   >

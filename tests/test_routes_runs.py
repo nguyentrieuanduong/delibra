@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import sys
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -65,6 +66,7 @@ def seeded_app(
     replay_limit: int = 5 * 1024 * 1024,
     run_timeout: int | None = None,
     max_run_timeout: int | None = None,
+    project_name: str = "Routes",
 ):
     defaults = Settings(home=tmp_path / "home")
     settings = replace(
@@ -80,7 +82,7 @@ def seeded_app(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     registry = RegistryStore(settings.home)
-    project = registry.register("Routes", project_dir)
+    project = registry.register(project_name, project_dir)
     store = ProjectStore(project)
     session = SessionConfig(
         id="a" * 32,
@@ -126,9 +128,22 @@ def parse_sse(response) -> list[dict[str, str]]:
     return events
 
 
+def test_legacy_uuid_run_emits_canonical_project_name_urls(tmp_path: Path) -> None:
+    app, project, session, _ = seeded_app(tmp_path, project_name="Route Matrix")
+    legacy_base = "/projects/" + project.id + f"/sessions/{session.id}"
+    canonical_base = f"/projects/Route%20Matrix/sessions/{session.id}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        started = client.post(f"{legacy_base}/run", data={"prompt": "Question"})
+
+    assert started.status_code == 202
+    assert f'sse-connect="{canonical_base}/rounds/1/stream"' in started.text
+    assert f'hx-post="{canonical_base}/cancel"' in started.text
+
+
 def test_post_run_stream_reconnect_late_done_and_final_fragment(tmp_path: Path) -> None:
     app, project, session, store = seeded_app(tmp_path)
-    base = f"/projects/{project.id}/sessions/{session.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{session.id}"
     with TestClient(app, base_url="http://localhost") as client:
         started = client.post(f"{base}/run", data={"prompt": "Question"})
         assert started.status_code == 202
@@ -164,7 +179,16 @@ def test_post_run_stream_reconnect_late_done_and_final_fragment(tmp_path: Path) 
         assert all(int(event["id"]) > pivot for event in replay)
         assert replay[-1]["event"] == "done"
 
-        with client.stream("GET", stream_url) as response:
+        legacy_stream_url = (
+            "/projects/"
+            + project.id
+            + f"/sessions/{session.id}/rounds/1/stream"
+        )
+        with client.stream(
+            "GET",
+            legacy_stream_url,
+            follow_redirects=False,
+        ) as response:
             late = parse_sse(response)
         assert [event["event"] for event in late] == ["done"]
 
@@ -178,7 +202,7 @@ def test_post_run_stream_reconnect_late_done_and_final_fragment(tmp_path: Path) 
 
 def test_replay_gap_streams_reset_snapshot_and_done(tmp_path: Path) -> None:
     app, project, session, _ = seeded_app(tmp_path, replay_limit=90)
-    base = f"/projects/{project.id}/sessions/{session.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{session.id}"
     with TestClient(app, base_url="http://localhost") as client:
         client.post(f"{base}/run", data={"prompt": "Question"})
         stream_url = f"{base}/rounds/1/stream"
@@ -195,7 +219,7 @@ def test_replay_gap_streams_reset_snapshot_and_done(tmp_path: Path) -> None:
 
 def test_cancel_route_finalizes_running_round(tmp_path: Path) -> None:
     app, project, session, store = seeded_app(tmp_path, mode="sleep")
-    base = f"/projects/{project.id}/sessions/{session.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{session.id}"
     with TestClient(app, base_url="http://localhost") as client:
         started = client.post(f"{base}/run", data={"prompt": "Long question"})
         assert started.status_code == 202
@@ -209,7 +233,7 @@ def test_cancel_route_finalizes_running_round(tmp_path: Path) -> None:
 
 def test_live_round_exposes_authoritative_timeout_fragment(tmp_path: Path) -> None:
     app, project, session, _ = seeded_app(tmp_path, mode="sleep")
-    base = f"/projects/{project.id}/sessions/{session.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{session.id}"
     with TestClient(app, base_url="http://localhost") as client:
         started = client.post(f"{base}/run", data={"prompt": "Long question"})
         assert started.status_code == 202
@@ -237,7 +261,7 @@ def test_timeout_extension_replaces_fragment_and_refreshes_stale_conflict(
     tmp_path: Path,
 ) -> None:
     app, project, session, _ = seeded_app(tmp_path, mode="sleep")
-    base = f"/projects/{project.id}/sessions/{session.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{session.id}"
     extension = f"{base}/rounds/1/timeout/extend"
     with TestClient(app, base_url="http://localhost") as client:
         client.post(f"{base}/run", data={"prompt": "Long question"})
@@ -273,7 +297,7 @@ def test_manual_timeout_rejects_future_auto_scope_without_changing_version(
     tmp_path: Path,
 ) -> None:
     app, project, session, _ = seeded_app(tmp_path, mode="sleep")
-    base = f"/projects/{project.id}/sessions/{session.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{session.id}"
     timeout_path = f"{base}/rounds/1/timeout"
     with TestClient(app, base_url="http://localhost") as client:
         client.post(f"{base}/run", data={"prompt": "Long question"})
@@ -304,7 +328,7 @@ def test_timeout_fragment_disables_every_extension_at_hard_cap(
         run_timeout=60,
         max_run_timeout=60,
     )
-    base = f"/projects/{project.id}/sessions/{session.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{session.id}"
     with TestClient(app, base_url="http://localhost") as client:
         client.post(f"{base}/run", data={"prompt": "At cap"})
         fragment = client.get(f"{base}/rounds/1/timeout")

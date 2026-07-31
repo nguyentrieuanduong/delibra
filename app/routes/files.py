@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from app.project_routing import request_project
 from app.storage import (
     ConflictError,
     ProjectFileDisplayError,
@@ -47,19 +48,19 @@ STRUCTURED_EXTENSIONS: dict[str, StructuredKind] = {
 }
 
 
-def _listing_url(project_id: str, path: str) -> str:
+def _listing_url(project_name: str, path: str) -> str:
     query = urlencode({"path": path})
-    return project_url(project_id, f"/files?{query}")
+    return project_url(project_name, f"/files?{query}")
 
 
-def _view_url(project_id: str, path: str) -> str:
+def _view_url(project_name: str, path: str) -> str:
     query = urlencode({"path": path})
-    return project_url(project_id, f"/files/view?{query}")
+    return project_url(project_name, f"/files/view?{query}")
 
 
-def _focus_url(project_id: str, path: str) -> str:
+def _focus_url(project_name: str, path: str) -> str:
     query = urlencode({"path": path})
-    return project_url(project_id, f"/files/focus?{query}")
+    return project_url(project_name, f"/files/focus?{query}")
 
 
 @contextmanager
@@ -73,19 +74,19 @@ def _shared_path_http_boundary() -> Iterator[None]:
         ) from exc
 
 
-def _breadcrumbs(project_id: str, path: str) -> list[dict[str, str]]:
+def _breadcrumbs(project_name: str, path: str) -> list[dict[str, str]]:
     parts = project_path_parts(path)
     breadcrumbs = [
         {
             "label": "Project root",
-            "url": _listing_url(project_id, ""),
+            "url": _listing_url(project_name, ""),
         }
     ]
     for index, part in enumerate(parts, start=1):
         breadcrumbs.append(
             {
                 "label": part,
-                "url": _listing_url(project_id, "/".join(parts[:index])),
+                "url": _listing_url(project_name, "/".join(parts[:index])),
             }
         )
     return breadcrumbs
@@ -97,15 +98,15 @@ async def list_files(
     project_id: str,
     path: str = Query(""),
 ) -> HTMLResponse:
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     try:
         entries = list_project_directory(Path(project.path), path)
-        breadcrumbs = _breadcrumbs(project_id, path)
+        breadcrumbs = _breadcrumbs(project.name, path)
     except ProjectFileSecurityError as exc:
         raise HTTPException(status_code=422, detail="invalid project file path") from exc
     except ProjectFileDisplayError:
         entries = []
-        breadcrumbs = _breadcrumbs(project_id, "")
+        breadcrumbs = _breadcrumbs(project.name, "")
         error = "This directory cannot be displayed."
     else:
         error = None
@@ -113,9 +114,9 @@ async def list_files(
         {
             "entry": entry,
             "url": (
-                _listing_url(project_id, entry.relative_path)
+                _listing_url(project.name, entry.relative_path)
                 if entry.kind == "directory"
-                else _view_url(project_id, entry.relative_path)
+                else _view_url(project.name, entry.relative_path)
             ),
         }
         for entry in entries
@@ -137,7 +138,7 @@ def _file_view_context(
     project_id: str,
     path: str,
 ) -> dict[str, object]:
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     try:
         project_path_parts(path)
     except ProjectFileSecurityError as exc:
@@ -221,7 +222,7 @@ def _file_view_context(
         "replacements": replacements,
         "structured_warning": structured_warning,
         "file_error": error,
-        "focus_url": _focus_url(project_id, path),
+        "focus_url": _focus_url(project.name, path),
         **shared_view,
     }
 
@@ -288,16 +289,20 @@ async def select_shared_file(
     project_id: str,
     path: str = Form(...),
 ) -> HTMLResponse:
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     with _shared_path_http_boundary():
-        async with request.app.state.locks.registry_project_sessions(project_id):
-            project = request.app.state.registry.get(project_id)
+        async with request.app.state.locks.registry_project_sessions(
+            resolved_project_id
+        ):
+            project = request.app.state.registry.get(resolved_project_id)
             ProjectStore(project).select_shared_markdown(
                 path,
                 request.app.state.settings.file_view_limit,
             )
         return _shared_file_response(
             request,
-            project_id,
+            resolved_project_id,
             path,
             "Selected as shared context.",
         )
@@ -314,9 +319,13 @@ async def save_shared_file(
     expected_sha256: str = Form(...),
     text: str = Form(...),
 ) -> HTMLResponse:
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     with _shared_path_http_boundary():
-        async with request.app.state.locks.registry_project_sessions(project_id):
-            project = request.app.state.registry.get(project_id)
+        async with request.app.state.locks.registry_project_sessions(
+            resolved_project_id
+        ):
+            project = request.app.state.registry.get(resolved_project_id)
             ProjectStore(project).save_shared_markdown(
                 path,
                 expected_sha256,
@@ -325,7 +334,7 @@ async def save_shared_file(
             )
         return _shared_file_response(
             request,
-            project_id,
+            resolved_project_id,
             path,
             "Shared context saved.",
         )
@@ -340,9 +349,13 @@ async def clear_shared_file(
     project_id: str,
     path: str = Form(...),
 ) -> HTMLResponse:
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     with _shared_path_http_boundary():
-        async with request.app.state.locks.registry_project_sessions(project_id):
-            project = request.app.state.registry.get(project_id)
+        async with request.app.state.locks.registry_project_sessions(
+            resolved_project_id
+        ):
+            project = request.app.state.registry.get(resolved_project_id)
             store = ProjectStore(project)
             normalized = "/".join(shared_markdown_path_parts(path))
             if store.selected_shared_markdown_path() != normalized:
@@ -352,7 +365,7 @@ async def clear_shared_file(
             store.clear_shared_markdown()
         return _shared_file_response(
             request,
-            project_id,
+            resolved_project_id,
             path,
             "Shared context cleared.",
         )

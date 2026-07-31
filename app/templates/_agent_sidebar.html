@@ -8,8 +8,8 @@
     <summary>Create agent</summary>
     <form
       method="post"
-      action="{{ project_url(project.id, '/sessions') }}"
-      hx-post="{{ project_url(project.id, '/sessions') }}"
+      action="{{ project_url(project.name, '/sessions') }}"
+      hx-post="{{ project_url(project.name, '/sessions') }}"
       hx-target="#agent-sidebar"
       hx-swap="outerHTML"
       data-session-config-form

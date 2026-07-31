@@ -10,6 +10,7 @@ from fastapi.responses import RedirectResponse
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import SessionConfig
+from app.project_routing import request_project
 from app.routes.chat import sidebar_response
 from app.security import validate_agent_name, validate_field
 from app.storage import (
@@ -78,9 +79,14 @@ async def create_session(
     agent, model, effort, role_instructions = _validated_configuration(
         agent, model, effort, role_instructions
     )
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     session_id = uuid4().hex
-    async with request.app.state.locks.project_sessions(project_id, [session_id]):
-        project = request.app.state.registry.get(project_id)
+    async with request.app.state.locks.project_sessions(
+        resolved_project_id,
+        [session_id],
+    ):
+        project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
         config = SessionConfig(
@@ -104,13 +110,13 @@ async def create_session(
             composer_oob=True,
             headers={
                 "HX-Push-Url": project_url(
-                    project.id,
+                    project.name,
                     f"/chat?agent={session_id}",
                 )
             },
         )
     return RedirectResponse(
-        project_url(project.id, f"/chat?agent={session_id}"),
+        project_url(project.name, f"/chat?agent={session_id}"),
         status_code=303,
     )
 
@@ -130,8 +136,13 @@ async def edit_session(
     supplied_configuration = any(
         value is not None for value in (agent, model, effort, role_instructions)
     )
-    async with request.app.state.locks.project_sessions(project_id, [session_id]):
-        project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    async with request.app.state.locks.project_sessions(
+        resolved_project_id,
+        [session_id],
+    ):
+        project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
         config = store.load_session(session_id)
@@ -185,7 +196,7 @@ async def edit_session(
             composer_oob=True,
         )
     return RedirectResponse(
-        project_url(project.id, f"/sessions/{session_id}"),
+        project_url(project.name, f"/sessions/{session_id}"),
         status_code=303,
     )
 
@@ -199,8 +210,13 @@ async def set_permanent_session_name(
 ):
     validate_id(session_id, "session id")
     name = validate_agent_name(name)
-    async with request.app.state.locks.project_sessions(project_id, [session_id]):
-        project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    async with request.app.state.locks.project_sessions(
+        resolved_project_id,
+        [session_id],
+    ):
+        project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
         config = store.load_session(session_id)
@@ -208,7 +224,7 @@ async def set_permanent_session_name(
             raise ConflictError("cannot name a running session")
         store.set_legacy_session_name(session_id, name)
     return RedirectResponse(
-        project_url(project.id, "/settings"),
+        project_url(project.name, "/settings"),
         status_code=303,
     )
 
@@ -219,21 +235,27 @@ async def delete_session(
     project_id: str,
     session_id: str,
 ):
-    async with request.app.state.locks.project_sessions(project_id, [session_id]):
-        project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    async with request.app.state.locks.project_sessions(
+        resolved_project_id,
+        [session_id],
+    ):
+        project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
         store.delete_session(session_id)
-    return RedirectResponse(project_url(project.id), status_code=303)
+    return RedirectResponse(project_url(project.name), status_code=303)
 
 
 @router.get("/projects/{project_id}/sessions/{session_id}")
 async def session_page(request: Request, project_id: str, session_id: str):
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
     store = ProjectStore(project)
     session = store.load_session(session_id)
     sessions = store.list_sessions()
-    active_key = request.app.state.manager.active_key(project_id, session_id)
+    active_key = request.app.state.manager.active_key(resolved_project_id, session_id)
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="session.html",
@@ -258,7 +280,7 @@ async def round_fragment(
     round_n: int,
     display: str | None = Query(None, alias="view"),
 ):
-    project = request.app.state.registry.get(project_id)
+    project = request_project(request, project_id)
     store = ProjectStore(project)
     session = store.load_session(session_id)
     sessions = store.list_sessions()

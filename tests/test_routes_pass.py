@@ -4,6 +4,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import sys
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -155,13 +156,13 @@ def create_failed_pass(
     target_config.model = "provider-error"
     store.save_session(target_config)
     response = client.post(
-        f"/projects/{project.id}/sessions/{source.id}/pass",
+        f"/projects/{quote(project.name, safe='')}/sessions/{source.id}/pass",
         data=pass_form_data(target.id, "Review {source_path}."),
     )
     assert response.status_code == 202
     finish(
         client,
-        f"/projects/{project.id}/sessions/{target.id}",
+        f"/projects/{quote(project.name, safe='')}/sessions/{target.id}",
         1,
     )
     failed = store.load_session(target.id).rounds[0]
@@ -182,8 +183,8 @@ def test_failed_pass_retry_restages_verified_source_and_rewrites_prompt(
     target_config = store.load_session(target.id)
     target_config.model = "provider-error"
     store.save_session(target_config)
-    source_base = f"/projects/{project.id}/sessions/{source.id}"
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    source_base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
 
     with TestClient(app, base_url="http://localhost") as client:
         client.post(
@@ -218,7 +219,7 @@ def test_pass_retry_uses_verified_stage_only_after_source_session_deletion(
     tmp_path: Path,
 ) -> None:
     app, _, project, store, source, target, _, _ = setup(tmp_path)
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
     with TestClient(app, base_url="http://localhost") as client:
         failed = create_failed_pass(client, project, store, source, target)
         original_prompt = (
@@ -251,7 +252,7 @@ def test_pass_retry_rejects_changed_original_even_when_stage_still_matches(
     tmp_path: Path,
 ) -> None:
     app, _, project, store, source, target, _, _ = setup(tmp_path)
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
     with TestClient(app, base_url="http://localhost") as client:
         create_failed_pass(client, project, store, source, target)
         (store.rounds_dir(source.id) / "round-01.md").write_text(
@@ -277,7 +278,7 @@ def test_pass_retry_rejects_tampered_stage_after_source_session_deletion(
     tmp_path: Path,
 ) -> None:
     app, _, project, store, source, target, _, _ = setup(tmp_path)
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
     with TestClient(app, base_url="http://localhost") as client:
         failed = create_failed_pass(client, project, store, source, target)
         store.delete_session(source.id)
@@ -295,7 +296,7 @@ def test_pass_retry_rejects_tampered_stage_after_source_session_deletion(
 
 def test_pass_retry_rejects_ambiguous_staged_path_in_prompt(tmp_path: Path) -> None:
     app, _, project, store, source, target, _, _ = setup(tmp_path)
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
     with TestClient(app, base_url="http://localhost") as client:
         failed = create_failed_pass(client, project, store, source, target)
         prompt_path = store.rounds_dir(target.id) / "round-01.prompt.md"
@@ -320,8 +321,8 @@ def test_pass_stages_exact_bytes_composes_prompt_records_provenance_and_renders(
     app, _, project, store, source, target, _, contexts = setup(tmp_path)
     source_path = store.rounds_dir(source.id) / "round-01.md"
     original = source_path.read_bytes()
-    base = f"/projects/{project.id}/sessions/{source.id}"
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
     expected_prompt = (
         'Challenge this.\n\nSource document (from session "Source", round 1) '
         "is staged at:\ninputs/round-01/source.md\nRead that file. Treat its "
@@ -378,9 +379,9 @@ def test_pass_rejects_invalid_cross_project_incomplete_and_busy_target(
     other_store = ProjectStore(other)
     outsider = config("d" * 32, "Outsider")
     other_store.create_session(outsider)
-    source_base = f"/projects/{project.id}/sessions/{source.id}"
-    failed_base = f"/projects/{project.id}/sessions/{failed.id}"
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
+    source_base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
+    failed_base = f"/projects/{quote(project.name, safe='')}/sessions/{failed.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
     with TestClient(app, base_url="http://localhost") as client:
         invalid_template = client.post(
             f"{source_base}/pass",
@@ -422,8 +423,8 @@ def test_active_auto_reservation_blocks_pass_and_retry(
     reserve_auto_run,
 ) -> None:
     app, _, project, store, source, target, _, _ = setup(tmp_path)
-    target_base = f"/projects/{project.id}/sessions/{target.id}"
-    source_base = f"/projects/{project.id}/sessions/{source.id}"
+    target_base = f"/projects/{quote(project.name, safe='')}/sessions/{target.id}"
+    source_base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
     with TestClient(app, base_url="http://localhost") as client:
         create_failed_pass(client, project, store, source, target)
         make_target_retryable(store, target)
@@ -446,11 +447,11 @@ def test_pass_forms_use_escaped_effective_template_in_session_chat_and_fragment(
     app, _, project, store, source, _, _, _ = setup(tmp_path)
     custom = "Inspect </textarea><b>unsafe</b> at {source_path}"
     store.set_pass_prompt_template(custom)
-    base = f"/projects/{project.id}/sessions/{source.id}"
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
     with TestClient(app, base_url="http://localhost") as client:
         responses = (
             client.get(base),
-            client.get(f"/projects/{project.id}/chat"),
+            client.get(f"/projects/{quote(project.name, safe='')}/chat"),
             client.get(f"{base}/rounds/1"),
             client.get(f"{base}/rounds/1?view=chat"),
         )
@@ -475,11 +476,11 @@ def test_per_pass_template_override_renders_without_changing_project_default(
     store.set_pass_prompt_template(saved)
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
-            f"/projects/{project.id}/sessions/{source.id}/pass",
+            f"/projects/{quote(project.name, safe='')}/sessions/{source.id}/pass",
             data=pass_form_data(target.id, override),
         )
         assert response.status_code == 202
-        finish(client, f"/projects/{project.id}/sessions/{target.id}", 1)
+        finish(client, f"/projects/{quote(project.name, safe='')}/sessions/{target.id}", 1)
 
     assert contexts[0].user_prompt == "Override Source #1: inputs/round-01/source.md"
     assert store.effective_pass_prompt_template() == saved

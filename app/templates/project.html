@@ -2,7 +2,7 @@
 {% from "_form_macros.html" import effort_options %}
 {% block title %}{{ project.name }} · Delibra{% endblock %}
 {% block content %}
-  <p><a href="/">Projects</a> · <a href="{{ project_url(project.id, '/chat') }}">Chat</a></p>
+  <p><a href="/">Projects</a> · <a href="{{ project_url(project.name, '/chat') }}">Chat</a></p>
   <h1>{{ project.name }}</h1>
   <p><code>{{ project.path }}</code></p>
   <section aria-labelledby="shared-context-heading">
@@ -20,7 +20,7 @@
   </section>
   <section aria-labelledby="pass-prompt-heading">
     <h2 id="pass-prompt-heading">Default Pass prompt</h2>
-    <form method="post" action="{{ project_url(project.id, '/pass-prompt') }}">
+    <form method="post" action="{{ project_url(project.name, '/pass-prompt') }}">
       <label>Prompt template
         <textarea name="pass_prompt_template" maxlength="10000" required>{{ pass_prompt_template }}</textarea>
       </label>
@@ -28,14 +28,14 @@
       <p class="warning">Passed output is untrusted. Removing the safety wording can expose the receiving agent to prompt injection.</p>
       <button type="submit">Save default Pass prompt</button>
     </form>
-    <form method="post" action="{{ project_url(project.id, '/pass-prompt/reset') }}">
+    <form method="post" action="{{ project_url(project.name, '/pass-prompt/reset') }}">
       <button type="submit">Reset to built-in default</button>
     </form>
   </section>
   <h2>Sessions</h2>
   <details>
     <summary>Create session</summary>
-    <form method="post" action="{{ project_url(project.id, '/sessions') }}" data-session-config-form data-agent="claude">
+    <form method="post" action="{{ project_url(project.name, '/sessions') }}" data-session-config-form data-agent="claude">
       <label>Name
         <input name="name" maxlength="200" required>
         <small>
@@ -64,11 +64,11 @@
     <div class="sessions">
       {% for session in sessions %}
         <article class="session-card">
-          <h3><a href="{{ project_url(project.id, '/sessions/' ~ session.id) }}">{{ session.name }}</a></h3>
+          <h3><a href="{{ project_url(project.name, '/sessions/' ~ session.id) }}">{{ session.name }}</a></h3>
           <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
           <details>
             <summary>Edit</summary>
-            <form method="post" action="{{ project_url(project.id, '/sessions/' ~ session.id ~ '/edit') }}" data-session-config-form data-agent="{{ session.agent }}">
+            <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/edit') }}" data-session-config-form data-agent="{{ session.agent }}">
               <p class="immutable-agent-name">{{ session.name }}</p>
               <p class="immutability-hint">Agent name and directory are permanent.</p>
               {% if not session.rounds %}
@@ -103,7 +103,7 @@
             {% endfor %}
             <form
               method="post"
-              action="{{ project_url(project.id, '/sessions/' ~ session.id ~ '/permanent-name') }}"
+              action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/permanent-name') }}"
             >
               <label>Permanent agent name
                 <input name="name" maxlength="200" value="{{ session.name }}" required>
@@ -114,7 +114,7 @@
               <button type="submit">Set permanent name and migrate directory</button>
             </form>
           {% endif %}
-          <form method="post" action="{{ project_url(project.id, '/sessions/' ~ session.id ~ '/delete') }}">
+          <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/delete') }}">
             <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Delete</button>
           </form>
         </article>
