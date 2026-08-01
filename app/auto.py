@@ -24,6 +24,7 @@ from app.models import (
     SessionConfig,
 )
 from app.storage import (
+    AutoMigrationStatus,
     ConflictError,
     LockCoordinator,
     OwnershipError,
@@ -1081,46 +1082,65 @@ class AutoManager:
             for (candidate_project_id, _), task in self._tasks.items()
         )
 
-    def reconcile_store_locked(self, store: ProjectStore) -> None:
-        records = store.list_auto_runs()
+    def _reconcile_record_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+    ) -> None:
+        if record.status not in ACTIVE_AUTO_STATUSES:
+            return
+        if record.active_key is not None and record.active_timeout is not None:
+            session = store.load_session(record.active_key.session_id)
+            active_round = next(
+                (
+                    item
+                    for item in session.rounds
+                    if item.n == record.active_key.round_n
+                    and item.source.type == "auto"
+                    and item.auto is not None
+                    and item.auto.auto_id == record.id
+                ),
+                None,
+            )
+            if active_round is not None:
+                active_round.timeout = deepcopy(record.active_timeout)
+                store.save_session(session)
+        self._transition_terminal_locked(
+            store,
+            record,
+            "interrupted",
+            "interrupted by restart",
+        )
+
+    def reconcile_store_locked(
+        self,
+        store: ProjectStore,
+        records: Sequence[AutoRunRecord],
+    ) -> None:
+        by_id = {record.id: record for record in records}
         active_id = store.active_auto_run_id()
-        if active_id is not None:
-            store.load_auto_run(active_id)
         for record in records:
-            if record.status in ACTIVE_AUTO_STATUSES:
-                if record.active_key is not None and record.active_timeout is not None:
-                    session = store.load_session(record.active_key.session_id)
-                    active_round = next(
-                        (
-                            item
-                            for item in session.rounds
-                            if item.n == record.active_key.round_n
-                            and item.source.type == "auto"
-                            and item.auto is not None
-                            and item.auto.auto_id == record.id
-                        ),
-                        None,
-                    )
-                    if active_round is not None:
-                        active_round.timeout = deepcopy(record.active_timeout)
-                        store.save_session(session)
-                self._transition_terminal_locked(
-                    store,
-                    record,
-                    "interrupted",
-                    "interrupted by restart",
-                )
-        if active_id is not None and store.active_auto_run_id() == active_id:
+            self._reconcile_record_locked(store, record)
+        if (
+            active_id is not None
+            and active_id in by_id
+            and store.active_auto_run_id() == active_id
+        ):
             terminal = store.load_auto_run(active_id)
             if terminal.status in TERMINAL_AUTO_STATUSES:
                 store.clear_auto_reservation(active_id)
 
-    async def reconcile_project(self, project_id: str) -> None:
+    async def reconcile_project(
+        self,
+        project_id: str,
+    ) -> AutoMigrationStatus:
         project = self.registry.get(project_id)
         store = ProjectStore(project)
         session_ids = [session.id for session in store.list_sessions()]
         async with self.locks.project_sessions(project_id, session_ids):
-            self.reconcile_store_locked(store)
+            status = store.migrate_auto_run_directories()
+            self.reconcile_store_locked(store, status.readable_records)
+            return status
 
     async def shutdown(self) -> None:
         self._quiescing = True

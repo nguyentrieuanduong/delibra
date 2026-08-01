@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
@@ -62,6 +62,8 @@ AUTO_STATUSES = frozenset(
 )
 AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
 AUTO_INDEX_FORMAT = "delibra-auto-index/1"
+AUTO_NUMBER_PATTERN = re.compile(r"[1-9][0-9]*\Z")
+AUTO_CREATING_PATTERN = re.compile(r"\.creating-([0-9a-f]{32})-([1-9][0-9]*)\Z")
 AUTO_CONTEXT_PATTERN = re.compile(r"^\.turn-context-[0-9a-f]{32}\.md$")
 AGENT_NAME_MAX_BYTES = 200
 WINDOWS_DEVICE_NAMES = frozenset(
@@ -806,6 +808,27 @@ class _SessionLocation:
 
 
 @dataclass(frozen=True)
+class _AutoLocation:
+    path: Path
+    number: int | None
+    legacy: bool
+
+
+@dataclass(frozen=True)
+class AutoMigrationIssue:
+    child: str
+    message: str
+
+
+@dataclass(frozen=True)
+class AutoMigrationStatus:
+    complete: bool
+    legacy_ids: tuple[str, ...]
+    issues: tuple[AutoMigrationIssue, ...]
+    readable_records: tuple[AutoRunRecord, ...]
+
+
+@dataclass(frozen=True)
 class SessionMigrationIssue:
     session_id: str
     name: str
@@ -1165,7 +1188,7 @@ class ProjectStore:
         self.sessions_root = self.root / "sessions"
         ensure_owned_directory(self.sessions_root, self.root)
         self._session_directory_cache: dict[str, _SessionLocation] | None = None
-        self._auto_directory_cache: dict[str, Path] | None = None
+        self._auto_directory_cache: dict[str, _AutoLocation] | None = None
 
     def _load_manifest(self) -> dict[str, Any]:
         manifest = load_json_recover(self.manifest_path)
@@ -1239,34 +1262,10 @@ class ProjectStore:
         raise StorageError("Auto run index has no valid recovery copy")
 
     def _rebuild_auto_index(self) -> dict[str, object]:
-        runs: dict[str, int] = {}
-        for child in self.auto_runs_root.iterdir():
-            if not child.name.isdecimal() or str(int(child.name)) != child.name:
-                continue
-            number = int(child.name)
-            if number < 1:
-                raise StorageError("Auto run directory number is invalid")
-            _assert_no_symlink_components(
-                child,
-                self.auto_runs_root,
-                allow_missing_leaf=False,
-            )
-            data = load_json_recover(child / "config.json")
-            if not isinstance(data, dict) or data.get("format") != AUTO_FORMAT:
-                raise StorageError("Auto run config is invalid")
-            try:
-                record = AutoRunRecord.from_dict(data)
-                self._validate_auto_record(record, self.project.id)
-            except (KeyError, TypeError, ValueError, StorageError) as exc:
-                raise StorageError("Auto run config is invalid") from exc
-            if record.number != number or record.id in runs:
-                raise StorageError("Auto run numeric identity is invalid")
-            runs[record.id] = number
-        return {
-            "format": AUTO_INDEX_FORMAT,
-            "next_number": max(runs.values(), default=0) + 1,
-            "runs": runs,
-        }
+        status = self._scan_auto_directories()
+        if status.issues:
+            raise StorageError(status.issues[0].message)
+        return self._auto_index_from_directory_cache(minimum_next=1)
 
     def _load_or_rebuild_auto_index(self) -> dict[str, object]:
         try:
@@ -1275,6 +1274,335 @@ class ProjectStore:
             index = self._rebuild_auto_index()
             atomic_write_json_recovery_pair(self.auto_index_path, index)
             return index
+
+    def _load_auto_record_at(
+        self,
+        run_dir: Path,
+        *,
+        expected_number: int | None,
+        legacy: bool,
+    ) -> AutoRunRecord:
+        _assert_no_symlink_components(
+            run_dir,
+            self.auto_runs_root,
+            allow_missing_leaf=False,
+        )
+        try:
+            data = load_json_recover(run_dir / "config.json")
+            if not isinstance(data, dict) or data.get("format") != AUTO_FORMAT:
+                raise OwnershipError("Auto run config is invalid")
+            record = AutoRunRecord.from_dict(data)
+        except (KeyError, TypeError, ValueError, StorageError) as exc:
+            raise OwnershipError("Auto run config is invalid") from exc
+        self._validate_auto_record(record, self.project.id)
+        if legacy and run_dir.name != record.id:
+            raise OwnershipError("legacy Auto directory identity is invalid")
+        if not legacy and record.number != expected_number:
+            raise OwnershipError("Auto number does not match directory")
+        return record
+
+    def _scan_auto_directories(self) -> AutoMigrationStatus:
+        candidates: list[tuple[str, AutoRunRecord, _AutoLocation]] = []
+        issues: list[AutoMigrationIssue] = []
+        for child in sorted(self.auto_runs_root.iterdir(), key=lambda item: item.name):
+            if child.name.startswith("."):
+                continue
+            if AUTO_NUMBER_PATTERN.fullmatch(child.name):
+                expected_number = int(child.name)
+                legacy = False
+            elif ID_PATTERN.fullmatch(child.name):
+                expected_number = None
+                legacy = True
+            else:
+                issues.append(
+                    AutoMigrationIssue(child.name, "Auto run directory name is invalid")
+                )
+                continue
+            try:
+                child_info = child.lstat()
+                if stat.S_ISLNK(child_info.st_mode):
+                    raise OwnershipError("Auto run directory must not be a symlink")
+                if not stat.S_ISDIR(child_info.st_mode):
+                    raise OwnershipError("Auto run child is not a directory")
+                record = self._load_auto_record_at(
+                    child,
+                    expected_number=expected_number,
+                    legacy=legacy,
+                )
+            except OSError as exc:
+                issues.append(
+                    AutoMigrationIssue(child.name, "Auto run directory is unavailable")
+                )
+                continue
+            except StorageError as exc:
+                issues.append(AutoMigrationIssue(child.name, str(exc)))
+                continue
+            candidates.append(
+                (
+                    child.name,
+                    record,
+                    _AutoLocation(child, record.number, legacy),
+                )
+            )
+
+        uuid_owners: dict[str, list[str]] = {}
+        number_owners: dict[int, list[str]] = {}
+        for child_name, record, _ in candidates:
+            uuid_owners.setdefault(record.id, []).append(child_name)
+            if record.number is not None:
+                number_owners.setdefault(record.number, []).append(child_name)
+        ambiguous: set[str] = set()
+        for owners in uuid_owners.values():
+            if len(owners) > 1:
+                ambiguous.update(owners)
+                issues.extend(
+                    AutoMigrationIssue(child, "Auto run UUID is stored more than once")
+                    for child in owners
+                )
+        for owners in number_owners.values():
+            if len(owners) > 1:
+                ambiguous.update(owners)
+                issues.extend(
+                    AutoMigrationIssue(child, "Auto run number is stored more than once")
+                    for child in owners
+                )
+
+        readable = [
+            (child, record, location)
+            for child, record, location in candidates
+            if child not in ambiguous
+        ]
+        unique_issues = {
+            (issue.child, issue.message): issue
+            for issue in issues
+        }
+        ordered_issues = tuple(unique_issues[key] for key in sorted(unique_issues))
+        legacy_ids = tuple(
+            sorted(record.id for _, record, location in readable if location.legacy)
+        )
+        self._auto_directory_cache = {
+            record.id: location
+            for _, record, location in readable
+        }
+        return AutoMigrationStatus(
+            complete=not legacy_ids and not ordered_issues,
+            legacy_ids=legacy_ids,
+            issues=ordered_issues,
+            readable_records=tuple(record for _, record, _ in readable),
+        )
+
+    def scan_auto_runs(self) -> AutoMigrationStatus:
+        return self._scan_auto_directories()
+
+    def auto_migration_status(self) -> AutoMigrationStatus:
+        return self.scan_auto_runs()
+
+    def _auto_index_from_directory_cache(
+        self,
+        *,
+        minimum_next: int,
+    ) -> dict[str, object]:
+        assert self._auto_directory_cache is not None
+        runs = {
+            auto_id: location.number
+            for auto_id, location in self._auto_directory_cache.items()
+            if not location.legacy and location.number is not None
+        }
+        return {
+            "format": AUTO_INDEX_FORMAT,
+            "next_number": max(minimum_next, max(runs.values(), default=0) + 1),
+            "runs": runs,
+        }
+
+    def _publish_rebuilt_auto_index(self, *, recovery_pair: bool) -> None:
+        if self._auto_directory_cache is None:
+            status = self._scan_auto_directories()
+            if status.issues:
+                raise StorageError(status.issues[0].message)
+        recovered_next = 1
+        try:
+            recovered = self._load_auto_index()["next_number"]
+            assert type(recovered) is int
+            recovered_next = recovered
+        except StorageError:
+            pass
+        index = self._auto_index_from_directory_cache(
+            minimum_next=recovered_next,
+        )
+        writer = atomic_write_json_recovery_pair if recovery_pair else atomic_write_json
+        writer(self.auto_index_path, index)
+
+    def _auto_location(self, auto_id: str) -> _AutoLocation:
+        auto_id = validate_id(auto_id, "Auto run id")
+        if self._auto_directory_cache is not None:
+            cached = self._auto_directory_cache.get(auto_id)
+            if cached is None:
+                raise NotFoundError(f"Auto run not found: {auto_id}")
+            return cached
+
+        try:
+            index = self._load_auto_index()
+        except StorageError:
+            index = None
+        if index is not None:
+            runs = index["runs"]
+            assert isinstance(runs, dict)
+            number = runs.get(auto_id)
+            if type(number) is int:
+                indexed = _AutoLocation(
+                    self.auto_runs_root / str(number),
+                    number,
+                    False,
+                )
+                try:
+                    record = self._load_auto_record_at(
+                        indexed.path,
+                        expected_number=number,
+                        legacy=False,
+                    )
+                    if record.id != auto_id:
+                        raise OwnershipError(
+                            "Auto run identity does not match index"
+                        )
+                except StorageError:
+                    pass
+                else:
+                    return indexed
+
+        legacy_path = self.auto_runs_root / auto_id
+        try:
+            legacy_info = legacy_path.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise StorageError("Auto run directory is unavailable") from exc
+        else:
+            if stat.S_ISLNK(legacy_info.st_mode):
+                raise OwnershipError("Auto run directory must not be a symlink")
+            record = self._load_auto_record_at(
+                legacy_path,
+                expected_number=None,
+                legacy=True,
+            )
+            if record.id != auto_id:
+                raise OwnershipError("Auto run identity does not match directory")
+            return _AutoLocation(legacy_path, record.number, True)
+
+        status = self._scan_auto_directories()
+        assert self._auto_directory_cache is not None
+        location = self._auto_directory_cache.get(auto_id)
+        if not status.issues:
+            try:
+                self._publish_rebuilt_auto_index(recovery_pair=False)
+            except StorageError:
+                pass
+        if location is not None:
+            return location
+        if status.issues:
+            raise StorageError(status.issues[0].message)
+        raise NotFoundError(f"Auto run not found: {auto_id}")
+
+    def _recovered_auto_high_water(self) -> int | None:
+        try:
+            index = self._load_auto_index()
+        except StorageError:
+            return None
+        next_number = index["next_number"]
+        assert type(next_number) is int
+        return next_number
+
+    def _remove_abandoned_auto_creations(self, next_number: int) -> None:
+        for child in sorted(self.auto_runs_root.iterdir(), key=lambda item: item.name):
+            match = AUTO_CREATING_PATTERN.fullmatch(child.name)
+            if match is None or int(match.group(2)) >= next_number:
+                continue
+            try:
+                info = child.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                child.unlink()
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            _assert_no_symlink_components(
+                child,
+                self.auto_runs_root,
+                allow_missing_leaf=False,
+            )
+            shutil.rmtree(child)
+
+    def migrate_auto_run_directories(self) -> AutoMigrationStatus:
+        high_water = self._recovered_auto_high_water()
+        if high_water is not None:
+            self._remove_abandoned_auto_creations(high_water)
+        status = self.auto_migration_status()
+        if status.issues:
+            return status
+        if not status.legacy_ids:
+            self._publish_rebuilt_auto_index(recovery_pair=True)
+            return self.auto_migration_status()
+
+        self._load_or_rebuild_auto_index()
+        ordered = sorted(
+            status.readable_records,
+            key=lambda item: (item.created_at, item.id),
+        )
+        assignments = {
+            record.id: number
+            for number, record in enumerate(ordered, start=1)
+        }
+        legacy_ids = set(status.legacy_ids)
+        assert self._auto_directory_cache is not None
+        assignment_issues: list[AutoMigrationIssue] = []
+        for record in ordered:
+            assigned = assignments[record.id]
+            if record.id not in legacy_ids and record.number != assigned:
+                location = self._auto_directory_cache[record.id]
+                assignment_issues.append(
+                    AutoMigrationIssue(
+                        location.path.name,
+                        "Auto number assignment is inconsistent",
+                    )
+                )
+            if (
+                record.id in legacy_ids
+                and record.number is not None
+                and record.number != assigned
+            ):
+                assignment_issues.append(
+                    AutoMigrationIssue(
+                        record.id,
+                        "Auto number assignment is inconsistent",
+                    )
+                )
+        if assignment_issues:
+            return AutoMigrationStatus(
+                complete=False,
+                legacy_ids=status.legacy_ids,
+                issues=tuple(assignment_issues),
+                readable_records=status.readable_records,
+            )
+
+        for record in ordered:
+            if record.id not in legacy_ids:
+                continue
+            assigned = assignments[record.id]
+            source = self.auto_runs_root / record.id
+            if record.number is None:
+                migrated = replace(record, number=assigned)
+                atomic_write_json_recovery_pair(
+                    source / "config.json",
+                    migrated.to_dict(),
+                )
+            destination = self.auto_runs_root / str(assigned)
+            if destination.exists():
+                raise OwnershipError("Auto migration destination already exists")
+            os.replace(source, destination)
+            _fsync_directory(self.auto_runs_root)
+            self._invalidate_auto_directory_cache()
+        self._publish_rebuilt_auto_index(recovery_pair=True)
+        return self.auto_migration_status()
 
     def require_auto_migration_complete(self) -> None:
         for child in self.auto_runs_root.iterdir():
@@ -1306,17 +1634,7 @@ class ProjectStore:
         self._auto_directory_cache = None
 
     def auto_run_dir(self, auto_id: str) -> Path:
-        validate_id(auto_id, "Auto run id")
-        index = self._load_or_rebuild_auto_index()
-        runs = index["runs"]
-        assert isinstance(runs, dict)
-        number = runs.get(auto_id)
-        if type(number) is int:
-            return self.auto_runs_root / str(number)
-        legacy = self.auto_runs_root / auto_id
-        if legacy.exists():
-            return legacy
-        raise NotFoundError(f"Auto run not found: {auto_id}")
+        return self._auto_location(auto_id).path
 
     @staticmethod
     def _validate_auto_record(record: AutoRunRecord, project_id: str) -> None:
@@ -1443,17 +1761,15 @@ class ProjectStore:
 
     def load_auto_run(self, auto_id: str) -> AutoRunRecord:
         run_dir = self.auto_run_dir(auto_id)
-        _assert_no_symlink_components(run_dir, self.auto_runs_root, allow_missing_leaf=False)
-        data = load_json_recover(run_dir / "config.json")
-        if not isinstance(data, dict) or data.get("format") != AUTO_FORMAT:
-            raise OwnershipError("Auto run config has an invalid shape")
-        try:
-            record = AutoRunRecord.from_dict(data)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise OwnershipError("Auto run config has an invalid shape") from exc
+        legacy = ID_PATTERN.fullmatch(run_dir.name) is not None
+        expected_number = None if legacy else int(run_dir.name)
+        record = self._load_auto_record_at(
+            run_dir,
+            expected_number=expected_number,
+            legacy=legacy,
+        )
         if record.id != auto_id:
             raise OwnershipError("Auto run identity does not match directory")
-        self._validate_auto_record(record, self.project.id)
         return record
 
     def load_auto_artifact(
@@ -1608,18 +1924,13 @@ class ProjectStore:
         atomic_write_json(run_dir / "config.json", record.to_dict())
 
     def list_auto_runs(self) -> list[AutoRunRecord]:
-        index = self._load_or_rebuild_auto_index()
-        runs = index["runs"]
-        assert isinstance(runs, dict)
-        records = [self.load_auto_run(auto_id) for auto_id in runs]
-        for child in self.auto_runs_root.iterdir():
-            if (
-                child.name not in runs
-                and child.is_dir()
-                and ID_PATTERN.fullmatch(child.name)
-            ):
-                records.append(self.load_auto_run(child.name))
-        return sorted(records, key=lambda item: (item.created_at, item.id))
+        status = self.auto_migration_status()
+        if status.issues:
+            raise StorageError(status.issues[0].message)
+        records = list(status.readable_records)
+        if any(record.number is None for record in records):
+            return sorted(records, key=lambda item: (item.created_at, item.id))
+        return sorted(records, key=lambda item: item.number)
 
     def active_auto_run_id(self) -> str | None:
         active = self._load_manifest().get("active_auto_run_id")

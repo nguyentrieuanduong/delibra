@@ -82,7 +82,11 @@ async def rebind_project(
         candidate_store.migrate_session_directories()
         for session in candidate_store.list_sessions():
             candidate_store.reconcile_session(session.id)
-        request.app.state.auto_manager.reconcile_store_locked(candidate_store)
+        auto_migration = candidate_store.migrate_auto_run_directories()
+        request.app.state.auto_manager.reconcile_store_locked(
+            candidate_store,
+            auto_migration.readable_records,
+        )
         rebound = registry.rebind(resolved_project_id, candidate_path)
     return RedirectResponse(
         project_url(rebound.name, "/chat"),
