@@ -62,14 +62,18 @@ deletes the user directory. Delibra owns only these locations:
 ```text
 ~/.delibra/registry.json
 <project>/.delibra/manifest.json
-<project>/.delibra/sessions/<immutable-agent-name>/config.json
-<project>/.delibra/sessions/<immutable-agent-name>/rounds/round-NN.{prompt.md,partial.md,md}
-<project>/.delibra/sessions/<immutable-agent-name>/workspace/
-<project>/.delibra/sessions/<immutable-agent-name>/workspace/inputs/round-NN/shared-context.md
-<project>/.delibra/auto-runs/<auto-id>/config.json
-<project>/.delibra/auto-runs/<auto-id>/{topic.md,baseline.md,shared-context.md}
-<project>/.delibra/auto-runs/<auto-id>/preparations/<session-id>.md
+<project>/.delibra/sessions/<immutable-agent-name>/
+<project>/.delibra/auto-runs/.index.json
+<project>/.delibra/auto-runs/<number>/config.json
+<project>/.delibra/auto-runs/<number>/{topic.md,baseline.md,shared-context.md}
+<project>/.delibra/auto-runs/<number>/preparations/<session-id>.md
 ```
+
+Project names are immutable while registered and appear percent-encoded in
+`/projects/<name>/...` browser URLs. Unregistering releases the name without
+deleting project data. Re-registering prefers the name carried by the project
+manifest and adds `-2`, `-3`, or the first free later suffix when that name is
+already registered.
 
 The registry keeps each project's canonical absolute location. If a project
 directory is moved, use **Rebind location** on the Projects page and select
@@ -132,8 +136,9 @@ ID, Delibra stages at most 20 completed rounds and 2 MiB of history, newest-firs
 selection and chronological for presentation. A newest round that cannot fit fails
 clearly rather than being silently truncated.
 
-Agent names, models, and effort levels remain editable after round 1; provider and
-role instructions become fixed. Edits are rejected while an agent is running. Real
+Models and effort levels remain editable after round 1; the agent name stays
+immutable, while provider and role instructions become fixed. Edits are rejected
+while an agent is running. Real
 CLI gates verified that both Claude Code and Codex preserve native conversation state
 when model and effort change, so the next round resumes natively with new settings.
 The executable adapter capability flags remain the source of truth; an unproven or
@@ -150,6 +155,11 @@ absolute links under the registered project root are supported; external,
 non-Markdown, traversal, and out-of-project links are not rewritten.
 
 ## Auto discussions and live timeouts
+
+Auto runs display and store a per-project number while retaining an internal UUID
+for reservations and provenance. Reserved numbers are never reused. A blocked
+legacy Auto migration appears in project settings; repair the named metadata or
+recovery backup, then use **Retry Auto migration**.
 
 The persistent **Auto** button beside **Send** opens project-level Auto setup. Before
 the first round, the browser copies the unsent composer text directly into the
