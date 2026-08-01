@@ -500,7 +500,7 @@ class AutoRunRecord:
             "format": AUTO_FORMAT,
             "id": self.id,
             "project_id": self.project_id,
-            "number": self.number,
+            **({"number": self.number} if self.number is not None else {}),
             "status": self.status,
             "agreement_policy": self.agreement_policy,
             "preparation_enabled": self.preparation_enabled,
