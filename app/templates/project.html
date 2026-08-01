@@ -5,6 +5,19 @@
   <p><a href="/">Projects</a> · <a href="{{ project_url(project.name, '/chat') }}">Chat</a></p>
   <h1>{{ project.name }}</h1>
   <p><code>{{ project.path }}</code></p>
+  {% if auto_migration_issues %}
+    <section aria-labelledby="auto-migration-heading">
+      <h2 id="auto-migration-heading">Auto migration is blocked</h2>
+      <ul>
+        {% for issue in auto_migration_issues %}
+          <li><code>{{ issue.child }}</code>: {{ issue.message }}</li>
+        {% endfor %}
+      </ul>
+      <form method="post" action="{{ project_url(project.name, '/auto-migration/retry') }}">
+        <button type="submit">Retry Auto migration</button>
+      </form>
+    </section>
+  {% endif %}
   <section aria-labelledby="shared-context-heading">
     <h2 id="shared-context-heading">Shared context</h2>
     {% if shared_markdown_path %}

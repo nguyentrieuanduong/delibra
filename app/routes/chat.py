@@ -108,7 +108,8 @@ async def chat_page(
     resolved_project_id = project.id
     store = ProjectStore(project)
     sessions = store.list_sessions()
-    auto_record = project_auto_record(request, resolved_project_id)
+    auto_projection = project_auto_record(request, resolved_project_id)
+    auto_record = auto_projection.record
     auto_active = (
         auto_record is not None
         and auto_record.status in ACTIVE_AUTO_STATUSES
@@ -133,6 +134,7 @@ async def chat_page(
                 else None
             ),
             "auto_active": auto_active,
+            "auto_migration_warning": auto_projection.warning,
             "health": request.app.state.health,
             "pass_prompt_template": store.effective_pass_prompt_template(),
             **sidebar,

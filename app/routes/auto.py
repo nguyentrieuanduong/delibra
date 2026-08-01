@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 
 from fastapi import APIRouter, Form, Header, Request
@@ -18,17 +19,43 @@ from app.storage import ProjectStore, StorageError, validate_id
 router = APIRouter()
 
 
+@dataclass(frozen=True)
+class ProjectAutoProjection:
+    record: AutoRunRecord | None
+    warning: str | None
+
+
 def project_auto_record(
     request: Request,
     project_id: str,
-) -> AutoRunRecord | None:
-    project = request_project(request, project_id)
-    resolved_project_id = project.id
-    store = ProjectStore(project)
+) -> ProjectAutoProjection:
+    store = ProjectStore(request.app.state.registry.get(project_id))
+    status = store.auto_migration_status()
     active_id = store.active_auto_run_id()
+    by_id = {record.id: record for record in status.readable_records}
     if active_id is not None:
-        return store.load_auto_run(active_id)
-    return request.app.state.auto_manager.latest(resolved_project_id)
+        record = by_id.get(active_id)
+        warning = (
+            status.issues[0].message
+            if record is None and status.issues
+            else None
+        )
+        return ProjectAutoProjection(record, warning)
+    readable = list(status.readable_records)
+    if any(item.number is None for item in readable):
+        record = max(
+            readable,
+            key=lambda item: (item.created_at, item.id),
+            default=None,
+        )
+    else:
+        record = max(
+            readable,
+            key=lambda item: item.number or 0,
+            default=None,
+        )
+    warning = status.issues[0].message if status.issues else None
+    return ProjectAutoProjection(record, warning)
 
 
 def _decode_text(contents: bytes, label: str) -> str:
@@ -155,6 +182,7 @@ def _status_response(
 async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
     project = request_project(request, project_id)
     store = ProjectStore(project)
+    store.require_auto_migration_complete()
     sessions = sorted(
         store.list_sessions(),
         key=lambda item: (item.name.casefold(), item.id),

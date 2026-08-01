@@ -186,6 +186,7 @@ class AutoManager:
         async with self.locks.registry_project_sessions(project_id, all_session_ids):
             project = self.registry.get(project_id)
             store = ProjectStore(project)
+            store.require_auto_migration_complete()
             sessions = store.list_sessions()
             if {item.id for item in sessions} != set(all_session_ids):
                 raise ConflictError("project sessions changed during Auto setup")
