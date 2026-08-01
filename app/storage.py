@@ -1428,9 +1428,18 @@ class ProjectStore:
             for auto_id, location in self._auto_directory_cache.items()
             if not location.legacy and location.number is not None
         }
+        creating_numbers = (
+            int(match.group(2))
+            for child in self.auto_runs_root.iterdir()
+            if (match := AUTO_CREATING_PATTERN.fullmatch(child.name)) is not None
+        )
         return {
             "format": AUTO_INDEX_FORMAT,
-            "next_number": max(minimum_next, max(runs.values(), default=0) + 1),
+            "next_number": max(
+                minimum_next,
+                max(runs.values(), default=0) + 1,
+                max(creating_numbers, default=0) + 1,
+            ),
             "runs": runs,
         }
 
