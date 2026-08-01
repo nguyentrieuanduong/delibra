@@ -119,7 +119,15 @@ def create_app(
                     )
                 for session in store.list_sessions():
                     store.reconcile_session(session.id)
-                await auto_manager.reconcile_project(project.id)
+                auto_migration = await auto_manager.reconcile_project(project.id)
+                if auto_migration.issues:
+                    LOGGER.warning(
+                        "Auto directory migration needs input for project %s: %s",
+                        project.id,
+                        ", ".join(
+                            issue.child for issue in auto_migration.issues
+                        ),
+                    )
             except StorageError:
                 LOGGER.exception("Startup reconciliation failed for project %s", project.id)
         try:

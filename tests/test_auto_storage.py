@@ -88,6 +88,352 @@ def auto_record_fixture(project_id: str) -> models.AutoRunRecord:
     )
 
 
+def write_auto_run_directory(
+    store: ProjectStore,
+    record: models.AutoRunRecord,
+    child: str,
+) -> None:
+    run_dir = store.auto_runs_root / child
+    run_dir.mkdir(mode=0o700)
+    (run_dir / "preparations").mkdir(mode=0o700)
+    (run_dir / "topic.md").write_bytes(b"Original topic")
+    (run_dir / "baseline.md").write_bytes(b"")
+    encoded = record.to_dict()
+    if record.number is None:
+        encoded.pop("number")
+    (run_dir / "config.json").write_text(
+        json.dumps(encoded),
+        encoding="utf-8",
+    )
+
+
+def create_legacy_auto_run(
+    store: ProjectStore,
+    *,
+    auto_id: str,
+    created_at: str = "2026-01-01T00:00:00Z",
+) -> models.AutoRunRecord:
+    record = auto_record_fixture(store.project.id)
+    record.id = auto_id
+    record.number = None
+    record.created_at = created_at
+    write_auto_run_directory(store, record, auto_id)
+    return record
+
+
+def create_numeric_auto_run(
+    store: ProjectStore,
+    *,
+    number: int,
+    auto_id: str,
+    created_at: str = "2026-01-01T00:00:00Z",
+) -> models.AutoRunRecord:
+    record = auto_record_fixture(store.project.id)
+    record.id = auto_id
+    record.number = number
+    record.created_at = created_at
+    write_auto_run_directory(store, record, str(number))
+    return record
+
+
+def test_auto_scanner_aggregates_issues_and_keeps_unrelated_records(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    valid = create_legacy_auto_run(store, auto_id="a" * 32)
+    malformed = store.auto_runs_root / ("b" * 32)
+    malformed.mkdir()
+    (malformed / "config.json").write_text("{", encoding="utf-8")
+
+    status = store.auto_migration_status()
+
+    assert status.complete is False
+    assert [record.id for record in status.readable_records] == [valid.id]
+    assert [(issue.child, issue.message) for issue in status.issues] == [
+        ("b" * 32, "Auto run config is invalid")
+    ]
+    with pytest.raises(StorageError):
+        store.list_auto_runs()
+
+
+def test_auto_scanner_excludes_both_sides_of_global_ambiguity(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    create_numeric_auto_run(store, number=1, auto_id="a" * 32)
+    create_numeric_auto_run(store, number=2, auto_id="a" * 32)
+
+    status = store.auto_migration_status()
+
+    assert status.readable_records == ()
+    assert {issue.child for issue in status.issues} == {"1", "2"}
+    assert all("UUID is stored more than once" in issue.message for issue in status.issues)
+
+
+def test_auto_scanner_excludes_both_sides_of_duplicate_number(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    create_numeric_auto_run(store, number=1, auto_id="a" * 32)
+    duplicate = auto_record_fixture(store.project.id)
+    duplicate.id = "b" * 32
+    duplicate.number = 1
+    write_auto_run_directory(store, duplicate, duplicate.id)
+
+    status = store.auto_migration_status()
+
+    assert status.readable_records == ()
+    assert {issue.child for issue in status.issues} == {"1", duplicate.id}
+    assert all("number is stored more than once" in issue.message for issue in status.issues)
+
+
+def test_auto_scanner_skips_dot_prefixed_entries(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    valid = create_legacy_auto_run(store, auto_id="a" * 32)
+    (store.auto_runs_root / ".index.json").write_text("{", encoding="utf-8")
+    hidden = store.auto_runs_root / ".creating-broken"
+    hidden.mkdir()
+    (hidden / "config.json").write_text("{", encoding="utf-8")
+
+    status = store.auto_migration_status()
+
+    assert status.issues == ()
+    assert status.legacy_ids == (valid.id,)
+    assert status.readable_records == (valid,)
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason_terms"),
+    [
+        ("symlink", ("symlink",)),
+        ("malformed_json_and_backup", ("config", "json")),
+        ("wrong_project", ("project identity",)),
+        ("invalid_artifact", ("artifact digest",)),
+        ("numeric_mismatch", ("number", "numeric")),
+    ],
+)
+def test_auto_scanner_matches_strict_validation_failure(
+    tmp_path: Path,
+    failure: str,
+    reason_terms: tuple[str, ...],
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    child = record.id
+
+    if failure == "symlink":
+        write_auto_run_directory(store, record, child)
+        outside = tmp_path / "outside-auto"
+        os.replace(store.auto_runs_root / child, outside)
+        (store.auto_runs_root / child).symlink_to(outside, target_is_directory=True)
+    elif failure == "malformed_json_and_backup":
+        run_dir = store.auto_runs_root / child
+        run_dir.mkdir()
+        (run_dir / "config.json").write_text("{", encoding="utf-8")
+        (run_dir / "config.json.bak").write_text("[", encoding="utf-8")
+    elif failure == "wrong_project":
+        record.project_id = "f" * 32
+        write_auto_run_directory(store, record, child)
+    elif failure == "invalid_artifact":
+        record.topic = models.AutoArtifact(path="topic.md", sha256="invalid")
+        write_auto_run_directory(store, record, child)
+    else:
+        record.number = 2
+        child = "1"
+        write_auto_run_directory(store, record, child)
+
+    with pytest.raises((OwnershipError, StorageError)) as strict_error:
+        store.load_auto_run(record.id)
+    status = store.auto_migration_status()
+
+    assert status.readable_records == ()
+    assert len(status.issues) == 1
+    assert status.issues[0].child == child
+    strict_reason = str(strict_error.value).casefold()
+    scan_reason = status.issues[0].message.casefold()
+    assert any(term in strict_reason for term in reason_terms)
+    assert any(term in scan_reason for term in reason_terms)
+
+
+def test_auto_uuid_fallback_scans_once_per_project_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = create_numeric_auto_run(store, number=1, auto_id="a" * 32)
+    store.auto_index_path.unlink(missing_ok=True)
+    store.auto_index_path.with_name(".index.json.bak").unlink(missing_ok=True)
+    scans = 0
+    original = store._scan_auto_directories
+
+    def counted_scan():
+        nonlocal scans
+        scans += 1
+        return original()
+
+    monkeypatch.setattr(store, "_scan_auto_directories", counted_scan)
+    monkeypatch.setattr(
+        store,
+        "_publish_rebuilt_auto_index",
+        lambda *, recovery_pair: (_ for _ in ()).throw(
+            StorageError("index is read only")
+        ),
+    )
+
+    assert store.load_auto_run(record.id).number == 1
+    assert store.load_auto_run(record.id).number == 1
+    assert scans == 1
+
+
+def test_auto_migration_resumes_mixed_layout_in_created_order(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    later = create_legacy_auto_run(
+        store,
+        auto_id="b" * 32,
+        created_at="2026-01-02T00:00:00Z",
+    )
+    earlier = create_legacy_auto_run(
+        store,
+        auto_id="a" * 32,
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+    first = store.migrate_auto_run_directories()
+    second = store.migrate_auto_run_directories()
+
+    assert first.complete is True
+    assert second.complete is True
+    assert store.load_auto_run(earlier.id).number == 1
+    assert store.load_auto_run(later.id).number == 2
+    assert [item.number for item in store.list_auto_runs()] == [1, 2]
+
+
+def test_auto_migration_preserves_numbered_gap(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    assert store.reserve_auto_run_number() == 1
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    status = store.migrate_auto_run_directories()
+
+    assert status.complete is True
+    assert not (store.auto_runs_root / "1").exists()
+    assert store.load_auto_run(record.id).number == 2
+    assert store.reserve_auto_run_number() == 3
+
+
+def test_auto_migration_removes_abandoned_reserved_creation(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    assert store.reserve_auto_run_number() == 1
+    abandoned = store.auto_runs_root / f".creating-{'c' * 32}-1"
+    abandoned.mkdir()
+    (abandoned / "partial").write_bytes(b"incomplete")
+
+    status = store.migrate_auto_run_directories()
+
+    assert status.complete is True
+    assert not abandoned.exists()
+    assert store.reserve_auto_run_number() == 2
+
+
+def test_auto_migration_unlinks_abandoned_creation_symlink_without_following(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    assert store.reserve_auto_run_number() == 1
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    abandoned = store.auto_runs_root / f".creating-{'d' * 32}-1"
+    abandoned.symlink_to(outside, target_is_directory=True)
+
+    status = store.migrate_auto_run_directories()
+
+    assert status.complete is True
+    assert not abandoned.exists()
+    assert outside.is_dir()
+
+
+def test_auto_migration_sweeps_abandoned_creation_while_layout_is_blocked(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    assert store.reserve_auto_run_number() == 1
+    abandoned = store.auto_runs_root / f".creating-{'e' * 32}-1"
+    abandoned.mkdir()
+    corrupt = store.auto_runs_root / ("f" * 32)
+    corrupt.mkdir()
+    (corrupt / "config.json").write_text("{", encoding="utf-8")
+
+    status = store.migrate_auto_run_directories()
+
+    assert status.complete is False
+    assert status.issues
+    assert not abandoned.exists()
+
+
+def test_auto_migration_retains_abandoned_creation_without_durable_high_water(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    assert store.reserve_auto_run_number() == 1
+    abandoned = store.auto_runs_root / f".creating-{'e' * 32}-1"
+    abandoned.mkdir()
+    store.auto_index_path.unlink()
+    store.auto_index_path.with_name(".index.json.bak").unlink()
+
+    status = store.migrate_auto_run_directories()
+
+    assert status.complete is True
+    assert abandoned.is_dir()
+
+
+def test_auto_interrupted_migration_resumes_with_stable_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = auto_project_store(tmp_path)
+    earlier = create_legacy_auto_run(
+        store,
+        auto_id="a" * 32,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    later = create_legacy_auto_run(
+        store,
+        auto_id="b" * 32,
+        created_at="2026-01-02T00:00:00Z",
+    )
+    original_replace = os.replace
+
+    def interrupt(source: Path, destination: Path, *args, **kwargs) -> None:
+        if source == store.auto_runs_root / later.id:
+            raise OSError("migration interrupted")
+        original_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt)
+    with pytest.raises(OSError, match="migration interrupted"):
+        store.migrate_auto_run_directories()
+    monkeypatch.setattr(os, "replace", original_replace)
+
+    migrated_config = store.auto_runs_root / "1" / "config.json"
+    migrated_config.write_text("{", encoding="utf-8")
+    migrated_backup = migrated_config.with_name("config.json.bak")
+    assert json.loads(migrated_backup.read_text(encoding="utf-8"))["number"] == 1
+
+    reopened = ProjectStore(store.project)
+    status = reopened.migrate_auto_run_directories()
+
+    assert status.complete is True
+    assert reopened.load_auto_run(earlier.id).number == 1
+    assert reopened.load_auto_run(later.id).number == 2
+    assert (reopened.auto_runs_root / "1" / "topic.md").read_bytes() == b"Original topic"
+    assert (reopened.auto_runs_root / "2" / "baseline.md").read_bytes() == b""
+
+
 def test_auto_number_is_additive_strict_and_legacy_compatible(
     tmp_path: Path,
 ) -> None:

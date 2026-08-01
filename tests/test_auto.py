@@ -363,6 +363,65 @@ def seed_durable_auto(
     return record
 
 
+def test_recovery_reconciles_readable_runs_when_owner_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    manager, _, _, _, store = auto_manager_fixture(tmp_path, [])
+    readable = seed_durable_auto(
+        store,
+        auto_id="a" * 32,
+        status="discussing",
+        publish=False,
+    )
+    corrupt_id = "f" * 32
+    corrupt = store.auto_runs_root / corrupt_id
+    corrupt.mkdir()
+    (corrupt / "config.json").write_text("{invalid", encoding="utf-8")
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["active_auto_run_id"] = corrupt_id
+    atomic_write_json(store.manifest_path, manifest)
+    status = store.auto_migration_status()
+
+    manager.reconcile_store_locked(store, status.readable_records)
+
+    assert store.load_auto_run(readable.id).status == "interrupted"
+    assert store.active_auto_run_id() == corrupt_id
+
+
+def test_startup_migrates_each_project_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(home=tmp_path / "home", run_timeout=2)
+    app = create_app(
+        settings_override=settings,
+        provider_commands={
+            "claude": "/missing/claude",
+            "codex": "/missing/codex",
+        },
+    )
+    project_path = tmp_path / "once"
+    project_path.mkdir()
+    RegistryStore(settings.home).register("One Migration", project_path)
+    calls = 0
+    original = ProjectStore.migrate_auto_run_directories
+
+    def counted(store: ProjectStore):
+        nonlocal calls
+        calls += 1
+        return original(store)
+
+    monkeypatch.setattr(
+        ProjectStore,
+        "migrate_auto_run_directories",
+        counted,
+    )
+    with TestClient(app, base_url="http://localhost"):
+        pass
+
+    assert calls == 1
+
+
 @pytest.mark.asyncio
 async def test_auto_manager_prepares_every_agent_before_shared_discussion(
     tmp_path: Path,
@@ -1200,8 +1259,7 @@ async def test_auto_restart_leaves_missing_or_invalid_pointer_reserved(
             encoding="utf-8",
         )
 
-    with pytest.raises(StorageError):
-        await manager.reconcile_project(project_id)
+    await manager.reconcile_project(project_id)
 
     assert store.active_auto_run_id() == auto_id
 
