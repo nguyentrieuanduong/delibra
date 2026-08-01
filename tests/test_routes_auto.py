@@ -7,6 +7,7 @@ import sys
 import time
 from urllib.parse import quote
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
@@ -218,6 +219,57 @@ def named_input(contents: str, name: str, value: str | None = None) -> str:
         if value is None or f'value="{value}"' in tag:
             return tag
     raise AssertionError(f"input {name!r} with value {value!r} not found")
+
+
+@pytest.mark.parametrize("reference", ["0", "01", "+1", "1.0", " 1", "1e0"])
+def test_auto_route_rejects_noncanonical_numbers(
+    tmp_path: Path,
+    reference: str,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=["CONVERGED", "CONVERGED"],
+    )
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(
+            client,
+            quote(project.name, safe=""),
+            [session.id for session in sessions],
+        )
+        assert started.status_code == 202
+        wait_for_auto(store, terminal=True)
+        response = client.get(
+            f"/projects/{quote(project.name, safe='')}"
+            f"/auto-runs/{quote(reference, safe='')}",
+            follow_redirects=False,
+        )
+    assert response.status_code == 422
+
+
+def test_auto_route_treats_a_32_digit_canonical_reference_as_a_number(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, _, project, store, _, _ = auto_route_app(tmp_path)
+    record = reserve_auto_run(store)
+    store.clear_auto_reservation(record.id)
+    number = int("1" * 32)
+    source = store.auto_runs_root / "1"
+    record.number = number
+    (source / "config.json").write_text(
+        json.dumps(record.to_dict()),
+        encoding="utf-8",
+    )
+    source.rename(store.auto_runs_root / str(number))
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"/projects/{quote(project.name, safe='')}/auto-runs/{number}",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200, response.text
+    assert f"Auto {number}" in response.text
 
 
 def test_canonical_project_name_auto_setup_urls(tmp_path: Path) -> None:
@@ -439,7 +491,9 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
         )
         active = wait_for_auto(store, terminal=False)
         chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
-        status = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{active.id}")
+        status = client.get(
+            f"/projects/{quote(project.name, safe='')}/auto-runs/{active.number}"
+        )
         session_page = client.get(
             f"/projects/{quote(project.name, safe='')}/sessions/{active.active_key.session_id}"
         )
@@ -462,7 +516,7 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
         chat.text,
     )
     assert re.search(r'<button[^>]*data-auto-open[^>]*disabled', chat.text)
-    assert "Auto preparation" in session_page.text
+    assert f"Auto {active.number}" in session_page.text
     assert re.search(r'>Cancel</button>', session_page.text)
     assert re.search(r'<button[^>]*disabled[^>]*>Cancel</button>', session_page.text)
     assert re.search(r'>Create session</button>', settings_page.text)
@@ -472,13 +526,14 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
     )
     assert re.search(r'<button[^>]*disabled[^>]*>Unregister</button>', index.text)
     assert stopped.status_code == 200
+    assert f"Auto {active.number}" in stopped.text
     assert "stopped" in stopped.text
     assert "Stop Auto" not in stopped.text
     assert re.search(r'<button[^>]*data-auto-open(?![^>]*disabled)', terminal_chat.text)
     assert factory.created == 1
 
 
-def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messages(
+def test_terminal_legacy_auto_status_redirects_and_escapes_preparations_streams_late(
     tmp_path: Path,
 ) -> None:
     outputs = [
@@ -505,7 +560,14 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messag
         terminal.terminal_reason = '<error data-value="unsafe">'
         terminal.discussion[0].warning = '<warning data-value="unsafe">'
         store.save_auto_run(terminal)
-        status = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.id}")
+        status = client.get(
+            f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.number}"
+        )
+        legacy_url = (
+            f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.id}"
+        )
+        legacy_status = client.get(legacy_url, follow_redirects=False)
+        legacy_head = client.head(legacy_url, follow_redirects=False)
         fallback_setup = client.get(f"/projects/{quote(project.name, safe='')}/auto/setup")
         timeline = client.get(f"/projects/{quote(project.name, safe='')}/chat/timeline")
         preparation_session = client.get(
@@ -523,6 +585,12 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messag
 
     assert terminal.status == "converged"
     assert status.status_code == 200
+    assert legacy_status.status_code == 302
+    assert legacy_status.headers["location"] == (
+        f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.number}"
+    )
+    assert legacy_head.status_code == 302
+    assert legacy_head.headers["location"] == legacy_status.headers["location"]
     assert "&lt;prep alpha&gt;" in status.text
     assert "&lt;prep beta&gt;" in status.text
     assert "<prep alpha>" not in status.text
@@ -544,7 +612,10 @@ def test_terminal_auto_status_escapes_preparations_streams_late_and_keeps_messag
     )
     assert timeline.text.count("Auto preparation") == 2
     assert "Auto preparation" in preparation_session.text
-    assert f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.id}" in preparation_session.text
+    assert (
+        f"/projects/{quote(project.name, safe='')}/auto-runs/{terminal.number}"
+        in preparation_session.text
+    )
     assert "Retry" not in preparation_session.text
     assert [event["event"] for event in late] == ["status"]
     assert [event["event"] for event in reset] == ["reset", "status"]
@@ -627,7 +698,7 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
     assert 'hx-preserve="true"' in stream_tag
     assert 'hx-ext="sse"' in stream_tag
     assert (
-        f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.id}/stream"'
+        f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.number}/stream"'
         in stream_tag
     )
     assert 'hx-preserve="true"' in timeout_tag
@@ -640,10 +711,10 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
         f'sse-connect="/projects/{quote(project.name, safe='')}/sessions/{key.session_id}'
         f'/rounds/{key.round_n}/stream"'
     ) in live_tag
-    assert "Auto preparation" in timeline.text
+    assert f"Auto {active.number}" in timeline.text
     assert f'hx-get="{timeout_path}"' in timeline.text
     assert status.text.count(
-        f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.id}/stream"'
+        f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.number}/stream"'
     ) == 1
     assert status.text.count('hx-trigger="sse:status, sse:reset"') == 2
 

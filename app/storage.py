@@ -62,7 +62,7 @@ AUTO_STATUSES = frozenset(
 )
 AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
 AUTO_INDEX_FORMAT = "delibra-auto-index/1"
-AUTO_NUMBER_PATTERN = re.compile(r"[1-9][0-9]*\Z")
+CANONICAL_AUTO_NUMBER = re.compile(r"[1-9][0-9]*\Z")
 AUTO_CREATING_PATTERN = re.compile(r"\.creating-([0-9a-f]{32})-([1-9][0-9]*)\Z")
 AUTO_CONTEXT_PATTERN = re.compile(r"^\.turn-context-[0-9a-f]{32}\.md$")
 AGENT_NAME_MAX_BYTES = 200
@@ -239,6 +239,14 @@ def validate_id(value: str, label: str = "id") -> str:
     if not ID_PATTERN.fullmatch(value):
         raise InvalidIdentifier(f"invalid {label}")
     return value
+
+
+def parse_auto_reference(value: str) -> int | str:
+    if CANONICAL_AUTO_NUMBER.fullmatch(value):
+        return int(value)
+    if ID_PATTERN.fullmatch(value):
+        return value
+    raise ValueError("Auto run reference is invalid")
 
 
 def project_path_parts(value: str) -> tuple[str, ...]:
@@ -1319,7 +1327,7 @@ class ProjectStore:
         for child in sorted(self.auto_runs_root.iterdir(), key=lambda item: item.name):
             if child.name.startswith("."):
                 continue
-            if AUTO_NUMBER_PATTERN.fullmatch(child.name):
+            if CANONICAL_AUTO_NUMBER.fullmatch(child.name):
                 expected_number = int(child.name)
                 legacy = False
             elif ID_PATTERN.fullmatch(child.name):
@@ -1760,17 +1768,32 @@ class ProjectStore:
         return record
 
     def load_auto_run(self, auto_id: str) -> AutoRunRecord:
-        run_dir = self.auto_run_dir(auto_id)
-        legacy = ID_PATTERN.fullmatch(run_dir.name) is not None
-        expected_number = None if legacy else int(run_dir.name)
+        location = self._auto_location(auto_id)
         record = self._load_auto_record_at(
-            run_dir,
-            expected_number=expected_number,
-            legacy=legacy,
+            location.path,
+            expected_number=location.number,
+            legacy=location.legacy,
         )
         if record.id != auto_id:
             raise OwnershipError("Auto run identity does not match directory")
         return record
+
+    def load_auto_run_reference(self, value: str) -> AutoRunRecord:
+        reference = parse_auto_reference(value)
+        if isinstance(reference, str):
+            return self.load_auto_run(reference)
+        run_dir = self.auto_runs_root / str(reference)
+        try:
+            run_dir.lstat()
+        except FileNotFoundError as exc:
+            raise NotFoundError(f"Auto run not found: {value}") from exc
+        except OSError as exc:
+            raise StorageError("Auto run directory is unavailable") from exc
+        return self._load_auto_record_at(
+            run_dir,
+            expected_number=reference,
+            legacy=False,
+        )
 
     def load_auto_artifact(
         self,
@@ -1931,6 +1954,13 @@ class ProjectStore:
         if any(record.number is None for record in records):
             return sorted(records, key=lambda item: (item.created_at, item.id))
         return sorted(records, key=lambda item: item.number)
+
+    def auto_number_map_for_view(self) -> dict[str, int]:
+        return {
+            record.id: record.number
+            for record in self.auto_migration_status().readable_records
+            if record.number is not None
+        }
 
     def active_auto_run_id(self) -> str | None:
         active = self._load_manifest().get("active_auto_run_id")

@@ -136,6 +136,65 @@ def create_numeric_auto_run(
     return record
 
 
+def test_numbered_auto_listing_uses_number_not_wall_clock(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    create_numeric_auto_run(
+        store,
+        number=1,
+        auto_id="a" * 32,
+        created_at="2026-01-02T00:00:00Z",
+    )
+    create_numeric_auto_run(
+        store,
+        number=2,
+        auto_id="b" * 32,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    assert [record.number for record in store.list_auto_runs()] == [1, 2]
+
+
+def test_auto_reference_parser_accepts_only_canonical_numbers_or_uuids() -> None:
+    generator = random.Random(20260801)
+    alphabet = "0123456789abcdefABCDEF+-. e_xyz"
+    valid = {str(number) for number in range(1, 100)}
+    valid.update({"a" * 32, "0123456789abcdef" * 2})
+    candidates = set(valid)
+    candidates.update(
+        "".join(generator.choice(alphabet) for _ in range(generator.randrange(0, 40)))
+        for _ in range(1_000)
+    )
+
+    for candidate in candidates:
+        is_number = (
+            candidate.isascii()
+            and candidate.isdecimal()
+            and not candidate.startswith("0")
+        )
+        is_uuid = len(candidate) == 32 and all(
+            character in "0123456789abcdef" for character in candidate
+        )
+        if is_number or is_uuid:
+            parsed = storage.parse_auto_reference(candidate)
+            assert parsed == (int(candidate) if is_number else candidate)
+        else:
+            with pytest.raises(ValueError, match="Auto run reference is invalid"):
+                storage.parse_auto_reference(candidate)
+
+
+def test_auto_run_reference_loads_number_and_uuid_to_the_same_record(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    expected = create_numeric_auto_run(
+        store,
+        number=7,
+        auto_id="a" * 32,
+    )
+
+    assert store.load_auto_run_reference("7").id == expected.id
+    assert store.load_auto_run_reference(expected.id).number == 7
+
+
 def test_auto_scanner_aggregates_issues_and_keeps_unrelated_records(
     tmp_path: Path,
 ) -> None:

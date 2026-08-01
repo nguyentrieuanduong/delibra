@@ -6,12 +6,12 @@
   data-auto-active="{{ 'true' if auto_active else 'false' }}"
 >
   <div class="auto-status-heading">
-    <h2>Auto · {{ auto.status }}</h2>
+    <h2><strong>Auto {{ auto.number }} · {{ auto.status }}</strong></h2>
     {% if auto_active %}
       <form
         method="post"
-        action="{{ project_url(project.name, '/auto-runs/' ~ auto.id ~ '/stop') }}"
-        hx-post="{{ project_url(project.name, '/auto-runs/' ~ auto.id ~ '/stop') }}"
+        action="{{ project_url(project.name, '/auto-runs/' ~ auto.number ~ '/stop') }}"
+        hx-post="{{ project_url(project.name, '/auto-runs/' ~ auto.number ~ '/stop') }}"
         hx-target="#auto-status"
         hx-swap="outerHTML"
       >
@@ -87,11 +87,11 @@
       id="auto-status-stream-{{ auto.id }}"
       hx-preserve="true"
       hx-ext="sse"
-      sse-connect="{{ project_url(project.name, '/auto-runs/' ~ auto.id ~ '/stream') }}"
+      sse-connect="{{ project_url(project.name, '/auto-runs/' ~ auto.number ~ '/stream') }}"
     >
       <span
         hidden
-        hx-get="{{ project_url(project.name, '/auto-runs/' ~ auto.id) }}"
+        hx-get="{{ project_url(project.name, '/auto-runs/' ~ auto.number) }}"
         hx-trigger="sse:status, sse:reset"
         hx-target="#auto-status"
         hx-swap="outerHTML"
