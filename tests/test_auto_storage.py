@@ -99,8 +99,6 @@ def write_auto_run_directory(
     (run_dir / "topic.md").write_bytes(b"Original topic")
     (run_dir / "baseline.md").write_bytes(b"")
     encoded = record.to_dict()
-    if record.number is None:
-        encoded.pop("number")
     (run_dir / "config.json").write_text(
         json.dumps(encoded),
         encoding="utf-8",
@@ -498,7 +496,6 @@ def test_auto_number_is_additive_strict_and_legacy_compatible(
 ) -> None:
     record = auto_record_fixture(auto_project_store(tmp_path).project.id)
     encoded = record.to_dict()
-    encoded.pop("number")
     assert models.AutoRunRecord.from_dict(encoded).number is None
 
     for bad in (True, False, 0, -1, 1.0, "1"):
@@ -506,6 +503,17 @@ def test_auto_number_is_additive_strict_and_legacy_compatible(
         candidate["number"] = bad
         with pytest.raises((TypeError, ValueError)):
             models.AutoRunRecord.from_dict(candidate)
+
+
+def test_legacy_auto_record_serialization_round_trips_without_null_number(
+    tmp_path: Path,
+) -> None:
+    record = auto_record_fixture(auto_project_store(tmp_path).project.id)
+
+    encoded = record.to_dict()
+
+    assert "number" not in encoded
+    assert models.AutoRunRecord.from_dict(encoded) == record
 
 
 def test_auto_number_reservation_survives_backup_recovery(
@@ -614,7 +622,6 @@ def test_auto_record_loads_legacy_token_and_omits_it_on_write(
 ) -> None:
     project_id = auto_project_store(tmp_path).project.id
     legacy = auto_record_fixture(project_id).to_dict()
-    legacy.pop("number")
     legacy["active_turn_token"] = "T" * 43
 
     restored = models.AutoRunRecord.from_dict(legacy)
@@ -627,7 +634,6 @@ def test_auto_record_loads_legacy_preparation_default_and_writes_it(
 ) -> None:
     project_id = auto_project_store(tmp_path).project.id
     legacy = auto_record_fixture(project_id).to_dict()
-    legacy.pop("number")
     legacy.pop("preparation_enabled", None)
 
     restored = models.AutoRunRecord.from_dict(legacy)
