@@ -433,7 +433,7 @@ def test_auto_migration_sweeps_abandoned_creation_while_layout_is_blocked(
     assert not abandoned.exists()
 
 
-def test_auto_migration_retains_abandoned_creation_without_durable_high_water(
+def test_auto_migration_retains_abandoned_creation_and_its_reserved_number(
     tmp_path: Path,
 ) -> None:
     store = auto_project_store(tmp_path)
@@ -447,6 +447,7 @@ def test_auto_migration_retains_abandoned_creation_without_durable_high_water(
 
     assert status.complete is True
     assert abandoned.is_dir()
+    assert store.reserve_auto_run_number() == 2
 
 
 def test_auto_interrupted_migration_resumes_with_stable_artifacts(
