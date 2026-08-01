@@ -8,6 +8,7 @@ import subprocess
 import sys
 from urllib.parse import quote
 
+import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 
@@ -68,6 +69,30 @@ def record(number: int, started_at: str) -> RoundRecord:
         started_at=started_at,
         finished_at=started_at,
         source=SourceDescriptor(type="user"),
+    )
+
+
+def auto_round(round_n: int, auto_id: str) -> RoundRecord:
+    return RoundRecord(
+        n=round_n,
+        status="complete",
+        error=None,
+        warnings=[],
+        agent="fake",
+        model="success",
+        effort="low",
+        started_at=f"2026-01-01T00:00:0{round_n}Z",
+        finished_at=f"2026-01-01T00:00:0{round_n}Z",
+        source=SourceDescriptor(type="auto"),
+        auto=AutoRoundDescriptor(
+            auto_id=auto_id,
+            phase="discussion",
+            cycle=1,
+            position=round_n - 1,
+            context_file=f"inputs/round-{round_n:02d}/auto-context.md",
+            context_sha256="0" * 64,
+            verdict="continue",
+        ),
     )
 
 
@@ -327,6 +352,49 @@ def test_active_auto_puts_the_message_textarea_in_the_disable_lifecycle(
         r'<textarea name="prompt"[^>]+data-disable-during-auto[^>]+disabled',
         response.text,
     )
+
+
+def test_timeline_maps_auto_uuid_to_number_once_and_degrades_unmapped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reserve_auto_run,
+) -> None:
+    mapped_id = "a" * 32
+    unmapped_id = "f" * 32
+    alpha = session(
+        "1" * 32,
+        "Alpha",
+        rounds=[
+            auto_round(1, mapped_id),
+            auto_round(2, unmapped_id),
+        ],
+    )
+    beta = session("2" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+    auto = reserve_auto_run(store, auto_id=mapped_id)
+    auto.status = "converged"
+    auto.finished_at = "2026-01-01T00:01:00Z"
+    auto.terminal_reason = "all agents agreed"
+    store.save_auto_run(auto)
+    store.clear_auto_reservation(auto.id)
+    calls = 0
+    original = ProjectStore.auto_number_map_for_view
+
+    def counted(self: ProjectStore) -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return original(self)
+
+    monkeypatch.setattr(ProjectStore, "auto_number_map_for_view", counted)
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+
+    assert response.status_code == 200
+    project_prefix = f"/projects/{quote(project.name, safe='')}"
+    assert f'href="{project_prefix}/auto-runs/1">Auto 1</a>' in response.text
+    assert "<span>Auto</span>" in response.text
+    assert "Auto aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in response.text
+    assert calls == 1
 
 
 def test_chat_workspace_renders_four_regions_and_full_agent_information(

@@ -8,7 +8,11 @@
   <h2>
     {{ session.name }} · Round {{ key.round_n }} · running
     {% if round is defined and round.record and round.record.auto %}
-      · <a href="{{ project_url(project.name, '/auto-runs/' ~ round.record.auto.auto_id) }}">Auto {{ 'preparation' if round.record.auto.phase == 'preparation' else 'discussion' }}</a>
+      · {% if round.auto_url %}
+          <a href="{{ round.auto_url }}">Auto {{ round.auto_number }}</a>
+        {% else %}
+          <span>Auto</span>
+        {% endif %}
     {% endif %}
   </h2>
   <div

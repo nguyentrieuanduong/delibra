@@ -19,7 +19,11 @@
   {% endif %}
   {% if round.record.auto %}
     <p class="provenance auto-provenance">
-      <a href="{{ project_url(project.name, '/auto-runs/' ~ round.record.auto.auto_id) }}">Auto {{ round.record.auto.auto_id }}</a>
+      {% if round.auto_url %}
+        <a href="{{ round.auto_url }}">Auto {{ round.auto_number }}</a>
+      {% else %}
+        <span>Auto</span>
+      {% endif %}
       · {% if round.record.auto.phase == 'preparation' %}Auto preparation{% else %}discussion cycle {{ round.record.auto.cycle }}{% endif %}
       · position {{ round.record.auto.position + 1 }}
       {% if round.record.auto.verdict %}· verdict {{ round.record.auto.verdict }}{% endif %}

@@ -25,11 +25,21 @@ from app.views import (
 router = APIRouter()
 
 
-def _timeline(request: Request, project_id: str, store: ProjectStore) -> list[dict]:
+def _timeline(
+    request: Request,
+    project_id: str,
+    store: ProjectStore,
+    *,
+    auto_numbers: dict[str, int],
+) -> list[dict]:
     items: list[dict] = []
     for session in store.list_sessions():
         active_key = request.app.state.manager.active_key(project_id, session.id)
-        for round_view in conversation_round_views(store, session.id):
+        for round_view in conversation_round_views(
+            store,
+            session.id,
+            auto_numbers=auto_numbers,
+        ):
             record = round_view["record"]
             if record is None:
                 continue
@@ -121,13 +131,19 @@ async def chat_page(
         composer_oob=False,
         auto_active=auto_active,
     )
+    auto_numbers = store.auto_number_map_for_view()
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="chat.html",
         context={
             "project": project,
             "sessions": sessions,
-            "timeline": _timeline(request, resolved_project_id, store),
+            "timeline": _timeline(
+                request,
+                resolved_project_id,
+                store,
+                auto_numbers=auto_numbers,
+            ),
             "auto_status": (
                 auto_status_context(request, resolved_project_id, auto_record)
                 if auto_record is not None
@@ -150,13 +166,19 @@ async def chat_timeline(request: Request, project_id: str) -> HTMLResponse:
     project = request_project(request, project_id)
     resolved_project_id = project.id
     store = ProjectStore(project)
+    auto_numbers = store.auto_number_map_for_view()
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_timeline.html",
         context={
             "project": project,
             "sessions": store.list_sessions(),
-            "timeline": _timeline(request, resolved_project_id, store),
+            "timeline": _timeline(
+                request,
+                resolved_project_id,
+                store,
+                auto_numbers=auto_numbers,
+            ),
             "auto_active": store.active_auto_run_id() is not None,
             "pass_prompt_template": store.effective_pass_prompt_template(),
         },

@@ -13,6 +13,7 @@ from app.storage import (
     StorageError,
     validate_id,
 )
+from app.urls import project_url
 
 
 def project_card(project: Project) -> dict[str, Any]:
@@ -45,7 +46,14 @@ def round_dom_id(session_id: str, round_n: int) -> str:
     return f"round-{session_id}-{round_n}"
 
 
-def round_views(store: ProjectStore, session_id: str) -> list[dict[str, Any]]:
+def round_views(
+    store: ProjectStore,
+    session_id: str,
+    *,
+    auto_numbers: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    if auto_numbers is None:
+        auto_numbers = store.auto_number_map_for_view()
     config = store.load_session(session_id)
     rounds_dir = store.rounds_dir(session_id)
     views: list[dict[str, Any]] = []
@@ -54,6 +62,11 @@ def round_views(store: ProjectStore, session_id: str) -> list[dict[str, Any]]:
         prompt = rounds_dir / f"round-{record.n:02d}.prompt.md"
         output = rounds_dir / f"round-{record.n:02d}.md"
         partial = rounds_dir / f"round-{record.n:02d}.partial.md"
+        auto_number = (
+            auto_numbers.get(record.auto.auto_id)
+            if record.auto is not None
+            else None
+        )
         views.append(
             {
                 "n": record.n,
@@ -68,6 +81,15 @@ def round_views(store: ProjectStore, session_id: str) -> list[dict[str, Any]]:
                 ),
                 "orphan": False,
                 "dom_id": round_dom_id(session_id, record.n),
+                "auto_number": auto_number,
+                "auto_url": (
+                    project_url(
+                        store.project.name,
+                        f"/auto-runs/{auto_number}",
+                    )
+                    if auto_number is not None
+                    else None
+                ),
             }
         )
     scan = store.scan_round_files(session_id)
@@ -89,6 +111,8 @@ def round_views(store: ProjectStore, session_id: str) -> list[dict[str, Any]]:
                 ),
                 "orphan": True,
                 "dom_id": round_dom_id(session_id, number),
+                "auto_number": None,
+                "auto_url": None,
             }
         )
     return sorted(views, key=lambda item: item["n"])
@@ -97,10 +121,12 @@ def round_views(store: ProjectStore, session_id: str) -> list[dict[str, Any]]:
 def conversation_round_views(
     store: ProjectStore,
     session_id: str,
+    *,
+    auto_numbers: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Project rounds visible as shared conversation messages."""
 
-    return round_views(store, session_id)
+    return round_views(store, session_id, auto_numbers=auto_numbers)
 
 
 def effort_levels() -> dict[str, list[str]]:

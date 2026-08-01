@@ -5,15 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 
-from fastapi import APIRouter, Form, Header, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Form, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sse_starlette.sse import EventSourceResponse
+from starlette.responses import Response
 
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import AutoRunRecord
 from app.project_routing import request_project
 from app.security import validate_field
-from app.storage import ProjectStore, StorageError, validate_id
+from app.storage import ProjectStore, StorageError, parse_auto_reference
+from app.urls import project_url
 
 
 router = APIRouter()
@@ -23,6 +25,20 @@ router = APIRouter()
 class ProjectAutoProjection:
     record: AutoRunRecord | None
     warning: str | None
+
+
+def _load_auto_reference(
+    store: ProjectStore,
+    value: str,
+) -> tuple[AutoRunRecord, int | str]:
+    try:
+        reference = parse_auto_reference(value)
+        return store.load_auto_run_reference(value), reference
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Auto run reference is invalid",
+        ) from exc
 
 
 def project_auto_record(
@@ -234,22 +250,35 @@ async def start_auto(
     )
 
 
-@router.get(
+@router.api_route(
     "/projects/{project_id}/auto-runs/{auto_id}",
+    methods=["GET", "HEAD"],
     response_class=HTMLResponse,
 )
 async def auto_status(
     request: Request,
     project_id: str,
     auto_id: str,
-) -> HTMLResponse:
-    validate_id(auto_id, "Auto run id")
+) -> Response:
     project = request_project(request, project_id)
     resolved_project_id = project.id
+    store = ProjectStore(project)
+    record, reference = _load_auto_reference(store, auto_id)
+    if isinstance(reference, str):
+        if record.number is None:
+            store.require_auto_migration_complete()
+        assert record.number is not None
+        return RedirectResponse(
+            project_url(
+                project.name,
+                f"/auto-runs/{record.number}",
+            ),
+            status_code=302,
+        )
     return _status_response(
         request,
         resolved_project_id,
-        request.app.state.auto_manager.get(resolved_project_id, auto_id),
+        request.app.state.auto_manager.get(resolved_project_id, record.id),
     )
 
 
@@ -260,15 +289,15 @@ async def auto_stream(
     auto_id: str,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> EventSourceResponse:
-    validate_id(auto_id, "Auto run id")
     project = request_project(request, project_id)
     resolved_project_id = project.id
-    request.app.state.auto_manager.get(resolved_project_id, auto_id)
+    record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    request.app.state.auto_manager.get(resolved_project_id, record.id)
 
     async def events():
         async for event in request.app.state.auto_manager.subscribe(
             resolved_project_id,
-            auto_id,
+            record.id,
             last_event_id,
         ):
             yield {
@@ -292,8 +321,11 @@ async def stop_auto(
     project_id: str,
     auto_id: str,
 ) -> HTMLResponse:
-    validate_id(auto_id, "Auto run id")
     project = request_project(request, project_id)
     resolved_project_id = project.id
-    record = await request.app.state.auto_manager.stop(resolved_project_id, auto_id)
+    record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    record = await request.app.state.auto_manager.stop(
+        resolved_project_id,
+        record.id,
+    )
     return _status_response(request, resolved_project_id, record)
