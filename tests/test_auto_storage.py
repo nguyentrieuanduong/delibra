@@ -733,6 +733,20 @@ def test_auto_store_reservation_guards_require_inactive_or_exact_active_owner(
         store.require_auto_owner("d" * 32)
 
 
+def test_missing_auto_reservation_owner_has_an_actionable_conflict(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["active_auto_run_id"] = "f" * 32
+    store.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ConflictError, match="active Auto run is missing") as raised:
+        store.require_auto_inactive()
+
+    assert "Retry Auto migration" not in str(raised.value)
+
+
 def test_auto_store_rejects_digest_and_symlink_tampering(tmp_path: Path) -> None:
     store = auto_project_store(tmp_path)
     record = auto_record_fixture(store.project.id)
