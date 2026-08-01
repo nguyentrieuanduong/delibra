@@ -50,6 +50,151 @@ def project_app(tmp_path: Path):
     ), settings
 
 
+def project_with_corrupt_active_auto(
+    settings: Settings,
+    tmp_path: Path,
+    reserve_auto_run,
+):
+    project_path = tmp_path / "corrupt-active"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register(
+        "Corrupt Active",
+        project_path,
+    )
+    store = ProjectStore(project)
+    for index, name in enumerate(("Alpha", "Beta"), start=1):
+        store.create_session(
+            SessionConfig(
+                id=str(index) * 32,
+                name=name,
+                agent="fake",
+                model="success",
+                effort="low",
+                role_instructions="",
+                cli_session_id=None,
+                status="idle",
+                created_at="2026-01-01T00:00:00Z",
+                rounds=[],
+            )
+        )
+    older = reserve_auto_run(store, auto_id="a" * 32)
+    older.status = "converged"
+    older.finished_at = "2026-01-01T00:01:00Z"
+    older.terminal_reason = "all agents agreed"
+    store.save_auto_run(older)
+    store.clear_auto_reservation(older.id)
+
+    corrupt_id = "f" * 32
+    corrupt_dir = store.auto_runs_root / corrupt_id
+    corrupt_dir.mkdir()
+    (corrupt_dir / "config.json").write_text("{", encoding="utf-8")
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["active_auto_run_id"] = corrupt_id
+    store.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return project
+
+
+def test_unreadable_active_auto_owner_is_actionable_409(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project = project_with_corrupt_active_auto(
+        settings,
+        tmp_path,
+        reserve_auto_run,
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/sessions",
+            data={
+                "name": "Gamma",
+                "agent": "claude",
+                "model": "sonnet",
+                "effort": "low",
+                "role_instructions": "",
+            },
+        )
+        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+
+    assert response.status_code == 409
+    assert "Retry Auto migration in project settings" in response.json()["detail"]
+    assert "Auto migration is blocked" in chat.text
+    assert "Auto 1 · converged" not in chat.text
+
+
+def test_auto_migration_issue_is_visible_retryable_and_escaped(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "blocked-auto"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register(
+        "Blocked Auto",
+        project_path,
+    )
+    broken = ProjectStore(project).auto_runs_root / "<broken>"
+    broken.mkdir()
+    (broken / "config.json").write_text("{", encoding="utf-8")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        settings_page = client.get(
+            f"/projects/{quote(project.name, safe='')}/settings"
+        )
+        retry = client.post(
+            f"/projects/{quote(project.name, safe='')}/auto-migration/retry",
+            follow_redirects=False,
+        )
+
+    assert "&lt;broken&gt;" in settings_page.text
+    assert "Retry Auto migration" in settings_page.text
+    assert retry.status_code == 303
+    assert retry.headers["location"].endswith("/settings")
+
+
+@pytest.mark.parametrize("manager_name", ["manager", "auto_manager"])
+def test_auto_migration_retry_rejects_in_memory_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_name: str,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / manager_name
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Retry Guard", project_path)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        manager = getattr(app.state, manager_name)
+        monkeypatch.setattr(manager, "has_active_project", lambda _: True)
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/auto-migration/retry",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 409
+
+
+def test_unregister_degraded_storage_checks_in_memory_only(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "missing-after-register"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Escape Hatch", project_path)
+    project_path.rename(tmp_path / "moved")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/unregister",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    with pytest.raises(NotFoundError):
+        RegistryStore(settings.home).get(project.id)
+
+
 def test_project_settings_reports_selected_and_broken_shared_markdown(
     tmp_path: Path,
 ) -> None:
@@ -839,7 +984,7 @@ async def test_rebind_is_serialized_against_a_running_session(
                 data={"path": str(moved)},
             )
         assert response.status_code == 409
-        assert response.json() == {"detail": "project has active work"}
+        assert response.json() == {"detail": "project has active agent work"}
         assert registry.get(project.id).path == str(original.resolve())
         await app.state.manager.cancel(key)
 

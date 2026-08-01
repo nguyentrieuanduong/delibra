@@ -218,6 +218,7 @@ def create_app(
             session_id: tuple(messages)
             for session_id, messages in migration_issue_lists.items()
         }
+        auto_migration_issues = store.auto_migration_status().issues
         return templates.TemplateResponse(
             request=request,
             name="project.html",
@@ -234,6 +235,7 @@ def create_app(
                 "auto_active": store.active_auto_run_id() is not None,
                 "legacy_session_ids": frozenset(migration.legacy_session_ids),
                 "migration_issues": migration_issues,
+                "auto_migration_issues": auto_migration_issues,
                 "pass_prompt_template": store.effective_pass_prompt_template(),
             },
         )

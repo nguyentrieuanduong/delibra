@@ -32,10 +32,17 @@ def _project_path(value: str) -> Path:
     return candidate
 
 
-def _reject_running_sessions(project) -> None:
-    sessions = ProjectStore(project).list_sessions()
+def _reject_running_sessions(store: ProjectStore) -> None:
+    sessions = store.list_sessions()
     if any(session.status == "running" for session in sessions):
         raise ConflictError("project has a running agent")
+
+
+def _reject_in_memory_work(request: Request, project_id: str) -> None:
+    if request.app.state.manager.has_active_project(project_id):
+        raise ConflictError("project has active agent work")
+    if request.app.state.auto_manager.has_active_project(project_id):
+        raise ConflictError("project has active Auto work")
 
 
 @router.post("/projects")
@@ -71,11 +78,7 @@ async def rebind_project(
         resolved_project_id,
         session_ids,
     ):
-        if (
-            request.app.state.manager.has_active_project(resolved_project_id)
-            or request.app.state.auto_manager.has_active_project(resolved_project_id)
-        ):
-            raise ConflictError("project has active work")
+        _reject_in_memory_work(request, resolved_project_id)
         candidate = registry.preview_rebind(resolved_project_id, candidate_path)
         candidate_store = ProjectStore(candidate)
         candidate_store.clear_native_session_ids_for_relocation()
@@ -103,18 +106,49 @@ async def unregister_project(request: Request, project_id: str):
         try:
             store = ProjectStore(project)
         except StorageError:
-            if (
-                request.app.state.manager.has_active_project(resolved_project_id)
-                or request.app.state.auto_manager.has_active_project(
-                    resolved_project_id
-                )
-            ):
-                raise ConflictError("project has active work")
-        else:
-            store.require_auto_inactive()
-            _reject_running_sessions(project)
+            store = None
+        if store is not None:
+            try:
+                active_id = store.active_auto_run_id()
+                if active_id is not None:
+                    store.load_auto_run(active_id)
+            except StorageError:
+                store = None
+            else:
+                if active_id is not None:
+                    raise ConflictError("project has an active Auto run")
+                _reject_running_sessions(store)
+        if store is None:
+            _reject_in_memory_work(request, resolved_project_id)
         request.app.state.registry.unregister(resolved_project_id)
     return RedirectResponse("/", status_code=303)
+
+
+@router.post("/projects/{project_id}/auto-migration/retry")
+async def retry_auto_migration(request: Request, project_id: str):
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    store = ProjectStore(project)
+    session_ids = [session.id for session in store.list_sessions()]
+    async with request.app.state.locks.registry_project_sessions(
+        resolved_project_id,
+        session_ids,
+    ):
+        project = request.app.state.registry.get(resolved_project_id)
+        store = ProjectStore(project)
+        current_session_ids = [session.id for session in store.list_sessions()]
+        if set(current_session_ids) != set(session_ids):
+            raise ConflictError("project sessions changed during Auto migration retry")
+        _reject_in_memory_work(request, resolved_project_id)
+        status = store.migrate_auto_run_directories()
+        request.app.state.auto_manager.reconcile_store_locked(
+            store,
+            status.readable_records,
+        )
+    return RedirectResponse(
+        project_url(project.name, "/settings"),
+        status_code=303,
+    )
 
 
 @router.post("/projects/{project_id}/pass-prompt")

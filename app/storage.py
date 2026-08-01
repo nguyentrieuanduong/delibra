@@ -828,6 +828,18 @@ class AutoMigrationStatus:
     readable_records: tuple[AutoRunRecord, ...]
 
 
+def _auto_migration_conflict(status: AutoMigrationStatus) -> ConflictError:
+    reason = (
+        status.issues[0].message
+        if status.issues
+        else "Auto run storage is not fully migrated"
+    )
+    return ConflictError(
+        f"Auto is unavailable: {reason}. "
+        "Retry Auto migration in project settings."
+    )
+
+
 @dataclass(frozen=True)
 class SessionMigrationIssue:
     session_id: str
@@ -1605,21 +1617,9 @@ class ProjectStore:
         return self.auto_migration_status()
 
     def require_auto_migration_complete(self) -> None:
-        for child in self.auto_runs_root.iterdir():
-            if child.name.startswith("."):
-                continue
-            canonical_number = (
-                child.name.isdecimal()
-                and int(child.name) > 0
-                and str(int(child.name)) == child.name
-            )
-            try:
-                info = child.lstat()
-            except OSError as exc:
-                raise StorageError("Auto run layout is unavailable") from exc
-            if canonical_number and stat.S_ISDIR(info.st_mode):
-                continue
-            raise ConflictError("Auto run migration is incomplete")
+        status = self.auto_migration_status()
+        if not status.complete:
+            raise _auto_migration_conflict(status)
 
     def reserve_auto_run_number(self) -> int:
         self.require_auto_migration_complete()
@@ -1940,7 +1940,10 @@ class ProjectStore:
         active_id = self.active_auto_run_id()
         if active_id is None:
             return
-        self.load_auto_run(active_id)
+        try:
+            self.load_auto_run(active_id)
+        except StorageError:
+            raise _auto_migration_conflict(self.auto_migration_status()) from None
         raise ConflictError("project has an active Auto run")
 
     def require_auto_owner(self, auto_id: str) -> AutoRunRecord:
