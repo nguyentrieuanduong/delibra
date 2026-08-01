@@ -1349,7 +1349,7 @@ class ProjectStore:
                     expected_number=expected_number,
                     legacy=legacy,
                 )
-            except OSError as exc:
+            except OSError:
                 issues.append(
                     AutoMigrationIssue(child.name, "Auto run directory is unavailable")
                 )
@@ -1981,6 +1981,12 @@ class ProjectStore:
             return
         try:
             self.load_auto_run(active_id)
+        except NotFoundError:
+            raise ConflictError(
+                "Auto is unavailable: the active Auto run is missing. "
+                "Restore its run directory or repair .delibra/manifest.json "
+                "before continuing."
+            ) from None
         except StorageError:
             raise _auto_migration_conflict(self.auto_migration_status()) from None
         raise ConflictError("project has an active Auto run")
