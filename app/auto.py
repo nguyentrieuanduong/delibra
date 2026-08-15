@@ -49,6 +49,12 @@ AUTO_STOP_RETRY_SECONDS = 0.01
 
 
 AUTO_CONVERGENCE = re.compile(r"\bconverged\b", re.IGNORECASE)
+AUTO_NEGATED_CONVERGENCE = re.compile(
+    r"\b(?:not|(?:is|are|was|were|has|have|had)n['’]?t)"
+    r"(?:\s+(?:yet|fully|completely|sufficiently|quite)){0,2}"
+    r"\s+converged\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -62,11 +68,11 @@ def parse_auto_verdict(text: str) -> Literal["agree", "continue"]:
 
     nonempty = [line for line in text.splitlines() if line.strip()]
     tail = nonempty[-3:]
-    return (
-        "agree"
-        if any(AUTO_CONVERGENCE.search(line) is not None for line in tail)
-        else "continue"
-    )
+    for line in tail:
+        without_negated_markers = AUTO_NEGATED_CONVERGENCE.sub("", line)
+        if AUTO_CONVERGENCE.search(without_negated_markers) is not None:
+            return "agree"
+    return "continue"
 
 
 def _untrusted_section(label: str, content: bytes) -> bytes:
