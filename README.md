@@ -187,12 +187,17 @@ one discussion turn. At the end of that initial cycle, any agreeing response
 converges the run. If nobody agrees, later cycles stop on the first agreeing
 response. **All agree** requires every agent to agree within the same
 complete cycle. Preparation calls do not count as discussion turns.
-A discussion response agrees when
-the standalone word `converged`, matched without case sensitivity, appears in its
-final three non-empty lines. This deliberately favors stopping over continuing
-when wording is ambiguous. The stored verdict remains `agree`. Reaching the
-configured number of complete cycles records `limit_reached` without starting an
-extra turn.
+A discussion response agrees when an unnegated standalone word `converged`,
+matched without case sensitivity, appears in its final three non-empty lines.
+An occurrence is ignored only when the same line places it after `not` or a
+supported negative contraction (`isn't`, `aren't`, `wasn't`, `weren't`,
+`hasn't`, `haven't`, or `hadn't`), with at most two intervening modifiers
+chosen from `yet`, `fully`, `completely`, `sufficiently`, and `quite`. Another
+unnegated occurrence in the three-line window still agrees. Unsupported wording
+containing `converged` also agrees, deliberately favoring stopping over
+additional Auto calls. The stored verdict remains `agree`. Reaching the
+configured number of complete cycles records `limit_reached` without starting
+an extra turn.
 
 The Auto status panel survives reloads and shows progress, participant order,
 verdicts, future-turn timeout budget, terminal reason, and completed preparations.

@@ -61,6 +61,7 @@ FAKE_CLI = Path(__file__).with_name("fake_cli.py")
         ("agree", "continue"),
         ("continue", "continue"),
         ("\n \t\n", "continue"),
+        ("", "continue"),
     ],
 )
 def test_parse_auto_verdict_uses_only_final_three_nonempty_lines(
@@ -76,6 +77,46 @@ def test_parse_auto_verdict_counts_nonempty_lines_only() -> None:
         parse_auto_verdict("Converged\n\nsecond\n \nthird\n\tfourth")
         == "continue"
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Not converged",
+        "NOT YET FULLY CONVERGED.",
+        "It isn't converged",
+        "They arent yet converged",
+        "We aren’t quite converged",
+        "It wasn't fully converged",
+        "They weren't sufficiently converged",
+        "That hasn't completely converged",
+        "We haven't yet fully converged",
+        "The earlier state hadn't converged",
+        "Converged\none\ntwo\nNot sufficiently converged",
+    ],
+)
+def test_parse_auto_verdict_ignores_supported_negation_in_tail(
+    text: str,
+) -> None:
+    assert parse_auto_verdict(text) == "continue"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Not only Converged",
+        "Cannot call this Converged",
+        "Not really Converged",
+        "Not yet fully completely Converged",
+        "Not converged earlier; now Converged",
+        "It is not\nConverged",
+        "Converged\nNot converged",
+    ],
+)
+def test_parse_auto_verdict_stops_for_remaining_tail_marker(
+    text: str,
+) -> None:
+    assert parse_auto_verdict(text) == "agree"
 
 
 def test_context_renderers_label_untrusted_injection_and_preserve_stable_order() -> None:
@@ -468,8 +509,10 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
         for session_id in session_ids
     )
     discussion_prompt = factory.calls[-1]["prompt"]
+    assert "final three non-empty response lines" in discussion_prompt
     assert "standalone word Converged" in discussion_prompt
     assert "do not use Converged" in discussion_prompt
+    assert "say Not converged" not in discussion_prompt
 
 
 @pytest.mark.asyncio
