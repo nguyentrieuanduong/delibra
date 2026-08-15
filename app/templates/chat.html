@@ -31,7 +31,13 @@
       aria-label="Conversation workspace"
     >
       {% include "_composer.html" %}
-      <div id="auto-setup-host"></div>
+      <div id="auto-setup-host">
+        {% if auto_setup %}
+          {% with project=auto_setup.project, sessions=auto_setup.sessions, topic=auto_setup.topic, topic_source=auto_setup.topic_source %}
+            {% include "_auto_setup.html" %}
+          {% endwith %}
+        {% endif %}
+      </div>
       <div id="chat-errors" class="chat-errors" aria-live="polite">
         {% if auto_migration_warning %}
           <p>

@@ -8,10 +8,14 @@ from fastapi.responses import HTMLResponse
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import Project, SessionConfig
 from app.project_routing import request_project
-from app.routes.auto import auto_status_context, project_auto_record
+from app.routes.auto import (
+    auto_setup_context,
+    auto_status_context,
+    project_auto_record,
+)
 from app.routes.runs import start_run_fragment
 from app.security import validate_field
-from app.storage import ProjectStore, validate_id
+from app.storage import ConflictError, ProjectStore, validate_id
 from app.urls import project_url
 from app.views import (
     agent_views,
@@ -113,6 +117,7 @@ async def chat_page(
     request: Request,
     project_id: str,
     agent: str | None = Query(None),
+    auto_setup: bool = Query(False),
 ):
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -124,6 +129,17 @@ async def chat_page(
         auto_record is not None
         and auto_record.status in ACTIVE_AUTO_STATUSES
     )
+    setup_context = None
+    if (
+        auto_setup
+        and not auto_active
+        and auto_projection.warning is None
+        and len(sessions) >= 2
+    ):
+        try:
+            setup_context = auto_setup_context(request, resolved_project_id)
+        except ConflictError:
+            setup_context = None
     sidebar = _sidebar_context(
         store,
         sessions,
@@ -150,6 +166,7 @@ async def chat_page(
                 else None
             ),
             "auto_active": auto_active,
+            "auto_setup": setup_context,
             "auto_migration_warning": auto_projection.warning,
             "health": request.app.state.health,
             "pass_prompt_template": store.effective_pass_prompt_template(),

@@ -116,11 +116,14 @@ def test_unreadable_active_auto_owner_is_actionable_409(
                 "role_instructions": "",
             },
         )
-        chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        chat = client.get(
+            f"/projects/{quote(project.name, safe='')}/chat?auto_setup=true"
+        )
 
     assert response.status_code == 409
     assert "Retry Auto migration in project settings" in response.json()["detail"]
     assert "Auto migration is blocked" in chat.text
+    assert "data-auto-setup-dialog" not in chat.text
     assert "Auto 1 · converged" not in chat.text
 
 

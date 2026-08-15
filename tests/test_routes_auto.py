@@ -14,7 +14,8 @@ from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
-from app.storage import ProjectStore, RegistryStore
+import app.routes.chat as chat_routes
+from app.storage import ConflictError, ProjectStore, RegistryStore
 
 
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
@@ -133,6 +134,41 @@ def auto_route_app(
         adapter_factory_override=factory,
     )
     return app, settings, project, store, sessions, factory
+
+
+def add_completed_user_round(
+    store: ProjectStore,
+    session: SessionConfig,
+    *,
+    prompt: str,
+    output: str,
+) -> None:
+    config = store.load_session(session.id)
+    round_n = len(config.rounds) + 1
+    config.rounds.append(
+        RoundRecord(
+            n=round_n,
+            status="complete",
+            error=None,
+            warnings=[],
+            agent=config.agent,
+            model=config.model,
+            effort=config.effort,
+            started_at=f"2026-07-19T00:00:{round_n:02d}Z",
+            finished_at=f"2026-07-19T00:00:{round_n:02d}Z",
+            source=SourceDescriptor(type="user"),
+        )
+    )
+    store.save_session(config)
+    rounds = store.rounds_dir(session.id)
+    (rounds / f"round-{round_n:02d}.prompt.md").write_text(
+        prompt,
+        encoding="utf-8",
+    )
+    (rounds / f"round-{round_n:02d}.md").write_text(
+        output,
+        encoding="utf-8",
+    )
 
 
 def start_auto(
@@ -349,6 +385,56 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     assert "?topic=" not in chat.text
 
 
+def test_chat_auto_setup_deep_link_reuses_fragment_context(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    add_completed_user_round(
+        store,
+        sessions[0],
+        prompt="Continue the durable conversation",
+        output="Current answer",
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        fragment = client.get(f"{prefix}/auto/setup")
+        page = client.get(f"{prefix}/chat?auto_setup=true")
+
+    assert fragment.status_code == 200
+    assert page.status_code == 200
+    assert page.text.count("data-auto-setup-dialog") == 1
+    assert 'data-topic-source="durable"' in page.text
+    assert "Continue the durable conversation" in fragment.text
+    assert "Continue the durable conversation" in page.text
+    assert page.text.index("alpha") < page.text.index("Beta")
+    assert 'value="first_agree" checked' in page.text
+    assert 'name="max_cycles" type="number" min="1" max="20" value="3"' in page.text
+
+
+def test_chat_auto_setup_deep_link_contains_migration_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _, project, _, _, _ = auto_route_app(tmp_path)
+
+    def migration_changed(_request, _project_id: str) -> dict:
+        raise ConflictError("Auto migration changed during request")
+
+    monkeypatch.setattr(
+        chat_routes,
+        "auto_setup_context",
+        migration_changed,
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{prefix}/chat?auto_setup=true")
+
+    assert page.status_code == 200
+    assert "data-auto-setup-dialog" not in page.text
+
+
 def test_fresh_auto_setup_defers_topic_to_composer_and_get_starts_no_work(
     tmp_path: Path,
 ) -> None:
@@ -499,6 +585,9 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
         )
         settings_page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
         index = client.get("/")
+        active_deep_link = client.get(
+            f"/projects/{quote(project.name, safe='')}/chat?auto_setup=true"
+        )
 
         stopped = client.post(
             f"/projects/{quote(project.name, safe='')}/auto-runs/{active.id}/stop"
@@ -516,6 +605,8 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
         chat.text,
     )
     assert re.search(r'<button[^>]*data-auto-open[^>]*disabled', chat.text)
+    assert f'data-auto-id="{active.id}"' in active_deep_link.text
+    assert "data-auto-setup-dialog" not in active_deep_link.text
     assert f"Auto {active.number}" in session_page.text
     assert re.search(r'>Cancel</button>', session_page.text)
     assert re.search(r'<button[^>]*disabled[^>]*>Cancel</button>', session_page.text)
