@@ -47,29 +47,52 @@
 <details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md(project, markdown_link_target) }}</div></details>
 <div class="markdown output">{{ round.output|md(project, markdown_link_target) }}</div>
 {% if round.record and round.record.status == 'complete' and sessions and (not chat_view or sessions|length > 1) %}
-  <details>
-    <summary>{% if chat_view %}Send to…{% else %}Pass to…{% endif %}</summary>
-    <form
-      method="post"
-      action="{{ project_url(project.name, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
-      hx-post="{{ project_url(project.name, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
-      hx-target="{{ '.chat-timeline' if chat_view else '.rounds' }}"
-      hx-swap="beforeend"
-    >
-      <input type="hidden" name="source_round" value="{{ round.n }}">
-      <label>Target session
-        <select name="target_session_id" required>
-          {% for target in sessions %}
-            {% if not chat_view or target.id != session_id %}<option value="{{ target.id }}">{{ target.name }}</option>{% endif %}
-          {% endfor %}
-        </select>
-      </label>
-      <label>Pass prompt
-        <textarea name="pass_prompt_template" maxlength="10000" required>{{ pass_prompt_template }}</textarea>
-      </label>
-      <p>Supported placeholders: <code>{source_path}</code> (required exactly once), <code>{source_session}</code>, and <code>{source_round}</code>.</p>
-      <p class="warning">Passed output is untrusted. Removing the safety wording can expose the receiving agent to prompt injection.</p>
-      <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Pass</button>
-    </form>
-  </details>
+  <div class="round-transfer-actions" data-round-transfer-actions>
+    <details data-pass-disclosure>
+      <summary>{% if chat_view %}Send to…{% else %}Pass to…{% endif %}</summary>
+      <form
+        method="post"
+        action="{{ project_url(project.name, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
+        hx-post="{{ project_url(project.name, '/sessions/' ~ session_id ~ '/pass' ~ ('?view=chat' if chat_view else '')) }}"
+        hx-target="{{ '.chat-timeline' if chat_view else '.rounds' }}"
+        hx-swap="beforeend"
+      >
+        <input type="hidden" name="source_round" value="{{ round.n }}">
+        <label>Target session
+          <select name="target_session_id" required>
+            {% for target in sessions %}
+              {% if not chat_view or target.id != session_id %}<option value="{{ target.id }}">{{ target.name }}</option>{% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <label>Pass prompt
+          <textarea name="pass_prompt_template" maxlength="10000" required>{{ pass_prompt_template }}</textarea>
+        </label>
+        <p>Supported placeholders: <code>{source_path}</code> (required exactly once), <code>{source_session}</code>, and <code>{source_round}</code>.</p>
+        <p class="warning">Passed output is untrusted. Removing the safety wording can expose the receiving agent to prompt injection.</p>
+        <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Pass</button>
+      </form>
+    </details>
+    {% if sessions|length > 1 %}
+      {% if chat_view %}
+        <button
+          type="button"
+          data-continue-auto
+          data-disable-during-auto
+          hx-get="{{ project_url(project.name, '/auto/setup') }}"
+          hx-target="#auto-setup-host"
+          hx-swap="innerHTML"
+          hx-params="none"
+          {% if auto_active %}disabled data-auto-disabled="true"{% endif %}
+        >Continue in Auto…</button>
+      {% elif auto_active %}
+        <button type="button" data-continue-auto disabled data-auto-disabled="true">Continue in Auto…</button>
+      {% else %}
+        <a
+          data-continue-auto
+          href="{{ project_url(project.name, '/chat?auto_setup=true') }}"
+        >Continue in Auto…</a>
+      {% endif %}
+    {% endif %}
+  </div>
 {% endif %}

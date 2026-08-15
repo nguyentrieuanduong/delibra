@@ -435,6 +435,107 @@ def test_chat_auto_setup_deep_link_contains_migration_race(
     assert "data-auto-setup-dialog" not in page.text
 
 
+def test_completed_round_continue_auto_controls_use_no_round_parameters(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    add_completed_user_round(
+        store,
+        sessions[0],
+        prompt="Conversation prompt",
+        output="Conversation answer",
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        chat = client.get(f"{prefix}/chat")
+        session_page = client.get(f"{prefix}/sessions/{sessions[0].id}")
+
+    chat_control = re.search(
+        r'<button[^>]*data-continue-auto[^>]*>',
+        chat.text,
+    )
+    session_control = re.search(
+        r'<a[^>]*data-continue-auto[^>]*>',
+        session_page.text,
+    )
+    chat_actions = re.search(
+        r'<div[^>]*data-round-transfer-actions[^>]*>(.*?)</div>',
+        chat.text,
+        re.DOTALL,
+    )
+    session_actions = re.search(
+        r'<div[^>]*data-round-transfer-actions[^>]*>(.*?)</div>',
+        session_page.text,
+        re.DOTALL,
+    )
+    assert chat_control is not None
+    assert session_control is not None
+    assert chat_actions is not None
+    assert session_actions is not None
+    assert f'hx-get="{prefix}/auto/setup"' in chat_control.group(0)
+    assert 'hx-target="#auto-setup-host"' in chat_control.group(0)
+    assert 'hx-params="none"' in chat_control.group(0)
+    assert f'href="{prefix}/chat?auto_setup=true"' in session_control.group(0)
+    assert (
+        chat_actions.group(1).index("</details>")
+        < chat_actions.group(1).index("data-continue-auto")
+    )
+    assert (
+        session_actions.group(1).index("</details>")
+        < session_actions.group(1).index("data-continue-auto")
+    )
+    for control in (chat_control.group(0), session_control.group(0)):
+        assert sessions[0].id not in control
+        assert "source_round" not in control
+
+
+def test_continue_auto_requires_two_sessions(tmp_path: Path) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    add_completed_user_round(
+        store,
+        sessions[0],
+        prompt="Only conversation",
+        output="Only answer",
+    )
+    store.delete_session(sessions[1].id)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        chat = client.get(f"{prefix}/chat")
+        session_page = client.get(f"{prefix}/sessions/{sessions[0].id}")
+        deep_link = client.get(f"{prefix}/chat?auto_setup=true")
+
+    assert "data-continue-auto" not in chat.text
+    assert "data-continue-auto" not in session_page.text
+    assert "data-auto-setup-dialog" not in deep_link.text
+
+
+def test_continue_auto_controls_disable_for_active_reservation(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    add_completed_user_round(
+        store,
+        sessions[0],
+        prompt="Existing conversation topic",
+        output="Completed before Auto",
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        reserve_auto_run(store, auto_id="f" * 32)
+        chat = client.get(f"{prefix}/chat")
+        session_page = client.get(f"{prefix}/sessions/{sessions[0].id}")
+
+    assert re.search(r'<button[^>]*data-continue-auto[^>]*disabled', chat.text)
+    assert re.search(
+        r'<button[^>]*data-continue-auto[^>]*disabled',
+        session_page.text,
+    )
+
+
 def test_fresh_auto_setup_defers_topic_to_composer_and_get_starts_no_work(
     tmp_path: Path,
 ) -> None:

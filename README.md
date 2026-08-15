@@ -170,6 +170,13 @@ selected by default. Select at least two unique agents, choose **All agree** or
 **First agree**, and set **Maximum discussion cycles** from 1 through 20 (default
 3). The agreement-policy default is **First agree**.
 
+Completed messages also expose **Continue in Auto…** beside Pass. In merged
+Chat it opens the existing Auto setup in place; on a session page it opens the
+same setup in merged Chat. The clicked message is not promoted to a new topic.
+Auto keeps the editable durable Topic and snapshots the bounded completed
+project conversation when **Start Auto** is pressed. Replace or expand Topic
+when the clicked output should instead define a new discussion topic.
+
 Auto starts discussion directly by default. Select **Prepare agents
 independently first** when every chosen agent should receive one independent
 preparation call containing only the original topic and the creation-time
