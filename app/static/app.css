@@ -82,6 +82,18 @@ textarea { min-height: 7rem; }
   gap: .5rem;
   justify-content: space-between;
 }
+.round-transfer-actions {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+.round-transfer-actions a[data-continue-auto] {
+  border: 1px solid #8888;
+  border-radius: .25rem;
+  padding: .15rem .5rem;
+  text-decoration: none;
+}
 .auto-setup-dialog {
   border: 1px solid #8888;
   border-radius: .5rem;
