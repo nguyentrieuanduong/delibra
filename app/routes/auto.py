@@ -194,8 +194,7 @@ def _status_response(
     )
 
 
-@router.get("/projects/{project_id}/auto/setup", response_class=HTMLResponse)
-async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
+def auto_setup_context(request: Request, project_id: str) -> dict:
     project = request_project(request, project_id)
     store = ProjectStore(project)
     store.require_auto_migration_complete()
@@ -204,15 +203,20 @@ async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
         key=lambda item: (item.name.casefold(), item.id),
     )
     topic = _durable_topic(request, store)
+    return {
+        "project": project,
+        "sessions": sessions,
+        "topic": topic or "",
+        "topic_source": "durable" if topic is not None else "composer",
+    }
+
+
+@router.get("/projects/{project_id}/auto/setup", response_class=HTMLResponse)
+async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_auto_setup.html",
-        context={
-            "project": project,
-            "sessions": sessions,
-            "topic": topic or "",
-            "topic_source": "durable" if topic is not None else "composer",
-        },
+        context=auto_setup_context(request, project_id),
     )
 
 
