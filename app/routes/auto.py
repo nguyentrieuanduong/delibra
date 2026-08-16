@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import json
 
@@ -11,7 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.responses import Response
 
 from app.auto import ACTIVE_AUTO_STATUSES
-from app.models import AutoRunRecord
+from app.models import AutoRunRecord, Project
 from app.project_routing import request_project
 from app.security import validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
@@ -25,6 +26,7 @@ router = APIRouter()
 class ProjectAutoProjection:
     record: AutoRunRecord | None
     warning: str | None
+    history: tuple[AutoRunRecord, ...]
 
 
 def _load_auto_reference(
@@ -47,31 +49,22 @@ def project_auto_record(
 ) -> ProjectAutoProjection:
     store = ProjectStore(request.app.state.registry.get(project_id))
     status = store.auto_migration_status()
+    history = auto_history_records(status.readable_records)
     active_id = store.active_auto_run_id()
-    by_id = {record.id: record for record in status.readable_records}
-    if active_id is not None:
-        record = by_id.get(active_id)
-        warning = (
-            status.issues[0].message
-            if record is None and status.issues
-            else None
-        )
-        return ProjectAutoProjection(record, warning)
-    readable = list(status.readable_records)
-    if any(item.number is None for item in readable):
-        record = max(
-            readable,
-            key=lambda item: (item.created_at, item.id),
-            default=None,
-        )
-    else:
-        record = max(
-            readable,
-            key=lambda item: item.number or 0,
-            default=None,
-        )
     warning = status.issues[0].message if status.issues else None
-    return ProjectAutoProjection(record, warning)
+    if active_id is not None:
+        by_id = {record.id: record for record in history}
+        record = by_id.get(active_id)
+        return ProjectAutoProjection(
+            record,
+            warning if record is None else None,
+            tuple(history),
+        )
+    return ProjectAutoProjection(
+        history[0] if history else None,
+        warning,
+        tuple(history),
+    )
 
 
 def _decode_text(contents: bytes, label: str) -> str:
@@ -79,6 +72,89 @@ def _decode_text(contents: bytes, label: str) -> str:
         return contents.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise StorageError(f"{label} is not valid UTF-8") from exc
+
+
+def auto_history_records(
+    records: Iterable[AutoRunRecord],
+) -> list[AutoRunRecord]:
+    records = list(records)
+    if any(record.number is None for record in records):
+        return sorted(
+            records,
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+    return sorted(
+        records,
+        key=lambda item: item.number or 0,
+        reverse=True,
+    )
+
+
+def _auto_material_context(
+    request: Request,
+    store: ProjectStore,
+    record: AutoRunRecord,
+) -> dict:
+    try:
+        topic = _decode_text(
+            store.load_auto_artifact(
+                record.id,
+                record.topic,
+                request.app.state.settings.request_body_limit,
+            ),
+            "Auto topic",
+        )
+    except StorageError:
+        topic = None
+    participants = {item.session_id: item for item in record.participants}
+    preparations = []
+    for turn in record.preparations:
+        try:
+            output = _decode_text(
+                store.load_round_artifact(
+                    turn.session_id,
+                    turn.round_n,
+                    "output",
+                    request.app.state.settings.captured_output_limit,
+                ),
+                "Auto preparation output",
+            )
+        except StorageError:
+            output = None
+        preparations.append(
+            {
+                "turn": turn,
+                "participant": participants[turn.session_id],
+                "output": output,
+                "output_unavailable": output is None,
+            }
+        )
+    return {"topic": topic, "preparations": preparations}
+
+
+def auto_history_index_context(request: Request, project_id: str) -> dict:
+    project = request_project(request, project_id)
+    store = ProjectStore(project)
+    return {
+        "project": project,
+        "auto_runs": auto_history_records(
+            store.auto_migration_status().readable_records
+        ),
+    }
+
+
+def auto_history_detail_context(
+    request: Request,
+    project: Project,
+    store: ProjectStore,
+    record: AutoRunRecord,
+) -> dict:
+    return {
+        "project": project,
+        "auto": record,
+        **_auto_material_context(request, store, record),
+    }
 
 
 def _durable_topic(request: Request, store: ProjectStore) -> str | None:
@@ -122,33 +198,11 @@ def auto_status_context(
     record: AutoRunRecord,
     *,
     clear_setup: bool = False,
+    refresh_history: bool = False,
 ) -> dict:
     project = request_project(request, project_id)
     store = ProjectStore(project)
-    topic = _decode_text(
-        store.load_auto_artifact(
-            record.id,
-            record.topic,
-            request.app.state.settings.request_body_limit,
-        ),
-        "Auto topic",
-    )
-    participants = {item.session_id: item for item in record.participants}
-    preparations = []
-    for turn in record.preparations:
-        output = store.load_round_artifact(
-            turn.session_id,
-            turn.round_n,
-            "output",
-            request.app.state.settings.captured_output_limit,
-        )
-        preparations.append(
-            {
-                "turn": turn,
-                "participant": participants[turn.session_id],
-                "output": _decode_text(output, "Auto preparation output"),
-            }
-        )
+    material = _auto_material_context(request, store, record)
     current_participant = (
         record.participants[record.next_participant]
         if record.status in ACTIVE_AUTO_STATUSES
@@ -159,8 +213,7 @@ def auto_status_context(
         "project": project,
         "auto": record,
         "auto_active": record.status in ACTIVE_AUTO_STATUSES,
-        "topic": topic,
-        "preparations": preparations,
+        **material,
         "preparing_number": min(
             len(record.preparations) + 1,
             len(record.participants),
@@ -170,6 +223,13 @@ def auto_status_context(
         ),
         "current_participant": current_participant,
         "clear_auto_setup": clear_setup,
+        "auto_history_oob_runs": (
+            auto_history_records(
+                store.auto_migration_status().readable_records
+            )
+            if refresh_history
+            else None
+        ),
     }
 
 
@@ -189,6 +249,7 @@ def _status_response(
             project_id,
             record,
             clear_setup=clear_setup,
+            refresh_history=True,
         ),
         status_code=status_code,
     )
@@ -217,6 +278,42 @@ async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
         request=request,
         name="_auto_setup.html",
         context=auto_setup_context(request, project_id),
+    )
+
+
+@router.get("/projects/{project_id}/auto/history", response_class=HTMLResponse)
+async def auto_history_index(request: Request, project_id: str) -> HTMLResponse:
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_auto_history_index.html",
+        context=auto_history_index_context(request, project_id),
+    )
+
+
+@router.get(
+    "/projects/{project_id}/auto-runs/{auto_id}/history",
+    response_class=HTMLResponse,
+)
+async def auto_history_detail(
+    request: Request,
+    project_id: str,
+    auto_id: str,
+) -> Response:
+    project = request_project(request, project_id)
+    store = ProjectStore(project)
+    record, reference = _load_auto_reference(store, auto_id)
+    if isinstance(reference, str) and record.number is not None:
+        return RedirectResponse(
+            project_url(
+                project.name,
+                f"/auto-runs/{record.number}/history",
+            ),
+            status_code=302,
+        )
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_auto_history_detail.html",
+        context=auto_history_detail_context(request, project, store, record),
     )
 
 

@@ -1,4 +1,9 @@
 {% if clear_auto_setup %}<div id="auto-setup-host" hx-swap-oob="innerHTML"></div>{% endif %}
+{% if auto_history_oob_runs|default(none) is not none %}
+  {% with auto_runs=auto_history_oob_runs|default([]), auto_history_oob=true %}
+    {% include "_auto_history_index.html" %}
+  {% endwith %}
+{% endif %}
 <section
   id="auto-status"
   class="auto-status {{ auto.status }}"
@@ -45,7 +50,11 @@
   {% endif %}
   <details>
     <summary>Topic</summary>
-    <pre>{{ topic }}</pre>
+    {% if topic is none %}
+      <p class="auto-topic-unavailable">Topic unavailable.</p>
+    {% else %}
+      <pre>{{ topic }}</pre>
+    {% endif %}
   </details>
   <details>
     <summary>Participants</summary>
@@ -55,15 +64,10 @@
       {% endfor %}
     </ol>
   </details>
-  {% if preparations %}
+  {% if auto.preparation_enabled or preparations %}
     <details>
       <summary>Preparations</summary>
-      {% for preparation in preparations %}
-        <article class="auto-preparation-summary">
-          <h3>{{ preparation.participant.name }} · round {{ preparation.turn.round_n }}</h3>
-          <pre>{{ preparation.output }}</pre>
-        </article>
-      {% endfor %}
+      {% include "_auto_preparations.html" %}
     </details>
   {% endif %}
   {% if auto.discussion %}

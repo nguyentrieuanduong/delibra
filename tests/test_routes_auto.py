@@ -13,7 +13,13 @@ from fastapi.testclient import TestClient
 from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
 from app.main import create_app
-from app.models import RoundRecord, SessionConfig, SourceDescriptor
+from app.models import (
+    AutoArtifact,
+    AutoRunRecord,
+    RoundRecord,
+    SessionConfig,
+    SourceDescriptor,
+)
 import app.routes.chat as chat_routes
 from app.storage import ConflictError, ProjectStore, RegistryStore
 
@@ -169,6 +175,22 @@ def add_completed_user_round(
         output,
         encoding="utf-8",
     )
+
+
+def finish_reserved_auto(
+    store: ProjectStore,
+    record: AutoRunRecord,
+    *,
+    status: str,
+    preparation_enabled: bool,
+) -> AutoRunRecord:
+    record.status = status
+    record.preparation_enabled = preparation_enabled
+    record.finished_at = "2026-07-19T00:01:00Z"
+    record.terminal_reason = f"Auto ended with {status}"
+    store.save_auto_run(record)
+    store.clear_auto_reservation(record.id)
+    return record
 
 
 def start_auto(
@@ -943,3 +965,175 @@ def test_discussion_places_current_timeout_in_timeline_not_auto_status(
     assert f'hx-get="{timeout_path}"' in timeline.text
     live_tag = opening_tag(timeline.text, f"round-{key.session_id}-{key.round_n}")
     assert 'hx-preserve="true"' in live_tag
+
+
+def test_auto_history_index_is_newest_first_lazy_and_canonical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reserve_auto_run,
+) -> None:
+    app, _, project, store, _, _ = auto_route_app(tmp_path)
+    project_prefix = f"/projects/{quote(project.name, safe='')}"
+    artifact_reads: list[str] = []
+    original = ProjectStore.load_auto_artifact
+
+    def counted_load_auto_artifact(
+        self: ProjectStore,
+        auto_id: str,
+        artifact: AutoArtifact,
+        maximum_bytes: int,
+    ) -> bytes:
+        artifact_reads.append(auto_id)
+        return original(self, auto_id, artifact, maximum_bytes)
+
+    monkeypatch.setattr(
+        ProjectStore,
+        "load_auto_artifact",
+        counted_load_auto_artifact,
+    )
+    with TestClient(app, base_url="http://localhost") as client:
+        first = finish_reserved_auto(
+            store,
+            reserve_auto_run(store, auto_id="c" * 32),
+            status="converged",
+            preparation_enabled=False,
+        )
+        second = reserve_auto_run(store, auto_id="d" * 32)
+        index = client.get(f"{project_prefix}/auto/history")
+        detail = client.get(
+            f"{project_prefix}/auto-runs/{first.number}/history"
+        )
+        active_detail = client.get(
+            f"{project_prefix}/auto-runs/{second.number}/history"
+        )
+        legacy = client.get(
+            f"{project_prefix}/auto-runs/{first.id}/history",
+            follow_redirects=False,
+        )
+
+    assert index.status_code == 200
+    assert index.text.index(f"Auto {second.number}") < index.text.index(
+        f"Auto {first.number}"
+    )
+    assert f'data-auto-history-number="{second.number}"' in index.text
+    assert f'data-auto-history-number="{first.number}"' in index.text
+    assert detail.status_code == 200
+    assert "Original topic" in detail.text
+    assert "Preparation was skipped." in detail.text
+    assert 'id="auto-status"' not in detail.text
+    assert 'data-auto-active=' not in detail.text
+    assert "Discussion verdicts" not in detail.text
+    assert active_detail.status_code == 200
+    assert "No preparation has completed." in active_detail.text
+    assert 'id="auto-status"' not in active_detail.text
+    assert 'data-auto-active=' not in active_detail.text
+    assert artifact_reads == [first.id, second.id]
+    assert legacy.status_code == 302
+    assert legacy.headers["location"] == (
+        f"{project_prefix}/auto-runs/{first.number}/history"
+    )
+
+
+def test_auto_history_preparations_are_escaped_focusable_and_refresh_oob(
+    tmp_path: Path,
+) -> None:
+    outputs = [
+        "<prep alpha>",
+        "<prep beta>",
+        "<discussion>\nCONVERGED",
+        "<discussion beta>",
+    ]
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=outputs,
+    )
+    project_prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+            policy="first_agree",
+            cycles=1,
+            prepare_first=True,
+        )
+        terminal = wait_for_auto(store, terminal=True)
+        detail = client.get(
+            f"{project_prefix}/auto-runs/{terminal.number}/history"
+        )
+        status = client.get(
+            f"{project_prefix}/auto-runs/{terminal.number}"
+        )
+
+    assert detail.status_code == 200
+    assert "&lt;unsafe topic&gt;" in detail.text
+    assert "&lt;prep alpha&gt;" in detail.text
+    assert "&lt;prep beta&gt;" in detail.text
+    assert "<prep alpha>" not in detail.text
+    assert "&lt;discussion&gt;" not in detail.text
+    assert "Discussion verdicts" not in detail.text
+    assert detail.text.count('class="auto-preparation-summary"') == 2
+    for turn in terminal.preparations:
+        focus_url = (
+            f"{project_prefix}/sessions/{turn.session_id}"
+            f"/rounds/{turn.round_n}/focus"
+        )
+        assert f'hx-get="{focus_url}"' in detail.text
+    assert detail.text.count('hx-target="#focus-dialog-content"') == 2
+    assert detail.text.count('aria-haspopup="dialog"') == 2
+    for response in (started, status):
+        assert 'id="auto-history-index"' in response.text
+        assert 'hx-swap-oob="outerHTML"' in response.text
+        assert f"Auto {terminal.number}" in response.text
+
+
+def test_auto_history_survives_deleted_preparation_session_without_path_leak(
+    tmp_path: Path,
+) -> None:
+    outputs = [
+        "Preparation A",
+        "Preparation B",
+        "Discussion A\nCONVERGED",
+        "Discussion B",
+    ]
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=outputs,
+    )
+    project_prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+            policy="first_agree",
+            cycles=1,
+            prepare_first=True,
+        )
+        terminal = wait_for_auto(store, terminal=True)
+        deleted_turn = terminal.preparations[0]
+        deleted_root = store.rounds_dir(deleted_turn.session_id)
+        store.delete_session(deleted_turn.session_id)
+        auto_root = store.auto_run_dir(terminal.id)
+        (auto_root / terminal.topic.path).unlink()
+        detail = client.get(
+            f"{project_prefix}/auto-runs/{terminal.number}/history"
+        )
+        status = client.get(
+            f"{project_prefix}/auto-runs/{terminal.number}"
+        )
+
+    deleted_focus_url = (
+        f"{project_prefix}/sessions/{deleted_turn.session_id}"
+        f"/rounds/{deleted_turn.round_n}/focus"
+    )
+    for response in (detail, status):
+        assert response.status_code == 200
+        assert "Preparation output unavailable." in response.text
+        assert "Topic unavailable." in response.text
+        assert str(deleted_root) not in response.text
+        assert str(auto_root) not in response.text
+        assert "owned root is unavailable" not in response.text
+        assert "Auto artifact is unavailable" not in response.text
+        assert deleted_focus_url not in response.text
+        assert "Preparation B" in response.text

@@ -1,0 +1,27 @@
+<div class="auto-preparation-list">
+  {% for preparation in preparations %}
+    <article class="auto-preparation-summary">
+      <div class="auto-preparation-heading">
+        <h4>{{ preparation.participant.name }} · round {{ preparation.turn.round_n }}</h4>
+        {% if not preparation.output_unavailable %}
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            hx-get="{{ project_url(project.name, '/sessions/' ~ preparation.turn.session_id ~ '/rounds/' ~ preparation.turn.round_n ~ '/focus') }}"
+            hx-target="#focus-dialog-content"
+            hx-swap="innerHTML"
+          >Focus</button>
+        {% endif %}
+      </div>
+      {% if preparation.output_unavailable %}
+        <p class="auto-preparation-unavailable">Preparation output unavailable.</p>
+      {% else %}
+        <pre>{{ preparation.output }}</pre>
+      {% endif %}
+    </article>
+  {% else %}
+    <p class="auto-preparation-empty">
+      {% if auto.preparation_enabled %}No preparation has completed.{% else %}Preparation was skipped.{% endif %}
+    </p>
+  {% endfor %}
+</div>
