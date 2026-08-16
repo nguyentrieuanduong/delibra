@@ -161,6 +161,16 @@ for reservations and provenance. Reserved numbers are never reused. A blocked
 legacy Auto migration appears in project settings; repair the named metadata or
 recovery backup, then use **Retry Auto migration**.
 
+In merged Chat, the message composer and the sole live/current Auto panel share
+the top row. The Auto panel is on the right and has its own scrollbar; no second
+Auto status is rendered below the composer. Its newest-first history lists every
+readable Auto run. Select a run to load only its persisted topic and completed
+preparations in the panel without navigating, scrolling, or filtering the
+conversation. Preparation cards expose **Focus** through the same shared dialog
+used by recorded messages. If a historical preparation artifact is no longer
+readable, the card reports that its output is unavailable without exposing a
+storage path.
+
 The persistent **Auto** button beside **Send** opens project-level Auto setup. Before
 the first round, the browser copies the unsent composer text directly into the
 editable topic field; it is never added to the setup URL. Once a conversation
@@ -170,12 +180,16 @@ selected by default. Select at least two unique agents, choose **All agree** or
 **First agree**, and set **Maximum discussion cycles** from 1 through 20 (default
 3). The agreement-policy default is **First agree**.
 
-Completed messages also expose **Continue in Auto…** beside Pass. In merged
-Chat it opens the existing Auto setup in place; on a session page it opens the
-same setup in merged Chat. The clicked message is not promoted to a new topic.
-Auto keeps the editable durable Topic and snapshots the bounded completed
-project conversation when **Start Auto** is pressed. Replace or expand Topic
-when the clicked output should instead define a new discussion topic.
+Completed Auto-owned messages link their canonical **Auto N** run from the message
+title. Every recorded prompt remains collapsed by default and appears in a bordered
+box when expanded. Completed messages expose **Continue in Auto…** beside
+**Send to…** or **Pass to…** while the Pass disclosure is closed, then beside the
+actual **Pass** button while it is open. In merged Chat, Continue opens the existing
+Auto setup in place; on a session page it opens the same setup in merged Chat. The
+clicked message is not promoted to a new topic. Auto keeps the editable durable
+Topic and snapshots the bounded completed project conversation when **Start Auto**
+is pressed. Replace or expand Topic when the clicked output should instead define a
+new discussion topic.
 
 Auto starts discussion directly by default. Select **Prepare agents
 independently first** when every chosen agent should receive one independent
