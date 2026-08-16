@@ -1633,10 +1633,11 @@ class ProjectStore:
         self._publish_rebuilt_auto_index(recovery_pair=True)
         return self.auto_migration_status()
 
-    def require_auto_migration_complete(self) -> None:
+    def require_auto_migration_complete(self) -> AutoMigrationStatus:
         status = self.auto_migration_status()
         if not status.complete:
             raise _auto_migration_conflict(status)
+        return status
 
     def reserve_auto_run_number(self) -> int:
         self.require_auto_migration_complete()

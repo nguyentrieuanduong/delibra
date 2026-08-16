@@ -20,8 +20,7 @@ from app.models import (
     SessionConfig,
     SourceDescriptor,
 )
-import app.routes.chat as chat_routes
-from app.storage import ConflictError, ProjectStore, RegistryStore
+from app.storage import ProjectStore, RegistryStore
 
 
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
@@ -409,6 +408,7 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
 
 def test_chat_auto_setup_deep_link_reuses_fragment_context(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _, project, store, sessions, _ = auto_route_app(tmp_path)
     add_completed_user_round(
@@ -420,8 +420,25 @@ def test_chat_auto_setup_deep_link_reuses_fragment_context(
     prefix = f"/projects/{quote(project.name, safe='')}"
 
     with TestClient(app, base_url="http://localhost") as client:
+        scan_calls = 0
+        original = ProjectStore._scan_auto_directories
+
+        def counted_scan(self: ProjectStore):
+            nonlocal scan_calls
+            scan_calls += 1
+            return original(self)
+
+        monkeypatch.setattr(
+            ProjectStore,
+            "_scan_auto_directories",
+            counted_scan,
+        )
+        scan_calls = 0
         fragment = client.get(f"{prefix}/auto/setup")
+        assert scan_calls == 1
+        scan_calls = 0
         page = client.get(f"{prefix}/chat?auto_setup=true")
+        assert scan_calls == 1
 
     assert fragment.status_code == 200
     assert page.status_code == 200
@@ -434,27 +451,20 @@ def test_chat_auto_setup_deep_link_reuses_fragment_context(
     assert 'name="max_cycles" type="number" min="1" max="20" value="3"' in page.text
 
 
-def test_chat_auto_setup_deep_link_contains_migration_race(
+def test_chat_auto_setup_deep_link_uses_projection_migration_gate(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app, _, project, _, _, _ = auto_route_app(tmp_path)
-
-    def migration_changed(_request, _project_id: str) -> dict:
-        raise ConflictError("Auto migration changed during request")
-
-    monkeypatch.setattr(
-        chat_routes,
-        "auto_setup_context",
-        migration_changed,
-    )
+    app, _, project, store, _, _ = auto_route_app(tmp_path)
     prefix = f"/projects/{quote(project.name, safe='')}"
-
     with TestClient(app, base_url="http://localhost") as client:
+        malformed = store.auto_runs_root / ("f" * 32)
+        malformed.mkdir()
+        (malformed / "config.json").write_text("{", encoding="utf-8")
         page = client.get(f"{prefix}/chat?auto_setup=true")
 
     assert page.status_code == 200
     assert "data-auto-setup-dialog" not in page.text
+    assert "Auto migration is blocked." in page.text
 
 
 def test_completed_round_continue_auto_controls_cover_both_pass_states(
