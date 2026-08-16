@@ -1111,7 +1111,7 @@ def test_auto_history_preparations_are_escaped_focusable_and_refresh_oob(
         assert f"Auto {terminal.number}" in response.text
 
 
-def test_auto_history_survives_deleted_preparation_session_without_path_leak(
+def test_auto_history_keeps_persisted_preparation_after_session_delete(
     tmp_path: Path,
 ) -> None:
     outputs = [
@@ -1120,11 +1120,11 @@ def test_auto_history_survives_deleted_preparation_session_without_path_leak(
         "Discussion A\nCONVERGED",
         "Discussion B",
     ]
-    app, _, project, store, sessions, _ = auto_route_app(
+    app, settings, project, store, sessions, _ = auto_route_app(
         tmp_path,
         outputs=outputs,
     )
-    project_prefix = f"/projects/{quote(project.name, safe='')}"
+    prefix = f"/projects/{quote(project.name, safe='')}"
     with TestClient(app, base_url="http://localhost") as client:
         start_auto(
             client,
@@ -1135,29 +1135,92 @@ def test_auto_history_survives_deleted_preparation_session_without_path_leak(
             prepare_first=True,
         )
         terminal = wait_for_auto(store, terminal=True)
-        deleted_turn = terminal.preparations[0]
-        deleted_root = store.rounds_dir(deleted_turn.session_id)
-        store.delete_session(deleted_turn.session_id)
+        deleted = terminal.preparations[0]
+        surviving = terminal.preparations[1]
+        persisted = store.load_auto_preparation(
+            terminal.id,
+            deleted.session_id,
+            deleted.output_sha256,
+            settings.captured_output_limit,
+        ).decode("utf-8")
+        deleted_root = store.rounds_dir(deleted.session_id)
+        store.delete_session(deleted.session_id)
         auto_root = store.auto_run_dir(terminal.id)
         (auto_root / terminal.topic.path).unlink()
         detail = client.get(
-            f"{project_prefix}/auto-runs/{terminal.number}/history"
+            f"{prefix}/auto-runs/{terminal.number}/history"
         )
-        status = client.get(
-            f"{project_prefix}/auto-runs/{terminal.number}"
-        )
+        status = client.get(f"{prefix}/auto-runs/{terminal.number}")
 
-    deleted_focus_url = (
-        f"{project_prefix}/sessions/{deleted_turn.session_id}"
-        f"/rounds/{deleted_turn.round_n}/focus"
+    deleted_focus = (
+        f"{prefix}/sessions/{deleted.session_id}"
+        f"/rounds/{deleted.round_n}/focus"
+    )
+    surviving_focus = (
+        f"{prefix}/sessions/{surviving.session_id}"
+        f"/rounds/{surviving.round_n}/focus"
     )
     for response in (detail, status):
         assert response.status_code == 200
-        assert "Preparation output unavailable." in response.text
+        assert persisted in response.text
         assert "Topic unavailable." in response.text
+        assert deleted_focus not in response.text
+        assert surviving_focus in response.text
         assert str(deleted_root) not in response.text
         assert str(auto_root) not in response.text
-        assert "owned root is unavailable" not in response.text
-        assert "Auto artifact is unavailable" not in response.text
-        assert deleted_focus_url not in response.text
-        assert "Preparation B" in response.text
+
+
+def test_auto_history_rejects_tampered_copy_and_ignores_live_round_drift(
+    tmp_path: Path,
+) -> None:
+    outputs = [
+        "Persisted Alpha",
+        "Persisted Beta",
+        "Discussion A\nCONVERGED",
+        "Discussion B",
+    ]
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=outputs,
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+            policy="first_agree",
+            cycles=1,
+            prepare_first=True,
+        )
+        terminal = wait_for_auto(store, terminal=True)
+        drifted, tampered = terminal.preparations
+        (store.rounds_dir(drifted.session_id) /
+         f"round-{drifted.round_n:02d}.md").write_text(
+            "Changed live round",
+            encoding="utf-8",
+        )
+        (store.auto_run_dir(terminal.id) / "preparations" /
+         f"{tampered.session_id}.md").write_text(
+            "Tampered Auto copy",
+            encoding="utf-8",
+        )
+        detail = client.get(
+            f"{prefix}/auto-runs/{terminal.number}/history"
+        )
+
+    drifted_focus = (
+        f"{prefix}/sessions/{drifted.session_id}"
+        f"/rounds/{drifted.round_n}/focus"
+    )
+    tampered_focus = (
+        f"{prefix}/sessions/{tampered.session_id}"
+        f"/rounds/{tampered.round_n}/focus"
+    )
+    assert detail.status_code == 200
+    assert "Persisted Alpha" in detail.text
+    assert "Changed live round" not in detail.text
+    assert detail.text.count("Preparation output unavailable.") == 1
+    assert "Tampered Auto copy" not in detail.text
+    assert drifted_focus not in detail.text
+    assert tampered_focus not in detail.text
