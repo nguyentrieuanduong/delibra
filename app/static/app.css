@@ -193,6 +193,15 @@ textarea { min-height: 7rem; }
 .round-header h2 { margin: 0; }
 .focus-round { flex: 0 0 auto; }
 .round-details { margin-top: .5rem; }
+.round-prompt { margin-bottom: .75rem; }
+.round-prompt-box {
+  border: 1px solid #8885;
+  border-radius: .35rem;
+  margin-top: .5rem;
+  padding: .75rem;
+}
+.round-prompt-box > :first-child { margin-top: 0; }
+.round-prompt-box > :last-child { margin-bottom: 0; }
 .round-details > summary { cursor: pointer; font-size: .85rem; }
 .round-details[open] > summary { margin-bottom: .5rem; }
 .focus-dialog {

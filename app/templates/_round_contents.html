@@ -19,12 +19,7 @@
   {% endif %}
   {% if round.record.auto %}
     <p class="provenance auto-provenance">
-      {% if round.auto_url %}
-        <a href="{{ round.auto_url }}">Auto {{ round.auto_number }}</a>
-      {% else %}
-        <span>Auto</span>
-      {% endif %}
-      · {% if round.record.auto.phase == 'preparation' %}Auto preparation{% else %}discussion cycle {{ round.record.auto.cycle }}{% endif %}
+      {% if round.record.auto.phase == 'preparation' %}Auto preparation{% else %}discussion cycle {{ round.record.auto.cycle }}{% endif %}
       · position {{ round.record.auto.position + 1 }}
       {% if round.record.auto.verdict %}· verdict {{ round.record.auto.verdict }}{% endif %}
     </p>
@@ -44,7 +39,10 @@
   </form>
 {% endif %}
 {% set markdown_link_target = 'reader' if chat_view|default(false) else none %}
-<details><summary>Prompt</summary><div class="markdown">{{ round.prompt|md(project, markdown_link_target) }}</div></details>
+<details class="round-prompt">
+  <summary>Prompt</summary>
+  <div class="round-prompt-box markdown">{{ round.prompt|md(project, markdown_link_target) }}</div>
+</details>
 <div class="markdown output">{{ round.output|md(project, markdown_link_target) }}</div>
 {% if round.record and round.record.status == 'complete' and sessions and (not chat_view or sessions|length > 1) %}
   <div class="round-transfer-actions" data-round-transfer-actions>
