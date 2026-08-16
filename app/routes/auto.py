@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 
 from fastapi import APIRouter, Form, Header, HTTPException, Request
@@ -12,7 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.responses import Response
 
 from app.auto import ACTIVE_AUTO_STATUSES
-from app.models import AutoRunRecord, Project
+from app.models import AutoRunRecord, AutoTurn, Project
 from app.project_routing import request_project
 from app.security import validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
@@ -91,6 +92,44 @@ def auto_history_records(
     )
 
 
+def _preparation_focus_available(
+    request: Request,
+    store: ProjectStore,
+    auto_id: str,
+    turn: AutoTurn,
+) -> bool:
+    try:
+        session = store.load_session(turn.session_id)
+        round_record = next(
+            (item for item in session.rounds if item.n == turn.round_n),
+            None,
+        )
+        if (
+            round_record is None
+            or round_record.auto is None
+            or round_record.auto.auto_id != auto_id
+            or round_record.auto.phase != "preparation"
+        ):
+            return False
+        prompt = store.load_round_artifact(
+            turn.session_id,
+            turn.round_n,
+            "prompt",
+            request.app.state.settings.request_body_limit,
+        )
+        output = store.load_round_artifact(
+            turn.session_id,
+            turn.round_n,
+            "output",
+            request.app.state.settings.captured_output_limit,
+        )
+        _decode_text(prompt, "Auto preparation prompt")
+        _decode_text(output, "Auto preparation output")
+    except StorageError:
+        return False
+    return sha256(output).hexdigest() == turn.output_sha256
+
+
 def _auto_material_context(
     request: Request,
     store: ProjectStore,
@@ -112,10 +151,10 @@ def _auto_material_context(
     for turn in record.preparations:
         try:
             output = _decode_text(
-                store.load_round_artifact(
+                store.load_auto_preparation(
+                    record.id,
                     turn.session_id,
-                    turn.round_n,
-                    "output",
+                    turn.output_sha256,
                     request.app.state.settings.captured_output_limit,
                 ),
                 "Auto preparation output",
@@ -128,6 +167,15 @@ def _auto_material_context(
                 "participant": participants[turn.session_id],
                 "output": output,
                 "output_unavailable": output is None,
+                "focus_available": (
+                    output is not None
+                    and _preparation_focus_available(
+                        request,
+                        store,
+                        record.id,
+                        turn,
+                    )
+                ),
             }
         )
     return {"topic": topic, "preparations": preparations}

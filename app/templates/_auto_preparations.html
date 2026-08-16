@@ -3,7 +3,7 @@
     <article class="auto-preparation-summary">
       <div class="auto-preparation-heading">
         <h4>{{ preparation.participant.name }} · round {{ preparation.turn.round_n }}</h4>
-        {% if not preparation.output_unavailable %}
+        {% if preparation.focus_available %}
           <button
             type="button"
             aria-haspopup="dialog"
