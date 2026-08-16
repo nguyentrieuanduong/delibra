@@ -30,7 +30,24 @@
       data-workspace-region="conversation"
       aria-label="Conversation workspace"
     >
-      {% include "_composer.html" %}
+      <div class="conversation-top" data-conversation-top>
+        {% include "_composer.html" %}
+        <aside id="auto-panel" aria-label="Auto status and history">
+          <div id="auto-status-host">
+            {% if auto_status %}
+              {% with project=auto_status.project, auto=auto_status.auto, auto_active=auto_status.auto_active, topic=auto_status.topic, preparations=auto_status.preparations, preparing_number=auto_status.preparing_number, hidden_preparation_key=auto_status.hidden_preparation_key, current_participant=auto_status.current_participant, clear_auto_setup=auto_status.clear_auto_setup, auto_history_oob_runs=auto_status.auto_history_oob_runs %}
+                {% include "_auto_status.html" %}
+              {% endwith %}
+            {% endif %}
+          </div>
+          {% with auto_runs=auto_history_runs, auto_history_oob=false %}
+            {% include "_auto_history_index.html" %}
+          {% endwith %}
+          <section id="auto-history-view" aria-live="polite">
+            <p>Select an Auto run to view its topic and preparations.</p>
+          </section>
+        </aside>
+      </div>
       <div id="auto-setup-host">
         {% if auto_setup %}
           {% with project=auto_setup.project, sessions=auto_setup.sessions, topic=auto_setup.topic, topic_source=auto_setup.topic_source %}
@@ -45,13 +62,6 @@
             {{ auto_migration_warning }}
             <a href="{{ project_url(project.name, '/settings') }}">Retry in project settings.</a>
           </p>
-        {% endif %}
-      </div>
-      <div id="auto-status-host">
-        {% if auto_status %}
-          {% with project=auto_status.project, auto=auto_status.auto, auto_active=auto_status.auto_active, topic=auto_status.topic, preparations=auto_status.preparations, preparing_number=auto_status.preparing_number, hidden_preparation_key=auto_status.hidden_preparation_key, current_participant=auto_status.current_participant, clear_auto_setup=auto_status.clear_auto_setup %}
-            {% include "_auto_status.html" %}
-          {% endwith %}
         {% endif %}
       </div>
       {% include "_timeline.html" %}

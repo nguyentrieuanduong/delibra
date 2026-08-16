@@ -147,7 +147,11 @@ async def chat_page(
         composer_oob=False,
         auto_active=auto_active,
     )
-    auto_numbers = store.auto_number_map_for_view()
+    auto_numbers = {
+        record.id: record.number
+        for record in auto_projection.history
+        if record.number is not None
+    }
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="chat.html",
@@ -160,6 +164,7 @@ async def chat_page(
                 store,
                 auto_numbers=auto_numbers,
             ),
+            "auto_history_runs": auto_projection.history,
             "auto_status": (
                 auto_status_context(request, resolved_project_id, auto_record)
                 if auto_record is not None
