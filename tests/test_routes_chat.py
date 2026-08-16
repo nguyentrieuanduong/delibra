@@ -354,7 +354,7 @@ def test_active_auto_puts_the_message_textarea_in_the_disable_lifecycle(
     )
 
 
-def test_timeline_maps_auto_uuid_to_number_once_and_degrades_unmapped(
+def test_timeline_reuses_projection_auto_numbers_and_degrades_unmapped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     reserve_auto_run,
@@ -377,15 +377,13 @@ def test_timeline_maps_auto_uuid_to_number_once_and_degrades_unmapped(
     auto.terminal_reason = "all agents agreed"
     store.save_auto_run(auto)
     store.clear_auto_reservation(auto.id)
-    calls = 0
-    original = ProjectStore.auto_number_map_for_view
-
-    def counted(self: ProjectStore) -> dict[str, int]:
-        nonlocal calls
-        calls += 1
-        return original(self)
-
-    monkeypatch.setattr(ProjectStore, "auto_number_map_for_view", counted)
+    monkeypatch.setattr(
+        ProjectStore,
+        "auto_number_map_for_view",
+        lambda self: pytest.fail(
+            "full Chat must reuse Auto numbers from ProjectAutoProjection"
+        ),
+    )
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(f"/projects/{quote(project.name, safe='')}/chat")
 
@@ -394,7 +392,67 @@ def test_timeline_maps_auto_uuid_to_number_once_and_degrades_unmapped(
     assert f'href="{project_prefix}/auto-runs/1">Auto 1</a>' in response.text
     assert "<span>Auto</span>" in response.text
     assert "Auto aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in response.text
-    assert calls == 1
+
+
+def test_chat_places_the_sole_auto_status_in_the_right_top_panel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reserve_auto_run,
+) -> None:
+    alpha = session("a" * 32, "Alpha")
+    beta = session("b" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+    with TestClient(app, base_url="http://localhost") as client:
+        reserve_auto_run(store)
+        scan_calls = 0
+        original = ProjectStore.auto_migration_status
+
+        def counted_auto_migration_status(self: ProjectStore):
+            nonlocal scan_calls
+            scan_calls += 1
+            return original(self)
+
+        monkeypatch.setattr(
+            ProjectStore,
+            "auto_migration_status",
+            counted_auto_migration_status,
+        )
+        response = client.get(
+            f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}"
+        )
+        stylesheet = client.get("/static/app.css")
+
+    assert response.status_code == 200
+    assert response.text.count('id="auto-status-host"') == 1
+    top_start = response.text.index('data-conversation-top')
+    top_end = response.text.index('id="auto-setup-host"')
+    top = response.text[top_start:top_end]
+    assert top.index('id="chat-composer"') < top.index('id="auto-panel"')
+    assert 'id="auto-status-host"' in top
+    assert 'id="auto-status"' in top
+    assert 'id="auto-history-index"' in top
+    assert 'id="auto-history-view"' in top
+    assert 'aria-label="Auto status and history"' in top
+    assert scan_calls == 1
+    assert 'grid-template-columns: minmax(20rem, 3fr) minmax(14rem, 2fr);' in (
+        stylesheet.text
+    )
+    panel_rule = re.search(
+        r"#auto-panel \{([^}]*)\}",
+        stylesheet.text,
+    )
+    assert panel_rule is not None
+    assert "max-height: min(30rem, 45vh);" in panel_rule.group(1)
+    assert "overflow-y: auto;" in panel_rule.group(1)
+    auto_status_rule = re.search(
+        r"#auto-panel \.auto-status \{([^}]*)\}",
+        stylesheet.text,
+    )
+    assert auto_status_rule is not None
+    assert "border: 0" in auto_status_rule.group(1)
+    assert "max-height: none" in auto_status_rule.group(1)
+    assert "overflow: visible" in auto_status_rule.group(1)
+    assert "padding: 0" in auto_status_rule.group(1)
 
 
 def test_chat_workspace_renders_four_regions_and_full_agent_information(
