@@ -9,13 +9,13 @@ from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import Project, SessionConfig
 from app.project_routing import request_project
 from app.routes.auto import (
-    auto_setup_context,
     auto_status_context,
     project_auto_record,
+    projected_auto_setup_context,
 )
 from app.routes.runs import start_run_fragment
 from app.security import validate_field
-from app.storage import ConflictError, ProjectStore, validate_id
+from app.storage import ProjectStore, validate_id
 from app.urls import project_url
 from app.views import (
     agent_views,
@@ -133,13 +133,16 @@ async def chat_page(
     if (
         auto_setup
         and not auto_active
-        and auto_projection.warning is None
+        and auto_projection.migration_complete
         and len(sessions) >= 2
     ):
-        try:
-            setup_context = auto_setup_context(request, resolved_project_id)
-        except ConflictError:
-            setup_context = None
+        setup_context = projected_auto_setup_context(
+            request,
+            project,
+            store,
+            sessions,
+            auto_projection.history,
+        )
     sidebar = _sidebar_context(
         store,
         sessions,

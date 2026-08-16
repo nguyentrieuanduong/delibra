@@ -13,7 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.responses import Response
 
 from app.auto import ACTIVE_AUTO_STATUSES
-from app.models import AutoRunRecord, AutoTurn, Project
+from app.models import AutoRunRecord, AutoTurn, Project, SessionConfig
 from app.project_routing import request_project
 from app.security import validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
@@ -28,6 +28,7 @@ class ProjectAutoProjection:
     record: AutoRunRecord | None
     warning: str | None
     history: tuple[AutoRunRecord, ...]
+    migration_complete: bool
 
 
 def _load_auto_reference(
@@ -60,11 +61,13 @@ def project_auto_record(
             record,
             warning if record is None else None,
             tuple(history),
+            status.complete,
         )
     return ProjectAutoProjection(
         history[0] if history else None,
         warning,
         tuple(history),
+        status.complete,
     )
 
 
@@ -205,7 +208,11 @@ def auto_history_detail_context(
     }
 
 
-def _durable_topic(request: Request, store: ProjectStore) -> str | None:
+def _durable_topic(
+    request: Request,
+    store: ProjectStore,
+    auto_records: Iterable[AutoRunRecord],
+) -> str | None:
     candidates = []
     for session in store.list_sessions():
         for record in session.rounds:
@@ -227,7 +234,7 @@ def _durable_topic(request: Request, store: ProjectStore) -> str | None:
             continue
         return _decode_text(prompt, "recorded prompt")
 
-    for record in store.list_auto_runs():
+    for record in reversed(tuple(auto_records)):
         try:
             topic = store.load_auto_artifact(
                 record.id,
@@ -303,21 +310,37 @@ def _status_response(
     )
 
 
-def auto_setup_context(request: Request, project_id: str) -> dict:
-    project = request_project(request, project_id)
-    store = ProjectStore(project)
-    store.require_auto_migration_complete()
-    sessions = sorted(
-        store.list_sessions(),
+def projected_auto_setup_context(
+    request: Request,
+    project: Project,
+    store: ProjectStore,
+    sessions: list[SessionConfig],
+    auto_records: Iterable[AutoRunRecord],
+) -> dict:
+    ordered_sessions = sorted(
+        sessions,
         key=lambda item: (item.name.casefold(), item.id),
     )
-    topic = _durable_topic(request, store)
+    topic = _durable_topic(request, store, auto_records)
     return {
         "project": project,
-        "sessions": sessions,
+        "sessions": ordered_sessions,
         "topic": topic or "",
         "topic_source": "durable" if topic is not None else "composer",
     }
+
+
+def auto_setup_context(request: Request, project_id: str) -> dict:
+    project = request_project(request, project_id)
+    store = ProjectStore(project)
+    status = store.require_auto_migration_complete()
+    return projected_auto_setup_context(
+        request,
+        project,
+        store,
+        store.list_sessions(),
+        auto_history_records(status.readable_records),
+    )
 
 
 @router.get("/projects/{project_id}/auto/setup", response_class=HTMLResponse)
