@@ -1,0 +1,4 @@
+<span
+  id="auto-history-status-{{ item.number or item.id }}"
+  {% if auto_history_status_oob|default(false) %}hx-swap-oob="outerHTML"{% endif %}
+>{{ item.status }} · {{ item.created_at }}</span>

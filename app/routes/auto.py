@@ -242,7 +242,8 @@ def auto_status_context(
     record: AutoRunRecord,
     *,
     clear_setup: bool = False,
-    refresh_history: bool = False,
+    refresh_history_index: bool = False,
+    refresh_history_status: bool = False,
 ) -> dict:
     project = request_project(request, project_id)
     store = ProjectStore(project)
@@ -271,9 +272,10 @@ def auto_status_context(
             auto_history_records(
                 store.auto_migration_status().readable_records
             )
-            if refresh_history
+            if refresh_history_index
             else None
         ),
+        "auto_history_status_oob": refresh_history_status,
     }
 
 
@@ -284,6 +286,7 @@ def _status_response(
     *,
     status_code: int = 200,
     clear_setup: bool = False,
+    refresh_history_index: bool = False,
 ) -> HTMLResponse:
     return request.app.state.templates.TemplateResponse(
         request=request,
@@ -293,7 +296,8 @@ def _status_response(
             project_id,
             record,
             clear_setup=clear_setup,
-            refresh_history=True,
+            refresh_history_index=refresh_history_index,
+            refresh_history_status=not refresh_history_index,
         ),
         status_code=status_code,
     )
@@ -399,6 +403,7 @@ async def start_auto(
         request.app.state.auto_manager.get(resolved_project_id, record.id),
         status_code=202,
         clear_setup=True,
+        refresh_history_index=True,
     )
 
 

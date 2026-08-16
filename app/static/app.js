@@ -211,6 +211,18 @@ function closeAutoSetup(control) {
   return true;
 }
 
+function focusAutoHistoryView(target) {
+  if (
+    !target ||
+    target.id !== "auto-history-view" ||
+    typeof target.focus !== "function"
+  ) {
+    return false;
+  }
+  target.focus();
+  return true;
+}
+
 function syncAutoDisabledControls(documentRoot) {
   if (!documentRoot || typeof documentRoot.querySelector !== "function") {
     return false;
@@ -291,6 +303,7 @@ if (typeof module !== "undefined" && module.exports) {
     closeFocusDialog,
     conversationTimelineForSwap,
     copyAutoComposerTopic,
+    focusAutoHistoryView,
     formatRemainingSeconds,
     handleFocusDialogCancel,
     isDialogBackdropClick,
@@ -379,6 +392,9 @@ if (typeof document !== "undefined") {
     if (timeline) {
       removeConversationEmptyState(timeline);
       syncConversationDisclosure(timeline);
+    }
+    if (focusAutoHistoryView(target)) {
+      return;
     }
     if (target.id !== "focus-dialog-content") {
       return;

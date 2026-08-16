@@ -708,6 +708,7 @@ def test_auto_start_skips_preparation_when_checkbox_is_missing(
             "Second participant objects",
         ],
     )
+    project_prefix = f"/projects/{quote(project.name, safe='')}"
     with TestClient(app, base_url="http://localhost") as client:
         started = start_auto(
             client,
@@ -715,6 +716,12 @@ def test_auto_start_skips_preparation_when_checkbox_is_missing(
             [session.id for session in sessions],
         )
         terminal = wait_for_auto(store, terminal=True)
+        detail = client.get(
+            f"{project_prefix}/auto-runs/{terminal.number}/history"
+        )
+        status = client.get(
+            f"{project_prefix}/auto-runs/{terminal.number}"
+        )
 
     assert started.status_code == 202
     assert terminal.status == "converged"
@@ -722,6 +729,9 @@ def test_auto_start_skips_preparation_when_checkbox_is_missing(
     assert terminal.preparations == []
     assert factory.created == 2
     assert "preparation skipped" in started.text
+    for response in (detail, status):
+        assert response.status_code == 200
+        assert "Preparation was skipped." in response.text
 
 
 def test_auto_choice_css_aligns_controls_without_changing_global_labels() -> None:
@@ -1195,10 +1205,53 @@ def test_auto_history_preparations_are_escaped_focusable_and_refresh_oob(
         assert f'hx-get="{focus_url}"' in detail.text
     assert detail.text.count('hx-target="#focus-dialog-content"') == 2
     assert detail.text.count('aria-haspopup="dialog"') == 2
-    for response in (started, status):
-        assert 'id="auto-history-index"' in response.text
-        assert 'hx-swap-oob="outerHTML"' in response.text
-        assert f"Auto {terminal.number}" in response.text
+    assert 'id="auto-history-index"' in started.text
+    assert 'hx-swap-oob="outerHTML"' in started.text
+    assert f"Auto {terminal.number}" in started.text
+    assert 'id="auto-history-index"' not in status.text
+    assert (
+        f'id="auto-history-status-{terminal.number}"'
+        in status.text
+    )
+    assert 'hx-swap-oob="outerHTML"' in status.text
+    assert f"{terminal.status} · {terminal.created_at}" in status.text
+
+
+def test_auto_status_updates_only_history_row_without_directory_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=["Prep A", "Prep B", "Talk A\nCONVERGED", "Talk B"],
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+            prepare_first=True,
+        )
+        terminal = wait_for_auto(store, terminal=True)
+        monkeypatch.setattr(
+            ProjectStore,
+            "_scan_auto_directories",
+            lambda self: pytest.fail(
+                "status polling must not scan Auto directories"
+            ),
+        )
+        response = client.get(
+            f"{prefix}/auto-runs/{terminal.number}"
+        )
+
+    assert response.status_code == 200
+    assert 'id="auto-history-index"' not in response.text
+    assert (
+        f'id="auto-history-status-{terminal.number}"'
+        in response.text
+    )
+    assert 'hx-swap-oob="outerHTML"' in response.text
 
 
 def test_auto_history_keeps_persisted_preparation_after_session_delete(

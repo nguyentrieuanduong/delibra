@@ -472,19 +472,19 @@ def test_chat_places_the_sole_auto_status_in_the_right_top_panel(
     beta = session("b" * 32, "Beta")
     app, project, store = setup_project(tmp_path, [alpha, beta])
     with TestClient(app, base_url="http://localhost") as client:
-        reserve_auto_run(store)
+        auto_run = reserve_auto_run(store)
         scan_calls = 0
-        original = ProjectStore.auto_migration_status
+        original = ProjectStore._scan_auto_directories
 
-        def counted_auto_migration_status(self: ProjectStore):
+        def counted_auto_directory_scan(self: ProjectStore):
             nonlocal scan_calls
             scan_calls += 1
             return original(self)
 
         monkeypatch.setattr(
             ProjectStore,
-            "auto_migration_status",
-            counted_auto_migration_status,
+            "_scan_auto_directories",
+            counted_auto_directory_scan,
         )
         response = client.get(
             f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}"
@@ -503,6 +503,12 @@ def test_chat_places_the_sole_auto_status_in_the_right_top_panel(
     assert 'id="auto-history-view"' in top
     assert 'aria-label="Auto status and history"' in top
     assert scan_calls == 1
+    assert 'id="auto-history-view" tabindex="-1"' in top
+    assert 'aria-live=' not in top
+    assert (
+        f'id="auto-history-status-{auto_run.number}"'
+        in top
+    )
     assert 'grid-template-columns: minmax(20rem, 3fr) minmax(14rem, 2fr);' in (
         stylesheet.text
     )
@@ -511,8 +517,25 @@ def test_chat_places_the_sole_auto_status_in_the_right_top_panel(
         stylesheet.text,
     )
     assert panel_rule is not None
-    assert "max-height: min(30rem, 45vh);" in panel_rule.group(1)
-    assert "overflow-y: auto;" in panel_rule.group(1)
+    assert "max-height: min(12rem, 18vh);" in panel_rule.group(1)
+    assert "max-height: min(30rem, 45vh);" not in panel_rule.group(1)
+    assert "font-size: .85rem;" in panel_rule.group(1)
+    assert "padding: .5rem;" in panel_rule.group(1)
+    assert "overflow: hidden auto;" in panel_rule.group(1)
+    assert "overflow-y: auto;" not in panel_rule.group(1)
+    assert (
+        "#auto-panel :is(button, input, select, textarea) "
+        "{ font: inherit; }"
+        in stylesheet.text
+    )
+    assert (
+        "#auto-panel :is(h2, h3, h4, p) { margin: .15rem 0; }"
+        in stylesheet.text
+    )
+    assert (
+        "#auto-panel form { gap: .35rem; margin: .25rem 0; }"
+        in stylesheet.text
+    )
     auto_status_rule = re.search(
         r"#auto-panel \.auto-status \{([^}]*)\}",
         stylesheet.text,
