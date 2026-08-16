@@ -457,7 +457,7 @@ def test_chat_auto_setup_deep_link_contains_migration_race(
     assert "data-auto-setup-dialog" not in page.text
 
 
-def test_completed_round_continue_auto_controls_use_no_round_parameters(
+def test_completed_round_continue_auto_controls_cover_both_pass_states(
     tmp_path: Path,
 ) -> None:
     app, _, project, store, sessions, _ = auto_route_app(tmp_path)
@@ -473,43 +473,64 @@ def test_completed_round_continue_auto_controls_use_no_round_parameters(
         chat = client.get(f"{prefix}/chat")
         session_page = client.get(f"{prefix}/sessions/{sessions[0].id}")
 
-    chat_control = re.search(
-        r'<button[^>]*data-continue-auto[^>]*>',
+    for page, summary in ((chat, "Send to…"), (session_page, "Pass to…")):
+        article = re.search(
+            rf'<article[^>]+id="round-{sessions[0].id}-1".*?</article>',
+            page.text,
+            flags=re.DOTALL,
+        )
+        assert article is not None
+        round_html = article.group()
+        controls = re.findall(
+            r'<(?:button|a)\b[^>]*data-continue-auto[^>]*>',
+            round_html,
+        )
+        assert len(controls) == 2
+        collapsed = next(
+            tag
+            for tag in controls
+            if 'data-continue-auto-placement="collapsed"' in tag
+        )
+        expanded = next(
+            tag
+            for tag in controls
+            if 'data-continue-auto-placement="expanded"' in tag
+        )
+        summary_index = round_html.index(f">{summary}</summary>")
+        collapsed_index = round_html.index(collapsed)
+        pass_index = round_html.index(">Pass</button>")
+        expanded_index = round_html.index(expanded)
+        form_close = round_html.index("</form>", pass_index)
+        assert summary_index < collapsed_index
+        assert pass_index < expanded_index < form_close
+        adjacency = re.search(
+            r'</details>\s*<(?:button|a)\b'
+            r'(?=[^>]*data-continue-auto-placement="collapsed")[^>]*>',
+            round_html,
+        )
+        assert adjacency is not None
+        assert collapsed in adjacency.group(0)
+        for control in (collapsed, expanded):
+            assert sessions[0].id not in control
+            assert "source_round" not in control
+
+    chat_controls = re.findall(
+        r'<button\b[^>]*data-continue-auto[^>]*>',
         chat.text,
     )
-    session_control = re.search(
-        r'<a[^>]*data-continue-auto[^>]*>',
+    assert len(chat_controls) == 2
+    for control in chat_controls:
+        assert f'hx-get="{prefix}/auto/setup"' in control
+        assert 'hx-target="#auto-setup-host"' in control
+        assert 'hx-params="none"' in control
+
+    session_controls = re.findall(
+        r'<a\b[^>]*data-continue-auto[^>]*>',
         session_page.text,
     )
-    chat_actions = re.search(
-        r'<div[^>]*data-round-transfer-actions[^>]*>(.*?)</div>',
-        chat.text,
-        re.DOTALL,
-    )
-    session_actions = re.search(
-        r'<div[^>]*data-round-transfer-actions[^>]*>(.*?)</div>',
-        session_page.text,
-        re.DOTALL,
-    )
-    assert chat_control is not None
-    assert session_control is not None
-    assert chat_actions is not None
-    assert session_actions is not None
-    assert f'hx-get="{prefix}/auto/setup"' in chat_control.group(0)
-    assert 'hx-target="#auto-setup-host"' in chat_control.group(0)
-    assert 'hx-params="none"' in chat_control.group(0)
-    assert f'href="{prefix}/chat?auto_setup=true"' in session_control.group(0)
-    assert (
-        chat_actions.group(1).index("</details>")
-        < chat_actions.group(1).index("data-continue-auto")
-    )
-    assert (
-        session_actions.group(1).index("</details>")
-        < session_actions.group(1).index("data-continue-auto")
-    )
-    for control in (chat_control.group(0), session_control.group(0)):
-        assert sessions[0].id not in control
-        assert "source_round" not in control
+    assert len(session_controls) == 2
+    for control in session_controls:
+        assert f'href="{prefix}/chat?auto_setup=true"' in control
 
 
 def test_continue_auto_requires_two_sessions(tmp_path: Path) -> None:
@@ -551,11 +572,14 @@ def test_continue_auto_controls_disable_for_active_reservation(
         chat = client.get(f"{prefix}/chat")
         session_page = client.get(f"{prefix}/sessions/{sessions[0].id}")
 
-    assert re.search(r'<button[^>]*data-continue-auto[^>]*disabled', chat.text)
-    assert re.search(
-        r'<button[^>]*data-continue-auto[^>]*disabled',
-        session_page.text,
-    )
+    for page in (chat, session_page):
+        controls = re.findall(
+            r'<button\b[^>]*data-continue-auto[^>]*>',
+            page.text,
+        )
+        assert len(controls) == 2
+        assert all("disabled" in control for control in controls)
+        assert all('data-auto-disabled="true"' in control for control in controls)
 
 
 def test_fresh_auto_setup_defers_topic_to_composer_and_get_starts_no_work(

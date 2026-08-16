@@ -112,6 +112,15 @@ textarea { min-height: 7rem; }
   flex-wrap: wrap;
   gap: .5rem;
 }
+.pass-submit-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+[data-pass-disclosure][open] + [data-continue-auto-placement="collapsed"] {
+  display: none;
+}
 .round-transfer-actions a[data-continue-auto] {
   border: 1px solid #8888;
   border-radius: .25rem;

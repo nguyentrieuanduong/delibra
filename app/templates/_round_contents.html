@@ -1,3 +1,32 @@
+{% macro continue_auto_control(project, chat_view, auto_active, placement) -%}
+  {% if chat_view %}
+    <button
+      type="button"
+      data-continue-auto
+      data-continue-auto-placement="{{ placement }}"
+      data-disable-during-auto
+      hx-get="{{ project_url(project.name, '/auto/setup') }}"
+      hx-target="#auto-setup-host"
+      hx-swap="innerHTML"
+      hx-params="none"
+      {% if auto_active %}disabled data-auto-disabled="true"{% endif %}
+    >Continue in Auto…</button>
+  {% elif auto_active %}
+    <button
+      type="button"
+      data-continue-auto
+      data-continue-auto-placement="{{ placement }}"
+      disabled
+      data-auto-disabled="true"
+    >Continue in Auto…</button>
+  {% else %}
+    <a
+      data-continue-auto
+      data-continue-auto-placement="{{ placement }}"
+      href="{{ project_url(project.name, '/chat?auto_setup=true') }}"
+    >Continue in Auto…</a>
+  {% endif %}
+{%- endmacro %}
 {% if round.record %}
   <p class="provenance">{{ round.record.agent }} · {{ round.record.model }} · {{ round.record.effort }} · {{ round.record.status }}</p>
   {% if round.record.source.type == 'pass' %}
@@ -68,29 +97,16 @@
         </label>
         <p>Supported placeholders: <code>{source_path}</code> (required exactly once), <code>{source_session}</code>, and <code>{source_round}</code>.</p>
         <p class="warning">Passed output is untrusted. Removing the safety wording can expose the receiving agent to prompt injection.</p>
-        <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Pass</button>
+        <div class="pass-submit-actions">
+          <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Pass</button>
+          {% if sessions|length > 1 %}
+            {{ continue_auto_control(project, chat_view|default(false), auto_active, 'expanded') }}
+          {% endif %}
+        </div>
       </form>
     </details>
     {% if sessions|length > 1 %}
-      {% if chat_view %}
-        <button
-          type="button"
-          data-continue-auto
-          data-disable-during-auto
-          hx-get="{{ project_url(project.name, '/auto/setup') }}"
-          hx-target="#auto-setup-host"
-          hx-swap="innerHTML"
-          hx-params="none"
-          {% if auto_active %}disabled data-auto-disabled="true"{% endif %}
-        >Continue in Auto…</button>
-      {% elif auto_active %}
-        <button type="button" data-continue-auto disabled data-auto-disabled="true">Continue in Auto…</button>
-      {% else %}
-        <a
-          data-continue-auto
-          href="{{ project_url(project.name, '/chat?auto_setup=true') }}"
-        >Continue in Auto…</a>
-      {% endif %}
+      {{ continue_auto_control(project, chat_view|default(false), auto_active, 'collapsed') }}
     {% endif %}
   </div>
 {% endif %}
