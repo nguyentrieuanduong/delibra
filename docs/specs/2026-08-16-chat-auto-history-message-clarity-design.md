@@ -46,9 +46,15 @@ Auto panel on the right. On narrower supported widths the columns may shrink,
 but they remain side by side; the existing Chat page already enforces a desktop
 minimum width. The Auto panel, rather than nested sections within it, owns the
 vertical scrollbar so the user can move through current status and older runs
-with one scroll gesture. The composer keeps a `20rem` minimum, the Auto panel
-keeps a `14rem` minimum, and the panel is capped at `min(30rem, 45vh)` so history
-has more room without consuming the entire conversation workspace.
+with one scroll gesture. The composer keeps a `20rem` minimum and the Auto panel
+keeps a `14rem` minimum.
+
+The Auto panel beside the new-message composer is capped at
+`min(12rem, 18vh)`, exactly one divided by 2.5 of the previous
+`min(30rem, 45vh)` cap. It uses `.85rem` text, `.5rem` padding, inherited
+compact form-control typography, `.15rem 0` content margins, `.35rem` form
+gaps, `.25rem 0` form margins, and one vertical scrollbar so more status and
+history information remains visible within the shorter panel.
 
 Move the existing `#auto-status-host` into the right-hand Auto panel; do not leave
 or render another status copy below the composer or elsewhere in Chat. Within
@@ -60,10 +66,20 @@ A new history index in the same right-hand panel lists all readable Auto runs
 newest first by canonical run number, with legacy creation-time ordering retained
 where numbering has not completed. Each item identifies its Auto number, status,
 and creation time. Opening an item is a read-only historical view and never
-replaces `#auto-status`. Index refreshes after a run is created and as Auto status
-changes, so a newly started or completed run becomes visible without a page
-reload. One Auto-directory scan supplies the current/latest projection, history
-index, and timeline Auto-number mapping for a full Chat render.
+replaces `#auto-status`.
+
+With a readable Auto index, initial Chat renders the history index from its
+single Auto scan. Starting a run refreshes the complete index once. Later
+Auto status responses update only that run's stable status span out of band,
+without scanning Auto directories or replacing a focused history button.
+Missing or unreadable index recovery may require one additional scan.
+
+A readable unnumbered legacy run remains available through the read-only
+history detail by UUID and renders as Legacy Auto. Live status and mutations
+continue to require completed migration.
+
+Loading a history detail focuses the non-live history region inside the Auto
+panel; it does not focus, scroll, filter, or change the conversation timeline.
 
 Opening a history item requests a dedicated same-project HTML fragment. The
 fragment displays the persisted Auto topic (the prompt supplied when starting
@@ -79,6 +95,17 @@ round-focus route into the existing shared focus dialog. No duplicate artifact
 or focus endpoint is introduced. If a preparation output is no longer readable,
 the card instead shows the fixed text `Preparation output unavailable.`, omits
 the broken Focus action, and does not expose the storage exception or path.
+
+Historical preparation cards read the digest-verified preparation copy
+stored under the Auto run. The live session round is used only to decide
+whether Focus remains available; deleting or changing that round never
+changes the persisted historical output.
+
+Each completed preparation's Focus eligibility check performs one session
+metadata load, one bounded prompt read, one bounded live-output read, and one
+output digest calculation on every live-status or history-detail material
+render. This accepted cost prevents a stale Focus action from being shown for
+a missing or changed backing round.
 
 For recorded messages, append the canonical `Auto N` link to the round title
 when the round belongs to Auto. Keep phase, position, verdict, and other detailed
@@ -107,7 +134,8 @@ remain unchanged.
 - `app/routes/chat.py` supplies lightweight, newest-first Auto history metadata
   to merged Chat.
 - `app/routes/auto.py` exposes an HTML-fragment route for one run's historical
-  topic and preparations and a refreshable history-index response.
+  topic and preparations, and emits out-of-band history updates with its Auto
+  status responses.
 - `app/templates/chat.html` adds the shared composer/Auto top-row layout, moves
   the sole `#auto-status-host` into the right-hand panel, and hosts the scrollable
   Auto history index there.
@@ -133,8 +161,12 @@ remain unchanged.
    one top row.
 2. The live/current Auto status renders only in that right-hand panel; no status
    copy remains below the composer or elsewhere in Chat.
-3. The Auto panel has one bounded vertical scrollbar independent of the
-   conversation timeline.
+3. The Auto panel beside the new-message composer uses
+   `max-height: min(12rem, 18vh)`, `font-size: .85rem`, `.5rem` padding, and
+   one vertical scrollbar independent of the conversation timeline. Its form
+   controls inherit the compact font; headings/paragraphs use `.15rem 0`
+   margins; forms use `.35rem` gaps and `.25rem 0` margins; and it has no
+   horizontal or nested status scrollbar.
 4. Chat lists every readable Auto run newest first and identifies number, status,
    and creation time without eagerly loading every topic or preparation output.
 5. Opening a historical run displays its persisted topic and completed
@@ -143,14 +175,21 @@ remain unchanged.
    conversation messages.
 7. Selecting a historical terminal run while another Auto run is active cannot
    re-enable Send, Pass, retry, cancel, or Auto-start controls.
-8. Starting a run and subsequent Auto status changes refresh the history index
-   without requiring a full page reload.
+8. Starting a run refreshes the complete history index without a page reload.
+   Subsequent Auto status changes update only that run's displayed status span
+   in the index without a page reload, Auto-directory scan, or replacement of
+   its history button.
 9. Readable preparation outputs are escaped, bounded by the existing
    captured-output limit, and displayed in individually bordered cards.
-10. Every preparation with a readable backing round has a Focus control that
-    opens the existing static round-focus fragment in the shared focus dialog;
-    an unreadable preparation returns HTTP 200 with a path-free unavailable state
-    and no broken Focus action.
+10. Historical preparation display and Focus availability are independent:
+    - Display reads the bounded, digest-verified copy stored under the Auto
+      run. A missing, invalid, oversized, undecodable, or digest-mismatched
+      copy returns HTTP 200 with `Preparation output unavailable.`, no storage
+      path, and no Focus action.
+    - Focus appears only while the original session round still belongs to
+      that Auto preparation, its prompt and output remain readable, and its
+      output digest matches the Auto copy. A deleted or changed live round
+      hides Focus without changing readable persisted display output.
 11. A run with preparation disabled or no completed preparation has a clear
     empty state.
 12. A completed Auto-owned message includes its canonical `Auto N` link in the

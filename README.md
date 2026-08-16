@@ -163,13 +163,19 @@ recovery backup, then use **Retry Auto migration**.
 
 In merged Chat, the message composer and the sole live/current Auto panel share
 the top row. The Auto panel is on the right and has its own scrollbar; no second
-Auto status is rendered below the composer. Its newest-first history lists every
-readable Auto run. Select a run to load only its persisted topic and completed
-preparations in the panel without navigating, scrolling, or filtering the
-conversation. Preparation cards expose **Focus** through the same shared dialog
-used by recorded messages. If a historical preparation artifact is no longer
-readable, the card reports that its output is unavailable without exposing a
-storage path.
+Auto status is rendered below the composer. It is capped at 2.5 times shorter
+than the earlier panel and uses smaller text so more status and history stay
+visible. Its newest-first history lists every readable Auto run. Select a run to
+load only its persisted topic and completed preparations in the panel without
+navigating, scrolling, or filtering the conversation.
+
+Preparation output comes from the digest-verified copy stored under the Auto run,
+so it survives deleting or changing the session round that produced it. Cards
+expose **Focus** through the same shared dialog used by recorded messages, but
+only while that original session round still exists unchanged for the
+preparation; otherwise the card keeps its persisted output and omits **Focus**.
+If the persisted preparation copy itself is no longer readable, the card reports
+that its output is unavailable without exposing a storage path.
 
 The persistent **Auto** button beside **Send** opens project-level Auto setup. Before
 the first round, the browser copies the unsent composer text directly into the
