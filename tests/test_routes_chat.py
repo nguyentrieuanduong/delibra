@@ -394,6 +394,75 @@ def test_timeline_reuses_projection_auto_numbers_and_degrades_unmapped(
     assert "Auto aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in response.text
 
 
+def test_recorded_auto_message_links_title_and_boxes_collapsed_prompt(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    auto_id = "e" * 32
+    alpha = session(
+        "a" * 32,
+        "Alpha",
+        rounds=[auto_round(1, auto_id)],
+    )
+    beta = session("b" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+    auto = reserve_auto_run(store, auto_id=auto_id)
+    auto.status = "converged"
+    auto.finished_at = "2026-01-01T00:01:00Z"
+    auto.terminal_reason = "all agents agreed"
+    store.save_auto_run(auto)
+    store.clear_auto_reservation(auto.id)
+    project_prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"{project_prefix}/chat")
+        focused = client.get(
+            f"{project_prefix}/sessions/{alpha.id}/rounds/1/focus"
+        )
+        stylesheet = client.get("/static/app.css")
+
+    bubble = re.search(
+        rf'<article[^>]+id="round-{alpha.id}-1".*?</article>',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert bubble is not None
+    contents = bubble.group()
+    auto_link = f'href="{project_prefix}/auto-runs/{auto.number}">Auto {auto.number}</a>'
+    header = re.search(
+        r'<div class="round-header">(.*?)</div>',
+        contents,
+        flags=re.DOTALL,
+    )
+    assert header is not None
+    assert auto_link in header.group(1)
+    assert contents.count(auto_link) == 1
+    provenance = re.search(
+        r'<p class="provenance auto-provenance">(.*?)</p>',
+        contents,
+        flags=re.DOTALL,
+    )
+    assert provenance is not None
+    assert "discussion cycle 1" in provenance.group(1)
+    assert "position 1" in provenance.group(1)
+    assert "verdict continue" in provenance.group(1)
+    assert "<a " not in provenance.group(1)
+    prompt = re.search(
+        r'<details class="round-prompt"([^>]*)>(.*?)</details>',
+        contents,
+        flags=re.DOTALL,
+    )
+    assert prompt is not None
+    assert "open" not in prompt.group(1)
+    assert 'class="round-prompt-box markdown"' in prompt.group(2)
+    assert "Prompt Alpha" in prompt.group(2)
+    assert focused.status_code == 200
+    assert 'class="round-prompt-box markdown"' in focused.text
+    assert "Prompt Alpha" in focused.text
+    assert ".round-prompt-box" in stylesheet.text
+    assert "border: 1px solid #8885;" in stylesheet.text
+
+
 def test_chat_places_the_sole_auto_status_in_the_right_top_panel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

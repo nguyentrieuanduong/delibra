@@ -1,6 +1,11 @@
 <article class="round {{ round.record.status if round.record else 'orphan' }}{% if round.record and round.record.auto %} auto-{{ round.record.auto.phase }}{% endif %}" id="{{ round.dom_id }}">
   <div class="round-header">
-    <h2>{{ session.name }} · Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}</h2>
+    <h2>
+      {{ session.name }} · Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}
+      {% if round.record and round.record.auto %}
+        · {% if round.auto_url %}<a href="{{ round.auto_url }}">Auto {{ round.auto_number }}</a>{% else %}<span>Auto</span>{% endif %}
+      {% endif %}
+    </h2>
     {% if chat_view and round.record %}
       <button
         type="button"
