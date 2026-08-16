@@ -176,6 +176,20 @@ def add_completed_user_round(
     )
 
 
+def convert_auto_to_legacy(
+    store: ProjectStore,
+    record: AutoRunRecord,
+) -> AutoRunRecord:
+    assert record.number is not None
+    number = record.number
+    record.number = None
+    store.save_auto_run(record)
+    (store.auto_runs_root / str(number)).rename(
+        store.auto_runs_root / record.id
+    )
+    return record
+
+
 def finish_reserved_auto(
     store: ProjectStore,
     record: AutoRunRecord,
@@ -1001,7 +1015,7 @@ def test_discussion_places_current_timeout_in_timeline_not_auto_status(
     assert 'hx-preserve="true"' in live_tag
 
 
-def test_auto_history_index_is_newest_first_lazy_and_canonical(
+def test_chat_auto_history_is_newest_first_lazy_and_canonical(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     reserve_auto_run,
@@ -1033,7 +1047,8 @@ def test_auto_history_index_is_newest_first_lazy_and_canonical(
             preparation_enabled=False,
         )
         second = reserve_auto_run(store, auto_id="d" * 32)
-        index = client.get(f"{project_prefix}/auto/history")
+        chat = client.get(f"{project_prefix}/chat")
+        assert artifact_reads == [second.id]
         detail = client.get(
             f"{project_prefix}/auto-runs/{first.number}/history"
         )
@@ -1044,13 +1059,20 @@ def test_auto_history_index_is_newest_first_lazy_and_canonical(
             f"{project_prefix}/auto-runs/{first.id}/history",
             follow_redirects=False,
         )
+        removed_index = client.get(f"{project_prefix}/auto/history")
 
-    assert index.status_code == 200
-    assert index.text.index(f"Auto {second.number}") < index.text.index(
+    index = re.search(
+        r'<nav[^>]+id="auto-history-index".*?</nav>',
+        chat.text,
+        flags=re.DOTALL,
+    )
+    assert index is not None
+    index_html = index.group()
+    assert index_html.index(f"Auto {second.number}") < index_html.index(
         f"Auto {first.number}"
     )
-    assert f'data-auto-history-number="{second.number}"' in index.text
-    assert f'data-auto-history-number="{first.number}"' in index.text
+    assert f'data-auto-history-number="{second.number}"' in index_html
+    assert f'data-auto-history-number="{first.number}"' in index_html
     assert detail.status_code == 200
     assert "Original topic" in detail.text
     assert "Preparation was skipped." in detail.text
@@ -1061,11 +1083,69 @@ def test_auto_history_index_is_newest_first_lazy_and_canonical(
     assert "No preparation has completed." in active_detail.text
     assert 'id="auto-status"' not in active_detail.text
     assert 'data-auto-active=' not in active_detail.text
-    assert artifact_reads == [first.id, second.id]
+    assert artifact_reads == [second.id, first.id, second.id]
     assert legacy.status_code == 302
     assert legacy.headers["location"] == (
         f"{project_prefix}/auto-runs/{first.number}/history"
     )
+    assert removed_index.status_code == 404
+
+
+def test_auto_history_reads_unnumbered_legacy_without_migration_gate(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, _, project, store, _, _ = auto_route_app(tmp_path)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        legacy = finish_reserved_auto(
+            store,
+            reserve_auto_run(store, auto_id="c" * 32),
+            status="converged",
+            preparation_enabled=False,
+        )
+        numbered = finish_reserved_auto(
+            store,
+            reserve_auto_run(store, auto_id="d" * 32),
+            status="stopped",
+            preparation_enabled=False,
+        )
+        legacy.created_at = "2026-01-01T00:00:00Z"
+        convert_auto_to_legacy(store, legacy)
+        numbered.created_at = "2026-01-02T00:00:00Z"
+        store.save_auto_run(numbered)
+        chat = client.get(f"{prefix}/chat")
+        detail = client.get(
+            f"{prefix}/auto-runs/{legacy.id}/history",
+            follow_redirects=False,
+        )
+        live_status = client.get(
+            f"{prefix}/auto-runs/{legacy.id}",
+            follow_redirects=False,
+        )
+
+    index = re.search(
+        r'<nav[^>]+id="auto-history-index".*?</nav>',
+        chat.text,
+        flags=re.DOTALL,
+    )
+    assert index is not None
+    assert index.group().index(f"Auto {numbered.number}") < (
+        index.group().index("Legacy Auto")
+    )
+    legacy_label = re.search(
+        rf'<button[^>]+auto-runs/{legacy.id}/history[^>]*>'
+        rf'.*?<strong>(.*?)</strong>',
+        index.group(),
+        flags=re.DOTALL,
+    )
+    assert legacy_label is not None
+    assert "Legacy Auto" in legacy_label.group(1)
+    assert legacy.id not in legacy_label.group(1)
+    assert detail.status_code == 200
+    assert "Legacy Auto" in detail.text
+    assert legacy.id not in detail.text
+    assert live_status.status_code == 409
 
 
 def test_auto_history_preparations_are_escaped_focusable_and_refresh_oob(
