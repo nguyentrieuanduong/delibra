@@ -184,17 +184,6 @@ def _auto_material_context(
     return {"topic": topic, "preparations": preparations}
 
 
-def auto_history_index_context(request: Request, project_id: str) -> dict:
-    project = request_project(request, project_id)
-    store = ProjectStore(project)
-    return {
-        "project": project,
-        "auto_runs": auto_history_records(
-            store.auto_migration_status().readable_records
-        ),
-    }
-
-
 def auto_history_detail_context(
     request: Request,
     project: Project,
@@ -349,15 +338,6 @@ async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
         request=request,
         name="_auto_setup.html",
         context=auto_setup_context(request, project_id),
-    )
-
-
-@router.get("/projects/{project_id}/auto/history", response_class=HTMLResponse)
-async def auto_history_index(request: Request, project_id: str) -> HTMLResponse:
-    return request.app.state.templates.TemplateResponse(
-        request=request,
-        name="_auto_history_index.html",
-        context=auto_history_index_context(request, project_id),
     )
 
 
