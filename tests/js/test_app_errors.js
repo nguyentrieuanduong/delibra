@@ -6,6 +6,7 @@ const {
   chatErrorMessage,
   closeFocusDialog,
   conversationTimelineForSwap,
+  focusAutoHistoryView,
   handleFocusDialogCancel,
   isDialogBackdropClick,
   openFocusDialog,
@@ -289,4 +290,24 @@ test("successful file fragments preserve the global chat error", function () {
     false
   );
   assert.equal(shouldClearChatError(`/projects/${project}/chat/select`), true);
+});
+
+test("loaded Auto history detail receives focus", function () {
+  let focused = 0;
+  const target = {
+    id: "auto-history-view",
+    focus() {
+      focused += 1;
+    },
+  };
+  assert.equal(focusAutoHistoryView(target), true);
+  assert.equal(focused, 1);
+  const wrong = {
+    id: "other",
+    focus() {
+      focused += 1;
+    },
+  };
+  assert.equal(focusAutoHistoryView(wrong), false);
+  assert.equal(focused, 1);
 });

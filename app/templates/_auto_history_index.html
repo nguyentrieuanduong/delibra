@@ -15,7 +15,9 @@
           aria-controls="auto-history-view"
         >
           <strong>{% if item.number %}Auto {{ item.number }}{% else %}Legacy Auto{% endif %}</strong>
-          <span>{{ item.status }} · {{ item.created_at }}</span>
+          {% with auto_history_status_oob=false %}
+            {% include "_auto_history_status.html" %}
+          {% endwith %}
         </button>
       </li>
     {% else %}

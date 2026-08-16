@@ -4,6 +4,11 @@
     {% include "_auto_history_index.html" %}
   {% endwith %}
 {% endif %}
+{% if auto_history_status_oob|default(false) %}
+  {% with item=auto, auto_history_status_oob=true %}
+    {% include "_auto_history_status.html" %}
+  {% endwith %}
+{% endif %}
 <section
   id="auto-status"
   class="auto-status {{ auto.status }}"
@@ -64,12 +69,10 @@
       {% endfor %}
     </ol>
   </details>
-  {% if auto.preparation_enabled or preparations %}
-    <details>
-      <summary>Preparations</summary>
-      {% include "_auto_preparations.html" %}
-    </details>
-  {% endif %}
+  <details>
+    <summary>Preparations</summary>
+    {% include "_auto_preparations.html" %}
+  </details>
   {% if auto.discussion %}
     <details open>
       <summary>Discussion verdicts</summary>
