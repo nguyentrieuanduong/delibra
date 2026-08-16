@@ -1,0 +1,15 @@
+<article class="auto-history-detail" aria-label="Auto run history detail">
+  <h3>{% if auto.number %}Auto {{ auto.number }}{% else %}Legacy Auto{% endif %} · {{ auto.status }}</h3>
+  <section aria-label="Auto topic">
+    <h4>Topic</h4>
+    {% if topic is none %}
+      <p class="auto-topic-unavailable">Topic unavailable.</p>
+    {% else %}
+      <pre>{{ topic }}</pre>
+    {% endif %}
+  </section>
+  <section aria-label="Auto preparations">
+    <h4>Preparations</h4>
+    {% include "_auto_preparations.html" %}
+  </section>
+</article>

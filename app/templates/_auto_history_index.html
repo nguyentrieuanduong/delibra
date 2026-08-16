@@ -1,0 +1,25 @@
+<nav
+  id="auto-history-index"
+  aria-label="Auto run history"
+  {% if auto_history_oob|default(false) %}hx-swap-oob="outerHTML"{% endif %}
+>
+  <h3>Auto history</h3>
+  <ol class="auto-history-list">
+    {% for item in auto_runs %}
+      <li data-auto-history-number="{{ item.number or 'legacy' }}">
+        <button
+          type="button"
+          hx-get="{{ project_url(project.name, '/auto-runs/' ~ (item.number or item.id) ~ '/history') }}"
+          hx-target="#auto-history-view"
+          hx-swap="innerHTML"
+          aria-controls="auto-history-view"
+        >
+          <strong>{% if item.number %}Auto {{ item.number }}{% else %}Legacy Auto{% endif %}</strong>
+          <span>{{ item.status }} · {{ item.created_at }}</span>
+        </button>
+      </li>
+    {% else %}
+      <li>No Auto runs yet.</li>
+    {% endfor %}
+  </ol>
+</nav>

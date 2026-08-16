@@ -115,6 +115,17 @@ textarea { min-height: 7rem; }
 .auto-status pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .auto-terminal-reason { font-weight: 600; }
 .auto-preparation { border-style: dashed; }
+.auto-history-list { display: grid; gap: .35rem; list-style: none; padding: 0; }
+.auto-history-list button { display: grid; text-align: left; width: 100%; }
+.auto-history-list span { font-size: .8rem; opacity: .75; }
+.auto-history-detail { border-top: 1px solid #8885; margin-top: .75rem; padding-top: .75rem; }
+.auto-history-detail pre, .auto-preparation-summary pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.auto-preparation-list { display: grid; gap: .5rem; }
+.auto-preparation-summary { border: 1px solid #8885; border-radius: .35rem; padding: .5rem; }
+.auto-preparation-heading { align-items: center; display: flex; gap: .5rem; justify-content: space-between; }
+.auto-preparation-heading h4 { margin: 0; }
+.auto-preparation-empty { opacity: .75; }
+.auto-preparation-unavailable, .auto-topic-unavailable { font-style: italic; opacity: .75; }
 .chat-timeline { min-height: 0; overflow: auto; }
 .workspace-agents {
   display: grid;
