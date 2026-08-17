@@ -49,12 +49,13 @@ vertical scrollbar so the user can move through current status and older runs
 with one scroll gesture. The composer keeps a `20rem` minimum and the Auto panel
 keeps a `14rem` minimum.
 
-The Auto panel beside the new-message composer is capped at
-`min(12rem, 18vh)`, exactly one divided by 2.5 of the previous
-`min(30rem, 45vh)` cap. It uses `.85rem` text, `.5rem` padding, inherited
-compact form-control typography, `.15rem 0` content margins, `.35rem` form
-gaps, `.25rem 0` form margins, and one vertical scrollbar so more status and
-history information remains visible within the shorter panel.
+The Auto panel initially matches the rendered height of the new-message
+composer beside it. Auto status or history content never increases that initial
+height: CSS size containment removes its intrinsic content size from grid-row
+calculation, and the panel stretches to the composer-sized row. The panel owns
+its vertical scrollbar and supports page-local vertical resizing between `6rem`
+and `80vh`; a reload restores composer-matched sizing. Compact `.85rem`
+typography and spacing remain unchanged.
 
 Move the existing `#auto-status-host` into the right-hand Auto panel; do not leave
 or render another status copy below the composer or elsewhere in Chat. Within
@@ -161,12 +162,11 @@ remain unchanged.
    one top row.
 2. The live/current Auto status renders only in that right-hand panel; no status
    copy remains below the composer or elsewhere in Chat.
-3. The Auto panel beside the new-message composer uses
-   `max-height: min(12rem, 18vh)`, `font-size: .85rem`, `.5rem` padding, and
-   one vertical scrollbar independent of the conversation timeline. Its form
-   controls inherit the compact font; headings/paragraphs use `.15rem 0`
-   margins; forms use `.35rem` gaps and `.25rem 0` margins; and it has no
-   horizontal or nested status scrollbar.
+3. On initial Chat render, the Auto panel and new-message composer have equal
+   rendered heights. Auto content does not grow the panel. The panel is
+   vertically resizable from `6rem` through `80vh`, retains one vertical
+   scrollbar independent of the conversation timeline, and has no horizontal
+   or nested status scrollbar. Resize state is not persisted across reloads.
 4. Chat lists every readable Auto run newest first and identifies number, status,
    and creation time without eagerly loading every topic or preparation output.
 5. Opening a historical run displays its persisted topic and completed

@@ -517,8 +517,13 @@ def test_chat_places_the_sole_auto_status_in_the_right_top_panel(
         stylesheet.text,
     )
     assert panel_rule is not None
-    assert "max-height: min(12rem, 18vh);" in panel_rule.group(1)
-    assert "max-height: min(30rem, 45vh);" not in panel_rule.group(1)
+    assert "align-self: stretch;" in panel_rule.group(1)
+    assert "box-sizing: border-box;" in panel_rule.group(1)
+    assert "contain: size;" in panel_rule.group(1)
+    assert "min-height: 6rem;" in panel_rule.group(1)
+    assert "max-height: 80vh;" in panel_rule.group(1)
+    assert "resize: vertical;" in panel_rule.group(1)
+    assert "max-height: min(12rem, 18vh);" not in panel_rule.group(1)
     assert "font-size: .85rem;" in panel_rule.group(1)
     assert "padding: .5rem;" in panel_rule.group(1)
     assert "overflow: hidden auto;" in panel_rule.group(1)
