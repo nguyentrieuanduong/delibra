@@ -82,13 +82,18 @@ textarea { min-height: 7rem; }
   min-width: 0;
 }
 #auto-panel {
+  align-self: stretch;
   border: 1px solid #3b82c488;
   border-radius: .5rem;
+  box-sizing: border-box;
+  contain: size;
   font-size: .85rem;
-  max-height: min(12rem, 18vh);
+  max-height: 80vh;
+  min-height: 6rem;
   min-width: 0;
   overflow: hidden auto;
   padding: .5rem;
+  resize: vertical;
 }
 #auto-panel :is(button, input, select, textarea) { font: inherit; }
 #auto-panel :is(h2, h3, h4, p) { margin: .15rem 0; }

@@ -163,11 +163,14 @@ recovery backup, then use **Retry Auto migration**.
 
 In merged Chat, the message composer and the sole live/current Auto panel share
 the top row. The Auto panel is on the right and has its own scrollbar; no second
-Auto status is rendered below the composer. It is capped at 2.5 times shorter
-than the earlier panel and uses smaller text so more status and history stay
-visible. Its newest-first history lists every readable Auto run. Select a run to
-load only its persisted topic and completed preparations in the panel without
-navigating, scrolling, or filtering the conversation.
+Auto status is rendered below the composer. The panel initially matches the
+rendered composer height, and Auto content scrolls inside it instead of growing
+it. Drag its vertical resize handle between `6rem` and `80vh` to inspect more or
+less information; a reload restores the composer-matched height. Compact text
+keeps more status and history visible. Its newest-first history lists every
+readable Auto run. Select a run to load only its persisted topic and completed
+preparations in the panel without navigating, scrolling, or filtering the
+conversation.
 
 Preparation output comes from the digest-verified copy stored under the Auto run,
 so it survives deleting or changing the session round that produced it. Cards
