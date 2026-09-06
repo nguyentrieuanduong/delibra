@@ -217,15 +217,24 @@ one discussion turn. At the end of that initial cycle, any agreeing response
 converges the run. If nobody agrees, later cycles stop on the first agreeing
 response. **All agree** requires every agent to agree within the same
 complete cycle. Preparation calls do not count as discussion turns.
-A discussion response agrees when an unnegated standalone word `converged`,
-matched without case sensitivity, appears in its final three non-empty lines.
-An occurrence is ignored only when the same line places it after `not` or a
-supported negative contraction (`isn't`, `aren't`, `wasn't`, `weren't`,
+A discussion response agrees when an unnegated standalone `converged` or its
+Vietnamese equivalent `hội tụ`, matched without case sensitivity, appears in its
+final three non-empty lines. Responses are Unicode NFC-normalized first, so
+precomposed and decomposed Vietnamese are treated identically.
+An English occurrence is ignored only when the same line places it after `not`
+or a supported negative contraction (`isn't`, `aren't`, `wasn't`, `weren't`,
 `hasn't`, `haven't`, or `hadn't`), with at most two intervening modifiers
-chosen from `yet`, `fully`, `completely`, `sufficiently`, and `quite`. Another
-unnegated occurrence in the three-line window still agrees. Unsupported wording
-containing `converged` also agrees, deliberately favoring stopping over
-additional Auto calls. The stored verdict remains `agree`. Reaching the
+chosen from `yet`, `fully`, `completely`, `sufficiently`, and `quite`.
+A Vietnamese occurrence is ignored only when the same line places it after a
+supported negator (`không`, `chưa`, `chẳng`, `không hề`, or `chưa hề`), with at
+most two intervening modifiers chosen from `hoàn toàn`, `thực sự`, `thật sự`,
+`hẳn`, and `đủ`. Negation is recognized as a prefix only: a trailing `chưa` is
+the question particle (`hội tụ chưa?`) and does not negate.
+Another unnegated occurrence in the three-line window still agrees. Unsupported
+wording containing `converged` or `hội tụ` also agrees, deliberately favoring
+stopping over additional Auto calls. Because `hội tụ` is spelled identically as
+verb and noun, a phrase such as `sự hội tụ` agrees for the same reason. The
+stored verdict remains `agree`. Reaching the
 configured number of complete cycles records `limit_reached` without starting
 an extra turn.
 
