@@ -18,6 +18,7 @@ from app.auto import (
     parse_auto_verdict,
     render_discussion_context,
     render_preparation_context,
+    validate_turn_timeout_seconds,
 )
 from app.config import Settings
 from app.main import create_app
@@ -194,6 +195,23 @@ def test_parse_auto_verdict_normalizes_decomposed_vietnamese() -> None:
     assert agreed != "Hội tụ"
     assert parse_auto_verdict(agreed) == "agree"
     assert parse_auto_verdict(negated) == "continue"
+
+
+@pytest.mark.parametrize("value", [1, 30, 90, 900, 14_400])
+def test_validate_turn_timeout_seconds_accepts_in_range_values(value: int) -> None:
+    assert validate_turn_timeout_seconds(value, maximum=14_400) == value
+
+
+@pytest.mark.parametrize("value", [0, -1, 14_401, 100_000])
+def test_validate_turn_timeout_seconds_rejects_out_of_range(value: int) -> None:
+    with pytest.raises(StorageError):
+        validate_turn_timeout_seconds(value, maximum=14_400)
+
+
+@pytest.mark.parametrize("value", [True, False, 90.0, "90", None])
+def test_validate_turn_timeout_seconds_rejects_non_integers(value: object) -> None:
+    with pytest.raises(StorageError):
+        validate_turn_timeout_seconds(value, maximum=14_400)
 
 
 def test_context_renderers_label_untrusted_injection_and_preserve_stable_order() -> None:
@@ -941,6 +959,86 @@ async def test_auto_manager_reservation_failure_persists_error_without_task(
 
     records = store.list_auto_runs()
     assert len(records) == 1 and records[0].status == "error"
+    assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_manager_create_defaults_turn_timeout_to_run_timeout(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha", "agree"), PlannedOutput("Beta", "agree")],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Default timeout topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert created.future_turn_timeout_seconds == manager.settings.run_timeout
+    assert terminal.future_turn_timeout_seconds == manager.settings.run_timeout
+    assert (
+        store.load_auto_run(created.id).future_turn_timeout_seconds
+        == manager.settings.run_timeout
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [30, 90, 14_400])
+async def test_auto_manager_create_round_trips_turn_timeout_seconds(
+    tmp_path: Path,
+    seconds: int,
+) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha", "agree"), PlannedOutput("Beta", "agree")],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Turn timeout topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+        turn_timeout_seconds=seconds,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert created.future_turn_timeout_seconds == seconds
+    assert terminal.status == "converged"
+    # Preserved exactly through every turn and across a reload — never floored
+    # through minutes.
+    assert terminal.future_turn_timeout_seconds == seconds
+    assert store.load_auto_run(created.id).future_turn_timeout_seconds == seconds
+
+
+@pytest.mark.asyncio
+async def test_auto_manager_create_rejects_over_cap_turn_timeout(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("unused")],
+    )
+
+    with pytest.raises(StorageError, match="turn time limit"):
+        await manager.create(
+            project_id,
+            topic="Over cap topic",
+            participant_ids=session_ids,
+            agreement_policy="all_agree",
+            max_cycles=1,
+            turn_timeout_seconds=manager.settings.max_run_timeout + 1,
+        )
+
+    assert store.list_auto_runs() == []
     assert factory.created == 0
 
 

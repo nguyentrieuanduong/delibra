@@ -246,6 +246,11 @@ cancel, agent identity changes, and project removal remain blocked until Auto is
 terminal; file viewing and shared-Markdown editing remain available. Edits do not
 change the immutable shared snapshot already captured for that Auto run.
 
+The Auto setup box sets the starting per-turn budget in **seconds**, from 1 through
+`DELIBRA_MAX_RUN_TIMEOUT`, defaulting to `DELIBRA_RUN_TIMEOUT`. It applies to every
+preparation and discussion turn of that run and is stored exactly as submitted; it is
+never rounded through minutes. The global cap still applies.
+
 Every live manual or Auto-owned round shows server-authoritative remaining time,
 deadline, effective budget, and hard cap. Add `+5`, `+15`, `+30`, or a custom whole
 number of minutes from 1 through 240 without restarting the provider. Auto turns

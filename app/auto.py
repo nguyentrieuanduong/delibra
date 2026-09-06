@@ -67,6 +67,16 @@ AUTO_NEGATED_CONVERGENCE_VI = re.compile(
 )
 
 
+def validate_turn_timeout_seconds(value: object, *, maximum: int) -> int:
+    """Bound an Auto per-turn budget in seconds, never in rounded minutes."""
+
+    if type(value) is not int or not 1 <= value <= maximum:
+        raise StorageError(
+            f"Auto turn time limit must be from 1 through {maximum} seconds"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class ContextEntry:
     label: str
@@ -183,6 +193,7 @@ class AutoManager:
         agreement_policy: str,
         max_cycles: int,
         preparation_enabled: bool = True,
+        turn_timeout_seconds: int | None = None,
     ) -> AutoRunRecord:
         if self._quiescing:
             raise ConflictError("Auto manager is shutting down")
@@ -196,6 +207,12 @@ class AutoManager:
             raise StorageError("Auto preparation choice is invalid")
         if type(max_cycles) is not int or not 1 <= max_cycles <= 20:
             raise StorageError("Auto cycle limit must be from 1 through 20")
+        turn_timeout = validate_turn_timeout_seconds(
+            self.settings.run_timeout
+            if turn_timeout_seconds is None
+            else turn_timeout_seconds,
+            maximum=self.settings.max_run_timeout,
+        )
         requested_ids = list(participant_ids)
         if len(requested_ids) < 2 or len(requested_ids) != len(set(requested_ids)):
             raise StorageError("Auto requires at least two unique participants")
@@ -274,7 +291,7 @@ class AutoManager:
                 preparations=[],
                 discussion=[],
                 active_key=None,
-                future_turn_timeout_seconds=self.settings.run_timeout,
+                future_turn_timeout_seconds=turn_timeout,
                 active_timeout=None,
                 stop_requested=False,
                 created_at=utc_now(),
