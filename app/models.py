@@ -192,6 +192,28 @@ class AutoParticipant:
 
 
 @dataclass(frozen=True)
+class AutoResumption:
+    """One Continue-Auto grant, recorded so every restart is auditable."""
+
+    resumed_at: str
+    from_status: str
+    max_cycles: int
+    turn_timeout_seconds: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoResumption":
+        return cls(
+            resumed_at=_strict_str(data, "resumed_at"),
+            from_status=_strict_str(data, "from_status"),
+            max_cycles=_strict_int(data, "max_cycles"),
+            turn_timeout_seconds=_strict_int(data, "turn_timeout_seconds"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class AutoArtifact:
     path: str
     sha256: str
@@ -418,6 +440,8 @@ class AutoRunRecord:
     started_at: str | None
     finished_at: str | None
     terminal_reason: str | None
+    # Absent in delibra-auto/1 records, so it must default.
+    resumptions: list[AutoResumption] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoRunRecord":
@@ -493,6 +517,10 @@ class AutoRunRecord:
                 if data.get("terminal_reason") is not None
                 else None
             ),
+            resumptions=[
+                AutoResumption.from_dict(item)
+                for item in data.get("resumptions", [])
+            ],
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -529,4 +557,5 @@ class AutoRunRecord:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "terminal_reason": self.terminal_reason,
+            "resumptions": [item.to_dict() for item in self.resumptions],
         }

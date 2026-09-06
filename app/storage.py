@@ -60,6 +60,8 @@ AUTO_STATUSES = frozenset(
         "interrupted",
     }
 )
+ACTIVE_AUTO_STATUSES = frozenset({"preparing", "discussing"})
+TERMINAL_AUTO_STATUSES = AUTO_STATUSES - ACTIVE_AUTO_STATUSES
 AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
 # Creation-time cap, deliberately not a per-start one: a mistyped limit must not
 # schedule an enormous run up front.
@@ -172,6 +174,16 @@ class ProjectMarkdown:
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _is_utc_timestamp(value: str) -> bool:
+    """Accept only what ``utc_now`` produces: an aware ISO-8601 instant."""
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
 
 
 def sanitize_name(value: str, *, maximum: int = 200) -> str:
@@ -1684,6 +1696,15 @@ class ProjectStore:
         for artifact in (record.topic, record.baseline, record.shared_context):
             if artifact is not None and not SHA256_PATTERN.fullmatch(artifact.sha256):
                 raise OwnershipError("Auto artifact digest is invalid")
+        for resumption in record.resumptions:
+            if resumption.from_status not in TERMINAL_AUTO_STATUSES:
+                raise OwnershipError("Auto resumption source status is invalid")
+            if not 1 <= resumption.max_cycles <= AUTO_MAX_LIFETIME_CYCLES:
+                raise OwnershipError("Auto resumption cycle limit is invalid")
+            if resumption.turn_timeout_seconds < 1:
+                raise OwnershipError("Auto resumption turn timeout is invalid")
+            if not _is_utc_timestamp(resumption.resumed_at):
+                raise OwnershipError("Auto resumption timestamp is invalid")
 
     @staticmethod
     def _auto_artifact_path(

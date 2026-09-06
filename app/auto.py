@@ -25,8 +25,10 @@ from app.models import (
     SessionConfig,
 )
 from app.storage import (
+    ACTIVE_AUTO_STATUSES,
     AUTO_MAX_INITIAL_CYCLES,
     AUTO_MAX_LIFETIME_CYCLES,
+    TERMINAL_AUTO_STATUSES,
     AutoMigrationStatus,
     ConflictError,
     LockCoordinator,
@@ -43,10 +45,6 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger(__name__)
-ACTIVE_AUTO_STATUSES = frozenset({"preparing", "discussing"})
-TERMINAL_AUTO_STATUSES = frozenset(
-    {"converged", "limit_reached", "stopped", "error", "interrupted"}
-)
 AUTO_STOP_MAX_ATTEMPTS = 100
 AUTO_STOP_RETRY_SECONDS = 0.01
 
