@@ -214,12 +214,14 @@ def start_auto(
     policy: str = "first_agree",
     cycles: int = 1,
     prepare_first: bool = False,
+    turn_timeout_seconds: int = 2,
 ):
     data = {
         "topic": "<unsafe topic>",
         "participant_id": session_ids,
         "agreement_policy": policy,
         "max_cycles": str(cycles),
+        "turn_timeout_seconds": str(turn_timeout_seconds),
     }
     if prepare_first:
         data["prepare_first"] = "true"
@@ -416,6 +418,13 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
         r'<input[^>]*name="max_cycles"[^>]*min="1"[^>]*max="20"[^>]*value="3"',
         setup.text,
     )
+    # Seconds end to end: the fixture's 2-second run_timeout must survive as the
+    # default, and the bound is the settings cap, not a minute-rounded value.
+    assert re.search(
+        r'<input[^>]*name="turn_timeout_seconds"[^>]*min="1"'
+        r'[^>]*max="14400"[^>]*value="2"',
+        setup.text,
+    )
     assert f'hx-get="/projects/{quote(project.name, safe='')}/auto/setup"' in chat.text
     assert "?topic=" not in chat.text
 
@@ -463,6 +472,14 @@ def test_chat_auto_setup_deep_link_reuses_fragment_context(
     assert page.text.index("alpha") < page.text.index("Beta")
     assert 'value="first_agree" checked' in page.text
     assert 'name="max_cycles" type="number" min="1" max="20" value="3"' in page.text
+    # The chat page renders the setup fragment through its own {% with %} unpack,
+    # which must carry the new bounds too.
+    for text in (fragment.text, page.text):
+        assert re.search(
+            r'name="turn_timeout_seconds"\s+type="number"\s+min="1"\s+'
+            r'max="14400"\s+value="2"',
+            text,
+        )
 
 
 def test_chat_auto_setup_deep_link_uses_projection_migration_gate(
@@ -651,12 +668,15 @@ def test_auto_start_rejects_invalid_participants_policy_and_cycles_before_creati
     base = f"/projects/{quote(project.name, safe='')}/auto-runs"
     valid_ids = [session.id for session in sessions]
     invalid_forms = [
-        (valid_ids[:1], "all_agree", "3"),
-        ([valid_ids[0], valid_ids[0]], "all_agree", "3"),
-        ([valid_ids[0], foreign.id], "all_agree", "3"),
-        (valid_ids, "majority", "3"),
-        (valid_ids, "all_agree", "0"),
-        (valid_ids, "all_agree", "21"),
+        (valid_ids[:1], "all_agree", "3", "2"),
+        ([valid_ids[0], valid_ids[0]], "all_agree", "3", "2"),
+        ([valid_ids[0], foreign.id], "all_agree", "3", "2"),
+        (valid_ids, "majority", "3", "2"),
+        (valid_ids, "all_agree", "0", "2"),
+        (valid_ids, "all_agree", "21", "2"),
+        (valid_ids, "all_agree", "3", "0"),
+        (valid_ids, "all_agree", "3", "-1"),
+        (valid_ids, "all_agree", "3", str(settings.max_run_timeout + 1)),
     ]
 
     with TestClient(app, base_url="http://localhost") as client:
@@ -668,13 +688,33 @@ def test_auto_start_rejects_invalid_participants_policy_and_cycles_before_creati
                     "participant_id": participant_ids,
                     "agreement_policy": policy,
                     "max_cycles": cycles,
+                    "turn_timeout_seconds": timeout,
                 },
             ).status_code
-            for participant_ids, policy, cycles in invalid_forms
+            for participant_ids, policy, cycles, timeout in invalid_forms
         ]
 
     assert all(status == 422 for status in statuses)
     assert store.list_auto_runs() == []
+
+
+def test_auto_start_round_trips_turn_timeout_seconds_without_minute_rounding(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(
+            client,
+            project.id,
+            [session.id for session in sessions],
+            turn_timeout_seconds=90,
+        )
+
+    assert started.status_code == 202
+    records = store.list_auto_runs()
+    assert len(records) == 1
+    assert records[0].future_turn_timeout_seconds == 90
 
 
 def test_auto_start_rejects_busy_project_before_creating_auto_directory(

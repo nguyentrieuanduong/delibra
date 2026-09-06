@@ -50,7 +50,7 @@
       </div>
       <div id="auto-setup-host">
         {% if auto_setup %}
-          {% with project=auto_setup.project, sessions=auto_setup.sessions, topic=auto_setup.topic, topic_source=auto_setup.topic_source %}
+          {% with project=auto_setup.project, sessions=auto_setup.sessions, topic=auto_setup.topic, topic_source=auto_setup.topic_source, turn_timeout_seconds=auto_setup.turn_timeout_seconds, max_turn_timeout_seconds=auto_setup.max_turn_timeout_seconds %}
             {% include "_auto_setup.html" %}
           {% endwith %}
         {% endif %}

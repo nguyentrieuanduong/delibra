@@ -47,6 +47,23 @@
     <label>Maximum discussion cycles
       <input name="max_cycles" type="number" min="1" max="20" value="3" required>
     </label>
+    <label>Time limit per turn (seconds)
+      <input
+        name="turn_timeout_seconds"
+        type="number"
+        min="1"
+        max="{{ max_turn_timeout_seconds }}"
+        value="{{ turn_timeout_seconds }}"
+        required
+      >
+    </label>
+    <p class="hint">
+      Applies to every preparation and discussion turn. The default is
+      {{ turn_timeout_seconds }} seconds; the maximum is
+      {{ max_turn_timeout_seconds }} seconds
+      ({{ (max_turn_timeout_seconds / 60)|round(1) }} minutes). Extending a turn
+      while Auto is running raises this budget for later turns too.
+    </p>
     <p class="hint">
       Maximum discussion calls at the default cycle limit: {{ sessions|length * 3 }};
       enabling preparation adds {{ sessions|length }} calls.

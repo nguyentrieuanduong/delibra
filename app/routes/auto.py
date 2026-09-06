@@ -315,11 +315,14 @@ def projected_auto_setup_context(
         key=lambda item: (item.name.casefold(), item.id),
     )
     topic = _durable_topic(request, store, auto_records)
+    settings = request.app.state.settings
     return {
         "project": project,
         "sessions": ordered_sessions,
         "topic": topic or "",
         "topic_source": "durable" if topic is not None else "composer",
+        "turn_timeout_seconds": settings.run_timeout,
+        "max_turn_timeout_seconds": settings.max_run_timeout,
     }
 
 
@@ -384,6 +387,7 @@ async def start_auto(
     participant_id: list[str] = Form(...),
     agreement_policy: str = Form(...),
     max_cycles: int = Form(...),
+    turn_timeout_seconds: int = Form(...),
     prepare_first: bool = Form(False),
 ) -> HTMLResponse:
     topic = validate_field(topic, "Topic", maximum=100_000)
@@ -396,6 +400,7 @@ async def start_auto(
         agreement_policy=agreement_policy,
         max_cycles=max_cycles,
         preparation_enabled=prepare_first,
+        turn_timeout_seconds=turn_timeout_seconds,
     )
     return _status_response(
         request,
