@@ -10,13 +10,21 @@ from pathlib import Path
 MIB = 1024 * 1024
 
 
-def _integer(name: str, default: int, *, minimum: int = 1) -> int:
+def _integer(
+    name: str,
+    default: int,
+    *,
+    minimum: int = 1,
+    maximum: int | None = None,
+) -> int:
     raw = os.environ.get(name)
     if raw is None:
         return default
     value = int(raw)
     if value < minimum:
         raise ValueError(f"{name} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be at most {maximum}")
     return value
 
 
@@ -33,6 +41,7 @@ class Settings:
     stateless_round_limit: int = 20
     request_body_limit: int = 2 * MIB
     file_view_limit: int = 512 * 1024
+    auto_resume_drain_seconds: int = 30
 
     def __post_init__(self) -> None:
         if self.max_run_timeout < self.run_timeout:
@@ -63,6 +72,12 @@ class Settings:
             stateless_round_limit=_integer("DELIBRA_STATELESS_ROUND_LIMIT", 20),
             request_body_limit=_integer("DELIBRA_REQUEST_BODY_LIMIT", 2 * MIB),
             file_view_limit=_integer("DELIBRA_FILE_VIEW_LIMIT", 512 * 1024),
+            auto_resume_drain_seconds=_integer(
+                "DELIBRA_AUTO_RESUME_DRAIN_SECONDS",
+                30,
+                minimum=1,
+                maximum=300,
+            ),
         )
 
 

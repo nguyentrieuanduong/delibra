@@ -1754,6 +1754,352 @@ async def test_auto_stop_claim_prevents_later_turn_during_timeout_race(
     assert timeout_result is not None
 
 
+async def _stopped_auto(tmp_path: Path, *, extra_outputs: list[PlannedOutput] | None = None):
+    """Drive a run to a real `stopped` state, parked mid-discussion."""
+
+    outputs = [
+        PlannedOutput("Alpha one", "continue"),
+        PlannedOutput("Beta one", "continue"),
+        *(extra_outputs or []),
+    ]
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        outputs,
+    )
+    created = await manager.create(
+        project_id,
+        topic="Resume topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status == "limit_reached"
+    return manager, factory, project_id, session_ids, store, created
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_continues_cycle_instead_of_restarting(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, _ids, store, created = await _stopped_auto(
+        tmp_path,
+        extra_outputs=[
+            PlannedOutput("Alpha two", "agree"),
+            PlannedOutput("Beta two", "agree"),
+        ],
+    )
+
+    resumed = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # limit_reached is only reachable on the last participant, so the cursor
+    # rolls to the next cycle rather than restarting at cycle 1.
+    assert resumed.status == "discussing"
+    assert resumed.current_cycle == 2
+    assert resumed.next_participant == 0
+    assert terminal.status == "converged"
+    assert terminal.max_cycles == 2
+    assert terminal.future_turn_timeout_seconds == 120
+    assert len(terminal.discussion) == 4
+    assert factory.created == 4
+    assert store.load_auto_run(created.id).current_cycle == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_records_every_grant_in_resumptions(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, _ids, store, created = await _stopped_auto(
+        tmp_path,
+        extra_outputs=[
+            PlannedOutput("Alpha two", "agree"),
+            PlannedOutput("Beta two", "agree"),
+        ],
+    )
+
+    await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    reloaded = store.load_auto_run(created.id)
+    assert len(reloaded.resumptions) == 1
+    entry = reloaded.resumptions[0]
+    assert entry.from_status == "limit_reached"
+    assert entry.max_cycles == 2
+    assert entry.turn_timeout_seconds == 120
+    assert terminal.resumptions == reloaded.resumptions
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_rejects_cycle_limit_below_the_reconstructed_cycle(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, _ids, store, created = await _stopped_auto(tmp_path)
+
+    # The run ended at cycle 1 and reconstructs to cycle 2, so an unchanged
+    # limit of 1 would start a cycle beyond it.
+    with pytest.raises(StorageError, match="cycle limit"):
+        await manager.resume(
+            project_id,
+            created.id,
+            max_cycles=1,
+            turn_timeout_seconds=120,
+        )
+
+    reloaded = store.load_auto_run(created.id)
+    assert reloaded.status == "limit_reached"
+    assert reloaded.resumptions == []
+    assert store.active_auto_run_id() is None
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_rejects_over_cap_turn_timeout_without_mutating(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, _ids, store, created = await _stopped_auto(tmp_path)
+
+    with pytest.raises(StorageError, match="turn time limit"):
+        await manager.resume(
+            project_id,
+            created.id,
+            max_cycles=2,
+            turn_timeout_seconds=manager.settings.max_run_timeout + 1,
+        )
+
+    reloaded = store.load_auto_run(created.id)
+    assert reloaded.status == "limit_reached"
+    assert reloaded.finished_at is not None
+    assert reloaded.resumptions == []
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_refreshes_editable_model_and_effort(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, session_ids, store, created = await _stopped_auto(
+        tmp_path,
+        extra_outputs=[
+            PlannedOutput("Alpha two", "agree"),
+            PlannedOutput("Beta two", "agree"),
+        ],
+    )
+    changed = store.load_session(session_ids[0])
+    changed.model = "success-2"
+    store.save_session(changed)
+
+    resumed = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # Model and effort are editable by design; _validate_auto_request compares
+    # the exact tuple, so a stale copy would reject the first resumed turn.
+    assert resumed.participants[0].model == "success-2"
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_rejects_a_removed_participant(tmp_path: Path) -> None:
+    manager, _factory, project_id, session_ids, store, created = await _stopped_auto(
+        tmp_path
+    )
+    store.delete_session(session_ids[0])
+
+    with pytest.raises(StorageError, match="no longer in the project"):
+        await manager.resume(
+            project_id,
+            created.id,
+            max_cycles=2,
+            turn_timeout_seconds=120,
+        )
+
+    assert store.load_auto_run(created.id).status == "limit_reached"
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_rejects_a_tampered_topic(tmp_path: Path) -> None:
+    manager, _factory, project_id, _ids, store, created = await _stopped_auto(tmp_path)
+    (store.auto_run_dir(created.id) / "topic.md").write_bytes(b"Tampered topic")
+
+    with pytest.raises(OwnershipError):
+        await manager.resume(
+            project_id,
+            created.id,
+            max_cycles=2,
+            turn_timeout_seconds=120,
+        )
+
+    assert store.load_auto_run(created.id).status == "limit_reached"
+    assert store.active_auto_run_id() is None
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_restores_the_terminal_snapshot_when_publication_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _factory, project_id, _ids, store, created = await _stopped_auto(tmp_path)
+
+    def fail_reservation(_store: ProjectStore, _auto_id: str) -> None:
+        raise StorageError("reservation write failed")
+
+    monkeypatch.setattr(ProjectStore, "publish_auto_reservation", fail_reservation)
+
+    with pytest.raises(StorageError, match="reservation write"):
+        await manager.resume(
+            project_id,
+            created.id,
+            max_cycles=2,
+            turn_timeout_seconds=120,
+        )
+
+    reloaded = store.load_auto_run(created.id)
+    assert reloaded.status == "limit_reached"
+    assert reloaded.current_cycle == 1
+    assert reloaded.finished_at is not None
+    assert reloaded.resumptions == []
+    assert reloaded.max_cycles == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_refuses_while_another_auto_is_active(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, _ids, store, created = await _stopped_auto(tmp_path)
+    # A live reservation means some Auto owns the project; resume must refuse.
+    store.publish_auto_reservation(created.id)
+
+    with pytest.raises(ConflictError):
+        await manager.resume(
+            project_id,
+            created.id,
+            max_cycles=2,
+            turn_timeout_seconds=120,
+        )
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_admits_a_session_left_at_error_status(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, session_ids, store, created = await _stopped_auto(
+        tmp_path,
+        extra_outputs=[
+            PlannedOutput("Alpha two", "agree"),
+            PlannedOutput("Beta two", "agree"),
+        ],
+    )
+    # A failed round persists its session as "error" with no process alive.
+    # Reading the precondition as `status == "idle"` would block exactly the
+    # recovery resume exists to provide.
+    failed = store.load_session(session_ids[0])
+    failed.status = "error"
+    store.save_session(failed)
+
+    resumed = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert resumed.status == "discussing"
+    assert terminal.status == "converged"
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_installs_a_task_that_stop_can_still_reach(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, _ids, store, created = await _stopped_auto(
+        tmp_path,
+        extra_outputs=[
+            PlannedOutput("Alpha two", sleep=True),
+            PlannedOutput("must not run"),
+        ],
+    )
+    outgoing = manager._tasks.get((project_id, created.id))
+
+    resumed = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    installed = manager._tasks.get((project_id, created.id))
+
+    assert resumed.status == "discussing"
+    assert installed is not None and installed is not outgoing
+    assert outgoing is None or outgoing.done()
+
+    await manager.stop(project_id, created.id)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_drive_pop_is_identity_safe_against_a_resumed_task(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, _ids, _store, created = await _stopped_auto(tmp_path)
+    key = (project_id, created.id)
+    sentinel = asyncio.create_task(asyncio.sleep(30))
+    manager._tasks[key] = sentinel
+
+    # A stale _drive returning after a resume has already installed a new task
+    # must not evict it, or the new task becomes invisible to Stop and shutdown.
+    await manager._drive(project_id, created.id)
+
+    assert manager._tasks.get(key) is sentinel
+    sentinel.cancel()
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_rejects_a_non_terminal_run(tmp_path: Path) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("never completes", sleep=True),
+            PlannedOutput("must not run"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Active topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+
+    with pytest.raises((ConflictError, StorageError)):
+        await manager.resume(
+            project_id,
+            created.id,
+            max_cycles=2,
+            turn_timeout_seconds=120,
+        )
+
+    await manager.stop(project_id, created.id)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+
 @pytest.mark.asyncio
 async def test_auto_stop_bounds_active_key_churn(
     tmp_path: Path,

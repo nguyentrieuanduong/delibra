@@ -19,6 +19,7 @@ from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
     AutoParticipant,
+    AutoResumption,
     AutoRunRecord,
     AutoTurn,
     RoundRecord,
@@ -386,6 +387,165 @@ class AutoManager:
         self._tasks[(project_id, auto_id)] = task
         return record
 
+    async def resume(
+        self,
+        project_id: str,
+        auto_id: str,
+        *,
+        max_cycles: int,
+        turn_timeout_seconds: int,
+    ) -> AutoRunRecord:
+        """Return a terminal Auto run to its parked cursor and drive it again."""
+
+        if self._quiescing:
+            raise ConflictError("Auto manager is shutting down")
+        # Fail fast on a run that is still going, so an active run is refused
+        # immediately instead of waiting out the drain below. Every check here is
+        # re-run under the locks; this one only avoids a pointless wait.
+        if self.get(project_id, auto_id).status in ACTIVE_AUTO_STATUSES:
+            raise ConflictError("Auto run is still active")
+        # Drain an outgoing _drive task before validating: the terminal status and
+        # the released reservation are visible before that task's `finally` runs,
+        # so a resume issued in that window would otherwise race it. Awaiting
+        # happens outside the lock set, because the task itself needs those locks
+        # to finish.
+        outgoing = self._tasks.get((project_id, auto_id))
+        if outgoing is not None and not outgoing.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(outgoing),
+                    self.settings.auto_resume_drain_seconds,
+                )
+            except asyncio.TimeoutError:
+                raise ConflictError(
+                    "Auto run is still finishing its previous turn; try again"
+                ) from None
+            except Exception:
+                # The outgoing task's own failure is already recorded on the
+                # record; resume validates that record below.
+                pass
+
+        project = self.registry.get(project_id)
+        discovered = ProjectStore(project).list_sessions()
+        all_session_ids = [session.id for session in discovered]
+        async with self.locks.registry_project_sessions(project_id, all_session_ids):
+            project = self.registry.get(project_id)
+            store = ProjectStore(project)
+            store.require_auto_migration_complete()
+            sessions = store.list_sessions()
+            if {item.id for item in sessions} != set(all_session_ids):
+                raise ConflictError("project sessions changed during Auto resume")
+            store.require_auto_inactive()
+            # Quiescent, not idle. A failed round leaves its session persisted as
+            # "error" with no process alive, and resuming from error is exactly
+            # what this method exists to provide, so only a live run blocks.
+            if any(session.status == "running" for session in sessions) or any(
+                self.runner.active_key(project_id, session.id) is not None
+                for session in sessions
+            ):
+                raise ConflictError(
+                    "no project session may be running before Auto resumes"
+                )
+
+            record = store.load_auto_run(auto_id)
+            cursor = reconstruct_resume_cursor(record)
+            if cursor.current_cycle > AUTO_MAX_LIFETIME_CYCLES:
+                raise StorageError(
+                    "Auto run reached the lifetime cycle limit of "
+                    f"{AUTO_MAX_LIFETIME_CYCLES} and cannot continue"
+                )
+            # Validate the edited limit against the reconstructed cycle, not the
+            # stored one: resuming limit_reached with an unchanged limit would
+            # otherwise start a cycle beyond it.
+            floor = max(cursor.current_cycle, 1)
+            if (
+                type(max_cycles) is not int
+                or not floor <= max_cycles <= AUTO_MAX_LIFETIME_CYCLES
+            ):
+                raise StorageError(
+                    f"Auto cycle limit must be from {floor} through "
+                    f"{AUTO_MAX_LIFETIME_CYCLES} to continue this run"
+                )
+            turn_timeout = validate_turn_timeout_seconds(
+                turn_timeout_seconds,
+                maximum=self.settings.max_run_timeout,
+            )
+
+            by_id = {item.id: item for item in sessions}
+            for participant in record.participants:
+                session = by_id.get(participant.session_id)
+                if session is None:
+                    raise StorageError(
+                        f"Auto participant {participant.name} is no longer in the project"
+                    )
+                if session.name != participant.name or session.agent != participant.agent:
+                    raise StorageError(
+                        f"Auto participant {participant.name} changed name or provider"
+                    )
+
+            # Re-verify every artifact the next turn will read. _discussion_context
+            # covers topic, preparations, baseline entries, and prior discussion
+            # outputs; shared context is not checked there, so check it explicitly
+            # rather than letting tampering surface mid-turn.
+            if record.shared_context is not None:
+                store.load_auto_artifact(
+                    record.id,
+                    record.shared_context,
+                    self.settings.file_view_limit,
+                )
+            self._discussion_context(store, record)
+
+            snapshot = deepcopy(record)
+            # Model and effort are editable by design, so refresh them from the
+            # live SessionConfig; _validate_auto_request compares the exact tuple
+            # and would otherwise reject the first resumed turn.
+            record.participants = [
+                AutoParticipant(
+                    session_id=participant.session_id,
+                    name=participant.name,
+                    agent=participant.agent,
+                    model=by_id[participant.session_id].model,
+                    effort=by_id[participant.session_id].effort,
+                )
+                for participant in record.participants
+            ]
+            record.resumptions = [
+                *record.resumptions,
+                AutoResumption(
+                    resumed_at=utc_now(),
+                    from_status=record.status,
+                    max_cycles=max_cycles,
+                    turn_timeout_seconds=turn_timeout,
+                ),
+            ]
+            record.status = cursor.status
+            record.current_cycle = cursor.current_cycle
+            record.next_participant = cursor.next_participant
+            record.max_cycles = max_cycles
+            record.future_turn_timeout_seconds = turn_timeout
+            record.finished_at = None
+            record.terminal_reason = None
+            record.stop_requested = False
+            record.active_key = None
+            record.active_timeout = None
+            store.save_auto_run(record)
+            try:
+                store.publish_auto_reservation(auto_id)
+            except Exception:
+                # Mirror create(): publication is a failure boundary. Restore the
+                # pre-resume terminal snapshot so a failed resume leaves no run
+                # that is active on disk but driven by nobody.
+                store.save_auto_run(snapshot)
+                raise
+
+        self._publish_status(record)
+        task = asyncio.create_task(
+            self._drive(project_id, auto_id),
+            name=f"delibra-auto-{auto_id}",
+        )
+        self._tasks[(project_id, auto_id)] = task
+        return record
+
     def get(self, project_id: str, auto_id: str) -> AutoRunRecord:
         project = self.registry.get(project_id)
         return ProjectStore(project).load_auto_run(auto_id)
@@ -537,7 +697,13 @@ class AutoManager:
             except Exception:
                 LOGGER.exception("Auto run %s terminal transition failed", auto_id)
         finally:
-            self._tasks.pop((project_id, auto_id), None)
+            # The terminal status and the released reservation become visible
+            # before this pop runs, so a resume can already have installed a new
+            # task under this key. Popping unconditionally would leave that task
+            # untracked by Stop and by shutdown.
+            key = (project_id, auto_id)
+            if self._tasks.get(key) is asyncio.current_task():
+                self._tasks.pop(key, None)
 
     async def _run_preparation(self, record: AutoRunRecord) -> None:
         from app.runner import AutoRunRequest
