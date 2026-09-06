@@ -662,6 +662,75 @@ def test_codex_auth_home_never_copies_ambient_auth(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        # A proven retryable event alone.
+        ("transient", "retryable_transport"),
+        # Unrecognized stderr folds to unknown and is dropped, so it cannot
+        # suppress the retry this feature exists to enable.
+        ("transient-noisy-stderr", "retryable_transport"),
+        # Quota evidence reaching only stderr must still be classified: the
+        # adapter never sees it, and it must pause rather than retry.
+        ("quota-stderr", "quota"),
+        # Explicit quota outranks retryable evidence in the same stream.
+        ("transient-then-quota", "quota"),
+        # A nonzero exit with no JSON error event stays terminal.
+        ("nonzero", "permanent"),
+        ("provider-error", "permanent"),
+    ],
+)
+async def test_round_records_the_folded_error_category(
+    tmp_path: Path,
+    mode: str,
+    expected: str,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode=mode)
+
+    key = await manager.start(project_id, session_id, "Classify me")
+    record = await manager.wait(key)
+
+    assert record.status == "error"
+    assert record.error_category == expected
+    assert store.load_session(session_id).rounds[-1].error_category == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["codex-auth-event", "codex-auth-stderr"])
+async def test_codex_auth_failures_classify_as_auth_despite_normalization(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    # _normalize_error rewrites the message into user-facing instructions that
+    # no longer carry the auth markers, so classification must read the raw text.
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode=mode)
+    config = store.load_session(session_id)
+    config.agent = "codex"
+    store.save_session(config)
+    manager.settings.codex_home.mkdir(mode=0o700)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+
+    key = await manager.start(project_id, session_id, "Auth me")
+    record = await manager.wait(key)
+
+    assert record.status == "error"
+    assert record.error_category == "auth"
+    assert "codex login --device-auth" in (record.error or "")
+
+
+@pytest.mark.asyncio
+async def test_successful_round_has_no_error_category(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+
+    key = await manager.start(project_id, session_id, "Succeed")
+    record = await manager.wait(key)
+
+    assert record.status == "complete"
+    assert record.error_category is None
+    assert "error_category" not in record.to_dict()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["codex-auth-event", "codex-auth-stderr"])
 async def test_codex_auth_errors_are_normalized_before_replay_and_persistence(
     tmp_path: Path,

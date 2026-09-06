@@ -432,6 +432,9 @@ class PlannedOutput:
     provider_error: bool = False
     delay: float = 0.01
     sleep: bool = False
+    # Drives fake_cli's failure modes, so the runner classifies a real stream
+    # rather than a category injected straight onto the record.
+    failure_mode: str | None = None
 
 
 class RecordingAutoAdapter:
@@ -473,11 +476,14 @@ class RecordingAutoAdapter:
             }
         )
         mode = (
-            "sleep"
-            if self.output.sleep
-            else "provider-error"
-            if self.output.provider_error
-            else "success"
+            self.output.failure_mode
+            or (
+                "sleep"
+                if self.output.sleep
+                else "provider-error"
+                if self.output.provider_error
+                else "success"
+            )
         )
         return Command(
             [
@@ -1752,6 +1758,170 @@ async def test_auto_stop_claim_prevents_later_turn_during_timeout_race(
     round_record = store.load_session(key.session_id).rounds[-1]
     assert round_record.status == "cancelled"
     assert timeout_result is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_retries_a_transient_discussion_failure_then_succeeds(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("attempt 1", failure_mode="transient"),
+            PlannedOutput("attempt 2", failure_mode="transient"),
+            PlannedOutput("Alpha", "agree"),
+            PlannedOutput("Beta", "agree"),
+        ],
+    )
+    manager.settings = replace(
+        manager.settings,
+        auto_turn_retries=2,
+        auto_retry_backoff_seconds=1,
+    )
+    manager._backoff_before_retry = _no_backoff
+
+    created = await manager.create(
+        project_id,
+        topic="Retry topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # Two failures, then a success: three attempts for the first speaker.
+    assert terminal.status == "converged"
+    assert factory.created == 4
+    rounds = store.load_session(session_ids[0]).rounds
+    # Each attempt is a fresh round, so the failed ones stay visible.
+    assert [r.status for r in rounds] == ["error", "error", "complete"]
+    assert all(r.error_category == "retryable_transport" for r in rounds[:2])
+
+
+@pytest.mark.asyncio
+async def test_auto_goes_terminal_after_exhausting_retries(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput(f"attempt {n}", failure_mode="transient") for n in range(3)],
+    )
+    manager.settings = replace(
+        manager.settings,
+        auto_turn_retries=2,
+        auto_retry_backoff_seconds=1,
+    )
+    manager._backoff_before_retry = _no_backoff
+
+    created = await manager.create(
+        project_id,
+        topic="Exhaust topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "error"
+    assert "discussion provider failed" in (terminal.terminal_reason or "")
+    assert factory.created == 3
+    # The cursor stays parked on the failed participant, so Continue Auto
+    # re-runs it rather than skipping it.
+    assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_auto_disables_retry_when_configured_to_zero(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("only attempt", failure_mode="transient")],
+    )
+    manager.settings = replace(manager.settings, auto_turn_retries=0)
+    manager._backoff_before_retry = _no_backoff
+
+    created = await manager.create(
+        project_id,
+        topic="No retry topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "error"
+    assert factory.created == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_quota_failure_pauses_to_resumable_stopped_without_retry(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("must not run"),
+        ],
+    )
+    manager.settings = replace(manager.settings, auto_turn_retries=2)
+    manager._backoff_before_retry = _no_backoff
+
+    created = await manager.create(
+        project_id,
+        topic="Quota topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # A 429 proves the call cannot succeed, so it must pause rather than retry.
+    assert terminal.status == "stopped"
+    assert "quota" in (terminal.terminal_reason or "")
+    assert factory.created == 1
+    assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_auto_retry_clears_active_state_between_attempts(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("attempt 1", failure_mode="transient"),
+            PlannedOutput("Alpha", "agree"),
+            PlannedOutput("Beta", "agree"),
+        ],
+    )
+    manager.settings = replace(manager.settings, auto_turn_retries=1)
+    seen: list[object] = []
+
+    async def record_state(attempt: int) -> None:
+        seen.append(store.load_auto_run(created.id).active_key)
+
+    manager._backoff_before_retry = record_state
+
+    created = await manager.create(
+        project_id,
+        topic="Active state topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # start_auto_locked rejects a new turn while active_key is set, so it must
+    # be cleared and persisted before the next attempt.
+    assert terminal.status == "converged"
+    assert seen == [None]
+
+
+async def _no_backoff(attempt: int) -> None:
+    return None
 
 
 async def _stopped_auto(tmp_path: Path, *, extra_outputs: list[PlannedOutput] | None = None):

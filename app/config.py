@@ -42,6 +42,8 @@ class Settings:
     request_body_limit: int = 2 * MIB
     file_view_limit: int = 512 * 1024
     auto_resume_drain_seconds: int = 30
+    auto_turn_retries: int = 2
+    auto_retry_backoff_seconds: int = 5
 
     def __post_init__(self) -> None:
         if self.max_run_timeout < self.run_timeout:
@@ -75,6 +77,19 @@ class Settings:
             auto_resume_drain_seconds=_integer(
                 "DELIBRA_AUTO_RESUME_DRAIN_SECONDS",
                 30,
+                minimum=1,
+                maximum=300,
+            ),
+            # Zero disables retry, so this is the one setting whose minimum is 0.
+            auto_turn_retries=_integer(
+                "DELIBRA_AUTO_TURN_RETRIES",
+                2,
+                minimum=0,
+                maximum=10,
+            ),
+            auto_retry_backoff_seconds=_integer(
+                "DELIBRA_AUTO_RETRY_BACKOFF_SECONDS",
+                5,
                 minimum=1,
                 maximum=300,
             ),

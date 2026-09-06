@@ -18,6 +18,7 @@ import signal
 from typing import Callable, Protocol
 
 from app.agents.base import AgentAdapter, AgentEvent, RunContext
+from app.agents.errors import CODEX_AUTH_MARKERS, classify_text, fold_categories
 from app.auto import parse_auto_verdict
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
@@ -56,17 +57,6 @@ STATELESS_CONTINUATION_WARNING = (
     "Native context was reset or unavailable; bounded staged history supplied "
     "a stateless continuation."
 )
-CODEX_AUTH_MARKERS = (
-    "codex isolated login is missing",
-    "access token could not be refreshed",
-    "refresh token was revoked",
-    "refresh token expired",
-    "token has expired",
-    "authentication required",
-    "not logged in",
-)
-
-
 class SessionBusy(ConflictError):
     """A second run was requested for a session that is already running."""
 
@@ -103,6 +93,7 @@ class ActiveRun:
     captured: bytearray = field(default_factory=bytearray)
     stderr_tail: bytearray = field(default_factory=bytearray)
     errors: list[str] = field(default_factory=list)
+    error_categories: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     cli_session_id: str | None = None
     cancel_requested: bool = False
@@ -926,6 +917,26 @@ class RunManager:
             raise StorageError("Codex auth path is not a regular file")
         raise StorageError("Codex isolated login is missing")
 
+    @staticmethod
+    def _fold_error_category(
+        active: ActiveRun,
+        error: str | None,
+        raw_stderr: str,
+    ) -> str:
+        """Fold every piece of failure evidence into one category.
+
+        Adapters only see stdout JSONL, so stderr, runner-created failures, and
+        the normalized Codex auth message would otherwise never acquire a
+        category and a quota or auth marker present only there would go terminal
+        instead of pausing. Unclassified text folds to ``unknown`` and is
+        dropped, so incidental noise cannot outrank a proven retryable event.
+        """
+
+        evidence = [*active.error_categories]
+        evidence.append(classify_text(raw_stderr))
+        evidence.append(classify_text(error or ""))
+        return fold_categories(evidence)
+
     def _normalize_error(self, agent: str, value: str) -> str:
         lowered = value.casefold()
         if agent != "codex" or not any(
@@ -1108,6 +1119,14 @@ class RunManager:
         elif event.kind == "error":
             message = self._normalize_error(active.config.agent, event.text)
             active.errors.append(message)
+            # Classify the raw text, never the normalized one: normalization
+            # rewrites the Codex auth message into user-facing instructions that
+            # no longer carry the markers that identify it.
+            active.error_categories.append(
+                event.error_info.category
+                if event.error_info is not None
+                else classify_text(event.text)
+            )
             self._publish(active, "error", message)
         return True
 
@@ -1224,6 +1243,11 @@ class RunManager:
             record.auto = replace(record.auto, verdict=parsed_verdict)
         record.status = status
         record.error = error
+        record.error_category = (
+            self._fold_error_category(active, error, raw_stderr)
+            if status == "error"
+            else None
+        )
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
         active.config.status = "idle" if status in {"complete", "cancelled"} else "error"

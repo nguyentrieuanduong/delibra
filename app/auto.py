@@ -15,6 +15,7 @@ import unicodedata
 from uuid import uuid4
 
 from app.config import Settings
+from app.agents.errors import is_retryable
 from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
@@ -868,7 +869,81 @@ class AutoManager:
                 store.save_auto_run(current)
         self._publish_status(current)
 
+    def _classify_turn_failure(
+        self,
+        store: ProjectStore,
+        current: AutoRunRecord,
+        result: RoundRecord,
+        *,
+        attempt: int,
+        phase: str,
+    ) -> Literal["done", "retry"]:
+        """Decide whether a failed Auto turn retries, pauses, or ends the run.
+
+        Must be called with the participant's session lock held.
+        """
+
+        category = result.error_category or "permanent"
+        reason = f"{phase} provider failed: {result.error or result.status}"
+        if category == "quota":
+            # A provider 429 proves the call cannot succeed; retrying it burns
+            # nothing but latency. Pause to a resumable stopped instead, so
+            # Continue Auto can recover the run.
+            self._transition_terminal_locked(
+                store,
+                current,
+                "stopped",
+                f"paused: provider quota exhausted during {phase}",
+            )
+            return "done"
+        if is_retryable(category) and attempt < self.settings.auto_turn_retries:
+            # start_auto_locked rejects a new turn while either field is set, and
+            # only _transition_terminal_locked clears them today, so clear and
+            # persist them before the next attempt.
+            current.active_key = None
+            current.active_timeout = None
+            store.save_auto_run(current)
+            return "retry"
+        self._transition_terminal_locked(store, current, "error", reason)
+        return "done"
+
+    async def _backoff_before_retry(self, attempt: int) -> None:
+        """Bounded exponential backoff: base * 2**(k-1), capped at 4 * base."""
+
+        base = self.settings.auto_retry_backoff_seconds
+        await asyncio.sleep(min(base * 2 ** (attempt - 1), 4 * base))
+
     async def _run_discussion(self, record: AutoRunRecord) -> None:
+        attempt = 0
+        while True:
+            if await self._run_discussion_attempt(record, attempt) != "retry":
+                return
+            attempt += 1
+            await self._backoff_before_retry(attempt)
+            # Honour Stop and shutdown between attempts; each attempt is a fresh
+            # round, so the failed one stays visible in the session history.
+            if self._quiescing:
+                await self._transition_terminal(
+                    record.project_id,
+                    record.id,
+                    "interrupted",
+                    "application shutdown",
+                )
+                return
+            if self.get(record.project_id, record.id).stop_requested:
+                await self._transition_terminal(
+                    record.project_id,
+                    record.id,
+                    "stopped",
+                    "stopped by user",
+                )
+                return
+
+    async def _run_discussion_attempt(
+        self,
+        record: AutoRunRecord,
+        attempt: int,
+    ) -> Literal["done", "retry"]:
         from app.runner import AutoRunRequest
 
         project = self.registry.get(record.project_id)
@@ -945,9 +1020,10 @@ class AutoManager:
             store.remove_auto_context(record.id, context_source)
         if terminal is not None:
             self._publish_status(terminal)
-            return
+            return "done"
         assert key is not None
         result = await self.runner.wait(key)
+        outcome: Literal["done", "retry"] = "done"
         async with self.locks.project_sessions(record.project_id, [participant.session_id]):
             current = store.load_auto_run(record.id)
             if current.stop_requested:
@@ -958,11 +1034,12 @@ class AutoManager:
                     "stopped by user",
                 )
             elif result.status != "complete":
-                self._transition_terminal_locked(
+                outcome = self._classify_turn_failure(
                     store,
                     current,
-                    "error",
-                    f"discussion provider failed: {result.error or result.status}",
+                    result,
+                    attempt=attempt,
+                    phase="discussion",
                 )
             else:
                 if current.active_key != key or result.auto is None:
@@ -990,6 +1067,7 @@ class AutoManager:
                 current.active_timeout = None
                 self._advance_discussion_locked(store, current)
         self._publish_status(current)
+        return outcome
 
     def _discussion_context(
         self,
