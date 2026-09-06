@@ -1,0 +1,36 @@
+<details class="auto-resume">
+  <summary>Continue Auto</summary>
+  <form
+    method="post"
+    action="{{ project_url(project.name, '/auto-runs/' ~ auto.number ~ '/resume') }}"
+    hx-post="{{ project_url(project.name, '/auto-runs/' ~ auto.number ~ '/resume') }}"
+    hx-target="#auto-status"
+    hx-swap="outerHTML"
+  >
+    <label>Maximum discussion cycles
+      <input
+        name="max_cycles"
+        type="number"
+        min="{{ resume_min_cycles }}"
+        max="{{ resume_max_cycles }}"
+        value="{{ resume_min_cycles }}"
+        required
+      >
+    </label>
+    <label>Time limit per turn (seconds)
+      <input
+        name="turn_timeout_seconds"
+        type="number"
+        min="1"
+        max="{{ max_turn_timeout_seconds }}"
+        value="{{ resume_turn_timeout_seconds }}"
+        required
+      >
+    </label>
+    <p class="hint">
+      Continues from cycle {{ resume_min_cycles }}, on the participant that was
+      next to speak. The cycle counter continues rather than restarting.
+    </p>
+    <button type="submit">Continue Auto</button>
+  </form>
+</details>

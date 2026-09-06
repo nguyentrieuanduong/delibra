@@ -35,7 +35,7 @@
         <aside id="auto-panel" aria-label="Auto status and history">
           <div id="auto-status-host">
             {% if auto_status %}
-              {% with project=auto_status.project, auto=auto_status.auto, auto_active=auto_status.auto_active, topic=auto_status.topic, preparations=auto_status.preparations, preparing_number=auto_status.preparing_number, hidden_preparation_key=auto_status.hidden_preparation_key, current_participant=auto_status.current_participant, clear_auto_setup=auto_status.clear_auto_setup, auto_history_oob_runs=auto_status.auto_history_oob_runs, auto_history_status_oob=auto_status.auto_history_status_oob %}
+              {% with project=auto_status.project, auto=auto_status.auto, auto_active=auto_status.auto_active, topic=auto_status.topic, preparations=auto_status.preparations, preparing_number=auto_status.preparing_number, hidden_preparation_key=auto_status.hidden_preparation_key, current_participant=auto_status.current_participant, clear_auto_setup=auto_status.clear_auto_setup, auto_history_oob_runs=auto_status.auto_history_oob_runs, auto_history_status_oob=auto_status.auto_history_status_oob, auto_resumable=auto_status.auto_resumable, resume_min_cycles=auto_status.resume_min_cycles, resume_max_cycles=auto_status.resume_max_cycles, resume_turn_timeout_seconds=auto_status.resume_turn_timeout_seconds, max_turn_timeout_seconds=auto_status.max_turn_timeout_seconds %}
                 {% include "_auto_status.html" %}
               {% endwith %}
             {% endif %}

@@ -12,7 +12,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 from starlette.responses import Response
 
-from app.auto import ACTIVE_AUTO_STATUSES
+from app.auto import (
+    ACTIVE_AUTO_STATUSES,
+    AUTO_MAX_LIFETIME_CYCLES,
+    TERMINAL_AUTO_STATUSES,
+    reconstruct_resume_cursor,
+)
 from app.models import AutoRunRecord, AutoTurn, Project, SessionConfig
 from app.project_routing import request_project
 from app.security import validate_field
@@ -184,6 +189,32 @@ def _auto_material_context(
     return {"topic": topic, "preparations": preparations}
 
 
+def _resume_context(
+    request: Request,
+    store: ProjectStore,
+    record: AutoRunRecord,
+) -> dict:
+    """Decide whether Continue Auto may be offered, and with what bounds."""
+
+    cursor = None
+    if record.status in TERMINAL_AUTO_STATUSES and store.active_auto_run_id() is None:
+        try:
+            cursor = reconstruct_resume_cursor(record)
+        except StorageError:
+            # An inconsistent record is genuinely not resumable, and a run past
+            # the lifetime cap is terminal for good. Hide the control rather than
+            # offering a button that can only fail.
+            cursor = None
+    resumable = cursor is not None and cursor.current_cycle <= AUTO_MAX_LIFETIME_CYCLES
+    return {
+        "auto_resumable": resumable,
+        "resume_min_cycles": max(cursor.current_cycle, 1) if resumable else None,
+        "resume_max_cycles": AUTO_MAX_LIFETIME_CYCLES,
+        "resume_turn_timeout_seconds": record.future_turn_timeout_seconds,
+        "max_turn_timeout_seconds": request.app.state.settings.max_run_timeout,
+    }
+
+
 def auto_history_detail_context(
     request: Request,
     project: Project,
@@ -194,6 +225,7 @@ def auto_history_detail_context(
         "project": project,
         "auto": record,
         **_auto_material_context(request, store, record),
+        **_resume_context(request, store, record),
     }
 
 
@@ -258,6 +290,7 @@ def auto_status_context(
         "project": project,
         "auto": record,
         "auto_active": record.status in ACTIVE_AUTO_STATUSES,
+        **_resume_context(request, store, record),
         **material,
         "preparing_number": min(
             len(record.preparations) + 1,
@@ -491,3 +524,33 @@ async def stop_auto(
         record.id,
     )
     return _status_response(request, resolved_project_id, record)
+
+
+@router.post(
+    "/projects/{project_id}/auto-runs/{auto_id}/resume",
+    response_class=HTMLResponse,
+    status_code=202,
+)
+async def resume_auto(
+    request: Request,
+    project_id: str,
+    auto_id: str,
+    max_cycles: int = Form(...),
+    turn_timeout_seconds: int = Form(...),
+) -> HTMLResponse:
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    record = await request.app.state.auto_manager.resume(
+        resolved_project_id,
+        record.id,
+        max_cycles=max_cycles,
+        turn_timeout_seconds=turn_timeout_seconds,
+    )
+    return _status_response(
+        request,
+        resolved_project_id,
+        record,
+        status_code=202,
+        refresh_history_index=True,
+    )

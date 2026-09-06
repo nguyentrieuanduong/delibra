@@ -1,5 +1,8 @@
 <article class="auto-history-detail" aria-label="Auto run history detail">
   <h3>{% if auto.number %}Auto {{ auto.number }}{% else %}Legacy Auto{% endif %} · {{ auto.status }}</h3>
+  {% if auto_resumable|default(false) %}
+    {% include "_auto_resume_form.html" %}
+  {% endif %}
   <section aria-label="Auto topic">
     <h4>Topic</h4>
     {% if topic is none %}
