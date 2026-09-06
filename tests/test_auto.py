@@ -13,9 +13,13 @@ from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
 from app.auto import (
+    AUTO_MAX_INITIAL_CYCLES,
+    AUTO_MAX_LIFETIME_CYCLES,
     AutoManager,
     ContextEntry,
+    ResumeCursor,
     parse_auto_verdict,
+    reconstruct_resume_cursor,
     render_discussion_context,
     render_preparation_context,
     validate_turn_timeout_seconds,
@@ -28,6 +32,7 @@ from app.models import (
     AutoParticipant,
     AutoRoundDescriptor,
     AutoRunRecord,
+    AutoTurn,
     RoundRecord,
     RunKey,
     SessionConfig,
@@ -212,6 +217,183 @@ def test_validate_turn_timeout_seconds_rejects_out_of_range(value: int) -> None:
 def test_validate_turn_timeout_seconds_rejects_non_integers(value: object) -> None:
     with pytest.raises(StorageError):
         validate_turn_timeout_seconds(value, maximum=14_400)
+
+
+def _resume_record(
+    *,
+    status: str,
+    current_cycle: int,
+    next_participant: int,
+    discussion: list[AutoTurn] | None = None,
+    participants: int = 2,
+    max_cycles: int = 3,
+) -> AutoRunRecord:
+    digest = "0" * 64
+    return AutoRunRecord(
+        id="a" * 32,
+        project_id="p" * 32,
+        number=1,
+        status=status,
+        agreement_policy="first_agree",
+        preparation_enabled=True,
+        max_cycles=max_cycles,
+        current_cycle=current_cycle,
+        next_participant=next_participant,
+        participants=[
+            AutoParticipant(
+                session_id=f"{index + 1:032x}",
+                name=f"Agent {index + 1}",
+                agent="fake",
+                model="success",
+                effort="low",
+            )
+            for index in range(participants)
+        ],
+        topic=AutoArtifact("topic.md", digest),
+        baseline=AutoArtifact("baseline.md", digest),
+        baseline_entries=[],
+        shared_context=None,
+        shared_context_source=None,
+        preparations=[],
+        discussion=list(discussion or []),
+        active_key=None,
+        future_turn_timeout_seconds=900,
+        active_timeout=None,
+        stop_requested=False,
+        created_at="2026-09-06T00:00:00Z",
+        started_at="2026-09-06T00:00:00Z",
+        finished_at="2026-09-06T00:01:00Z",
+        terminal_reason="stopped by user",
+    )
+
+
+def _discussion_turn(cycle: int, position: int) -> AutoTurn:
+    return AutoTurn(
+        phase="discussion",
+        session_id=f"{position + 1:032x}",
+        round_n=cycle * 10 + position,
+        cycle=cycle,
+        position=position,
+        output_sha256="1" * 64,
+        verdict="continue",
+    )
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["stopped", "error", "interrupted", "converged", "limit_reached"],
+)
+def test_reconstruct_resume_cursor_keeps_preparing_before_discussion(
+    status: str,
+) -> None:
+    record = _resume_record(status=status, current_cycle=0, next_participant=1)
+
+    cursor = reconstruct_resume_cursor(record)
+
+    # current_cycle == 0 means the run never entered discussion; _drive routes
+    # next_participant == len(participants) to _begin_discussion itself, so a
+    # discussion cursor must never be synthesised here.
+    assert cursor == ResumeCursor("preparing", 0, 1)
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["stopped", "error", "interrupted"],
+)
+def test_reconstruct_resume_cursor_keeps_failed_cursor_parked(status: str) -> None:
+    record = _resume_record(
+        status=status,
+        current_cycle=2,
+        next_participant=1,
+        discussion=[_discussion_turn(1, 0), _discussion_turn(1, 1), _discussion_turn(2, 0)],
+    )
+
+    cursor = reconstruct_resume_cursor(record)
+
+    # The cursor only advances after a completed turn, so it is already parked
+    # on the participant that must re-run.
+    assert cursor == ResumeCursor("discussing", 2, 1)
+
+
+def test_reconstruct_resume_cursor_advances_converged_within_cycle() -> None:
+    record = _resume_record(
+        status="converged",
+        current_cycle=2,
+        next_participant=0,
+        discussion=[_discussion_turn(1, 0), _discussion_turn(1, 1), _discussion_turn(2, 0)],
+        participants=3,
+    )
+
+    # Convergence returns early without advancing the cursor, so resume owes it
+    # exactly one advance.
+    assert reconstruct_resume_cursor(record) == ResumeCursor("discussing", 2, 1)
+
+
+def test_reconstruct_resume_cursor_rolls_converged_on_last_participant() -> None:
+    record = _resume_record(
+        status="converged",
+        current_cycle=2,
+        next_participant=1,
+        discussion=[_discussion_turn(1, 0), _discussion_turn(1, 1), _discussion_turn(2, 0), _discussion_turn(2, 1)],
+    )
+
+    assert reconstruct_resume_cursor(record) == ResumeCursor("discussing", 3, 0)
+
+
+def test_reconstruct_resume_cursor_rolls_limit_reached_to_next_cycle() -> None:
+    record = _resume_record(
+        status="limit_reached",
+        current_cycle=3,
+        next_participant=1,
+        discussion=[_discussion_turn(3, 0), _discussion_turn(3, 1)],
+        max_cycles=3,
+    )
+
+    # limit_reached is only reachable on the last participant.
+    assert reconstruct_resume_cursor(record) == ResumeCursor("discussing", 4, 0)
+
+
+@pytest.mark.parametrize(
+    ("status", "discussion"),
+    [
+        # converged with no discussion turn at all
+        ("converged", []),
+        # converged whose latest turn does not match the stored cycle
+        ("converged", [_discussion_turn(1, 1)]),
+        # converged whose latest turn does not match the stored participant
+        ("converged", [_discussion_turn(2, 0)]),
+        # limit_reached not parked on the last participant
+        ("limit_reached", [_discussion_turn(2, 0)]),
+    ],
+)
+def test_reconstruct_resume_cursor_rejects_inconsistent_records(
+    status: str,
+    discussion: list[AutoTurn],
+) -> None:
+    record = _resume_record(
+        status=status,
+        current_cycle=2,
+        next_participant=1,
+        discussion=discussion,
+    )
+
+    with pytest.raises(StorageError):
+        reconstruct_resume_cursor(record)
+
+
+def test_reconstruct_resume_cursor_rejects_non_terminal_records() -> None:
+    record = _resume_record(status="discussing", current_cycle=1, next_participant=0)
+
+    with pytest.raises(StorageError):
+        reconstruct_resume_cursor(record)
+
+
+def test_auto_cycle_caps_are_distinct() -> None:
+    # A creation-time cap, deliberately not a per-start one, plus a wider
+    # lifetime bound so a run that ends at the creation cap stays resumable.
+    assert AUTO_MAX_INITIAL_CYCLES == 20
+    assert AUTO_MAX_LIFETIME_CYCLES == 100
+    assert AUTO_MAX_INITIAL_CYCLES < AUTO_MAX_LIFETIME_CYCLES
 
 
 def test_context_renderers_label_untrusted_injection_and_preserve_stable_order() -> None:

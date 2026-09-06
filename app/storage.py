@@ -61,6 +61,15 @@ AUTO_STATUSES = frozenset(
     }
 )
 AUTO_POLICIES = frozenset({"all_agree", "first_agree"})
+# Creation-time cap, deliberately not a per-start one: a mistyped limit must not
+# schedule an enormous run up front.
+AUTO_MAX_INITIAL_CYCLES = 20
+# Lifetime bound, enforced on every save and on resume. A run that reaches
+# limit_reached at the creation cap reconstructs one cycle past it, so this bound
+# must be wider or that run would be rejected by its own persistence layer.
+# Widening a validation bound is backward compatible: every existing record
+# already satisfies it.
+AUTO_MAX_LIFETIME_CYCLES = 100
 AUTO_INDEX_FORMAT = "delibra-auto-index/1"
 CANONICAL_AUTO_NUMBER = re.compile(r"[1-9][0-9]*\Z")
 AUTO_CREATING_PATTERN = re.compile(r"\.creating-([0-9a-f]{32})-([1-9][0-9]*)\Z")
@@ -1663,7 +1672,7 @@ class ProjectStore:
             raise OwnershipError("Auto run status is invalid")
         if record.agreement_policy not in AUTO_POLICIES:
             raise OwnershipError("Auto agreement policy is invalid")
-        if not 1 <= record.max_cycles <= 20:
+        if not 1 <= record.max_cycles <= AUTO_MAX_LIFETIME_CYCLES:
             raise OwnershipError("Auto cycle limit is invalid")
         if len(record.participants) < 2:
             raise OwnershipError("Auto run requires at least two participants")
