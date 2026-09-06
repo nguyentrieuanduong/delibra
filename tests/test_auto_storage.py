@@ -692,6 +692,76 @@ def test_round_record_loads_legacy_json_and_roundtrips_auto_timeout() -> None:
     assert decoded.timeout == timeout
 
 
+def test_auto_record_loads_delibra_auto_1_records_without_resumptions(
+    tmp_path: Path,
+) -> None:
+    # delibra-auto/1 records predate the field entirely and must still load.
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+    encoded = record.to_dict()
+    encoded.pop("resumptions", None)
+
+    decoded = models.AutoRunRecord.from_dict(encoded)
+
+    assert decoded.resumptions == []
+
+
+def test_auto_record_round_trips_resumptions(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.status = "stopped"
+    record.finished_at = "2026-09-06T00:05:00Z"
+    record.resumptions = [
+        models.AutoResumption(
+            resumed_at="2026-09-06T00:06:00Z",
+            from_status="stopped",
+            max_cycles=5,
+            turn_timeout_seconds=120,
+        )
+    ]
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    reloaded = store.load_auto_run(record.id)
+
+    assert reloaded.resumptions == record.resumptions
+    assert models.AutoRunRecord.from_dict(record.to_dict()).resumptions == (
+        record.resumptions
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"from_status": "discussing"},
+        {"from_status": "not-a-status"},
+        {"max_cycles": 0},
+        {"max_cycles": 101},
+        {"turn_timeout_seconds": 0},
+        {"resumed_at": "not-a-timestamp"},
+    ],
+)
+def test_auto_store_shape_checks_every_resumption_entry(
+    tmp_path: Path,
+    mutation: dict,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    valid = {
+        "resumed_at": "2026-09-06T00:06:00Z",
+        "from_status": "stopped",
+        "max_cycles": 5,
+        "turn_timeout_seconds": 120,
+    }
+    record.resumptions = [models.AutoResumption(**{**valid, **mutation})]
+
+    with pytest.raises(OwnershipError, match="resumption"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
 @pytest.mark.parametrize("cycles", [1, 20, 21, 100])
 def test_auto_store_accepts_cycle_limits_up_to_the_lifetime_cap(
     tmp_path: Path,
