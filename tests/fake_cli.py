@@ -14,6 +14,10 @@ import time
 CODEX_REVOKED = (
     "Your access token could not be refreshed because your refresh token was revoked."
 )
+TRANSIENT_FAILURE = (
+    "API Error: Connection closed mid-response. "
+    "The response above may be incomplete."
+)
 
 
 def emit(payload: dict) -> None:
@@ -40,6 +44,26 @@ def main() -> int:
     if mode == "codex-auth-stderr":
         sys.stderr.write(CODEX_REVOKED + "\n")
         sys.stderr.flush()
+        return 1
+    if mode == "transient":
+        # The exact failure reported in modifications.md:6.
+        emit({"kind": "error", "text": TRANSIENT_FAILURE})
+        return 1
+    if mode == "transient-noisy-stderr":
+        # A proven retryable event beside text no classifier recognizes: the
+        # noise must not outrank the structured verdict.
+        emit({"kind": "error", "text": TRANSIENT_FAILURE})
+        sys.stderr.write("note: workspace cache warmed in 12ms\n")
+        sys.stderr.flush()
+        return 1
+    if mode == "quota-stderr":
+        # Quota evidence that never reaches the adapter, which sees stdout only.
+        sys.stderr.write("Error: 429 rate limit exceeded for this account\n")
+        sys.stderr.flush()
+        return 1
+    if mode == "transient-then-quota":
+        emit({"kind": "error", "text": TRANSIENT_FAILURE})
+        emit({"kind": "error", "text": "429 rate limit exceeded"})
         return 1
     if mode == "spawn-child":
         subprocess.Popen(

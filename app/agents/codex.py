@@ -6,6 +6,11 @@ import json
 from typing import Any
 
 from app.agents.base import AgentEvent, Command, RunContext, shared_context_section
+from app.agents.errors import (
+    ProviderErrorInfo,
+    classify_status_code,
+    classify_text,
+)
 from app.models import SessionConfig
 
 
@@ -140,11 +145,16 @@ class CodexAdapter:
             self._pending_message = None
             return [AgentEvent("result", self._final)]
         if event_type == "error":
-            return [AgentEvent("error", self._safe_error(event.get("message")))]
+            return [self._error_event(event.get("message"), code=event.get("code"))]
         if event_type == "turn.failed":
             error = event.get("error")
-            message = error.get("message") if isinstance(error, dict) else None
-            return [AgentEvent("error", self._safe_error(message))]
+            structured = error if isinstance(error, dict) else {}
+            return [
+                self._error_event(
+                    structured.get("message"),
+                    code=structured.get("code"),
+                )
+            ]
         if event_type == "turn.started":
             return []
         return [AgentEvent("warning", "Codex emitted an unknown event type")]
@@ -171,7 +181,7 @@ class CodexAdapter:
         elif event_type == "item.started" and item_type == "web_search":
             events.append(AgentEvent("progress", "Searching the web"))
         elif event_type == "item.completed" and item_type == "error":
-            events.append(AgentEvent("error", self._safe_error(item.get("message"))))
+            events.append(self._error_event(item.get("message"), code=item.get("code")))
         return events
 
     def _flush_interim_message(self) -> list[AgentEvent]:
@@ -191,6 +201,21 @@ class CodexAdapter:
         delta = text[len(self._streamed_cumulative) :]
         self._streamed_cumulative = text
         return [AgentEvent("text_delta", delta)] if delta else []
+
+    @staticmethod
+    def _error_event(value: Any, *, code: Any = None) -> AgentEvent:
+        """Sanitize a Codex error and classify it for the runner's fold."""
+
+        message = CodexAdapter._safe_error(value)
+        status = code if isinstance(code, int) and not isinstance(code, bool) else None
+        category = classify_status_code(status)
+        if category == "unknown":
+            category = classify_text(message)
+        return AgentEvent(
+            "error",
+            message,
+            error_info=ProviderErrorInfo(category=category, status_code=status),
+        )
 
     @staticmethod
     def _safe_error(value: Any) -> str:

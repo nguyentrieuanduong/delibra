@@ -305,6 +305,8 @@ class RoundRecord:
     retry_of: int | None = None
     auto: AutoRoundDescriptor | None = None
     timeout: TimeoutRecord | None = None
+    # Folded failure category; absent on legacy records and on success.
+    error_category: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RoundRecord":
@@ -339,11 +341,18 @@ class RoundRecord:
                 if data.get("timeout") is not None
                 else None
             ),
+            error_category=(
+                str(data["error_category"])
+                if data.get("error_category") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["source"] = self.source.to_dict()
+        if self.error_category is None:
+            result.pop("error_category", None)
         if self.shared_context is None:
             result.pop("shared_context", None)
         else:

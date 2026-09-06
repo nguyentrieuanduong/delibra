@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
+from app.agents.errors import ProviderErrorInfo
 from app.models import SessionConfig
 
 
@@ -19,6 +20,10 @@ class AgentEvent:
     kind: EventKind
     text: str = ""
     cli_session_id: str | None = None
+    # Set by adapters on "error" events so the runner can classify a failure from
+    # provider structure rather than from prose. ProviderErrorInfo carries only
+    # normalized scalars, preserving this class's contract.
+    error_info: ProviderErrorInfo | None = None
 
 
 @dataclass(frozen=True)

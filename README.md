@@ -246,6 +246,23 @@ cancel, agent identity changes, and project removal remain blocked until Auto is
 terminal; file viewing and shared-Markdown editing remain available. Edits do not
 change the immutable shared snapshot already captured for that Auto run.
 
+A failed Auto turn is classified before it ends the run. Each adapter maps its
+own structured error fields to a category, and the runner does the same for
+stderr and for failures it creates itself (spawn, output limits, nonzero exit,
+empty result, persistence) — adapters see stdout only, so a marker present only
+on stderr would otherwise never be classified. All the evidence folds into one
+category, strictest first: `quota` > `auth` > `permanent` > `retryable_server` >
+`retryable_transport`. Text no classifier recognizes is `unknown` and is dropped
+from the fold, so incidental noise cannot mask a proven retryable failure; only
+when no recognized evidence exists at all does the result become `permanent`.
+
+A retryable turn is retried up to `DELIBRA_AUTO_TURN_RETRIES` times with bounded
+exponential backoff. Each attempt is a fresh round, so failed attempts stay
+visible in the session history, and Stop and shutdown are honoured between
+attempts. A quota failure never retries — it pauses the run to a resumable
+`stopped`, which **Continue Auto** recovers. Anything else ends the run as
+`error` with the cursor parked on the participant that failed.
+
 **Continue Auto** resumes a finished run in place, from any of the five terminal
 states (`stopped`, `interrupted`, `error`, `limit_reached`, `converged`). It is
 offered when no Auto is active anywhere in the project. The cursor is
@@ -361,6 +378,10 @@ The main environment settings are:
 - `DELIBRA_AUTO_RESUME_DRAIN_SECONDS` (default 30; 1 through 300) — how long
   **Continue Auto** waits for a finishing Auto task to release its slot before
   returning a conflict
+- `DELIBRA_AUTO_TURN_RETRIES` (default 2 retries, i.e. 3 attempts; 0 through 10;
+  **0 disables retry**)
+- `DELIBRA_AUTO_RETRY_BACKOFF_SECONDS` (default 5; 1 through 300) — attempt *k*
+  waits `min(base * 2**(k-1), 4 * base)` seconds
 
 Names/models are capped at 200 characters, role instructions at 20,000, prompts at
 100,000, and pass instructions at 10,000.

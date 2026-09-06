@@ -6,6 +6,11 @@ import json
 from typing import Any
 
 from app.agents.base import AgentEvent, Command, RunContext, shared_context_section
+from app.agents.errors import (
+    ProviderErrorInfo,
+    classify_status_code,
+    classify_text,
+)
 from app.models import SessionConfig
 
 
@@ -16,6 +21,39 @@ _TOOL_PROGRESS = {
     "Write": "Updating workspace files",
     "Edit": "Updating workspace files",
 }
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _classify_result(event: dict[str, Any], message: str) -> ProviderErrorInfo:
+    """Prefer Claude's structured error fields, then fall back to the message.
+
+    Structured first because a status code carries no ambiguity; the text
+    fallback exists because no structured field is yet proven to classify the
+    reported connection-closed failure.
+    """
+
+    raw_status = event.get("api_error_status")
+    status = raw_status if isinstance(raw_status, int) and not isinstance(raw_status, bool) else None
+    stop_reason = _optional_str(event.get("stop_reason"))
+    terminal_reason = _optional_str(event.get("terminal_reason"))
+
+    category = classify_status_code(status)
+    if category == "unknown":
+        for candidate in (terminal_reason, stop_reason, message):
+            if candidate is None:
+                continue
+            category = classify_text(candidate)
+            if category != "unknown":
+                break
+    return ProviderErrorInfo(
+        category=category,
+        status_code=status,
+        stop_reason=stop_reason,
+        terminal_reason=terminal_reason,
+    )
 
 
 class ClaudeAdapter:
@@ -112,7 +150,14 @@ class ClaudeAdapter:
             result = event.get("result")
             text = result if isinstance(result, str) else ""
             if event.get("is_error"):
-                return [AgentEvent("error", text or "Claude reported an error")]
+                message = text or "Claude reported an error"
+                return [
+                    AgentEvent(
+                        "error",
+                        message,
+                        error_info=_classify_result(event, message),
+                    )
+                ]
             if not text:
                 return [AgentEvent("error", "Claude returned an empty result")]
             self._final = text
