@@ -246,6 +246,26 @@ cancel, agent identity changes, and project removal remain blocked until Auto is
 terminal; file viewing and shared-Markdown editing remain available. Edits do not
 change the immutable shared snapshot already captured for that Auto run.
 
+**Continue Auto** resumes a finished run in place, from any of the five terminal
+states (`stopped`, `interrupted`, `error`, `limit_reached`, `converged`). It is
+offered when no Auto is active anywhere in the project. The cursor is
+reconstructed from the record: a run that converged or hit its cycle limit
+advances one position, while one that stopped or failed re-runs the participant
+it was parked on, so the cycle counter continues rather than restarting.
+Resume rejects an inconsistent record rather than repairing it, and refuses a run
+whose reconstructed cycle would pass the lifetime cap of 100 cycles.
+
+The cycle limit and the per-turn time limit are editable on resume; the cycle
+limit is bounded below by the reconstructed cycle, so an unchanged limit cannot
+start a cycle beyond it. Participant name and provider are immutable and a drift
+is rejected, while model and effort are refreshed from the live agent
+configuration. Every artifact the next turn will read — topic, preparations,
+baseline, prior discussion outputs, and shared context — is digest-verified
+before the run restarts. Each grant is recorded durably in `resumptions`.
+
+A creation-time cap of 20 cycles still applies to the setup box; persistence and
+resume admit up to 100, because a run that ends at cycle 20 reconstructs to 21.
+
 The Auto setup box sets the starting per-turn budget in **seconds**, from 1 through
 `DELIBRA_MAX_RUN_TIMEOUT`, defaulting to `DELIBRA_RUN_TIMEOUT`. It applies to every
 preparation and discussion turn of that run and is stored exactly as submitted; it is
@@ -338,6 +358,9 @@ The main environment settings are:
 - `DELIBRA_STATELESS_ROUND_LIMIT` (default 20)
 - `DELIBRA_REQUEST_BODY_LIMIT` (default 2 MiB)
 - `DELIBRA_FILE_VIEW_LIMIT` (default 512 KiB)
+- `DELIBRA_AUTO_RESUME_DRAIN_SECONDS` (default 30; 1 through 300) — how long
+  **Continue Auto** waits for a finishing Auto task to release its slot before
+  returning a conflict
 
 Names/models are capped at 200 characters, role instructions at 20,000, prompts at
 100,000, and pass instructions at 10,000.

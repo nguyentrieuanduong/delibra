@@ -698,6 +698,74 @@ def test_auto_start_rejects_invalid_participants_policy_and_cycles_before_creati
     assert store.list_auto_runs() == []
 
 
+def test_auto_resume_route_continues_the_run_and_offers_the_control(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(client, project.id, [s.id for s in sessions], cycles=1)
+        record = wait_for_auto(store, terminal=True)
+        status = client.get(f"{base}/auto-runs/{record.number}")
+        resumed = client.post(
+            f"{base}/auto-runs/{record.number}/resume",
+            data={"max_cycles": "2", "turn_timeout_seconds": "120"},
+        )
+        final = wait_for_auto(store, terminal=True)
+
+    assert started.status_code == 202
+    # The control is offered on a terminal run with no Auto active project-wide,
+    # bounded by the reconstructed cycle rather than 1..20.
+    assert "Continue Auto" in status.text
+    assert re.search(
+        r'name="max_cycles"[^>]*min="2"[^>]*max="100"[^>]*value="2"',
+        status.text,
+    )
+    assert resumed.status_code == 202
+    reloaded = store.load_auto_run(record.id)
+    assert reloaded.max_cycles == 2
+    assert reloaded.future_turn_timeout_seconds == 120
+    assert len(reloaded.resumptions) == 1
+    assert final.current_cycle >= 2
+
+
+def test_auto_resume_route_rejects_a_cycle_limit_below_the_parked_cycle(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [s.id for s in sessions], cycles=1)
+        record = wait_for_auto(store, terminal=True)
+        rejected = client.post(
+            f"{base}/auto-runs/{record.number}/resume",
+            data={"max_cycles": "1", "turn_timeout_seconds": "120"},
+        )
+
+    assert rejected.status_code == 422
+    reloaded = store.load_auto_run(record.id)
+    assert reloaded.max_cycles == 1
+    assert reloaded.resumptions == []
+    assert reloaded.finished_at is not None
+
+
+def test_auto_status_hides_continue_while_a_run_is_active(tmp_path: Path) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path, sleep=True)
+    base = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [s.id for s in sessions])
+        record = wait_for_auto(store, terminal=False)
+        status = client.get(f"{base}/auto-runs/{record.number}")
+        client.post(f"{base}/auto-runs/{record.number}/stop")
+        wait_for_auto(store, terminal=True)
+
+    assert "Stop Auto" in status.text
+    assert "Continue Auto" not in status.text
+
+
 def test_auto_start_round_trips_turn_timeout_seconds_without_minute_rounding(
     tmp_path: Path,
 ) -> None:

@@ -27,6 +27,8 @@
       >
         <button type="submit">Stop Auto</button>
       </form>
+    {% elif auto_resumable|default(false) %}
+      {% include "_auto_resume_form.html" %}
     {% endif %}
   </div>
   <p>
