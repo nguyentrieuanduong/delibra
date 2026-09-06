@@ -25,6 +25,8 @@ from app.models import (
     SessionConfig,
 )
 from app.storage import (
+    AUTO_MAX_INITIAL_CYCLES,
+    AUTO_MAX_LIFETIME_CYCLES,
     AutoMigrationStatus,
     ConflictError,
     LockCoordinator,
@@ -65,6 +67,68 @@ AUTO_NEGATED_CONVERGENCE_VI = re.compile(
     r"\s+hội tụ\b",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class ResumeCursor:
+    """Where a resumed Auto run must pick up, derived from a terminal record."""
+
+    status: Literal["preparing", "discussing"]
+    current_cycle: int
+    next_participant: int
+
+
+def reconstruct_resume_cursor(record: AutoRunRecord) -> ResumeCursor:
+    """Derive the resume cursor from a terminal record, or reject the record.
+
+    Inconsistent records are rejected rather than repaired: a cursor guessed
+    from contradictory state would silently replay or skip a participant.
+    """
+
+    if record.status not in TERMINAL_AUTO_STATUSES:
+        raise StorageError("Auto run is not in a terminal state")
+    participants = len(record.participants)
+    if record.current_cycle == 0:
+        # The run never entered discussion. ``_drive`` routes a preparation
+        # cursor at ``len(participants)`` to ``_begin_discussion``, which sets
+        # the discussion cursor itself, so never synthesise one here.
+        if not 0 <= record.next_participant <= participants:
+            raise StorageError("Auto preparation cursor is invalid")
+        return ResumeCursor("preparing", 0, record.next_participant)
+    if not 0 <= record.next_participant < participants:
+        raise StorageError("Auto discussion cursor is invalid")
+
+    if record.status in {"stopped", "error", "interrupted"}:
+        # The cursor only advances after a *completed* turn, so it is already
+        # parked on the participant that must re-run.
+        return ResumeCursor("discussing", record.current_cycle, record.next_participant)
+
+    latest = record.discussion[-1] if record.discussion else None
+    if (
+        latest is None
+        or latest.cycle != record.current_cycle
+        or latest.position != record.next_participant
+    ):
+        raise StorageError(
+            "Auto run cursor does not match its latest discussion turn"
+        )
+    if record.status == "limit_reached":
+        # Reached only on the last participant: the ``not last_participant``
+        # guard returns first.
+        if record.next_participant != participants - 1:
+            raise StorageError(
+                "Auto limit_reached cursor is not on the last participant"
+            )
+        return ResumeCursor("discussing", record.current_cycle + 1, 0)
+    # converged: the turn completed but convergence returned before the cursor
+    # was advanced, so resume owes it exactly one advance.
+    if record.next_participant + 1 < participants:
+        return ResumeCursor(
+            "discussing",
+            record.current_cycle,
+            record.next_participant + 1,
+        )
+    return ResumeCursor("discussing", record.current_cycle + 1, 0)
 
 
 def validate_turn_timeout_seconds(value: object, *, maximum: int) -> int:
@@ -205,8 +269,10 @@ class AutoManager:
             raise StorageError("Auto agreement policy is invalid")
         if type(preparation_enabled) is not bool:
             raise StorageError("Auto preparation choice is invalid")
-        if type(max_cycles) is not int or not 1 <= max_cycles <= 20:
-            raise StorageError("Auto cycle limit must be from 1 through 20")
+        if type(max_cycles) is not int or not 1 <= max_cycles <= AUTO_MAX_INITIAL_CYCLES:
+            raise StorageError(
+                f"Auto cycle limit must be from 1 through {AUTO_MAX_INITIAL_CYCLES}"
+            )
         turn_timeout = validate_turn_timeout_seconds(
             self.settings.run_timeout
             if turn_timeout_seconds is None

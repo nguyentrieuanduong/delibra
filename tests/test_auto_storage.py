@@ -692,6 +692,36 @@ def test_round_record_loads_legacy_json_and_roundtrips_auto_timeout() -> None:
     assert decoded.timeout == timeout
 
 
+@pytest.mark.parametrize("cycles", [1, 20, 21, 100])
+def test_auto_store_accepts_cycle_limits_up_to_the_lifetime_cap(
+    tmp_path: Path,
+    cycles: int,
+) -> None:
+    # The creation cap is 20, but a run that ends at cycle 20 reconstructs to 21
+    # on resume, so persistence must admit the whole lifetime range.
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.max_cycles = cycles
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    assert store.load_auto_run(record.id).max_cycles == cycles
+
+
+@pytest.mark.parametrize("cycles", [0, -1, 101, 1_000])
+def test_auto_store_rejects_cycle_limits_outside_the_lifetime_cap(
+    tmp_path: Path,
+    cycles: int,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.max_cycles = cycles
+
+    with pytest.raises(OwnershipError, match="cycle limit"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
 def test_auto_store_publishes_and_clears_exact_manifest_reservation(
     tmp_path: Path,
 ) -> None:
