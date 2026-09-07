@@ -207,8 +207,22 @@ def _resume_context(
             # offering a button that can only fail.
             cursor = None
     resumable = cursor is not None and cursor.current_cycle <= AUTO_MAX_LIFETIME_CYCLES
+    quota_resume = None
+    if resumable and record.quota_pause is not None:
+        observation = record.quota_pause.observation
+        remaining = observation.remaining_percent
+        quota_resume = {
+            "provider": observation.provider.title(),
+            "window": (
+                "5-hour" if observation.window == "five_hour" else "weekly"
+            ),
+            "remaining_percent": round(remaining) if remaining is not None else None,
+            "status": observation.status,
+            "resets_at": observation.resets_at,
+        }
     return {
         "auto_resumable": resumable,
+        "quota_resume": quota_resume,
         "resume_min_cycles": max(cursor.current_cycle, 1) if resumable else None,
         "resume_max_cycles": AUTO_MAX_LIFETIME_CYCLES,
         "resume_turn_timeout_seconds": record.future_turn_timeout_seconds,

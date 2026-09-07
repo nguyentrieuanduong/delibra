@@ -31,6 +31,7 @@ from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
     AutoParticipant,
+    AutoQuotaOverride,
     AutoRoundDescriptor,
     AutoRunRecord,
     AutoTurn,
@@ -2032,6 +2033,183 @@ async def test_first_codex_auto_dispatch_hydrates_quota_before_starting(
     assert terminal.quota_pause is not None
     assert terminal.quota_pause.observation.provider == "codex"
     assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_continuing_a_quota_pause_grants_the_exact_window_override(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha", "continue"), PlannedOutput("Beta", "continue")],
+    )
+    now = datetime.now(timezone.utc)
+    reset = now + timedelta(hours=1)
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="five_hour",
+            used_percent=94.0,
+            status="unknown",
+            resets_at=reset,
+            observed_at=now,
+            source="codex_rollout_token_count",
+        )
+    )
+    created = await manager.create(
+        project_id,
+        topic="Continue despite low quota",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    paused = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert paused.quota_pause is not None
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="five_hour",
+            used_percent=97.0,
+            status="unknown",
+            resets_at=reset,
+            observed_at=now + timedelta(seconds=1),
+            source="codex_rollout_token_count",
+        )
+    )
+
+    resumed = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=1,
+        turn_timeout_seconds=120,
+    )
+    override = resumed.quota_override
+    finished = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert override is not None
+    assert (override.provider, override.account_key, override.window) == (
+        "fake",
+        "default",
+        "five_hour",
+    )
+    assert override.resets_at == reset
+    assert override.used_percent_at_grant == 94.0
+    assert override.granted_from_status == "unknown"
+    assert resumed.quota_pause == paused.quota_pause
+    assert finished.status == "limit_reached"
+    assert finished.quota_pause is None
+    assert factory.created == 2
+    assert store.load_auto_run(created.id).quota_override == override
+
+    resumed_nonquota = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    repaused = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert resumed_nonquota.quota_override is None
+    assert repaused.status == "stopped"
+    assert repaused.quota_pause is not None
+    assert factory.created == 2
+    assert repaused.resumptions[0].quota_override == override
+    assert repaused.resumptions[1].quota_override is None
+
+
+def test_five_hour_override_never_suppresses_a_weekly_pause(tmp_path: Path) -> None:
+    manager, _factory, _project_id, _session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [],
+    )
+    now = datetime.now(timezone.utc)
+    reset = now + timedelta(hours=1)
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="five_hour",
+            used_percent=94.0,
+            status="unknown",
+            resets_at=reset,
+            observed_at=now,
+            source="codex_rollout_token_count",
+        )
+    )
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="seven_day",
+            used_percent=98.0,
+            status="unknown",
+            resets_at=reset + timedelta(days=6),
+            observed_at=now,
+            source="codex_rollout_token_count",
+        )
+    )
+    override = AutoQuotaOverride(
+        provider="fake",
+        account_key="default",
+        window="five_hour",
+        resets_at=reset,
+        used_percent_at_grant=94.0,
+        granted_at=now,
+        granted_from_status="unknown",
+    )
+
+    pause = manager.runner.quota_pause_observation("fake", override)
+
+    assert pause is not None
+    assert pause.window == "seven_day"
+
+
+@pytest.mark.asyncio
+async def test_provider_quota_error_clears_an_existing_user_override(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("quota", failure_mode="quota-stderr")],
+    )
+    now = datetime.now(timezone.utc)
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="five_hour",
+            used_percent=94.0,
+            status="unknown",
+            resets_at=now + timedelta(hours=1),
+            observed_at=now,
+            source="codex_rollout_token_count",
+        )
+    )
+    created = await manager.create(
+        project_id,
+        topic="Provider rejects despite override",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=1,
+        turn_timeout_seconds=120,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert terminal.quota_override is None
+    assert terminal.quota_pause is None
+    assert factory.created == 1
 
 
 @pytest.mark.asyncio

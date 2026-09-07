@@ -295,6 +295,14 @@ before the run restarts. Each grant is recorded durably in `resumptions`.
 A creation-time cap of 20 cycles still applies to the setup box; persistence and
 resume admit up to 100, because a run that ends at cycle 20 reconstructs to 21.
 
+When quota preflight pauses Auto, **Continue Auto** shows the responsible provider
+window, the observation and reset time before accepting the click. Continuing
+grants only that exact window and keeps spending it until the reset; a five-hour
+grant never covers the weekly window. A new reset, a stale no-reset observation,
+or a provider quota error ends the grant. The grant remains anchored to the
+observation shown to the user even if the shared monitor changes before submit,
+and the resumption audit retains each grant after the active override is cleared.
+
 The Auto setup box sets the starting per-turn budget in **seconds**, from 1 through
 `DELIBRA_MAX_RUN_TIMEOUT`, defaulting to `DELIBRA_RUN_TIMEOUT`. It applies to every
 preparation and discussion turn of that run and is stored exactly as submitted; it is

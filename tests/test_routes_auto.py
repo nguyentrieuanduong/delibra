@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 import sys
@@ -15,8 +16,10 @@ from app.config import Settings
 from app.main import create_app
 from app.models import (
     AutoArtifact,
+    AutoQuotaPause,
     AutoRoundDescriptor,
     AutoRunRecord,
+    RateLimitObservation,
     RoundRecord,
     SessionConfig,
     SourceDescriptor,
@@ -730,6 +733,46 @@ def test_auto_resume_route_continues_the_run_and_offers_the_control(
     assert reloaded.future_turn_timeout_seconds == 120
     assert len(reloaded.resumptions) == 1
     assert final.current_cycle >= 2
+
+
+def test_quota_paused_continue_discloses_the_window_and_spending_choice(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}"
+    now = datetime.now(timezone.utc)
+    reset = now + timedelta(hours=1)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [session.id for session in sessions], cycles=1)
+        record = wait_for_auto(store, terminal=True)
+        record.status = "stopped"
+        record.terminal_reason = "paused for quota"
+        record.quota_pause = AutoQuotaPause(
+            observation=RateLimitObservation(
+                provider="codex",
+                account_key="default",
+                window="five_hour",
+                used_percent=94.0,
+                status="unknown",
+                resets_at=reset,
+                observed_at=now,
+                source="codex_rollout_token_count",
+            ),
+            paused_at=now,
+        )
+        store.save_auto_run(record)
+        status = client.get(f"{base}/auto-runs/{record.number}")
+        history = client.get(f"{base}/auto-runs/{record.number}/history")
+        chat = client.get(f"{base}/chat")
+
+    for response in (status, history, chat):
+        assert response.status_code == 200
+        assert "Codex 5-hour quota" in response.text
+        assert "6% remaining" in response.text
+        assert f'datetime="{reset.isoformat()}"' in response.text
+        assert "keep spending this quota until it resets" in response.text
+        assert ">Continue and spend quota<" in response.text
 
 
 def test_auto_resume_route_rejects_a_cycle_limit_below_the_parked_cycle(

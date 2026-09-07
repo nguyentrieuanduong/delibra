@@ -208,6 +208,7 @@ class AutoResumption:
     from_status: str
     max_cycles: int
     turn_timeout_seconds: int
+    quota_override: AutoQuotaOverride | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoResumption":
@@ -216,10 +217,23 @@ class AutoResumption:
             from_status=_strict_str(data, "from_status"),
             max_cycles=_strict_int(data, "max_cycles"),
             turn_timeout_seconds=_strict_int(data, "turn_timeout_seconds"),
+            quota_override=(
+                AutoQuotaOverride.from_dict(data["quota_override"])
+                if data.get("quota_override") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result: dict[str, Any] = {
+            "resumed_at": self.resumed_at,
+            "from_status": self.from_status,
+            "max_cycles": self.max_cycles,
+            "turn_timeout_seconds": self.turn_timeout_seconds,
+        }
+        if self.quota_override is not None:
+            result["quota_override"] = self.quota_override.to_dict()
+        return result
 
 
 @dataclass(frozen=True)
@@ -695,6 +709,96 @@ class AutoQuotaPause:
         }
 
 
+@dataclass(frozen=True)
+class AutoQuotaOverride:
+    """The exact quota window a user chose to keep spending."""
+
+    provider: str
+    account_key: str
+    window: str
+    resets_at: datetime | None
+    used_percent_at_grant: float | None
+    granted_at: datetime
+    granted_from_status: str
+
+    def __post_init__(self) -> None:
+        if self.window not in RATE_LIMIT_WINDOWS:
+            raise ValueError(f"unknown rate-limit window: {self.window}")
+        if self.granted_from_status not in RATE_LIMIT_STATUSES:
+            raise ValueError(
+                f"unknown rate-limit status: {self.granted_from_status}"
+            )
+        for name in ("provider", "account_key"):
+            value = getattr(self, name)
+            if type(value) is not str or not value:
+                raise ValueError(f"{name} must be a non-empty string")
+        object.__setattr__(
+            self,
+            "used_percent_at_grant",
+            _checked_percent(self.used_percent_at_grant),
+        )
+        object.__setattr__(
+            self,
+            "resets_at",
+            _checked_instant(self.resets_at, "resets_at", optional=True),
+        )
+        object.__setattr__(
+            self,
+            "granted_at",
+            _checked_instant(self.granted_at, "granted_at", optional=False),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoQuotaOverride":
+        resets_at = data.get("resets_at")
+        return cls(
+            provider=_strict_str(data, "provider"),
+            account_key=_strict_str(data, "account_key"),
+            window=_strict_str(data, "window"),
+            resets_at=None if resets_at is None else _parse_instant(resets_at),
+            used_percent_at_grant=data.get("used_percent_at_grant"),
+            granted_at=_parse_instant(_strict_str(data, "granted_at")),
+            granted_from_status=_strict_str(data, "granted_from_status"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "provider": self.provider,
+            "account_key": self.account_key,
+            "window": self.window,
+            "granted_at": self.granted_at.isoformat(),
+            "granted_from_status": self.granted_from_status,
+        }
+        if self.resets_at is not None:
+            result["resets_at"] = self.resets_at.isoformat()
+        if self.used_percent_at_grant is not None:
+            result["used_percent_at_grant"] = self.used_percent_at_grant
+        return result
+
+    def is_live_for(
+        self,
+        observation: RateLimitObservation,
+        *,
+        now: datetime,
+        staleness_seconds: int,
+    ) -> bool:
+        """Whether this grant covers the observation's exact live window."""
+
+        current = _checked_instant(now, "now", optional=False)
+        if (self.provider, self.account_key, self.window) != observation.key:
+            return False
+        if self.resets_at is not None:
+            return (
+                observation.resets_at == self.resets_at
+                and current < self.resets_at
+            )
+        age_seconds = (current - self.granted_at).total_seconds()
+        return (
+            observation.resets_at is None
+            and 0 <= age_seconds <= staleness_seconds
+        )
+
+
 @dataclass
 class RoundRecord:
     n: int
@@ -884,6 +988,7 @@ class AutoRunRecord:
     # Absent in delibra-auto/1 records, so both must default.
     resumptions: list[AutoResumption] = field(default_factory=list)
     quota_pause: AutoQuotaPause | None = None
+    quota_override: AutoQuotaOverride | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoRunRecord":
@@ -968,6 +1073,11 @@ class AutoRunRecord:
                 if data.get("quota_pause") is not None
                 else None
             ),
+            quota_override=(
+                AutoQuotaOverride.from_dict(data["quota_override"])
+                if data.get("quota_override") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1007,5 +1117,10 @@ class AutoRunRecord:
             "resumptions": [item.to_dict() for item in self.resumptions],
             "quota_pause": (
                 self.quota_pause.to_dict() if self.quota_pause is not None else None
+            ),
+            "quota_override": (
+                self.quota_override.to_dict()
+                if self.quota_override is not None
+                else None
             ),
         }

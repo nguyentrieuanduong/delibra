@@ -1004,6 +1004,20 @@ def quota_pause(**overrides) -> models.AutoQuotaPause:
     )
 
 
+def quota_override(**overrides) -> models.AutoQuotaOverride:
+    fields = {
+        "provider": "codex",
+        "account_key": "default",
+        "window": "five_hour",
+        "resets_at": datetime(2026, 9, 7, 14, 0, tzinfo=timezone.utc),
+        "used_percent_at_grant": 94.0,
+        "granted_at": datetime(2026, 9, 7, 12, 1, tzinfo=timezone.utc),
+        "granted_from_status": "unknown",
+    }
+    fields.update(overrides)
+    return models.AutoQuotaOverride(**fields)
+
+
 def test_auto_record_loads_delibra_auto_1_records_without_a_quota_pause(
     tmp_path: Path,
 ) -> None:
@@ -1035,6 +1049,85 @@ def test_auto_record_round_trips_the_quota_pause_that_caused_the_stop(
     assert reloaded.quota_pause == record.quota_pause
     assert reloaded.quota_pause.observation.remaining_percent == pytest.approx(6.0)
     assert reloaded.quota_pause.observation.key == ("codex", "default", "five_hour")
+
+
+def test_auto_record_round_trips_a_quota_override_and_loads_legacy_none(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    encoded = record.to_dict()
+    encoded.pop("quota_override", None)
+    assert models.AutoRunRecord.from_dict(encoded).quota_override is None
+
+    record.number = store.reserve_auto_run_number()
+    record.quota_override = quota_override()
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    assert store.load_auto_run(record.id).quota_override == record.quota_override
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"window": "monthly"},
+        {"used_percent_at_grant": 101.0},
+        {"granted_from_status": "stopped"},
+        {"provider": ""},
+        {"resets_at": datetime(2026, 9, 7, 14, 0)},
+        {"granted_at": datetime(2026, 9, 7, 12, 1)},
+    ],
+)
+def test_quota_override_rejects_malformed_grants(mutation: dict) -> None:
+    with pytest.raises(ValueError):
+        quota_override(**mutation)
+
+
+def test_quota_override_is_live_only_for_its_exact_window() -> None:
+    grant = quota_override()
+    observation = quota_pause().observation
+
+    assert grant.is_live_for(
+        observation,
+        now=datetime(2026, 9, 7, 13, 0, tzinfo=timezone.utc),
+        staleness_seconds=1800,
+    )
+    assert not grant.is_live_for(
+        quota_pause(
+            resets_at=datetime(2026, 9, 7, 19, 0, tzinfo=timezone.utc)
+        ).observation,
+        now=datetime(2026, 9, 7, 13, 0, tzinfo=timezone.utc),
+        staleness_seconds=1800,
+    )
+    assert not grant.is_live_for(
+        observation,
+        now=datetime(2026, 9, 7, 14, 0, tzinfo=timezone.utc),
+        staleness_seconds=1800,
+    )
+
+
+def test_quota_override_without_a_reset_expires_by_grant_staleness() -> None:
+    grant = quota_override(
+        resets_at=None,
+        granted_at=datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc),
+    )
+    observation = quota_pause(resets_at=None).observation
+
+    assert grant.is_live_for(
+        observation,
+        now=datetime(2026, 9, 7, 12, 30, tzinfo=timezone.utc),
+        staleness_seconds=1800,
+    )
+    assert not grant.is_live_for(
+        observation,
+        now=datetime(2026, 9, 7, 11, 59, 59, tzinfo=timezone.utc),
+        staleness_seconds=1800,
+    )
+    assert not grant.is_live_for(
+        observation,
+        now=datetime(2026, 9, 7, 12, 30, 1, tzinfo=timezone.utc),
+        staleness_seconds=1800,
+    )
 
 
 @pytest.mark.parametrize(
