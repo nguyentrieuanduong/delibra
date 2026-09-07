@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import time
 
 from fastapi.testclient import TestClient
 
@@ -309,10 +310,17 @@ def test_badge_reports_when_quota_durability_is_degraded(
     assert 'role="status"' in response.text
 
 
-def test_first_badge_read_hydrates_codex_quota_from_the_latest_rollout(
+def test_the_badge_schedules_codex_hydration_instead_of_waiting_for_it(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """Phase 8 made the quota read a subprocess, so a render must not wait.
+
+    The account read is unavailable here (`/missing/codex`), which is also
+    what exercises the rollout fallback: the figure still arrives, just on a
+    later poll rather than inside the first render.
+    """
+
     settings = Settings(home=tmp_path / "home")
     rollout_dir = settings.codex_home / "sessions" / "2026" / "09" / "07"
     rollout_dir.mkdir(parents=True)
@@ -346,9 +354,16 @@ def test_first_badge_read_hydrates_codex_quota_from_the_latest_rollout(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get("/usage/badge")
+        # The read runs on the event loop, so the figure lands on a later
+        # poll. Bounded so a genuine failure to hydrate still fails the test.
+        for _ in range(100):
+            hydrated = client.get("/usage/badge")
+            if "5h: 6% remaining" in hydrated.text:
+                break
+            time.sleep(0.02)
 
         def reject_second_scan(*_args, **_kwargs):
-            raise AssertionError("Codex hydration repeated")
+            raise AssertionError("Codex hydration repeated inside its interval")
 
         monkeypatch.setattr(
             "app.runner.read_latest_codex_rollout_state", reject_second_scan
@@ -356,8 +371,8 @@ def test_first_badge_read_hydrates_codex_quota_from_the_latest_rollout(
         repeated = client.get("/usage/badge")
 
     assert response.status_code == 200
-    assert "5h: 6% remaining" in response.text
-    assert 'class="usage-badge paused"' in response.text
+    assert "5h: 6% remaining" in hydrated.text
+    assert 'class="usage-badge paused"' in hydrated.text
     assert repeated.status_code == 200
 
 

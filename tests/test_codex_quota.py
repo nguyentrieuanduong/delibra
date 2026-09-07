@@ -9,6 +9,7 @@ because quota state is advisory and no read of it may fail a round or a page.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 import pytest
 
 from app.codex_quota import parse_account_rate_limits, read_codex_account_rate_limits
+from app.models import RateLimitReading
 
 
 FIXTURE = Path("spike/fixtures/m8/codex_app_server_rate_limits.json")
@@ -275,3 +277,256 @@ async def test_the_read_runs_against_delibras_own_codex_home(tmp_path: Path) -> 
     )
 
     assert (tmp_path / "seen-home").read_text("utf-8") == str(home)
+
+
+# --- wiring: which quota source the runner asks, and when -------------------
+
+
+def _manager(
+    tmp_path: Path,
+    *,
+    clock: Any = None,
+    refresh_seconds: int = 300,
+) -> Any:
+    from app.config import Settings
+    from app.runner import RunManager
+    from app.storage import LockCoordinator, RegistryStore
+
+    home = tmp_path / "home"
+    settings = Settings(home=home, codex_quota_refresh_seconds=refresh_seconds)
+    kwargs: dict[str, Any] = {}
+    if clock is not None:
+        kwargs["quota_clock"] = clock
+    return RunManager(
+        registry=RegistryStore(home),
+        locks=LockCoordinator(),
+        settings=settings,
+        # No run is started here; these tests exercise the quota read alone.
+        adapter_factory=lambda config: None,
+        **kwargs,
+    )
+
+
+def _account_readings() -> list[RateLimitReading]:
+    return parse_account_rate_limits(_fixture())
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_prefers_the_account_over_delibras_own_rollout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole point of Phase 8b: the rollout only sees Delibra's own home."""
+
+    manager = _manager(tmp_path)
+    rollout_calls = 0
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        return _account_readings()
+
+    def rollout(*args: Any, **kwargs: Any) -> Any:
+        nonlocal rollout_calls
+        rollout_calls += 1
+        raise AssertionError("the rollout must not be read when the account answers")
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+    monkeypatch.setattr("app.runner.read_latest_codex_rollout_state", rollout)
+
+    await manager.refresh_codex_quota()
+
+    assert manager.usage.report("codex", "five_hour").used_percent == 20.0
+    assert manager.usage.report("codex", "seven_day").used_percent == 37.0
+    assert manager.usage.report("codex", "five_hour").source == "codex_app_server"
+    assert rollout_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_the_rollout_still_answers_when_the_account_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.storage import CodexRolloutState
+
+    manager = _manager(tmp_path)
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        return []
+
+    def rollout(*args: Any, **kwargs: Any) -> CodexRolloutState:
+        return CodexRolloutState(
+            [
+                RateLimitReading(
+                    window="five_hour",
+                    used_percent=3.0,
+                    status="unknown",
+                    resets_at=datetime(2099, 1, 1, tzinfo=UTC),
+                    source="codex_rollout_token_count",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+    monkeypatch.setattr("app.runner.read_latest_codex_rollout_state", rollout)
+
+    await manager.refresh_codex_quota()
+
+    observation = manager.usage.report("codex", "five_hour")
+    assert observation.used_percent == 3.0
+    assert observation.source == "codex_rollout_token_count"
+
+
+@pytest.mark.asyncio
+async def test_a_second_refresh_inside_the_interval_spawns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise a badge poll would spawn an app-server process a minute."""
+
+    now = datetime(2026, 9, 7, 13, 0, tzinfo=UTC)
+    manager = _manager(tmp_path, clock=lambda: now, refresh_seconds=300)
+    calls = 0
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        nonlocal calls
+        calls += 1
+        return _account_readings()
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+    monkeypatch.setattr(
+        "app.runner.read_latest_codex_rollout_state",
+        lambda *args, **kwargs: __import__(
+            "app.storage", fromlist=["CodexRolloutState"]
+        ).CodexRolloutState([]),
+    )
+
+    await manager.refresh_codex_quota()
+    await manager.refresh_codex_quota()
+
+    assert calls == 1
+
+    now = now.replace(hour=13, minute=6)
+    await manager.refresh_codex_quota()
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_still_starts_the_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider that is down must not become a spawn-per-poll loop."""
+
+    from app.storage import CodexRolloutState
+
+    now = datetime(2026, 9, 7, 13, 0, tzinfo=UTC)
+    manager = _manager(tmp_path, clock=lambda: now)
+    calls = 0
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+    monkeypatch.setattr(
+        "app.runner.read_latest_codex_rollout_state",
+        lambda *args, **kwargs: CodexRolloutState([]),
+    )
+
+    await manager.refresh_codex_quota()
+    await manager.refresh_codex_quota()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduling_a_refresh_never_makes_a_render_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page render returns what the monitor holds; the read lands after."""
+
+    manager = _manager(tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        started.set()
+        await release.wait()
+        return _account_readings()
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+
+    manager.schedule_codex_quota_refresh()
+
+    assert manager.usage.report("codex", "five_hour") is None
+    await started.wait()
+    release.set()
+    await manager.drain_codex_quota_refresh()
+
+    assert manager.usage.report("codex", "five_hour").used_percent == 20.0
+
+
+@pytest.mark.asyncio
+async def test_scheduling_twice_runs_one_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    calls = 0
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return _account_readings()
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+
+    manager.schedule_codex_quota_refresh()
+    manager.schedule_codex_quota_refresh()
+    await manager.drain_codex_quota_refresh()
+
+    assert calls == 1
+
+
+def test_scheduling_outside_an_event_loop_is_a_no_op(tmp_path: Path) -> None:
+    """Rendering in a sync test must not raise for want of a running loop."""
+
+    _manager(tmp_path).schedule_codex_quota_refresh()
+
+
+@pytest.mark.asyncio
+async def test_the_pause_check_reads_the_account_before_deciding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto's pre-dispatch check is a decision point, so it waits for the read."""
+
+    manager = _manager(tmp_path)
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        return [
+            RateLimitReading(
+                window="five_hour",
+                used_percent=99.0,
+                status="unknown",
+                resets_at=datetime(2099, 1, 1, tzinfo=UTC),
+                source="codex_app_server",
+            )
+        ]
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+
+    observation = await manager.quota_pause_observation("codex")
+
+    assert observation is not None
+    assert observation.used_percent == 99.0
+
+
+@pytest.mark.asyncio
+async def test_the_pause_check_leaves_other_providers_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+
+    async def account(*args: Any, **kwargs: Any) -> list[RateLimitReading]:
+        raise AssertionError("a Claude turn must not read Codex quota")
+
+    monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
+
+    assert await manager.quota_pause_observation("claude") is None

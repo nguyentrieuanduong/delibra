@@ -913,7 +913,7 @@ class AutoManager:
                     else None
                 )
                 quota_pause = (
-                    self.runner.quota_pause_observation(
+                    await self.runner.quota_pause_observation(
                         participant.agent,
                         record.quota_override,
                     )

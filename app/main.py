@@ -81,6 +81,9 @@ def create_app(
             settings=app_settings,
             adapter_factory=adapter_factory,
             usage_monitor=usage_monitor,
+            # The account quota read is a Codex CLI invocation like any other,
+            # so it resolves through the same command.
+            codex_executable=commands["codex"],
         )
         auto_manager = AutoManager(
             registry=registry,
