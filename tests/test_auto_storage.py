@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
@@ -982,3 +983,94 @@ def test_auto_store_rejects_preparation_tampering_and_bounded_round_reads(
     output.symlink_to(outside)
     with pytest.raises(OwnershipError, match="symlink"):
         store.load_round_artifact(participant.session_id, 1, "output", 100)
+
+
+def quota_pause(**overrides) -> models.AutoQuotaPause:
+    fields = {
+        "provider": "codex",
+        "account_key": "default",
+        "window": "five_hour",
+        "used_percent": 94.0,
+        "status": "unknown",
+        "resets_at": datetime(2026, 9, 7, 14, 0, tzinfo=timezone.utc),
+        "observed_at": datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc),
+        "source": "codex_rollout_token_count",
+    }
+    fields.update(overrides)
+    paused_at = fields.pop("paused_at", datetime(2026, 9, 7, 12, 0, 1, tzinfo=timezone.utc))
+    return models.AutoQuotaPause(
+        observation=models.RateLimitObservation(**fields),
+        paused_at=paused_at,
+    )
+
+
+def test_auto_record_loads_delibra_auto_1_records_without_a_quota_pause(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    encoded = record.to_dict()
+    encoded.pop("quota_pause", None)
+
+    assert models.AutoRunRecord.from_dict(encoded).quota_pause is None
+
+
+def test_auto_record_round_trips_the_quota_pause_that_caused_the_stop(
+    tmp_path: Path,
+) -> None:
+    # The Continue disclosure needs the window, the observed figure and the
+    # reset instant; recovering those by parsing terminal_reason prose would
+    # break the moment the wording changes.
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.status = "stopped"
+    record.finished_at = "2026-09-07T12:00:01Z"
+    record.terminal_reason = "paused: Codex 5-hour limit, 6% remaining"
+    record.quota_pause = quota_pause()
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    reloaded = store.load_auto_run(record.id)
+
+    assert reloaded.quota_pause == record.quota_pause
+    assert reloaded.quota_pause.observation.remaining_percent == pytest.approx(6.0)
+    assert reloaded.quota_pause.observation.key == ("codex", "default", "five_hour")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"window": "monthly"},
+        {"status": "throttled"},
+        {"used_percent": 150.0},
+        {"provider": ""},
+        {"source": "guesswork"},
+    ],
+)
+def test_auto_store_shape_checks_the_quota_pause(
+    tmp_path: Path, mutation: dict
+) -> None:
+    with pytest.raises(ValueError):
+        quota_pause(**mutation)
+
+
+def test_a_quota_pause_needs_an_aware_pause_instant(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        quota_pause(paused_at=datetime(2026, 9, 7, 12, 0, 1))
+
+
+def test_a_tampered_quota_pause_on_disk_is_refused(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.status = "stopped"
+    record.finished_at = "2026-09-07T12:00:01Z"
+    record.quota_pause = quota_pause()
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+    config_path = store.auto_run_dir(record.id) / "config.json"
+    encoded = json.loads(config_path.read_text(encoding="utf-8"))
+    encoded["quota_pause"]["observation"]["used_percent"] = 150.0
+    config_path.write_text(json.dumps(encoded), encoding="utf-8")
+
+    with pytest.raises(StorageError, match="Auto run config is invalid"):
+        store.load_auto_run(record.id)

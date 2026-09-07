@@ -661,6 +661,40 @@ def _parse_instant(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+@dataclass(frozen=True)
+class AutoQuotaPause:
+    """Why an Auto run stopped, as a record rather than a parsed sentence.
+
+    The Continue disclosure needs the window, the observed figure and the reset
+    instant, and the override in 5e must match the exact window this names;
+    recovering any of that from ``terminal_reason`` prose would break the moment
+    the wording changes.
+    """
+
+    observation: RateLimitObservation
+    paused_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "paused_at",
+            _checked_instant(self.paused_at, "paused_at", optional=False),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoQuotaPause":
+        return cls(
+            observation=RateLimitObservation.from_dict(data["observation"]),
+            paused_at=_parse_instant(_strict_str(data, "paused_at")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "observation": self.observation.to_dict(),
+            "paused_at": self.paused_at.isoformat(),
+        }
+
+
 @dataclass
 class RoundRecord:
     n: int
@@ -847,8 +881,9 @@ class AutoRunRecord:
     started_at: str | None
     finished_at: str | None
     terminal_reason: str | None
-    # Absent in delibra-auto/1 records, so it must default.
+    # Absent in delibra-auto/1 records, so both must default.
     resumptions: list[AutoResumption] = field(default_factory=list)
+    quota_pause: AutoQuotaPause | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoRunRecord":
@@ -928,6 +963,11 @@ class AutoRunRecord:
                 AutoResumption.from_dict(item)
                 for item in data.get("resumptions", [])
             ],
+            quota_pause=(
+                AutoQuotaPause.from_dict(data["quota_pause"])
+                if data.get("quota_pause") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -965,4 +1005,7 @@ class AutoRunRecord:
             "finished_at": self.finished_at,
             "terminal_reason": self.terminal_reason,
             "resumptions": [item.to_dict() for item in self.resumptions],
+            "quota_pause": (
+                self.quota_pause.to_dict() if self.quota_pause is not None else None
+            ),
         }
