@@ -54,6 +54,7 @@ from app.models import (
 )
 from app.runner import RunManager
 from app.storage import (
+    AUTO_MAX_COMPACTION_ATTEMPTS,
     ConflictError,
     LockCoordinator,
     OwnershipError,
@@ -2246,6 +2247,105 @@ async def test_a_run_interrupted_mid_compaction_resumes_where_it_was_parked(
     assert record.status == "limit_reached"
     assert [item.outcome for item in record.compaction_attempts] == ["summarized"]
     assert record.retired_discussion_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_structural_skip_disables_the_policy_on_its_first_occurrence(
+    tmp_path: Path,
+) -> None:
+    # `fixed` -- topic, preparations and summary framing -- cannot shrink for
+    # the life of the run, so re-testing it every cycle is pure waste.
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("P" * 1_000),
+            PlannedOutput("P" * 1_000),
+            *[PlannedOutput(f"Answer {index}", "continue") for index in range(6)],
+        ],
+    )
+    # Large preparations against a small prompt limit leave room for a
+    # discussion entry but not for a summary worth paying for.
+    manager.settings = replace(
+        manager.settings,
+        stateless_history_limit=2_800,
+        auto_compact_output_limit=100_000,
+        auto_compact_min_output=1_000,
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="No headroom topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=3,
+        preparation_enabled=True,
+        context_policy=AutoContextPolicy(mode="compact", unit="turns", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "limit_reached"
+    # One attempt and one warning, no matter how many turns followed it.
+    assert [item.outcome for item in record.compaction_attempts] == [
+        "skipped_no_headroom"
+    ]
+    assert record.compaction_disabled_reason is not None
+    assert "headroom" in record.compaction_disabled_reason
+    assert record.summaries == []
+    # Two preparations and six discussion turns; no compaction call at all.
+    assert factory.created == 8
+
+
+@pytest.mark.asyncio
+async def test_the_writer_stops_at_its_cap_instead_of_growing_an_unloadable_record(
+    tmp_path: Path,
+) -> None:
+    # The validator's bound sits above this one precisely so it is never
+    # reached: a record that no longer loads is far worse than not compacting.
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput(f"Answer {index}", "continue") for index in range(4)],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Attempt cap topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    record = store.load_auto_run(created.id)
+    record.context_policy = AutoContextPolicy(
+        mode="clear",
+        unit="turns",
+        interval=1,
+    )
+    record.compaction_attempts = [
+        AutoCompactionAttempt(
+            trigger_key=auto_trigger_key("turns", 1, index),
+            unit="turns",
+            cycle=1,
+            discussion_len=index,
+            attempted_at="2026-09-07T12:00:00Z",
+            outcome="cleared",
+        )
+        for index in range(AUTO_MAX_COMPACTION_ATTEMPTS)
+    ]
+    store.save_auto_run(record)
+
+    await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    resumed = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert len(resumed.compaction_attempts) == AUTO_MAX_COMPACTION_ATTEMPTS
+    assert resumed.compaction_disabled_reason == "compaction attempt limit reached"
+    assert resumed.retired_discussion_count == 0
+    # Still loadable, which is the whole point of capping the writer.
+    assert store.load_auto_run(created.id).status == resumed.status
 
 
 @pytest.mark.asyncio
