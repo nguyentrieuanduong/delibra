@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import shlex
 import sys
+import time
 from typing import Callable
 
 import pytest
@@ -21,6 +23,7 @@ from app.models import (
     AutoRunRecord,
     ContextObservation,
     ContextReading,
+    RateLimitReading,
     RoundRecord,
     SessionConfig,
     SharedContextDescriptor,
@@ -97,6 +100,21 @@ class FakeAdapter:
                     ),
                 ),
             ]
+        if kind == "rate_limit":
+            return [
+                AgentEvent(
+                    "rate_limit",
+                    rate_limit=RateLimitReading(
+                        window=payload["window"],
+                        used_percent=None,
+                        status=payload["status"],
+                        resets_at=datetime.fromtimestamp(
+                            payload["resets_at"], timezone.utc
+                        ),
+                        source="claude_rate_limit_event",
+                    ),
+                )
+            ]
         if kind == "result":
             self._final = payload.get("text", "")
             return [AgentEvent("result", self._final)]
@@ -142,11 +160,13 @@ class AutoVerdictAdapter(FakeAdapter):
         return []
 
 
-def session(session_id: str = "a" * 32, *, mode: str = "success") -> SessionConfig:
+def session(
+    session_id: str = "a" * 32, *, mode: str = "success", agent: str = "fake"
+) -> SessionConfig:
     return SessionConfig(
         id=session_id,
         name=f"runner test {session_id[:4]}",
-        agent="fake",
+        agent=agent,
         model=mode,
         effort="low",
         role_instructions="Test role",
@@ -164,6 +184,7 @@ def setup_manager(
     settings_transform: Callable[[Settings], Settings] | None = None,
     contexts: list[RunContext] | None = None,
     final_writer=atomic_write_text,
+    agent: str = "fake",
 ) -> tuple[RunManager, str, str, ProjectStore]:
     home = tmp_path / "home"
     project_dir = tmp_path / "project"
@@ -171,7 +192,7 @@ def setup_manager(
     registry = RegistryStore(home)
     project = registry.register("Runner", project_dir)
     store = ProjectStore(project)
-    config = session(mode=mode)
+    config = session(mode=mode, agent=agent)
     store.create_session(config)
     app_settings = Settings(home=home, run_timeout=2)
     if settings_transform:
@@ -192,6 +213,7 @@ def create_runner_auto_record(
     *,
     status: str,
     shared: bytes | None = None,
+    agent: str = "fake",
 ) -> AutoRunRecord:
     second_id = "b" * 32
     store.create_session(session(second_id))
@@ -210,7 +232,7 @@ def create_runner_auto_record(
             AutoParticipant(
                 session_id,
                 f"runner test {session_id[:4]}",
-                "fake",
+                agent,
                 "success",
                 "low",
             ),
@@ -1379,3 +1401,71 @@ async def test_migrated_legacy_workspace_continues_statelessly(
     ]
     assert STATELESS_CONTINUATION_WARNING in second.warnings
     assert store.load_session(session_id).cli_session_id == "fake-native-session"
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_event_reaches_the_shared_account_wide_monitor(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, _ = setup_manager(tmp_path, mode="rate-limit")
+
+    key = await manager.start(project_id, session_id, "Ask")
+    record = await manager.wait(key)
+
+    assert record.status == "complete"
+    observed = manager.usage.report("fake", "five_hour")
+    assert observed.status == "rejected"
+    assert observed.source == "claude_rate_limit_event"
+
+
+def write_codex_rollout(home: Path, thread_id: str) -> None:
+    directory = home / "codex-home" / "sessions" / "2026" / "09" / "07"
+    directory.mkdir(parents=True)
+    (directory / f"rollout-2026-09-07T10-02-47-{thread_id}.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "primary": {
+                            "used_percent": 94.0,
+                            "window_minutes": 300,
+                            "resets_at": int(time.time()) + 3600,
+                        }
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_auto_turn_still_seeds_codex_quota_from_its_own_rollout(
+    tmp_path: Path,
+) -> None:
+    """Every Auto turn sets `ignore_returned_session`, and that is exactly where
+    pause decisions matter, so the thread id is captured separately from the
+    resumable session id it deliberately discards."""
+
+    manager, project_id, session_id, store = setup_manager(tmp_path, agent="codex")
+    (manager.settings.codex_home).mkdir(parents=True, exist_ok=True)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    write_codex_rollout(manager.settings.home, "fake-native-session")
+    auto_record = create_runner_auto_record(
+        store, session_id, status="preparing", agent="codex"
+    )
+
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(
+            project_id,
+            session_id,
+            auto_run_request(store, auto_record, phase="preparation"),
+        )
+    record = await manager.wait(key)
+
+    assert record.status == "complete"
+    assert store.load_session(session_id).cli_session_id is None
+    assert manager.usage.report("codex", "five_hour").used_percent == 94.0
