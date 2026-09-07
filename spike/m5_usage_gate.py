@@ -79,6 +79,18 @@ OCCUPANCY_SEQUENCE = (
     "d_small_fresh",
 )
 
+INDUCED_LABEL = "f_induced_error"
+
+# The order turns are actually run in: the model-change turn goes second so a
+# rejected model name fails before the 100 KiB turn is paid for.
+RUN_ORDER = (
+    "a_small_fresh",
+    "e_model_change",
+    "b_large_resume",
+    "c_small_resume",
+    "d_small_fresh",
+)
+
 # Candidate fields, recorded for every turn so the reasoning stays auditable and
 # re-checkable when a CLI version changes.
 CLAUDE_CANDIDATES = (
@@ -102,8 +114,11 @@ CODEX_CANDIDATES = (
     "usage.input_tokens",
     "usage.cached_input_tokens",
     "usage.output_tokens",
-    "last_token_usage.total_tokens",
-    "total_token_usage.total_tokens",
+    # Both live under `info` in the rollout's `token_count` payload. The flat
+    # paths read None on every turn, so the plan's required `last_token_usage`
+    # evidence was recorded as absent while it was sitting in the fixture.
+    "info.last_token_usage.total_tokens",
+    "info.total_token_usage.total_tokens",
     "info.model_context_window",
     "rate_limits.primary.used_percent",
     "rate_limits.primary.window_minutes",
@@ -184,8 +199,24 @@ UUID_LIKE = re.compile(
 )
 
 
+# Provider diagnostics, kept in full however long they are. Codex reports the
+# HTTP status only inside its error string -- there is no structured status
+# field on stdout -- so redacting these leaves the error fixtures unable to
+# exercise the parser they exist for. They are provider text, not model output;
+# the only prompt the gate ever sends is a fixed constant.
+DIAGNOSTIC_KEYS = frozenset({"message", "codex_error_info", "error_type"})
+
+
 def is_identifier_key(key: str) -> bool:
     return key in IDENTIFIER_KEYS
+
+
+def _sanitize_entry(key: str, value: Any, *, depth: int) -> Any:
+    if is_identifier_key(key) and not isinstance(value, (dict, list)):
+        return "<redacted>"
+    if key in DIAGNOSTIC_KEYS and isinstance(value, str):
+        return value
+    return sanitize(value, depth=depth + 1)
 
 
 def sanitize(value: Any, *, depth: int = 0) -> Any:
@@ -201,9 +232,7 @@ def sanitize(value: Any, *, depth: int = 0) -> Any:
         return "<deep>"
     if isinstance(value, dict):
         return {
-            key: "<redacted>"
-            if is_identifier_key(key) and not isinstance(value[key], (dict, list))
-            else sanitize(value[key], depth=depth + 1)
+            key: _sanitize_entry(key, value[key], depth=depth)
             for key in value
         }
     if isinstance(value, list):
@@ -320,6 +349,35 @@ async def run_turn(
     return result
 
 
+def load_fixture_turns(
+    directory: Path, provider: str
+) -> tuple[list[TurnResult], TurnResult | None]:
+    """Rebuild turns from checked-in fixtures, making no provider calls.
+
+    The fixtures already hold every number the verdicts are derived from, so a
+    corrected discriminator does not need a fresh billable run to re-grade the
+    evidence that was already paid for.
+    """
+
+    turns: list[TurnResult] = []
+    induced: TurnResult | None = None
+    for path in sorted(directory.glob(f"{provider}_*.jsonl")):
+        label = path.stem[len(provider) + 1 :]
+        lines = [
+            json.loads(raw)
+            for raw in path.read_text(encoding="utf-8").splitlines()
+            if raw.strip()
+        ]
+        turn = TurnResult(label=label, lines=lines)
+        if label == INDUCED_LABEL:
+            induced = turn
+        else:
+            turns.append(turn)
+    order = {label: index for index, label in enumerate(RUN_ORDER)}
+    turns.sort(key=lambda t: order.get(t.label, len(order)))
+    return turns, induced
+
+
 def read_rollout(thread_id: str) -> list[dict[str, Any]]:
     """Return the `event_msg` payloads of the rollout for `thread_id`.
 
@@ -429,14 +487,21 @@ def occupancy_verdict(readings: dict[str, list[Any]]) -> dict[str, str]:
             verdicts[path] = "inconclusive: not numeric on all four turns"
             continue
         a, b, c, d = values[:4]
-        if b <= a:
+        jump = b - a
+        if jump <= 0:
             verdicts[path] = "inconclusive: did not rise at B"
-        elif c > b:
-            verdicts[path] = "cumulative: kept rising at C"
-        elif d > b * 0.5:
-            verdicts[path] = "inconclusive: did not drop on a fresh session at D"
+            continue
+        # C is the decisive turn, but the comparison is *how much* it grew, not
+        # whether it grew. A resumed turn resends the whole conversation, so an
+        # occupancy field is higher at C than at B by one small prompt -- the
+        # measured Codex run gained 18 tokens against a 20,499-token jump at B.
+        # A cumulative field instead gains roughly another whole turn.
+        if c - b > jump * 0.25:
+            verdicts[path] = "cumulative: gained about another turn at C"
+        elif abs(d - a) > max(abs(a) * 0.5, 1):
+            verdicts[path] = "inconclusive: did not return to baseline at D"
         else:
-            verdicts[path] = "occupancy: elevated at C, reset at D"
+            verdicts[path] = "occupancy: held at C, reset to baseline at D"
     return verdicts
 
 
@@ -532,17 +597,29 @@ def build_capabilities(
     # rate_limit_info, where `utilization` was absent in a healthy live run and
     # its unit is unproven -- so it is NOT marked proven here just for being
     # structurally present.
-    for window_name, prefix in (
-        ("five_hour", "rate_limits.primary"),
-        ("seven_day", "rate_limits.secondary"),
-    ):
+    # The window is named by `window_minutes`, not by the slot it sits in.
+    # Measured: primary=300 (5h), secondary=10080 (7d). Following the slot name
+    # instead would, if the provider ever reorders them, report weekly usage as
+    # the 5-hour figure and pause an Auto run far too early.
+    for prefix in ("rate_limits.primary", "rate_limits.secondary"):
         percent = readings.get(f"{prefix}.used_percent")
-        if percent and any(isinstance(v, (int, float)) for v in percent):
-            capabilities[f"{window_name}_quota_percent"] = {
-                "proven": True,
-                "unit": "percent_used_0_to_100",
-                "evidence": f"{prefix}.used_percent with resets_at",
-            }
+        if not percent or not any(isinstance(v, (int, float)) for v in percent):
+            continue
+        minutes = [v for v in readings.get(f"{prefix}.window_minutes", []) if v]
+        window = quota_window_from_minutes(minutes[-1] if minutes else None)
+        if window is None:
+            continue
+        capabilities[f"{window}_quota_percent"] = {
+            "proven": True,
+            # Corroborated against the same account's `codex /status`, which
+            # reported "84% left" for the weekly window while this field read
+            # 16.0 -- so it counts percent *used*, not remaining.
+            "unit": "percent_used_0_to_100",
+            "evidence": (
+                f"{prefix}.used_percent with resets_at, window_minutes="
+                f"{minutes[-1]}"
+            ),
+        }
     status = readings.get("rate_limit_info.status")
     if status and any(v is not None for v in status):
         # Claude reports a single `rate_limit_info`. Only `rateLimitType` says
@@ -590,6 +667,18 @@ def build_capabilities(
         "occupancy_experiment": verdicts,
         "capabilities": capabilities,
     }
+
+
+def quota_window_from_minutes(window_minutes: Any) -> str | None:
+    """Map a window length onto ours, tolerating small provider drift."""
+
+    if not isinstance(window_minutes, (int, float)) or isinstance(window_minutes, bool):
+        return None
+    if abs(window_minutes - 300) <= 30:  # 5 hours
+        return "five_hour"
+    if abs(window_minutes - 10080) <= 720:  # 7 days
+        return "seven_day"
+    return None
 
 
 def quota_window(rate_limit_type: Any) -> str | None:
@@ -717,6 +806,40 @@ def write_fixtures(staging: Path, provider: str, turns: list[TurnResult]) -> Non
         print(f"  staged {path.name} ({len(turn.lines)} lines)")
 
 
+def recompute(selected: list[str]) -> int:
+    """Re-grade the checked-in fixtures. Makes no provider calls."""
+
+    summary: dict[str, Any] = {}
+    for provider in selected:
+        turns, induced = load_fixture_turns(FIXTURES, provider)
+        if not turns:
+            print(f"{provider}: no fixtures under {FIXTURES.relative_to(ROOT)}")
+            continue
+        candidates = CLAUDE_CANDIDATES if provider == "claude" else CODEX_CANDIDATES
+        summary[provider] = build_capabilities(
+            provider, turns, candidates, induced=induced
+        )
+    if not summary:
+        return 1
+
+    target = FIXTURES / "capabilities.json"
+    existing: dict[str, Any] = {}
+    if target.exists():
+        existing = json.loads(target.read_text(encoding="utf-8"))
+    target.write_text(
+        json.dumps(merge_capabilities(existing, summary), indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    for provider, report in summary.items():
+        print(f"  {provider}:")
+        for name, entry in sorted(report["capabilities"].items()):
+            mark = "PROVEN" if entry["proven"] else "unproven"
+            print(f"    {name:26s} {mark:9s} unit={entry['unit']}")
+    print(f"\nrecomputed {target.relative_to(ROOT)} from the checked-in fixtures")
+    return 0
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -733,19 +856,30 @@ async def main() -> int:
     # per ~/.codex/config.toml and its own session records -- not a guess.
     parser.add_argument("--codex-model", default="gpt-5.6-sol")
     parser.add_argument("--codex-alternate-model", default="gpt-5.5")
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help=(
+            "re-grade the checked-in fixtures and rewrite capabilities.json. "
+            "Makes no provider calls: use it when a verdict rule is corrected, "
+            "so evidence already paid for is not bought twice."
+        ),
+    )
     args = parser.parse_args()
 
     settings = Settings.from_env()
     os.environ.setdefault("CODEX_HOME", str(settings.codex_home))
 
+    selected = ["claude", "codex"] if args.provider == "both" else [args.provider]
+
+    if args.recompute:
+        return recompute(selected)
+
     workspace = Path(tempfile.mkdtemp(prefix="delibra-m5-gate-"))
     staging = Path(tempfile.mkdtemp(prefix="delibra-m5-staging-"))
-    published = False
+    published: list[str] = []
     summary: dict[str, Any] = {}
     try:
-        selected = (
-            ["claude", "codex"] if args.provider == "both" else [args.provider]
-        )
         for provider in selected:
             print(f"{provider}: running the four-turn occupancy experiment...")
             adapter = ClaudeAdapter() if provider == "claude" else CodexAdapter()

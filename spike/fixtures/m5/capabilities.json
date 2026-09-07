@@ -1,0 +1,156 @@
+{
+  "codex": {
+    "capabilities": {
+      "context_occupancy": {
+        "evidence": [
+          "usage.input_tokens",
+          "info.last_token_usage.total_tokens",
+          "info.total_token_usage.total_tokens"
+        ],
+        "proven": true,
+        "unit": "tokens"
+      },
+      "context_window": {
+        "evidence": "info.model_context_window",
+        "proven": true,
+        "unit": "tokens"
+      },
+      "error_classification": {
+        "evidence": "codex: induced error carried no structured status code; classification would have to parse free text",
+        "proven": false,
+        "unit": null
+      },
+      "five_hour_quota_percent": {
+        "evidence": "rate_limits.primary.used_percent with resets_at, window_minutes=300",
+        "proven": true,
+        "unit": "percent_used_0_to_100"
+      },
+      "five_hour_quota_status": {
+        "evidence": null,
+        "proven": false,
+        "unit": null
+      },
+      "seven_day_quota_percent": {
+        "evidence": "rate_limits.secondary.used_percent with resets_at, window_minutes=10080",
+        "proven": true,
+        "unit": "percent_used_0_to_100"
+      },
+      "seven_day_quota_status": {
+        "evidence": null,
+        "proven": false,
+        "unit": null
+      },
+      "turn_billing": {
+        "evidence": [
+          "usage.input_tokens",
+          "usage.cached_input_tokens",
+          "usage.output_tokens"
+        ],
+        "proven": true,
+        "unit": "tokens"
+      }
+    },
+    "failures": {},
+    "observed": {
+      "info.last_token_usage.total_tokens": [
+        11506,
+        10265,
+        32005,
+        32023,
+        11506
+      ],
+      "info.model_context_window": [
+        258400,
+        258400,
+        258400,
+        258400,
+        258400
+      ],
+      "info.total_token_usage.total_tokens": [
+        11506,
+        10265,
+        32005,
+        32023,
+        11506
+      ],
+      "rate_limits.primary.resets_at": [
+        1788756684,
+        1788756684,
+        1788756684,
+        1788756685,
+        1788756685
+      ],
+      "rate_limits.primary.used_percent": [
+        7.0,
+        7.0,
+        7.0,
+        7.0,
+        7.0
+      ],
+      "rate_limits.primary.window_minutes": [
+        300,
+        300,
+        300,
+        300,
+        300
+      ],
+      "rate_limits.secondary.resets_at": [
+        1789269494,
+        1789269494,
+        1789269494,
+        1789269494,
+        1789269494
+      ],
+      "rate_limits.secondary.used_percent": [
+        16.0,
+        16.0,
+        16.0,
+        16.0,
+        16.0
+      ],
+      "rate_limits.secondary.window_minutes": [
+        10080,
+        10080,
+        10080,
+        10080,
+        10080
+      ],
+      "usage.cached_input_tokens": [
+        0,
+        1408,
+        11264,
+        31872,
+        0
+      ],
+      "usage.input_tokens": [
+        11501,
+        10260,
+        32000,
+        32018,
+        11501
+      ],
+      "usage.output_tokens": [
+        5,
+        5,
+        5,
+        5,
+        5
+      ]
+    },
+    "occupancy_experiment": {
+      "info.last_token_usage.total_tokens": "occupancy: held at C, reset to baseline at D",
+      "info.total_token_usage.total_tokens": "occupancy: held at C, reset to baseline at D",
+      "usage.cached_input_tokens": "cumulative: gained about another turn at C",
+      "usage.input_tokens": "occupancy: held at C, reset to baseline at D",
+      "usage.output_tokens": "inconclusive: did not rise at B"
+    },
+    "provider": "codex",
+    "turns": [
+      "a_small_fresh",
+      "e_model_change",
+      "b_large_resume",
+      "c_small_resume",
+      "d_small_fresh"
+    ]
+  }
+}
