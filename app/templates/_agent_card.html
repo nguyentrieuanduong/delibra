@@ -34,6 +34,21 @@
     {% if agent_view.preview_error %}<p class="error">{{ agent_view.preview_error }}</p>{% endif %}
     <section class="agent-context" aria-label="Context">
       <h4>Context</h4>
+      <p class="agent-context-occupancy">
+        {% set occupancy = agent_view.context_occupancy %}
+        {% if occupancy is none %}
+          Window occupancy unknown
+        {% else %}
+          {{ "{:,}".format(occupancy.used_tokens) }}
+          {% if occupancy.context_window %}
+            / {{ "{:,}".format(occupancy.context_window) }} tokens
+            ({{ occupancy.percent }}%)
+          {% else %}
+            tokens · window unknown
+          {% endif %}
+          · last observed round {{ occupancy.round_n }}
+        {% endif %}
+      </p>
       <p class="agent-context-state">
         {% if agent.context_summary %}
           Summarized through round {{ agent.context_summary.source_round }}

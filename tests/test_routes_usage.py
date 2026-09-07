@@ -351,7 +351,7 @@ def test_first_badge_read_hydrates_codex_quota_from_the_latest_rollout(
             raise AssertionError("Codex hydration repeated")
 
         monkeypatch.setattr(
-            "app.runner.read_latest_codex_rate_limits", reject_second_scan
+            "app.runner.read_latest_codex_rollout_state", reject_second_scan
         )
         repeated = client.get("/usage/badge")
 

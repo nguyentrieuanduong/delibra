@@ -53,8 +53,8 @@ from app.storage import (
     atomic_write_json,
     atomic_write_text,
     ensure_owned_directory,
-    read_codex_rate_limits,
-    read_latest_codex_rate_limits,
+    read_codex_rollout_state,
+    read_latest_codex_rollout_state,
     safe_copy_file,
     utc_now,
     validate_id,
@@ -1437,23 +1437,36 @@ class RunManager:
         if warning is not None:
             active.warnings.append(warning)
 
-    def _seed_codex_quota(self, active: ActiveRun) -> None:
-        """Read the quota Codex wrote to Delibra's own CODEX_HOME.
+    def _seed_codex_rollout_state(self, active: ActiveRun) -> None:
+        """Read what Codex wrote to Delibra's own CODEX_HOME after a round.
 
-        Codex never puts `token_count` on `exec --json` stdout, so this is the
-        only place its percentages can be observed -- and it costs no provider
-        call, because the rollout is app-owned state.
+        Codex puts neither `token_count` nor the context window on
+        `exec --json` stdout, so this one bounded read is the only place its
+        percentages and its occupancy denominator exist -- and it costs no
+        provider call, because the rollout is app-owned state.
         """
 
         if active.config.agent != "codex" or active.provider_thread_id is None:
             return
-        for reading in read_codex_rate_limits(
+        state = read_codex_rollout_state(
             self.settings.codex_home,
             active.provider_thread_id,
             scan_limit=self.settings.codex_rollout_scan_limit,
             read_limit=self.settings.codex_rollout_read_limit,
-        ):
+        )
+        for reading in state.rate_limits:
             self._record_rate_limit(active, reading)
+        if (
+            state.context_window is not None
+            and active.context_reading is not None
+            and active.context_reading.context_window is None
+        ):
+            # The numerator came from stdout's `turn.completed`; only the
+            # rollout knows what to divide it by.
+            active.context_reading = replace(
+                active.context_reading,
+                context_window=state.context_window,
+            )
 
     def hydrate_codex_quota(self) -> None:
         """Seed the monitor once from the newest app-owned Codex rollout."""
@@ -1474,11 +1487,11 @@ class RunManager:
 
         self._codex_quota_hydrated = True
         observed_at = datetime.now(UTC)
-        for reading in read_latest_codex_rate_limits(
+        for reading in read_latest_codex_rollout_state(
             self.settings.codex_home,
             scan_limit=self.settings.codex_rollout_scan_limit,
             read_limit=self.settings.codex_rollout_read_limit,
-        ):
+        ).rate_limits:
             self.usage.record(
                 reading.observed(
                     provider="codex",
@@ -1633,7 +1646,7 @@ class RunManager:
         )
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
-        self._seed_codex_quota(active)
+        self._seed_codex_rollout_state(active)
         record.usage = active.usage
         if active.context_reading is not None:
             # Only the runner knows which round the reading belongs to. A turn

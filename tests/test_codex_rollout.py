@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.storage import read_codex_rate_limits, read_latest_codex_rate_limits
+from app.storage import read_codex_rollout_state, read_latest_codex_rollout_state
 
 
 THREAD = "01a0412b-8a1d-7fe0-b58d-d6db6ca38dcc"
@@ -21,6 +21,7 @@ def token_count(
     primary_window: object = 300,
     secondary_window: object = 10080,
     primary_reset: object = RESET_PRIMARY,
+    info: object = None,
 ) -> str:
     return json.dumps(
         {
@@ -28,7 +29,7 @@ def token_count(
             "type": "event_msg",
             "payload": {
                 "type": "token_count",
-                "info": None,
+                "info": info,
                 "rate_limits": {
                     "primary": {
                         "used_percent": primary_used,
@@ -55,9 +56,9 @@ def rollout(home: Path, *lines: str, thread: str = THREAD, day: str = "07") -> P
 
 
 def read(home: Path, *, thread: str = THREAD, scan_limit: int = 200, read_limit: int = 4096):
-    return read_codex_rate_limits(
+    return read_codex_rollout_state(
         home, thread, scan_limit=scan_limit, read_limit=read_limit
-    )
+    ).rate_limits
 
 
 def test_both_windows_come_from_the_newest_token_count(tmp_path: Path) -> None:
@@ -162,13 +163,42 @@ def test_discovery_is_bounded_by_the_scan_limit(tmp_path: Path) -> None:
 def test_latest_quota_discovery_does_not_require_a_thread_id(tmp_path: Path) -> None:
     rollout(tmp_path, token_count(primary_used=63.0, secondary_used=27.0))
 
-    readings = read_latest_codex_rate_limits(
+    readings = read_latest_codex_rollout_state(
         tmp_path,
         scan_limit=200,
         read_limit=4096,
-    )
+    ).rate_limits
 
     assert {reading.window: reading.used_percent for reading in readings} == {
         "five_hour": 63.0,
         "seven_day": 27.0,
     }
+
+
+def test_the_context_window_comes_from_the_same_bounded_rollout_read(
+    tmp_path: Path,
+) -> None:
+    # `exec --json` never reports it, so this one read carries both the quota
+    # percentages and the occupancy denominator.
+    rollout(tmp_path, token_count(info={"model_context_window": 258400}))
+
+    state = read_codex_rollout_state(
+        tmp_path, THREAD, scan_limit=200, read_limit=4096
+    )
+
+    assert state.context_window == 258400
+    assert {reading.window for reading in state.rate_limits} == {
+        "five_hour",
+        "seven_day",
+    }
+
+
+@pytest.mark.parametrize("window", [0, -1, "258400", 1.5, None, True])
+def test_an_unusable_context_window_stays_unknown(tmp_path: Path, window) -> None:
+    rollout(tmp_path, token_count(info={"model_context_window": window}))
+
+    state = read_codex_rollout_state(
+        tmp_path, THREAD, scan_limit=200, read_limit=4096
+    )
+
+    assert state.context_window is None

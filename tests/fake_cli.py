@@ -106,8 +106,18 @@ def main() -> int:
                 "resets_at": time.time() + 3600,
             }
         )
-    if mode in {"usage", "usage-error"}:
-        emit({"kind": "usage", "input": 11, "output": 3, "used": 14, "window": 100})
+    if mode in {"usage", "usage-error", "usage-no-window"}:
+        # A provider that reports occupancy but no window: Codex reports its
+        # window only in the rollout, never on stdout.
+        emit(
+            {
+                "kind": "usage",
+                "input": 11,
+                "output": 3,
+                "used": 14,
+                "window": None if mode == "usage-no-window" else 100,
+            }
+        )
     if mode == "usage-error":
         emit({"kind": "error", "text": "provider rejected request"})
     if mode != "empty-result":
