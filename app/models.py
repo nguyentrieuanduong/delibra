@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Any
 
 
 AUTO_FORMAT = "delibra-auto/1"
+
+# Every numerator Phase 0 proved, named at the point of use so a later gate can
+# change one provider's source without silently reinterpreting stored data.
+NUMERATOR_SOURCES = frozenset(
+    {"claude_final_assistant", "codex_last_token_usage"}
+)
 
 
 def _strict_int(data: dict[str, Any], key: str, *, default: int | None = None) -> int:
@@ -289,6 +296,132 @@ class AutoTurn:
         return result
 
 
+def _checked_tokens(value: Any, name: str) -> int | None:
+    """Accept an absent count, reject anything that is not a real token count."""
+
+    if value is None:
+        return None
+    # ``type(...) is not int`` and not ``isinstance``: ``True`` is an ``int``.
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer or None")
+    return value
+
+
+def _checked_cost(value: Any) -> float | None:
+    if value is None:
+        return None
+    if type(value) not in (int, float):
+        raise ValueError("total_cost_usd must be a number or None")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("total_cost_usd must be finite and non-negative")
+    return float(value)
+
+
+@dataclass(frozen=True)
+class TurnUsage:
+    """What one round cost, as the provider billed it.
+
+    Every field is optional and stays ``None`` when unreported: a blanket zero
+    default would render an unavailable cost as a real ``0.00``.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    total_cost_usd: float | None = None
+    max_output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "reasoning_tokens",
+            "max_output_tokens",
+        ):
+            object.__setattr__(
+                self, name, _checked_tokens(getattr(self, name), name)
+            )
+        object.__setattr__(
+            self, "total_cost_usd", _checked_cost(self.total_cost_usd)
+        )
+
+    @property
+    def reported(self) -> bool:
+        """True when the provider reported at least one figure."""
+
+        return any(value is not None for value in asdict(self).values())
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TurnUsage":
+        return cls(
+            input_tokens=data.get("input_tokens"),
+            output_tokens=data.get("output_tokens"),
+            cache_read_tokens=data.get("cache_read_tokens"),
+            cache_creation_tokens=data.get("cache_creation_tokens"),
+            reasoning_tokens=data.get("reasoning_tokens"),
+            total_cost_usd=data.get("total_cost_usd"),
+            max_output_tokens=data.get("max_output_tokens"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+@dataclass(frozen=True)
+class ContextObservation:
+    """How full one session's provider context window was after a round.
+
+    Never interchangeable with ``TurnUsage``: a provider's billing record may
+    aggregate a whole agent loop, so reusing it as the occupancy numerator
+    would report the wrong number.
+    """
+
+    used_tokens: int | None
+    context_window: int | None
+    numerator_source: str
+    resolved_model: str | None
+    round_n: int
+    observed_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "used_tokens", _checked_tokens(self.used_tokens, "used_tokens")
+        )
+        object.__setattr__(
+            self,
+            "context_window",
+            _checked_tokens(self.context_window, "context_window"),
+        )
+        if self.numerator_source not in NUMERATOR_SOURCES:
+            raise ValueError(
+                f"unknown context numerator source: {self.numerator_source}"
+            )
+        if type(self.round_n) is not int or self.round_n < 1:
+            raise ValueError("round_n must be a positive integer")
+        if type(self.observed_at) is not str or not self.observed_at:
+            raise ValueError("observed_at must be a non-empty string")
+        if self.resolved_model is not None and type(self.resolved_model) is not str:
+            raise ValueError("resolved_model must be a string or None")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ContextObservation":
+        return cls(
+            used_tokens=data.get("used_tokens"),
+            context_window=data.get("context_window"),
+            numerator_source=str(data["numerator_source"]),
+            resolved_model=data.get("resolved_model"),
+            round_n=_strict_int(data, "round_n"),
+            observed_at=_strict_str(data, "observed_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class RoundRecord:
     n: int
@@ -307,6 +440,9 @@ class RoundRecord:
     timeout: TimeoutRecord | None = None
     # Folded failure category; absent on legacy records and on success.
     error_category: str | None = None
+    # What the provider billed for this round; absent on legacy records and
+    # whenever the provider reported nothing.
+    usage: TurnUsage | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RoundRecord":
@@ -346,6 +482,11 @@ class RoundRecord:
                 if data.get("error_category") is not None
                 else None
             ),
+            usage=(
+                TurnUsage.from_dict(data["usage"])
+                if data.get("usage") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -367,6 +508,10 @@ class RoundRecord:
             result.pop("timeout", None)
         else:
             result["timeout"] = self.timeout.to_dict()
+        if self.usage is None:
+            result.pop("usage", None)
+        else:
+            result["usage"] = self.usage.to_dict()
         return result
 
 
@@ -382,6 +527,10 @@ class SessionConfig:
     status: str
     created_at: str
     rounds: list[RoundRecord] = field(default_factory=list)
+    # Latest wins, and invalidated to None wherever Delibra deliberately
+    # discards the provider-side context this describes. Absent on legacy
+    # records.
+    context_observation: ContextObservation | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SessionConfig":
@@ -396,11 +545,21 @@ class SessionConfig:
             status=str(data["status"]),
             created_at=str(data["created_at"]),
             rounds=[RoundRecord.from_dict(item) for item in data.get("rounds", [])],
+            context_observation=(
+                ContextObservation.from_dict(data["context_observation"])
+                if data.get("context_observation") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["rounds"] = [item.to_dict() for item in self.rounds]
+        result["context_observation"] = (
+            self.context_observation.to_dict()
+            if self.context_observation is not None
+            else None
+        )
         return result
 
 

@@ -13,11 +13,13 @@ import unicodedata
 import pytest
 
 from app.models import (
+    ContextObservation,
     Project,
     RoundRecord,
     SessionConfig,
     SharedContextDescriptor,
     SourceDescriptor,
+    TurnUsage,
 )
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
 from app.storage import (
@@ -261,6 +263,106 @@ def test_round_record_shared_context_and_retry_fields_are_backward_compatible() 
     restored = RoundRecord.from_dict(legacy.to_dict())
     assert restored.shared_context == legacy.shared_context
     assert restored.retry_of == 1
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"input_tokens": True},
+        {"input_tokens": -1},
+        {"output_tokens": 1.0},
+        {"cache_read_tokens": -5},
+        {"max_output_tokens": False},
+        {"total_cost_usd": float("nan")},
+        {"total_cost_usd": float("inf")},
+        {"total_cost_usd": -0.5},
+        {"total_cost_usd": True},
+    ],
+)
+def test_turn_usage_rejects_booleans_negatives_and_non_finite_costs(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        TurnUsage(**kwargs)
+
+
+def test_turn_usage_leaves_unreported_fields_none_rather_than_zero() -> None:
+    usage = TurnUsage(input_tokens=12, output_tokens=3)
+
+    assert usage.total_cost_usd is None
+    assert usage.to_dict() == {"input_tokens": 12, "output_tokens": 3}
+    assert TurnUsage.from_dict(usage.to_dict()) == usage
+    assert not TurnUsage().reported
+
+
+def test_round_record_usage_is_backward_compatible() -> None:
+    legacy_data = {
+        "n": 1,
+        "status": "complete",
+        "error": None,
+        "warnings": [],
+        "agent": "codex",
+        "model": "gpt-5.6-sol",
+        "effort": "high",
+        "started_at": "2026-09-07T00:00:00Z",
+        "finished_at": "2026-09-07T00:00:01Z",
+        "source": {"type": "user"},
+    }
+
+    legacy = RoundRecord.from_dict(legacy_data)
+    assert legacy.usage is None
+    assert "usage" not in legacy.to_dict()
+
+    legacy.usage = TurnUsage(
+        input_tokens=32018,
+        output_tokens=5,
+        cache_read_tokens=31872,
+        cache_creation_tokens=0,
+        reasoning_tokens=0,
+        total_cost_usd=0.0130533,
+        max_output_tokens=64000,
+    )
+    assert RoundRecord.from_dict(legacy.to_dict()).usage == legacy.usage
+
+
+def test_session_config_context_observation_is_backward_compatible() -> None:
+    legacy_data = {
+        "id": "b" * 32,
+        "name": "researcher",
+        "agent": "claude",
+        "model": "sonnet",
+        "effort": "high",
+        "role_instructions": "",
+        "cli_session_id": None,
+        "status": "idle",
+        "created_at": "2026-09-07T00:00:00Z",
+    }
+
+    legacy = SessionConfig.from_dict(legacy_data)
+    assert legacy.context_observation is None
+
+    legacy.context_observation = ContextObservation(
+        used_tokens=42970,
+        context_window=1_000_000,
+        numerator_source="claude_final_assistant",
+        resolved_model="claude-sonnet-5",
+        round_n=3,
+        observed_at="2026-09-07T00:00:02Z",
+    )
+    restored = SessionConfig.from_dict(legacy.to_dict())
+    assert restored.context_observation == legacy.context_observation
+
+
+def test_context_observation_rejects_an_unattributable_numerator() -> None:
+    with pytest.raises(ValueError):
+        ContextObservation(
+            used_tokens=1,
+            context_window=2,
+            numerator_source="claude_result",
+            resolved_model="claude-sonnet-5",
+            round_n=1,
+            observed_at="2026-09-07T00:00:00Z",
+        )
 
 
 def test_shared_markdown_selection_persists_and_rejects_reserved_roots(
