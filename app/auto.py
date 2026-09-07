@@ -1001,6 +1001,36 @@ class AutoManager:
             )
         self._publish_status(current)
 
+    def _halted_locked(
+        self,
+        store: ProjectStore,
+        current: AutoRunRecord,
+    ) -> bool:
+        """Whether shutdown or Stop has claimed this run, transitioning it if so.
+
+        One copy of the check every locked step makes before it starts work, so
+        a change to what halts a run cannot land in four places and miss a
+        fifth.
+        """
+
+        if self._quiescing:
+            self._transition_terminal_locked(
+                store,
+                current,
+                "interrupted",
+                "application shutdown",
+            )
+            return True
+        if current.stop_requested:
+            self._transition_terminal_locked(
+                store,
+                current,
+                "stopped",
+                "stopped by user",
+            )
+            return True
+        return False
+
     async def _run_preparation(self, record: AutoRunRecord) -> None:
         from app.runner import AutoRunRequest
 
@@ -1021,21 +1051,7 @@ class AutoManager:
                 [participant.session_id],
             ):
                 current = store.load_auto_run(record.id)
-                if self._quiescing:
-                    self._transition_terminal_locked(
-                        store,
-                        current,
-                        "interrupted",
-                        "application shutdown",
-                    )
-                    terminal = current
-                elif current.stop_requested:
-                    self._transition_terminal_locked(
-                        store,
-                        current,
-                        "stopped",
-                        "stopped by user",
-                    )
+                if self._halted_locked(store, current):
                     terminal = current
                 else:
                     round_n = store.allocate_round(participant.session_id)
@@ -1256,27 +1272,14 @@ class AutoManager:
         session_ids = [participant.session_id for participant in record.participants]
         async with self.locks.project_sessions(record.project_id, session_ids):
             current = store.load_auto_run(record.id)
-            if self._quiescing:
-                self._transition_terminal_locked(
-                    store,
-                    current,
-                    "interrupted",
-                    "application shutdown",
-                )
-            elif current.stop_requested:
-                self._transition_terminal_locked(
-                    store,
-                    current,
-                    "stopped",
-                    "stopped by user",
-                )
-            elif self._compaction_writer_exhausted(current):
-                store.save_auto_run(current)
-            else:
-                current.retired_baseline_count = len(current.baseline_entries)
-                current.retired_discussion_count = len(current.discussion)
-                self._record_compaction_attempt(current, outcome="cleared")
-                store.save_auto_run(current)
+            if not self._halted_locked(store, current):
+                if self._compaction_writer_exhausted(current):
+                    store.save_auto_run(current)
+                else:
+                    current.retired_baseline_count = len(current.baseline_entries)
+                    current.retired_discussion_count = len(current.discussion)
+                    self._record_compaction_attempt(current, outcome="cleared")
+                    store.save_auto_run(current)
         self._publish_status(current)
 
     async def _run_context_compaction(self, record: AutoRunRecord) -> None:
@@ -1336,21 +1339,7 @@ class AutoManager:
         session_ids = [participant.session_id for participant in record.participants]
         async with self.locks.project_sessions(record.project_id, session_ids):
             current = store.load_auto_run(record.id)
-            if self._quiescing:
-                self._transition_terminal_locked(
-                    store,
-                    current,
-                    "interrupted",
-                    "application shutdown",
-                )
-            elif current.stop_requested:
-                self._transition_terminal_locked(
-                    store,
-                    current,
-                    "stopped",
-                    "stopped by user",
-                )
-            else:
+            if not self._halted_locked(store, current):
                 self._record_compaction_attempt(
                     current,
                     outcome=outcome,
@@ -1390,21 +1379,7 @@ class AutoManager:
                 [participant.session_id],
             ):
                 current = store.load_auto_run(record.id)
-                if self._quiescing:
-                    self._transition_terminal_locked(
-                        store,
-                        current,
-                        "interrupted",
-                        "application shutdown",
-                    )
-                    finished = current
-                elif current.stop_requested:
-                    self._transition_terminal_locked(
-                        store,
-                        current,
-                        "stopped",
-                        "stopped by user",
-                    )
+                if self._halted_locked(store, current):
                     finished = current
                 elif self._compaction_writer_exhausted(current):
                     store.save_auto_run(current)
@@ -1725,21 +1700,7 @@ class AutoManager:
                 [participant.session_id],
             ):
                 current = store.load_auto_run(record.id)
-                if self._quiescing:
-                    self._transition_terminal_locked(
-                        store,
-                        current,
-                        "interrupted",
-                        "application shutdown",
-                    )
-                    terminal = current
-                elif current.stop_requested:
-                    self._transition_terminal_locked(
-                        store,
-                        current,
-                        "stopped",
-                        "stopped by user",
-                    )
+                if self._halted_locked(store, current):
                     terminal = current
                 else:
                     round_n = store.allocate_round(participant.session_id)

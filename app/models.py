@@ -352,9 +352,10 @@ class AutoSummary:
             raise ValueError("Auto summary session_id must be a non-empty string")
         for name in ("retired_baseline_count", "retired_discussion_count"):
             _bounded_int(getattr(self, name), name, minimum=0, maximum=1_000_000)
-        object.__setattr__(
-            self, "dropped_entries", tuple(str(item) for item in self.dropped_entries)
-        )
+        entries = tuple(self.dropped_entries)
+        if any(type(item) is not str or not item for item in entries):
+            raise ValueError("Auto summary dropped entries must be non-empty strings")
+        object.__setattr__(self, "dropped_entries", entries)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoSummary":
