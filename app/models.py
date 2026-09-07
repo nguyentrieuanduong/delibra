@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime, timezone
 import math
 from typing import Any
 
@@ -492,6 +493,172 @@ class ContextObservation:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+RATE_LIMIT_WINDOWS = frozenset({"five_hour", "seven_day"})
+RATE_LIMIT_STATUSES = frozenset({"healthy", "warning", "rejected", "unknown"})
+# Every quota source Phase 0 proved, named so a later gate can change one
+# provider's source without silently reinterpreting stored data.
+RATE_LIMIT_SOURCES = frozenset(
+    {"claude_rate_limit_event", "codex_rollout_token_count"}
+)
+
+
+def _checked_percent(value: Any) -> float | None:
+    if value is None:
+        return None
+    # ``type(...) not in`` and not ``isinstance``: ``True`` is an ``int``.
+    if type(value) not in (int, float):
+        raise ValueError("used_percent must be a number or None")
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        raise ValueError("used_percent must be finite and within 0..100")
+    return float(value)
+
+
+def _checked_instant(value: Any, name: str, *, optional: bool) -> Any:
+    """Require an aware instant, so two windows are never compared as strings."""
+
+    if value is None:
+        if optional:
+            return None
+        raise ValueError(f"{name} is required")
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{name} must be a timezone-aware datetime")
+    return value.astimezone(timezone.utc)
+
+
+def _rate_limit_fields(window: str, status: str, source: str) -> None:
+    if window not in RATE_LIMIT_WINDOWS:
+        raise ValueError(f"unknown rate-limit window: {window}")
+    if status not in RATE_LIMIT_STATUSES:
+        raise ValueError(f"unknown rate-limit status: {status}")
+    if source not in RATE_LIMIT_SOURCES:
+        raise ValueError(f"unknown rate-limit source: {source}")
+
+
+@dataclass(frozen=True)
+class RateLimitReading:
+    """One provider's quota report, before Delibra stamps whose account it is.
+
+    An adapter knows what the provider said; only the runner knows which
+    account it was speaking for and when the report landed.
+    """
+
+    window: str
+    used_percent: float | None
+    status: str
+    resets_at: datetime | None
+    source: str
+
+    def __post_init__(self) -> None:
+        _rate_limit_fields(self.window, self.status, self.source)
+        object.__setattr__(
+            self, "used_percent", _checked_percent(self.used_percent)
+        )
+        object.__setattr__(
+            self,
+            "resets_at",
+            _checked_instant(self.resets_at, "resets_at", optional=True),
+        )
+
+    def observed(
+        self, *, provider: str, account_key: str, observed_at: datetime
+    ) -> "RateLimitObservation":
+        return RateLimitObservation(
+            provider=provider,
+            account_key=account_key,
+            window=self.window,
+            used_percent=self.used_percent,
+            status=self.status,
+            resets_at=self.resets_at,
+            observed_at=observed_at,
+            source=self.source,
+        )
+
+
+@dataclass(frozen=True)
+class RateLimitObservation:
+    """How much account quota one window had left, as of one instant.
+
+    Account-scoped and shared across every session of a provider, which is
+    correct for quota and wrong for context: ``ContextObservation`` never goes
+    near this record.
+    """
+
+    provider: str
+    account_key: str
+    window: str
+    used_percent: float | None
+    status: str
+    resets_at: datetime | None
+    observed_at: datetime
+    source: str
+
+    def __post_init__(self) -> None:
+        _rate_limit_fields(self.window, self.status, self.source)
+        for name in ("provider", "account_key"):
+            value = getattr(self, name)
+            if type(value) is not str or not value:
+                raise ValueError(f"{name} must be a non-empty string")
+        object.__setattr__(
+            self, "used_percent", _checked_percent(self.used_percent)
+        )
+        object.__setattr__(
+            self,
+            "resets_at",
+            _checked_instant(self.resets_at, "resets_at", optional=True),
+        )
+        object.__setattr__(
+            self,
+            "observed_at",
+            _checked_instant(self.observed_at, "observed_at", optional=False),
+        )
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.provider, self.account_key, self.window)
+
+    @property
+    def remaining_percent(self) -> float | None:
+        """Derived, never stored: a second stored figure could disagree."""
+
+        return None if self.used_percent is None else 100.0 - self.used_percent
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RateLimitObservation":
+        resets_at = data.get("resets_at")
+        return cls(
+            provider=_strict_str(data, "provider"),
+            account_key=_strict_str(data, "account_key"),
+            window=_strict_str(data, "window"),
+            used_percent=data.get("used_percent"),
+            status=_strict_str(data, "status"),
+            resets_at=None if resets_at is None else _parse_instant(resets_at),
+            observed_at=_parse_instant(_strict_str(data, "observed_at")),
+            source=_strict_str(data, "source"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "provider": self.provider,
+            "account_key": self.account_key,
+            "window": self.window,
+            "status": self.status,
+            "observed_at": self.observed_at.isoformat(),
+            "source": self.source,
+        }
+        if self.used_percent is not None:
+            result["used_percent"] = self.used_percent
+        if self.resets_at is not None:
+            result["resets_at"] = self.resets_at.isoformat()
+        return result
+
+
+def _parse_instant(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("stored instants must carry a UTC offset")
+    return parsed.astimezone(timezone.utc)
 
 
 @dataclass

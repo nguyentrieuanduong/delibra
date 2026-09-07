@@ -51,6 +51,42 @@ def test_max_run_timeout_defaults_to_four_hours_and_rejects_smaller_run_timeout(
             "0",
             "301",
         ),
+        (
+            "DELIBRA_USAGE_WARN_REMAINING_PERCENT",
+            "usage_warn_remaining_percent",
+            20,
+            "-1",
+            "101",
+        ),
+        (
+            "DELIBRA_USAGE_PAUSE_REMAINING_PERCENT",
+            "usage_pause_remaining_percent",
+            8,
+            "-1",
+            "101",
+        ),
+        (
+            "DELIBRA_USAGE_WEEKLY_PAUSE_REMAINING_PERCENT",
+            "usage_weekly_pause_remaining_percent",
+            3,
+            "-1",
+            "101",
+        ),
+        ("DELIBRA_USAGE_STALENESS_SECONDS", "usage_staleness_seconds", 1800, "59", "86401"),
+        (
+            "DELIBRA_CODEX_ROLLOUT_SCAN_LIMIT",
+            "codex_rollout_scan_limit",
+            200,
+            "0",
+            "5001",
+        ),
+        (
+            "DELIBRA_CODEX_ROLLOUT_READ_LIMIT",
+            "codex_rollout_read_limit",
+            4 * 1024 * 1024,
+            "65535",
+            str(64 * 1024 * 1024 + 1),
+        ),
     ],
 )
 def test_new_settings_defaults_and_bounds(
@@ -68,6 +104,17 @@ def test_new_settings_defaults_and_bounds(
         monkeypatch.setenv(name, value)
         with pytest.raises(ValueError):
             Settings.from_env()
+
+
+def test_pause_threshold_must_stay_below_the_warning_threshold() -> None:
+    # A pause at or above the warning point would fire before any warning was
+    # ever shown, so the two thresholds are validated against each other.
+    with pytest.raises(ValueError, match="below DELIBRA_USAGE_WARN_REMAINING_PERCENT"):
+        Settings(
+            home=Path("/tmp/delibra-settings-test"),
+            usage_warn_remaining_percent=20,
+            usage_pause_remaining_percent=20,
+        )
 
 
 def test_auto_turn_retries_accepts_zero_to_disable_retry(

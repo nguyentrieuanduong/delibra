@@ -44,11 +44,24 @@ class Settings:
     auto_resume_drain_seconds: int = 30
     auto_turn_retries: int = 2
     auto_retry_backoff_seconds: int = 5
+    # Quota thresholds are stated as *remaining* capacity, matching
+    # modifications.md:4; policy compares them strictly.
+    usage_warn_remaining_percent: int = 20
+    usage_pause_remaining_percent: int = 8
+    usage_weekly_pause_remaining_percent: int = 3
+    usage_staleness_seconds: int = 1800
+    codex_rollout_scan_limit: int = 200
+    codex_rollout_read_limit: int = 4 * MIB
 
     def __post_init__(self) -> None:
         if self.max_run_timeout < self.run_timeout:
             raise ValueError(
                 "DELIBRA_MAX_RUN_TIMEOUT must be at least DELIBRA_RUN_TIMEOUT"
+            )
+        if self.usage_pause_remaining_percent >= self.usage_warn_remaining_percent:
+            raise ValueError(
+                "DELIBRA_USAGE_PAUSE_REMAINING_PERCENT must be below "
+                "DELIBRA_USAGE_WARN_REMAINING_PERCENT"
             )
 
     @property
@@ -92,6 +105,42 @@ class Settings:
                 5,
                 minimum=1,
                 maximum=300,
+            ),
+            usage_warn_remaining_percent=_integer(
+                "DELIBRA_USAGE_WARN_REMAINING_PERCENT",
+                20,
+                minimum=0,
+                maximum=100,
+            ),
+            usage_pause_remaining_percent=_integer(
+                "DELIBRA_USAGE_PAUSE_REMAINING_PERCENT",
+                8,
+                minimum=0,
+                maximum=100,
+            ),
+            usage_weekly_pause_remaining_percent=_integer(
+                "DELIBRA_USAGE_WEEKLY_PAUSE_REMAINING_PERCENT",
+                3,
+                minimum=0,
+                maximum=100,
+            ),
+            usage_staleness_seconds=_integer(
+                "DELIBRA_USAGE_STALENESS_SECONDS",
+                1800,
+                minimum=60,
+                maximum=86_400,
+            ),
+            codex_rollout_scan_limit=_integer(
+                "DELIBRA_CODEX_ROLLOUT_SCAN_LIMIT",
+                200,
+                minimum=1,
+                maximum=5_000,
+            ),
+            codex_rollout_read_limit=_integer(
+                "DELIBRA_CODEX_ROLLOUT_READ_LIMIT",
+                4 * MIB,
+                minimum=64 * 1024,
+                maximum=64 * MIB,
             ),
         )
 
