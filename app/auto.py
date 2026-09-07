@@ -20,6 +20,7 @@ from app.agents.errors import is_retryable
 from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
+    AutoCompactionAttempt,
     AutoParticipant,
     AutoQuotaOverride,
     AutoQuotaPause,
@@ -28,8 +29,10 @@ from app.models import (
     AutoTurn,
     ContextSummaryArtifact,
     RateLimitObservation,
+    AutoSummary,
     RoundRecord,
     SessionConfig,
+    auto_trigger_key,
 )
 from app.storage import (
     ACTIVE_AUTO_STATUSES,
@@ -139,6 +142,71 @@ def reconstruct_resume_cursor(record: AutoRunRecord) -> ResumeCursor:
             record.next_participant + 1,
         )
     return ResumeCursor("discussing", record.current_cycle + 1, 0)
+
+
+def compaction_cooldown_target(record: AutoRunRecord) -> int:
+    """The discussion length a failed attempt must wait for before retrying.
+
+    An ``interval`` of turns for the turns unit, and one full speaking round for
+    cycles and prompt-size, which is the cadence the user configured. Retrying
+    after a single turn was the defect this replaces: the boundary is still due
+    after that turn, so a failed attempt would start a fresh batch forever.
+    """
+
+    policy = record.effective_context_policy
+    span = (
+        policy.interval
+        if policy.unit == "turns"
+        else max(1, len(record.participants))
+    )
+    return len(record.discussion) + span
+
+
+def compaction_boundary_due(
+    record: AutoRunRecord,
+    *,
+    prompt_limit: int,
+    rendered_bytes: int | None = None,
+) -> bool:
+    """Whether a compaction boundary is due before the next discussion turn.
+
+    Pure: every input is on the record or is the size of the prompt about to be
+    sent. The session-scoped occupancy figure is deliberately not consulted --
+    it is not scoped to this run, so before a participant's first discussion
+    turn it can describe an unrelated manual conversation, and afterwards it
+    describes that participant's *previous* prompt rather than this one.
+    """
+
+    policy = record.effective_context_policy
+    if policy.mode == "off" or record.compaction_disabled_reason is not None:
+        return False
+    if len(record.discussion) < record.compaction_cooldown_until_discussion_len:
+        return False
+    key = auto_trigger_key(policy.unit, record.current_cycle, len(record.discussion))
+    if any(
+        attempt.trigger_key == key for attempt in record.compaction_attempts
+    ):
+        # Retained only as the same-boundary duplicate guard, which is what
+        # stops a restart mid-attempt from re-attempting an identical boundary.
+        return False
+    pending = len(record.discussion) - record.retired_discussion_count
+    if policy.unit == "turns":
+        return pending >= policy.interval
+    if policy.unit == "cycles":
+        return (
+            record.next_participant == 0
+            and record.current_cycle > 1
+            and (record.current_cycle - 1) % policy.interval == 0
+            and pending > 0
+        )
+    if rendered_bytes is None:
+        return False
+    # Rendered bytes, never a provider token window: Auto turns are stateless,
+    # so the prompt *is* the context. ``>=`` so a threshold of 100 is reachable.
+    return (
+        pending > 0
+        and rendered_bytes * 100 >= policy.threshold_percent * prompt_limit
+    )
 
 
 def validate_turn_timeout_seconds(value: object, *, maximum: int) -> int:
@@ -1334,6 +1402,46 @@ class AutoManager:
             ],
             summary=summary,
         )
+
+    def _compaction_decision(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+    ) -> tuple[bool, bytes | None]:
+        """Decide the boundary and, for the prompt-size unit, freeze the render.
+
+        The rendering measured is the prompt *about to be sent*, not the one
+        already sent: the response that just landed is what pushes the next
+        prompt over the threshold, so measuring the previous one would dispatch
+        one oversized turn and notice afterwards. Below the threshold the frozen
+        bytes are handed straight to the turn they were rendered for, so there
+        is no time-of-check/time-of-use gap; at or above they are discarded and
+        the turn re-renders after the retirement counters move.
+
+        The frozen rendering is a signal, never the compaction input: it has
+        already dropped the oldest entries to fit the prompt budget, and
+        summarizing that set while retiring the full one would destroy exactly
+        the entries compaction exists to preserve.
+        """
+
+        policy = record.effective_context_policy
+        if policy.mode == "off" or record.compaction_disabled_reason is not None:
+            return False, None
+        if policy.unit != "context":
+            return (
+                compaction_boundary_due(
+                    record,
+                    prompt_limit=self.settings.stateless_history_limit,
+                ),
+                None,
+            )
+        frozen = self._discussion_context(store, record)
+        due = compaction_boundary_due(
+            record,
+            prompt_limit=self.settings.stateless_history_limit,
+            rendered_bytes=len(frozen),
+        )
+        return due, None if due else frozen
 
     def _context_material(
         self,
