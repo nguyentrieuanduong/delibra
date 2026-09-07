@@ -253,6 +253,10 @@ textarea { min-height: 7rem; }
 .focus-dialog-close { float: right; }
 #focus-dialog-content { max-height: calc(85vh - 4rem); overflow: auto; }
 .round-focus { min-width: 0; }
+.agent-context h4 { margin: .5rem 0 .25rem; }
+.agent-context-state { font-size: .9rem; opacity: .8; }
+.agent-context-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.agent-context-actions form { margin: .25rem 0; }
 .agent-card { border: 1px solid #8885; border-radius: .5rem; margin: .75rem 0; padding: .75rem; }
 .agent-card.selected { border-color: #3b82c4; }
 .agent-preview { font-size: .9rem; overflow-wrap: anywhere; }

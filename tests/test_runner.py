@@ -1534,6 +1534,210 @@ def test_stage_history_fails_closed_on_a_tampered_summary(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_clear_context_retires_every_round_and_the_native_session(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1, 2))
+    write_summary(store, config, "Old summary", source_round=1)
+    config = store.load_session(session_id)
+    config.cli_session_id = "native-abc"
+    config.context_observation = ContextObservation(
+        used_tokens=10,
+        context_window=100,
+        numerator_source="claude_final_assistant",
+        resolved_model="fake",
+        round_n=2,
+        observed_at="2026-07-17T00:00:02Z",
+    )
+    store.save_session(config)
+
+    await manager.clear_context(project_id, session_id)
+
+    cleared = store.load_session(session_id)
+    assert cleared.context_baseline_round == 2
+    assert cleared.context_summary is None
+    assert cleared.cli_session_id is None
+    assert cleared.context_observation is None
+    # The rounds themselves stay: Clear retires context, it does not delete history.
+    assert [record.n for record in cleared.rounds] == [1, 2]
+    input_root, staged = manager._stage_history(store, cleared, 3)
+    assert staged == []
+    manager._cleanup_input_root(input_root)
+
+
+@pytest.mark.asyncio
+async def test_clear_context_refuses_a_busy_session(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="sleep")
+    key = await manager.start(project_id, session_id, "Keep running")
+
+    with pytest.raises(SessionBusy):
+        await manager.clear_context(project_id, session_id)
+
+    await manager.cancel(key)
+    await manager.wait(key)
+    assert store.load_session(session_id).context_baseline_round == 0
+
+
+@pytest.mark.asyncio
+async def test_compact_commits_one_summary_and_retires_what_it_summarized(
+    tmp_path: Path,
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+    )
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1, 2))
+    config = store.load_session(session_id)
+    config.cli_session_id = "native-abc"
+    store.save_session(config)
+
+    record = await manager.wait(await manager.compact(project_id, session_id))
+
+    assert record.status == "complete"
+    assert record.source.type == "compact"
+    committed = store.load_session(session_id)
+    summary = committed.context_summary
+    assert summary is not None
+    assert summary.source_round == record.n
+    assert store.load_context_summary(session_id, summary, 4096) == b"Hello"
+    # The compaction round retires the rounds it read *and itself*, in one
+    # comparison, and the native session goes with them.
+    assert committed.context_baseline_round == record.n
+    assert committed.cli_session_id is None
+    assert committed.context_observation is None
+    # A compaction is never a native resume: a successful call advances
+    # provider state that a later failed commit could not roll back.
+    assert contexts[-1].resume_strategy == "stateless"
+    assert contexts[-1].resume_id is None
+    assert [path.name for path in contexts[-1].staged_history] == [
+        "round-01.prompt.md",
+        "round-01.md",
+        "round-02.prompt.md",
+        "round-02.md",
+    ]
+
+    # The next ordinary turn carries the summary and none of the retired rounds.
+    await manager.wait(await manager.start(project_id, session_id, "Continue"))
+    assert [path.name for path in contexts[-1].staged_history] == ["summary.md"]
+
+
+@pytest.mark.asyncio
+async def test_compact_stages_every_unretired_round_past_ordinary_budgets(
+    tmp_path: Path,
+) -> None:
+    # The ordinary history builder drops rounds once its budgets are hit;
+    # advancing the baseline past a round nothing summarized would discard it
+    # permanently, so compaction reads them all or refuses.
+    contexts: list[RunContext] = []
+    tight = lambda settings: replace(
+        settings,
+        stateless_round_limit=1,
+        stateless_history_limit=64,
+    )
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+        settings_transform=tight,
+    )
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1, 2, 3), size=20)
+
+    await manager.wait(await manager.compact(project_id, session_id))
+
+    assert [path.name for path in contexts[-1].staged_history] == [
+        "round-01.prompt.md",
+        "round-01.md",
+        "round-02.prompt.md",
+        "round-02.md",
+        "round-03.prompt.md",
+        "round-03.md",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_compact_refuses_a_snapshot_over_the_input_limit(
+    tmp_path: Path,
+) -> None:
+    small = lambda settings: replace(settings, compact_input_limit=32)
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        settings_transform=small,
+    )
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1, 2), size=20)
+
+    with pytest.raises(StorageError, match="compaction input"):
+        await manager.compact(project_id, session_id)
+
+    unchanged = store.load_session(session_id)
+    assert unchanged.context_baseline_round == 0
+    assert unchanged.context_summary is None
+    assert unchanged.rounds == config.rounds
+    assert unchanged.status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_compaction_leaves_the_boundary_exactly_as_it_was(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        mode="provider-error",
+    )
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1,))
+    config = store.load_session(session_id)
+    config.cli_session_id = "native-abc"
+    store.save_session(config)
+
+    record = await manager.wait(await manager.compact(project_id, session_id))
+
+    assert record.status == "error"
+    reloaded = store.load_session(session_id)
+    assert reloaded.context_baseline_round == 0
+    assert reloaded.context_summary is None
+    # The native session is only surrendered by a compaction that committed.
+    assert reloaded.cli_session_id == "native-abc"
+
+
+@pytest.mark.asyncio
+async def test_a_summary_over_the_output_limit_fails_without_committing(
+    tmp_path: Path,
+) -> None:
+    small = lambda settings: replace(settings, compact_output_limit=3)
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        settings_transform=small,
+    )
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1,))
+
+    record = await manager.wait(await manager.compact(project_id, session_id))
+
+    assert record.status == "error"
+    assert "summary" in (record.error or "")
+    reloaded = store.load_session(session_id)
+    assert reloaded.context_summary is None
+    assert reloaded.context_baseline_round == 0
+
+
+@pytest.mark.asyncio
+async def test_compact_refuses_a_busy_session(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="sleep")
+    key = await manager.start(project_id, session_id, "Keep running")
+
+    with pytest.raises(SessionBusy):
+        await manager.compact(project_id, session_id)
+
+    await manager.cancel(key)
+    await manager.wait(key)
+
+
+@pytest.mark.asyncio
 async def test_migrated_legacy_workspace_continues_statelessly(
     tmp_path: Path,
 ) -> None:

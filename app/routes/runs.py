@@ -202,6 +202,39 @@ async def run_session(
 
 
 @router.post(
+    "/projects/{project_id}/sessions/{session_id}/context/compact",
+    response_class=HTMLResponse,
+    status_code=202,
+)
+async def compact_session_context(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    view: str | None = None,
+) -> HTMLResponse:
+    """Summarize this session's unretired rounds into one durable briefing."""
+
+    validate_id(session_id, "session id")
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    key = await request.app.state.manager.compact(resolved_project_id, session_id)
+    project = request.app.state.registry.get(resolved_project_id)
+    session = ProjectStore(project).load_session(session_id)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_live.html",
+        context={
+            "project": project,
+            "key": key,
+            "session": session,
+            "dom_id": round_dom_id(session_id, key.round_n),
+            "chat_view": view == "chat",
+        },
+        status_code=202,
+    )
+
+
+@router.post(
     "/projects/{project_id}/sessions/{source_session_id}/pass",
     response_class=HTMLResponse,
     status_code=202,
