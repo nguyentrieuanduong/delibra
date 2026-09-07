@@ -23,6 +23,7 @@ from app.project_routing import request_project
 from app.security import validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
 from app.urls import project_url
+from app.views import auto_run_usage
 
 
 router = APIRouter()
@@ -224,6 +225,7 @@ def auto_history_detail_context(
     return {
         "project": project,
         "auto": record,
+        "auto_usage": auto_run_usage(store, record.id),
         **_auto_material_context(request, store, record),
         **_resume_context(request, store, record),
     }
@@ -300,6 +302,7 @@ def auto_status_context(
             record.active_key if record.status == "preparing" else None
         ),
         "current_participant": current_participant,
+        "auto_usage": auto_run_usage(store, record.id),
         "clear_auto_setup": clear_setup,
         "auto_history_oob_runs": (
             auto_history_records(

@@ -20,6 +20,7 @@ from app.models import (
     SharedContextDescriptor,
     SourceDescriptor,
     TurnUsage,
+    total_turn_usage,
 )
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
 from app.storage import (
@@ -351,6 +352,26 @@ def test_session_config_context_observation_is_backward_compatible() -> None:
     )
     restored = SessionConfig.from_dict(legacy.to_dict())
     assert restored.context_observation == legacy.context_observation
+
+
+def test_totals_never_claim_a_figure_no_round_reported() -> None:
+    total = total_turn_usage(
+        [
+            None,
+            TurnUsage(input_tokens=10, total_cost_usd=0.25, max_output_tokens=64000),
+            TurnUsage(input_tokens=5, output_tokens=2),
+        ]
+    )
+
+    assert total.input_tokens == 15
+    assert total.output_tokens == 2
+    assert total.total_cost_usd == pytest.approx(0.25)
+    # Nothing reported these, so they stay unknown rather than becoming 0.
+    assert total.cache_read_tokens is None
+    assert total.reasoning_tokens is None
+    # A per-turn cap is not a quantity, so it is never summed.
+    assert total.max_output_tokens is None
+    assert not total_turn_usage([None, TurnUsage()]).reported
 
 
 def test_context_observation_rejects_an_unattributable_numerator() -> None:

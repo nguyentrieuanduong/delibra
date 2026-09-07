@@ -1,0 +1,15 @@
+{# Every figure is optional: a provider that reported nothing must show
+   nothing rather than a fabricated zero. #}
+{% macro turn_usage(usage, label) -%}
+  {% if usage and usage.reported %}
+    <p class="provenance usage">
+      {{ label }}
+      {%- if usage.input_tokens is not none %} · {{ "{:,}".format(usage.input_tokens) }} in{% endif %}
+      {%- if usage.output_tokens is not none %} · {{ "{:,}".format(usage.output_tokens) }} out{% endif %}
+      {%- if usage.reasoning_tokens is not none %} · {{ "{:,}".format(usage.reasoning_tokens) }} reasoning{% endif %}
+      {%- if usage.cache_read_tokens is not none %} · {{ "{:,}".format(usage.cache_read_tokens) }} cache read{% endif %}
+      {%- if usage.cache_creation_tokens is not none %} · {{ "{:,}".format(usage.cache_creation_tokens) }} cache write{% endif %}
+      {%- if usage.total_cost_usd is not none %} · ${{ "%.4f"|format(usage.total_cost_usd) }}{% endif %}
+    </p>
+  {% endif %}
+{%- endmacro %}
