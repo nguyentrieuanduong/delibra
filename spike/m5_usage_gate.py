@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -228,6 +229,23 @@ UUID_LIKE = re.compile(
 # the only prompt the gate ever sends is a fixed constant.
 DIAGNOSTIC_KEYS = frozenset({"message", "codex_error_info", "error_type"})
 
+# Prompt and response text, redacted for what the key *is* rather than for how
+# long the value happens to be. The old length rule kept any string under 64
+# characters, so a short answer ("ok") survived into a checked-in fixture. The
+# only prompt this gate sends is a fixed constant, but the rule has to hold for
+# whatever a later probe sends.
+CONTENT_KEYS = frozenset(
+    {
+        "text",
+        "content",
+        "result",
+        "last_agent_message",
+        "prompt",
+        "instructions",
+        "developer_instructions",
+    }
+)
+
 
 def is_identifier_key(key: str) -> bool:
     return key in IDENTIFIER_KEYS
@@ -238,6 +256,10 @@ def _sanitize_entry(key: str, value: Any, *, depth: int) -> Any:
         return "<redacted>"
     if key in DIAGNOSTIC_KEYS and isinstance(value, str):
         return value
+    # Only the leaf string goes; `content` is usually a list of typed parts and
+    # the parser keys on those types, so recursion must continue through it.
+    if key in CONTENT_KEYS and isinstance(value, str):
+        return "<redacted>"
     return sanitize(value, depth=depth + 1)
 
 
@@ -567,11 +589,48 @@ def resolved_model(lines: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def provenance(
+    provider: str, turns: list[TurnResult], captured_at: str | None
+) -> dict[str, Any]:
+    """Say when this provider's evidence was captured and by what.
+
+    The two providers are probed separately and merged into one report -- the
+    measured runs were 29 minutes apart -- so without this, evidence from two
+    incompatible CLI versions coexists silently and nothing in the file says
+    so. Anything not observable is null rather than guessed: Codex emits no
+    version in its stream, and `--recompute` re-grades fixtures it did not
+    capture, so it has no capture time to report.
+    """
+
+    versions = [
+        line["claude_code_version"]
+        for turn in turns
+        for line in turn.lines
+        if isinstance(line.get("claude_code_version"), str)
+    ]
+    models: list[str] = []
+    for turn in turns:
+        model = resolved_model(turn.lines)
+        if model is None:
+            settings = scan(turn.lines, "thread_settings")
+            if isinstance(settings, dict) and isinstance(settings.get("model"), str):
+                model = settings["model"]
+        if model is not None and model not in models:
+            models.append(model)
+    return {
+        "provider": provider,
+        "captured_at": captured_at,
+        "cli_version": versions[0] if versions else None,
+        "resolved_models": models,
+    }
+
+
 def build_capabilities(
     provider: str,
     turns: list[TurnResult],
     candidates: tuple[str, ...],
     induced: TurnResult | None = None,
+    captured_at: str | None = None,
 ) -> dict[str, Any]:
     per_turn = [read_candidates(provider, t.lines, candidates) for t in turns]
     paths = list(candidates) + list(DERIVED_CANDIDATES.get(provider, {}))
@@ -608,6 +667,7 @@ def build_capabilities(
             "observed": observed,
             "occupancy_experiment": verdicts,
             "capabilities": capabilities,
+            "provenance": provenance(provider, turns, captured_at),
             "note": "probe failed; every capability is unknown, not absent",
         }
 
@@ -758,6 +818,7 @@ def build_capabilities(
         "observed": observed,
         "occupancy_experiment": verdicts,
         "capabilities": capabilities,
+        "provenance": provenance(provider, turns, captured_at),
     }
 
 
@@ -1029,7 +1090,14 @@ async def main() -> int:
                 CLAUDE_CANDIDATES if provider == "claude" else CODEX_CANDIDATES
             )
             summary[provider] = build_capabilities(
-                provider, turns, candidates, induced=induced
+                provider,
+                turns,
+                candidates,
+                induced=induced,
+                captured_at=datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z"),
             )
 
         published = publish(staging=staging, target=FIXTURES, summary=summary)

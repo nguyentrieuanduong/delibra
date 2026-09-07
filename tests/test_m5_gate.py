@@ -584,6 +584,84 @@ class TestQuotaPercentIsValidatedNotMerelyNumeric:
         assert report["capabilities"]["five_hour_quota_percent"]["proven"] is False
 
 
+class TestContentIsRedactedByKeyNotByLength:
+    """Prompt and response text is redacted because of what it is.
+
+    The old rule kept any string under 64 characters, so a short answer
+    survived into a checked-in fixture. The gate's own probe is a fixed
+    constant, but the rule has to hold for whatever a later probe sends.
+    """
+
+    @pytest.mark.parametrize(
+        "key", ["text", "content", "result", "last_agent_message", "developer_instructions"]
+    )
+    def test_a_short_content_string_is_redacted(self, key: str) -> None:
+        assert sanitize({key: "ok"}) == {key: "<redacted>"}
+
+    def test_structure_around_redacted_content_survives(self) -> None:
+        # The parser keys on `type`; only the text goes.
+        entry = {"content": [{"text": "Reply with exactly the word: ok", "type": "text"}]}
+
+        assert sanitize(entry) == {"content": [{"text": "<redacted>", "type": "text"}]}
+
+    def test_provider_diagnostics_are_still_kept_in_full(self) -> None:
+        # Codex reports its HTTP status only inside this string. Redacting it
+        # leaves the error fixture unable to exercise the parser it exists for.
+        message = "429 Too Many Requests: you have hit your usage limit " * 3
+
+        assert sanitize({"message": message}) == {"message": message}
+
+    def test_statuses_and_model_names_are_not_content(self) -> None:
+        entry = {"status": "allowed", "model": "claude-sonnet-5", "type": "result"}
+
+        assert sanitize(entry) == entry
+
+
+class TestProvenance:
+    """Two providers probed hours apart must not merge without saying so."""
+
+    def _turns(self) -> list[TurnResult]:
+        init = {
+            "type": "system",
+            "subtype": "init",
+            "model": "claude-sonnet-5",
+            "claude_code_version": "2.1.202",
+        }
+        return [_turn("a_small_fresh", [init, CLAUDE_SUCCESS])]
+
+    def test_the_cli_version_is_recorded(self) -> None:
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        assert report["provenance"]["cli_version"] == "2.1.202"
+
+    def test_the_resolved_models_are_recorded(self) -> None:
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        assert report["provenance"]["resolved_models"] == ["claude-sonnet-5"]
+
+    def test_an_unobservable_version_is_null_not_guessed(self) -> None:
+        # Codex emits no version anywhere in its stream. Null says "unknown";
+        # inventing one would let incompatible evidence look compatible.
+        turns = [_turn("a_small_fresh", [CODEX_SUCCESS])]
+
+        report = build_capabilities("codex", turns, CODEX_CANDIDATES)
+
+        assert report["provenance"]["cli_version"] is None
+
+    def test_the_capture_time_is_recorded_when_the_turns_were_just_run(self) -> None:
+        report = build_capabilities(
+            "claude", self._turns(), CLAUDE_CANDIDATES, captured_at="2026-09-07T09:22:00Z"
+        )
+
+        assert report["provenance"]["captured_at"] == "2026-09-07T09:22:00Z"
+
+    def test_recomputing_does_not_invent_a_capture_time(self) -> None:
+        # --recompute re-grades old fixtures; it did not capture them.
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        assert report["provenance"]["captured_at"] is None
+
+
 class TestSanitize:
     """Identifiers are redacted; parser-relevant values survive."""
 
