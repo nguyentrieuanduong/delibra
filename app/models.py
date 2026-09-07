@@ -785,7 +785,13 @@ RATE_LIMIT_STATUSES = frozenset({"healthy", "warning", "rejected", "unknown"})
 # Every quota source Phase 0 proved, named so a later gate can change one
 # provider's source without silently reinterpreting stored data.
 RATE_LIMIT_SOURCES = frozenset(
-    {"claude_rate_limit_event", "codex_rollout_token_count"}
+    {
+        "claude_rate_limit_event",
+        "codex_rollout_token_count",
+        # Phase 8: the account-wide read, which supersedes the rollout for
+        # Codex quota because the rollout only ever sees Delibra's own home.
+        "codex_app_server",
+    }
 )
 
 
