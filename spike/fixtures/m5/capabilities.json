@@ -1,4 +1,240 @@
 {
+  "claude": {
+    "capabilities": {
+      "context_occupancy": {
+        "evidence": [
+          "usage.total_prompt_tokens (derived)"
+        ],
+        "proven": true,
+        "unit": "tokens"
+      },
+      "context_window": {
+        "evidence": "modelUsage[claude-haiku-4-5-20251001, claude-sonnet-5].contextWindow",
+        "proven": true,
+        "unit": "tokens"
+      },
+      "error_classification": {
+        "evidence": "claude: induced invalid-model request reported status 404 in the structured field `api_error_status`. That is one permanent 4xx; the criterion is 429, 5xx and a transport failure, and those three remain UNTESTED -- none can be induced without an exhausted quota or a real outage. Partial evidence, so unproven.",
+        "proven": false,
+        "unit": null
+      },
+      "five_hour_quota_percent": {
+        "evidence": null,
+        "proven": false,
+        "unit": null
+      },
+      "five_hour_quota_status": {
+        "evidence": "rate_limit_info.status with rateLimitType='five_hour'",
+        "proven": true,
+        "unit": "status_string"
+      },
+      "seven_day_quota_percent": {
+        "evidence": null,
+        "proven": false,
+        "unit": null
+      },
+      "seven_day_quota_status": {
+        "evidence": null,
+        "proven": false,
+        "unit": null
+      },
+      "turn_billing": {
+        "evidence": [
+          "usage.input_tokens",
+          "usage.output_tokens",
+          "usage.cache_read_input_tokens",
+          "usage.cache_creation_input_tokens"
+        ],
+        "proven": true,
+        "unit": "tokens"
+      }
+    },
+    "failures": {},
+    "observed": {
+      "api_error_status": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "modelUsage": [
+        {
+          "claude-sonnet-5": {
+            "cacheCreationInputTokens": 1322,
+            "cacheReadInputTokens": 6794,
+            "contextWindow": 1000000,
+            "costUSD": 0.0100362,
+            "inputTokens": 2,
+            "maxOutputTokens": 64000,
+            "outputTokens": 4,
+            "webSearchRequests": 0
+          }
+        },
+        {
+          "claude-haiku-4-5-20251001": {
+            "cacheCreationInputTokens": 1443,
+            "cacheReadInputTokens": 4892,
+            "contextWindow": 200000,
+            "costUSD": 0.0036702,
+            "inputTokens": 10,
+            "maxOutputTokens": 32000,
+            "outputTokens": 57,
+            "webSearchRequests": 0
+          }
+        },
+        {
+          "claude-sonnet-5": {
+            "cacheCreationInputTokens": 34835,
+            "cacheReadInputTokens": 8116,
+            "contextWindow": 1000000,
+            "costUSD": 0.21150779999999997,
+            "inputTokens": 1,
+            "maxOutputTokens": 64000,
+            "outputTokens": 4,
+            "webSearchRequests": 0
+          }
+        },
+        {
+          "claude-sonnet-5": {
+            "cacheCreationInputTokens": 17,
+            "cacheReadInputTokens": 42951,
+            "contextWindow": 1000000,
+            "costUSD": 0.0130533,
+            "inputTokens": 2,
+            "maxOutputTokens": 64000,
+            "outputTokens": 4,
+            "webSearchRequests": 0
+          }
+        },
+        {
+          "claude-sonnet-5": {
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 8116,
+            "contextWindow": 1000000,
+            "costUSD": 0.0025008,
+            "inputTokens": 2,
+            "maxOutputTokens": 64000,
+            "outputTokens": 4,
+            "webSearchRequests": 0
+          }
+        }
+      ],
+      "num_turns": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "rate_limit_info.overageStatus": [
+        "rejected",
+        "rejected",
+        "rejected",
+        "rejected",
+        "rejected"
+      ],
+      "rate_limit_info.rateLimitType": [
+        "five_hour",
+        "five_hour",
+        "five_hour",
+        "five_hour",
+        "five_hour"
+      ],
+      "rate_limit_info.resetsAt": [
+        1788750000,
+        1788750000,
+        1788750000,
+        1788750000,
+        1788750000
+      ],
+      "rate_limit_info.status": [
+        "allowed",
+        "allowed",
+        "allowed",
+        "allowed",
+        "allowed"
+      ],
+      "rate_limit_info.utilization": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stop_reason": [
+        "end_turn",
+        "end_turn",
+        "end_turn",
+        "end_turn",
+        "end_turn"
+      ],
+      "terminal_reason": [
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "total_cost_usd": [
+        0.0100362,
+        0.0036702,
+        0.21150779999999997,
+        0.0130533,
+        0.0025008
+      ],
+      "usage.cache_creation_input_tokens": [
+        1322,
+        1443,
+        34835,
+        17,
+        0
+      ],
+      "usage.cache_read_input_tokens": [
+        6794,
+        4892,
+        8116,
+        42951,
+        8116
+      ],
+      "usage.input_tokens": [
+        2,
+        10,
+        1,
+        2,
+        2
+      ],
+      "usage.output_tokens": [
+        4,
+        57,
+        4,
+        4,
+        4
+      ],
+      "usage.total_prompt_tokens (derived)": [
+        8118,
+        6345,
+        42952,
+        42970,
+        8118
+      ]
+    },
+    "occupancy_experiment": {
+      "usage.cache_creation_input_tokens": "inconclusive: did not return to baseline at D",
+      "usage.cache_read_input_tokens": "cumulative: gained about another turn at C",
+      "usage.input_tokens": "inconclusive: did not rise at B",
+      "usage.output_tokens": "inconclusive: did not rise at B",
+      "usage.total_prompt_tokens (derived)": "occupancy: held at C, reset to baseline at D"
+    },
+    "provider": "claude",
+    "turns": [
+      "a_small_fresh",
+      "e_model_change",
+      "b_large_resume",
+      "c_small_resume",
+      "d_small_fresh"
+    ]
+  },
   "codex": {
     "capabilities": {
       "context_occupancy": {
