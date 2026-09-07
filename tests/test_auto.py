@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -34,6 +35,7 @@ from app.models import (
     AutoRunRecord,
     AutoTurn,
     ContextObservation,
+    RateLimitObservation,
     RoundRecord,
     RunKey,
     SessionConfig,
@@ -1898,6 +1900,138 @@ async def test_auto_quota_failure_pauses_to_resumable_stopped_without_retry(
     assert "quota" in (terminal.terminal_reason or "")
     assert factory.created == 1
     assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 1, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preparation_enabled", [False, True])
+async def test_auto_pauses_on_known_low_quota_before_dispatching_a_turn(
+    tmp_path: Path,
+    preparation_enabled: bool,
+) -> None:
+    manager, factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("must not run"), PlannedOutput("must not run either")],
+    )
+    now = datetime.now(timezone.utc)
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="five_hour",
+            used_percent=94.0,
+            status="unknown",
+            resets_at=now + timedelta(hours=1),
+            observed_at=now,
+            source="codex_rollout_token_count",
+        )
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Pause before spending quota",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=preparation_enabled,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert terminal.quota_pause is not None
+    assert terminal.quota_pause.observation.remaining_percent == 6.0
+    assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_quota_crossing_during_a_turn_pauses_before_the_following_turn(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("first finishes", delay=0.1), PlannedOutput("must not run")],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Finish only the running turn",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    for _ in range(100):
+        if factory.created == 1:
+            break
+        await asyncio.sleep(0.005)
+    now = datetime.now(timezone.utc)
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="five_hour",
+            used_percent=94.0,
+            status="unknown",
+            resets_at=now + timedelta(hours=1),
+            observed_at=now,
+            source="codex_rollout_token_count",
+        )
+    )
+
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert len(terminal.discussion) == 1
+    assert factory.created == 1
+
+
+@pytest.mark.asyncio
+async def test_first_codex_auto_dispatch_hydrates_quota_before_starting(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("must not run"), PlannedOutput("must not run either")],
+    )
+    for session_id in session_ids:
+        config = store.load_session(session_id)
+        config.agent = "codex"
+        store.save_session(config)
+    rollout_dir = manager.settings.codex_home / "sessions" / "2026" / "09" / "07"
+    rollout_dir.mkdir(parents=True)
+    reset = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+    (rollout_dir / "rollout-2026-09-07T10-02-47-cold-start-thread.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "primary": {
+                            "used_percent": 94.0,
+                            "window_minutes": 300,
+                            "resets_at": reset,
+                        }
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Hydrate before dispatch",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert terminal.quota_pause is not None
+    assert terminal.quota_pause.observation.provider == "codex"
+    assert factory.created == 0
 
 
 @pytest.mark.asyncio

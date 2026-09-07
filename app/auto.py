@@ -6,6 +6,7 @@ import asyncio
 from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from hashlib import sha256
 import logging
 from pathlib import Path
@@ -20,9 +21,11 @@ from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
     AutoParticipant,
+    AutoQuotaPause,
     AutoResumption,
     AutoRunRecord,
     AutoTurn,
+    RateLimitObservation,
     RoundRecord,
     SessionConfig,
 )
@@ -666,6 +669,24 @@ class AutoManager:
         try:
             while not self._quiescing:
                 record = self.get(project_id, auto_id)
+                participant = (
+                    record.participants[record.next_participant]
+                    if record.status == "discussing"
+                    or (
+                        record.status == "preparing"
+                        and record.preparation_enabled
+                        and record.next_participant < len(record.participants)
+                    )
+                    else None
+                )
+                quota_pause = (
+                    self.runner.quota_pause_observation(participant.agent)
+                    if participant is not None
+                    else None
+                )
+                if quota_pause is not None:
+                    await self._pause_for_quota(record, quota_pause)
+                    return
                 if record.status == "preparing":
                     if not record.preparation_enabled:
                         await self._begin_discussion(record)
@@ -705,6 +726,35 @@ class AutoManager:
             key = (project_id, auto_id)
             if self._tasks.get(key) is asyncio.current_task():
                 self._tasks.pop(key, None)
+
+    async def _pause_for_quota(
+        self,
+        record: AutoRunRecord,
+        observation: RateLimitObservation,
+    ) -> None:
+        project = self.registry.get(record.project_id)
+        store = ProjectStore(project)
+        session_ids = [participant.session_id for participant in record.participants]
+        async with self.locks.project_sessions(record.project_id, session_ids):
+            current = store.load_auto_run(record.id)
+            current.quota_pause = AutoQuotaPause(
+                observation=observation,
+                paused_at=datetime.now(UTC),
+            )
+            window = "5-hour" if observation.window == "five_hour" else "weekly"
+            remaining = observation.remaining_percent
+            signal = (
+                f"{remaining:g}% remaining"
+                if remaining is not None
+                else f"status {observation.status}"
+            )
+            self._transition_terminal_locked(
+                store,
+                current,
+                "stopped",
+                f"paused: {observation.provider.title()} {window} limit, {signal}",
+            )
+        self._publish_status(current)
 
     async def _run_preparation(self, record: AutoRunRecord) -> None:
         from app.runner import AutoRunRequest

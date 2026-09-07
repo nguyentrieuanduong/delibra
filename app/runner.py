@@ -28,6 +28,7 @@ from app.models import (
     ContextReading,
     Project,
     RateLimitReading,
+    RateLimitObservation,
     RoundRecord,
     RunKey,
     SessionConfig,
@@ -50,11 +51,12 @@ from app.storage import (
     atomic_write_text,
     ensure_owned_directory,
     read_codex_rate_limits,
+    read_latest_codex_rate_limits,
     safe_copy_file,
     utc_now,
     validate_id,
 )
-from app.usage import UsageMonitor
+from app.usage import UsageMonitor, quota_verdict
 
 
 LOGGER = logging.getLogger(__name__)
@@ -176,6 +178,7 @@ class RunManager:
         self.adapter_factory = adapter_factory
         self.final_writer = final_writer
         self.usage = usage_monitor or UsageMonitor(settings=settings)
+        self._codex_quota_hydrated = False
         self._active: dict[RunKey, ActiveRun] = {}
         self._completed: dict[RunKey, CompletedRun] = {}
 
@@ -1164,13 +1167,15 @@ class RunManager:
         multi-account setup cannot silently merge two accounts.
         """
 
-        self.usage.record(
+        warning = self.usage.record(
             reading.observed(
                 provider=active.config.agent,
                 account_key="default",
                 observed_at=datetime.now(UTC),
             )
         )
+        if warning is not None:
+            active.warnings.append(warning)
 
     def _seed_codex_quota(self, active: ActiveRun) -> None:
         """Read the quota Codex wrote to Delibra's own CODEX_HOME.
@@ -1189,6 +1194,42 @@ class RunManager:
             read_limit=self.settings.codex_rollout_read_limit,
         ):
             self._record_rate_limit(active, reading)
+
+    def hydrate_codex_quota(self) -> None:
+        """Seed the monitor once from the newest app-owned Codex rollout."""
+
+        if self._codex_quota_hydrated:
+            return
+        self._codex_quota_hydrated = True
+        observed_at = datetime.now(UTC)
+        for reading in read_latest_codex_rate_limits(
+            self.settings.codex_home,
+            scan_limit=self.settings.codex_rollout_scan_limit,
+            read_limit=self.settings.codex_rollout_read_limit,
+        ):
+            self.usage.record(
+                reading.observed(
+                    provider="codex",
+                    account_key="default",
+                    observed_at=observed_at,
+                )
+            )
+
+    def quota_pause_observation(
+        self, provider: str
+    ) -> RateLimitObservation | None:
+        """Return the first live provider window whose policy requires pause."""
+
+        if provider == "codex":
+            self.hydrate_codex_quota()
+        for window in ("five_hour", "seven_day"):
+            observation = self.usage.report(provider, window)
+            if (
+                observation is not None
+                and quota_verdict(observation, settings=self.settings) == "pause"
+            ):
+                return observation
+        return None
 
     async def _consume_stderr(self, active: ActiveRun) -> None:
         process = active.process

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.storage import read_codex_rate_limits
+from app.storage import read_codex_rate_limits, read_latest_codex_rate_limits
 
 
 THREAD = "01a0412b-8a1d-7fe0-b58d-d6db6ca38dcc"
@@ -20,6 +20,7 @@ def token_count(
     secondary_used: object = 16.0,
     primary_window: object = 300,
     secondary_window: object = 10080,
+    primary_reset: object = RESET_PRIMARY,
 ) -> str:
     return json.dumps(
         {
@@ -32,7 +33,7 @@ def token_count(
                     "primary": {
                         "used_percent": primary_used,
                         "window_minutes": primary_window,
-                        "resets_at": RESET_PRIMARY,
+                        "resets_at": primary_reset,
                     },
                     "secondary": {
                         "used_percent": secondary_used,
@@ -98,6 +99,11 @@ def test_a_rollout_being_appended_to_is_tolerated(tmp_path: Path) -> None:
         {"primary_used": None},
         {"primary_window": 60},
         {"primary_window": "300"},
+        {"primary_reset": None},
+        {"primary_reset": "soon"},
+        {"primary_reset": -1},
+        {"primary_reset": float("inf")},
+        {"primary_reset": 10**100},
     ],
 )
 def test_an_unusable_window_is_dropped_rather_than_guessed(
@@ -151,3 +157,18 @@ def test_discovery_is_bounded_by_the_scan_limit(tmp_path: Path) -> None:
 
     assert read(tmp_path, scan_limit=1) == []
     assert len(read(tmp_path, scan_limit=3)) == 2
+
+
+def test_latest_quota_discovery_does_not_require_a_thread_id(tmp_path: Path) -> None:
+    rollout(tmp_path, token_count(primary_used=63.0, secondary_used=27.0))
+
+    readings = read_latest_codex_rate_limits(
+        tmp_path,
+        scan_limit=200,
+        read_limit=4096,
+    )
+
+    assert {reading.window: reading.used_percent for reading in readings} == {
+        "five_hour": 63.0,
+        "seven_day": 27.0,
+    }

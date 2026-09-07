@@ -40,7 +40,6 @@ from app.pass_prompts import (
     PassPromptTemplateError,
     validate_pass_prompt_template,
 )
-from app.usage import epoch_instant
 
 
 FORMAT = "delibra/1"
@@ -176,6 +175,17 @@ class ProjectMarkdown:
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def epoch_instant(value: object) -> datetime | None:
+    """Parse provider epoch seconds without treating booleans as numbers."""
+
+    if type(value) not in (int, float) or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _is_utc_timestamp(value: str) -> bool:
@@ -597,6 +607,39 @@ def atomic_write_text(path: Path, contents: str) -> None:
     atomic_write_bytes(path, contents.encode("utf-8"))
 
 
+def atomic_write_owned_json(path: Path, root: Path, data: Any) -> None:
+    """Atomically write JSON only through a path owned below ``root``."""
+
+    _assert_no_symlink_components(path.parent, root, allow_missing_leaf=False)
+    _assert_no_symlink_components(path, root, allow_missing_leaf=True)
+    atomic_write_json(path, data)
+    _assert_no_symlink_components(path, root, allow_missing_leaf=False)
+
+
+def read_owned_bytes(path: Path, root: Path, limit: int) -> ProjectFileContents:
+    """Read a regular owned file through a no-follow descriptor and byte bound."""
+
+    if limit < 1:
+        raise ValueError("owned read limit must be positive")
+    _assert_no_symlink_components(path, root, allow_missing_leaf=False)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OwnershipError(f"owned path is not a regular file: {path}")
+        return _read_bounded_descriptor(descriptor, limit)
+    except OwnershipError:
+        raise
+    except OSError as exc:
+        raise StorageError(f"failed to read owned file {path}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _valid_json(path: Path) -> bool:
     try:
         json.loads(path.read_text(encoding="utf-8"))
@@ -827,9 +870,12 @@ def _rollout_rate_limits(rate_limits: Any) -> list[RateLimitReading]:
             continue
         window = CODEX_ROLLOUT_WINDOWS.get(entry.get("window_minutes"))
         used = entry.get("used_percent")
+        resets_at = epoch_instant(entry.get("resets_at"))
         # `used_percent` is the only figure Phase 0 proved for Codex; it proved
-        # no status, so every Codex window is reported status-unknown.
-        if window is None or type(used) not in (int, float):
+        # no status, so every Codex window is reported status-unknown. Its gate
+        # also proved a positive reset; without one an old rollout cannot be
+        # assigned safely to a live window.
+        if window is None or type(used) not in (int, float) or resets_at is None:
             continue
         try:
             readings.append(
@@ -837,7 +883,7 @@ def _rollout_rate_limits(rate_limits: Any) -> list[RateLimitReading]:
                     window=window,
                     used_percent=used,
                     status="unknown",
-                    resets_at=epoch_instant(entry.get("resets_at")),
+                    resets_at=resets_at,
                     source="codex_rollout_token_count",
                 )
             )
@@ -867,27 +913,16 @@ def _rollout_tail(path: Path, root: Path, read_limit: int) -> list[str]:
     return lines[1:] if offset else lines
 
 
-def read_codex_rate_limits(
+def _codex_rollout_rate_limits(
     codex_home: Path,
-    thread_id: str,
+    pattern: str,
     *,
     scan_limit: int,
     read_limit: int,
 ) -> list[RateLimitReading]:
-    """Read one Codex thread's newest quota record from its own rollout.
-
-    Codex keeps `token_count` in the app-owned `CODEX_HOME` and never on
-    `exec --json` stdout, so this is quota state Delibra can read without
-    spending a provider call. A rollout mid-append, a malformed tail, a missing
-    thread and a symlinked path all report nothing rather than raising: quota
-    state is advisory, and no read of it may fail a round.
-    """
-
-    if not CODEX_THREAD_PATTERN.fullmatch(thread_id):
-        return []
     try:
         matches = sorted(
-            codex_home.glob(f"sessions/*/*/*/rollout-*-{thread_id}.jsonl"),
+            codex_home.glob(pattern),
             reverse=True,
         )[:scan_limit]
     except OSError:
@@ -911,6 +946,48 @@ def read_codex_rate_limits(
             if readings:
                 return readings
     return []
+
+
+def read_codex_rate_limits(
+    codex_home: Path,
+    thread_id: str,
+    *,
+    scan_limit: int,
+    read_limit: int,
+) -> list[RateLimitReading]:
+    """Read one Codex thread's newest quota record from its own rollout.
+
+    Codex keeps `token_count` in the app-owned `CODEX_HOME` and never on
+    `exec --json` stdout, so this is quota state Delibra can read without
+    spending a provider call. A rollout mid-append, a malformed tail, a missing
+    thread and a symlinked path all report nothing rather than raising: quota
+    state is advisory, and no read of it may fail a round.
+    """
+
+    if not CODEX_THREAD_PATTERN.fullmatch(thread_id):
+        return []
+    return _codex_rollout_rate_limits(
+        codex_home,
+        f"sessions/*/*/*/rollout-*-{thread_id}.jsonl",
+        scan_limit=scan_limit,
+        read_limit=read_limit,
+    )
+
+
+def read_latest_codex_rate_limits(
+    codex_home: Path,
+    *,
+    scan_limit: int,
+    read_limit: int,
+) -> list[RateLimitReading]:
+    """Read the newest available Codex quota without needing a thread id."""
+
+    return _codex_rollout_rate_limits(
+        codex_home,
+        "sessions/*/*/*/rollout-*.jsonl",
+        scan_limit=scan_limit,
+        read_limit=read_limit,
+    )
 
 
 @dataclass(frozen=True)

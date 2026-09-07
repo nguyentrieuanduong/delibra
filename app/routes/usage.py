@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from app.usage import quota_verdict
+from app.usage import USAGE_PERSISTENCE_WARNING, quota_verdict
 
 
 router = APIRouter()
@@ -56,12 +56,16 @@ def _badge_context(request: Request) -> dict[str, Any]:
     return {
         "providers": providers,
         "badge_state": badge_state,
+        "durability_warning": (
+            USAGE_PERSISTENCE_WARNING if monitor.durability_degraded else None
+        ),
         "usage_poll_seconds": settings.usage_poll_seconds,
     }
 
 
 @router.get("/usage/badge", response_class=HTMLResponse)
 async def usage_badge(request: Request) -> HTMLResponse:
+    request.app.state.manager.hydrate_codex_quota()
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_usage_badge.html",

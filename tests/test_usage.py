@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
+from random import Random
 
 import pytest
 
+import app.usage as usage_module
 from app.config import Settings
 from app.models import RateLimitObservation, RateLimitReading
-from app.usage import UsageMonitor, quota_verdict
+from app.usage import USAGE_FORMAT, UsageMonitor, quota_verdict
 
 
 SETTINGS = Settings(home=Path("/tmp/delibra-usage-test"))
@@ -40,6 +43,7 @@ def monitor(settings: Settings | None = None, now: datetime = NOW) -> UsageMonit
     return UsageMonitor(
         settings=settings or SETTINGS,
         clock=lambda: now,
+        persist=False,
     )
 
 
@@ -256,3 +260,105 @@ def test_a_provider_without_percentages_is_judged_on_status_alone(
 
 def test_an_unknown_window_never_pauses() -> None:
     assert quota_verdict(None, settings=SETTINGS) == "unknown"
+
+
+def test_merged_observations_survive_a_monitor_restart(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path)
+    first = UsageMonitor(settings=settings, clock=lambda: NOW)
+    current = observation(used_percent=71.5, status="warning")
+
+    first.record(current)
+    reloaded = UsageMonitor(settings=settings, clock=lambda: NOW)
+
+    assert reloaded.report("codex", "five_hour") == current
+    usage_path = tmp_path / "usage.json"
+    assert usage_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_generated_malformed_usage_files_never_seed_or_escape(
+    tmp_path: Path,
+) -> None:
+    rng = Random(73419)
+    usage_path = tmp_path / "usage.json"
+    primitives: list[object] = [None, True, False, -1, 1.5, "quota", [], {}]
+    malformed: list[object] = [
+        None,
+        [],
+        {},
+        {"format": "wrong", "observations": []},
+        {"format": USAGE_FORMAT, "observations": "not-a-list"},
+    ]
+    malformed.extend(
+        {
+            "format": USAGE_FORMAT,
+            "observations": [
+                rng.choice(primitives),
+                {f"unexpected-{rng.randrange(10_000)}": rng.choice(primitives)},
+            ],
+        }
+        for _ in range(100)
+    )
+
+    for payload in malformed:
+        usage_path.write_text(json.dumps(payload), encoding="utf-8")
+        reloaded = UsageMonitor(settings=Settings(home=tmp_path), clock=lambda: NOW)
+        assert reloaded.report("codex", "five_hour") is None
+
+
+def test_symlinked_usage_state_is_never_followed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "format": USAGE_FORMAT,
+                "observations": [observation(used_percent=99.0).to_dict()],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (home / "usage.json").symlink_to(outside)
+
+    reloaded = UsageMonitor(settings=Settings(home=home), clock=lambda: NOW)
+
+    assert reloaded.report("codex", "five_hour") is None
+    before = outside.read_text(encoding="utf-8")
+    assert reloaded.record(observation()) is not None
+    assert reloaded.durability_degraded is True
+    assert outside.read_text(encoding="utf-8") == before
+
+
+def test_durability_flag_clears_after_the_next_successful_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_writer = usage_module.atomic_write_owned_json
+    usage = UsageMonitor(settings=Settings(home=tmp_path), clock=lambda: NOW)
+
+    def fail_usage_write(*_args, **_kwargs) -> None:
+        raise OSError("read-only quota store")
+
+    monkeypatch.setattr(usage_module, "atomic_write_owned_json", fail_usage_write)
+    assert usage.record(observation()) is not None
+    assert usage.durability_degraded is True
+
+    monkeypatch.setattr(usage_module, "atomic_write_owned_json", original_writer)
+    assert usage.record(observation(observed_at=NOW + timedelta(seconds=1))) is None
+    assert usage.durability_degraded is False
+
+
+def test_restart_drops_a_persisted_observation_that_became_stale(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(home=tmp_path)
+    UsageMonitor(settings=settings, clock=lambda: NOW).record(
+        observation(resets_at=NOW + timedelta(days=1))
+    )
+
+    reloaded = UsageMonitor(
+        settings=settings,
+        clock=lambda: NOW + timedelta(seconds=settings.usage_staleness_seconds + 1),
+    )
+
+    assert reloaded.report("codex", "five_hour") is None
