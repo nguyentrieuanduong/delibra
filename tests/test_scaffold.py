@@ -82,6 +82,20 @@ def test_max_run_timeout_defaults_to_four_hours_and_rejects_smaller_run_timeout(
         ),
         ("DELIBRA_USAGE_STALENESS_SECONDS", "usage_staleness_seconds", 1800, "59", "86401"),
         (
+            "DELIBRA_CODEX_APP_SERVER_TIMEOUT_SECONDS",
+            "codex_app_server_timeout_seconds",
+            15,
+            "0",
+            "121",
+        ),
+        (
+            "DELIBRA_CODEX_QUOTA_REFRESH_SECONDS",
+            "codex_quota_refresh_seconds",
+            300,
+            "29",
+            "3601",
+        ),
+        (
             "DELIBRA_CODEX_ROLLOUT_SCAN_LIMIT",
             "codex_rollout_scan_limit",
             200,

@@ -54,6 +54,11 @@ class Settings:
     usage_poll_seconds: int = 1800
     usage_low_quota_poll_seconds: int = 300
     usage_staleness_seconds: int = 1800
+    # Reading the account's live quota costs a `codex app-server` subprocess and
+    # 1-2 seconds, so it is bounded at both ends: one handshake may not hang,
+    # and a badge poll may not respawn the process a minute.
+    codex_app_server_timeout_seconds: int = 15
+    codex_quota_refresh_seconds: int = 300
     codex_rollout_scan_limit: int = 200
     codex_rollout_read_limit: int = 4 * MIB
     # Compaction reads every unretired round at once, and its summary is
@@ -217,6 +222,18 @@ class Settings:
                 1800,
                 minimum=60,
                 maximum=86_400,
+            ),
+            codex_app_server_timeout_seconds=_integer(
+                "DELIBRA_CODEX_APP_SERVER_TIMEOUT_SECONDS",
+                15,
+                minimum=1,
+                maximum=120,
+            ),
+            codex_quota_refresh_seconds=_integer(
+                "DELIBRA_CODEX_QUOTA_REFRESH_SECONDS",
+                300,
+                minimum=30,
+                maximum=3_600,
             ),
             codex_rollout_scan_limit=_integer(
                 "DELIBRA_CODEX_ROLLOUT_SCAN_LIMIT",

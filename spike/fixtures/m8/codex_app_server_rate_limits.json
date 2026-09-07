@@ -1,0 +1,84 @@
+{
+  "accountId": "<redacted>",
+  "rateLimitResetCredits": {
+    "availableCount": 3,
+    "credits": [
+      {
+        "description": "<redacted>",
+        "expiresAt": "<redacted>",
+        "grantedAt": "<redacted>",
+        "id": "<redacted>",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "title": "<redacted>"
+      },
+      {
+        "description": "<redacted>",
+        "expiresAt": "<redacted>",
+        "grantedAt": "<redacted>",
+        "id": "<redacted>",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "title": "<redacted>"
+      },
+      {
+        "description": "<redacted>",
+        "expiresAt": "<redacted>",
+        "grantedAt": "<redacted>",
+        "id": "<redacted>",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "title": "<redacted>"
+      }
+    ]
+  },
+  "rateLimitUpsell": null,
+  "rateLimits": {
+    "credits": {
+      "balance": "<redacted>",
+      "hasCredits": false,
+      "unlimited": false
+    },
+    "individualLimit": null,
+    "limitId": "codex",
+    "limitName": null,
+    "planType": "plus",
+    "primary": {
+      "resetsAt": 1788794060,
+      "usedPercent": 20,
+      "windowDurationMins": 300
+    },
+    "rateLimitReachedType": null,
+    "secondary": {
+      "resetsAt": 1789269494,
+      "usedPercent": 37,
+      "windowDurationMins": 10080
+    },
+    "spendControlReached": false
+  },
+  "rateLimitsByLimitId": {
+    "codex": {
+      "credits": {
+        "balance": "<redacted>",
+        "hasCredits": false,
+        "unlimited": false
+      },
+      "individualLimit": null,
+      "limitId": "codex",
+      "limitName": null,
+      "planType": "plus",
+      "primary": {
+        "resetsAt": 1788794060,
+        "usedPercent": 20,
+        "windowDurationMins": 300
+      },
+      "rateLimitReachedType": null,
+      "secondary": {
+        "resetsAt": 1789269494,
+        "usedPercent": 37,
+        "windowDurationMins": 10080
+      },
+      "spendControlReached": false
+    }
+  }
+}
