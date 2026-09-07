@@ -206,6 +206,9 @@ def setup_manager(
         settings=app_settings,
         adapter_factory=AdapterFactory(contexts),
         final_writer=final_writer,
+        # Never the real CLI: the account quota read spawns `codex
+        # app-server`, and a test must not reach the operator's account.
+        codex_executable="/missing/codex",
     )
     return manager, project.id, config.id, store
 

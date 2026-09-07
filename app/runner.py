@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -59,7 +60,12 @@ from app.storage import (
     utc_now,
     validate_id,
 )
+from app.codex_quota import read_codex_account_rate_limits
 from app.usage import UsageMonitor, quota_verdict
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -190,6 +196,8 @@ class RunManager:
         adapter_factory: AdapterFactory,
         final_writer: Callable[[Path, str], None] = atomic_write_text,
         usage_monitor: UsageMonitor | None = None,
+        quota_clock: Callable[[], datetime] = _utc_now,
+        codex_executable: str = "codex",
     ) -> None:
         self.registry = registry
         self.locks = locks
@@ -197,7 +205,11 @@ class RunManager:
         self.adapter_factory = adapter_factory
         self.final_writer = final_writer
         self.usage = usage_monitor or UsageMonitor(settings=settings)
-        self._codex_quota_hydrated = False
+        self._quota_clock = quota_clock
+        self._codex_executable = codex_executable
+        # The last *attempt* to read Codex quota, and the task doing so.
+        self._codex_quota_read_at: datetime | None = None
+        self._codex_quota_task: asyncio.Task[None] | None = None
         self._active: dict[RunKey, ActiveRun] = {}
         self._completed: dict[RunKey, CompletedRun] = {}
 
@@ -518,9 +530,9 @@ class RunManager:
 
         if auto_request is None and config.agent == "codex":
             # One quota check per manual prompt, on the provider about to be
-            # spent. Auto keeps its own pre-dispatch check and must not
-            # re-stamp the observation once per turn.
-            self.refresh_codex_quota()
+            # spent. Awaited, not scheduled: this is the moment a stale figure
+            # would be acted on. Auto keeps its own pre-dispatch check.
+            await self.refresh_codex_quota()
 
         round_n = store.allocate_round(session_id)
         key = RunKey(project_id, session_id, round_n)
@@ -1473,30 +1485,79 @@ class RunManager:
                 context_window=state.context_window,
             )
 
-    def hydrate_codex_quota(self) -> None:
-        """Seed the monitor once from the newest app-owned Codex rollout."""
+    def schedule_codex_quota_refresh(self) -> None:
+        """Start a refresh without making the caller wait for it.
 
-        if self._codex_quota_hydrated:
-            return
-        self.refresh_codex_quota()
-
-    def refresh_codex_quota(self) -> None:
-        """Re-read the newest app-owned Codex rollout, costing no provider call.
-
-        Called before every manual Codex prompt, which is the moment a stale
-        figure would be acted on. It is deliberately not called for other
-        providers: the read stamps `observed_at` with the read time, so an
-        unconditional refresh would keep an ageing Codex figure alive past its
-        staleness window while a different account was being spent.
+        Phase 8 measured the account read at 1.2-1.9 s, which is far too long
+        to sit in a page render. Every render path uses this instead: the page
+        ships whatever the monitor already holds, and the badge's next poll
+        shows the fresh figure. Only the two paths that are about to *act* on
+        the answer await it.
         """
 
-        self._codex_quota_hydrated = True
-        observed_at = datetime.now(UTC)
-        for reading in read_latest_codex_rollout_state(
+        if not self._codex_quota_due():
+            return
+        if self._codex_quota_task is not None and not self._codex_quota_task.done():
+            return
+        try:
+            self._codex_quota_task = asyncio.get_running_loop().create_task(
+                self.refresh_codex_quota()
+            )
+        except RuntimeError:
+            # Rendered outside an event loop; the monitor's existing state is
+            # still correct, and quota state is advisory either way.
+            return
+
+    async def drain_codex_quota_refresh(self) -> None:
+        """Await any scheduled refresh, for shutdown and for tests."""
+
+        task = self._codex_quota_task
+        if task is not None and not task.done():
+            await asyncio.shield(task)
+
+    def _codex_quota_due(self) -> bool:
+        """Whether enough time has passed to spend another subprocess.
+
+        Keyed on the last *attempt*, not the last success: a Codex that is
+        down or logged out would otherwise become one spawned process per
+        badge poll, forever.
+        """
+
+        last = self._codex_quota_read_at
+        if last is None:
+            return True
+        elapsed = (self._quota_clock() - last).total_seconds()
+        return elapsed >= self.settings.codex_quota_refresh_seconds
+
+    async def refresh_codex_quota(self) -> None:
+        """Re-read Codex quota, costing no provider call.
+
+        The account read comes first because it is the only one that sees the
+        whole account: Delibra isolates Codex into its own `CODEX_HOME`, so a
+        `codex` run in the operator's own terminal spends the same
+        subscription and never appears in the rollouts read here. Phase 8
+        measured that gap at 19 points on the weekly window.
+
+        The rollout stays as the fallback -- it needs no subprocess, so it is
+        still the cheapest floor when the account read is unavailable.
+        """
+
+        if not self._codex_quota_due():
+            return
+        self._codex_quota_read_at = self._quota_clock()
+        readings = await read_codex_account_rate_limits(
             self.settings.codex_home,
-            scan_limit=self.settings.codex_rollout_scan_limit,
-            read_limit=self.settings.codex_rollout_read_limit,
-        ).rate_limits:
+            executable=self._codex_executable,
+            timeout_seconds=self.settings.codex_app_server_timeout_seconds,
+        )
+        if not readings:
+            readings = read_latest_codex_rollout_state(
+                self.settings.codex_home,
+                scan_limit=self.settings.codex_rollout_scan_limit,
+                read_limit=self.settings.codex_rollout_read_limit,
+            ).rate_limits
+        observed_at = datetime.now(UTC)
+        for reading in readings:
             self.usage.record(
                 reading.observed(
                     provider="codex",
@@ -1505,15 +1566,19 @@ class RunManager:
                 )
             )
 
-    def quota_pause_observation(
+    async def quota_pause_observation(
         self,
         provider: str,
         quota_override: AutoQuotaOverride | None = None,
     ) -> RateLimitObservation | None:
-        """Return the first live provider window whose policy requires pause."""
+        """Return the first live provider window whose policy requires pause.
+
+        This is a decision point, not a render, so it waits for the account
+        read rather than acting on whatever the monitor happens to hold.
+        """
 
         if provider == "codex":
-            self.hydrate_codex_quota()
+            await self.refresh_codex_quota()
         for window in ("five_hour", "seven_day"):
             observation = self.usage.report(provider, window)
             if (
@@ -1993,6 +2058,10 @@ class RunManager:
         await asyncio.shield(active.completion)
 
     async def shutdown(self) -> None:
+        # A scheduled quota read owns a subprocess; leaving it detached would
+        # outlive the loop that is about to close.
+        with suppress(Exception):
+            await self.drain_codex_quota_refresh()
         active = list(self._active.values())
         for run in active:
             run.cancel_requested = True

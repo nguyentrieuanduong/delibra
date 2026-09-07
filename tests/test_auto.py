@@ -600,6 +600,9 @@ def auto_manager_fixture(
         locks=locks,
         settings=settings,
         adapter_factory=factory,
+        # Never the real CLI: the account quota read spawns `codex
+        # app-server`, and a test must not reach the operator's account.
+        codex_executable="/missing/codex",
     )
     manager = AutoManager(
         registry=registry,
@@ -3564,7 +3567,10 @@ async def test_continuing_a_quota_pause_grants_the_exact_window_override(
     assert repaused.resumptions[1].quota_override is None
 
 
-def test_five_hour_override_never_suppresses_a_weekly_pause(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_five_hour_override_never_suppresses_a_weekly_pause(
+    tmp_path: Path,
+) -> None:
     manager, _factory, _project_id, _session_ids, _store = auto_manager_fixture(
         tmp_path,
         [],
@@ -3605,7 +3611,7 @@ def test_five_hour_override_never_suppresses_a_weekly_pause(tmp_path: Path) -> N
         granted_from_status="unknown",
     )
 
-    pause = manager.runner.quota_pause_observation("fake", override)
+    pause = await manager.runner.quota_pause_observation("fake", override)
 
     assert pause is not None
     assert pause.window == "seven_day"

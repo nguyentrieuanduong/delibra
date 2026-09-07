@@ -93,6 +93,9 @@ def manager_setup(tmp_path: Path, *, target_model: str = "success"):
         locks=LockCoordinator(),
         settings=Settings(home=tmp_path / "home", run_timeout=2),
         adapter_factory=lambda config: Adapter(contexts),
+        # Never the real CLI: the account quota read spawns `codex
+        # app-server`, and a test must not reach the operator's account.
+        codex_executable="/missing/codex",
     )
     descriptor = SourceDescriptor(
         type="pass", from_session=source.id, from_round=1

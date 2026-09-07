@@ -24,10 +24,13 @@ def usage_badge_context(request: Request, *, oob: bool = False) -> dict[str, Any
     minute per tab, forever, for state that only a finished turn can change.
 
     Every caller renders the badge itself rather than asking the browser to
-    fetch it on load, so Codex's once-per-process hydration belongs here.
+    fetch it on load, so Codex's refresh is kicked off here -- scheduled, never
+    awaited: Phase 8's account read takes 1.2-1.9 s, and a page must not wait
+    on it. This render ships the monitor's current state and the next poll
+    shows the newer figure.
     """
 
-    request.app.state.manager.hydrate_codex_quota()
+    request.app.state.manager.schedule_codex_quota_refresh()
     monitor = request.app.state.usage_monitor
     settings = request.app.state.settings
     providers: list[dict[str, Any]] = []
