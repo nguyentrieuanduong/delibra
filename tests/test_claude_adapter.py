@@ -427,6 +427,43 @@ def test_an_unlabelled_window_is_attributed_to_neither(info: dict) -> None:
     assert rate_limit_from(info) == []
 
 
+@pytest.mark.parametrize(
+    "rate_limit_type", ["seven_day", "seven_day_opus", "seven_day_sonnet"]
+)
+def test_a_model_scoped_weekly_refusal_is_still_a_weekly_refusal(
+    rate_limit_type: str,
+) -> None:
+    """Phase 8a: dropping these was a missed pause, not a display defect.
+
+    `RateLimitType` also carries per-model weekly limits. Mapping only the
+    plain `seven_day` meant a `rejected` on the Sonnet or Opus weekly window
+    produced no observation at all, so nothing could pause on it.
+    """
+
+    events = rate_limit_from(
+        {
+            "rateLimitType": rate_limit_type,
+            "status": "rejected",
+            "resetsAt": 1788750000,
+        }
+    )
+
+    assert [event.rate_limit.window for event in events] == ["seven_day"]
+    assert events[0].rate_limit.status == "rejected"
+
+
+def test_the_overage_window_is_not_a_subscription_quota() -> None:
+    """Phase 0 measured `overageStatus: rejected` on five successful turns.
+
+    `overage` describes whether pay-as-you-go is available, not whether the
+    subscription window is exhausted, so it must never reach the policy.
+    """
+
+    assert rate_limit_from(
+        {"rateLimitType": "overage", "status": "rejected", "resetsAt": 1788750000}
+    ) == []
+
+
 @pytest.mark.parametrize("resets_at", ["soon", -1, None, True])
 def test_an_unusable_reset_instant_still_reports_the_status(resets_at) -> None:
     events = rate_limit_from(

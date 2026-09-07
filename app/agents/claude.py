@@ -15,9 +15,18 @@ from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsag
 from app.storage import epoch_instant
 
 
-# The only window label Phase 0 observed; an unrecognised one proves neither
-# window, so nothing is attributed to either.
-_RATE_LIMIT_WINDOWS = {"five_hour": "five_hour", "seven_day": "seven_day"}
+# An unrecognised label proves neither window, so nothing is attributed to
+# either. The per-model weekly limits *are* the weekly window: mapping only the
+# plain `seven_day` left a `rejected` on the Sonnet or Opus window producing no
+# observation at all, so nothing could pause on it (8a). `overage` stays absent
+# on purpose -- it reports whether pay-as-you-go is available, not whether the
+# subscription window is exhausted.
+_RATE_LIMIT_WINDOWS = {
+    "five_hour": "five_hour",
+    "seven_day": "seven_day",
+    "seven_day_opus": "seven_day",
+    "seven_day_sonnet": "seven_day",
+}
 
 _RATE_LIMIT_STATUSES = {
     "allowed": "healthy",

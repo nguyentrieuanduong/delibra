@@ -134,7 +134,10 @@ async def probe_provider(
 
 
 async def probe_all(commands: dict[str, str]) -> list[ProviderHealth]:
-    expected = {"claude": "2.1.202", "codex": "0.144.5"}
+    # The newest version each provider has been verified against. A mismatch
+    # stays a warning: rate-limit and usage fields are feature-detected, never
+    # inferred from the version string.
+    expected = {"claude": "2.1.202", "codex": "0.153.4"}
     return list(
         await asyncio.gather(
             *(

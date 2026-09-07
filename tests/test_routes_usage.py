@@ -408,3 +408,58 @@ def test_badge_restores_persisted_quota_after_an_application_restart(
 
     assert response.status_code == 200
     assert "weekly: 71% remaining" in response.text
+
+
+def test_claudes_missing_percentage_is_stated_as_a_gap_not_as_unknown(
+    tmp_path,
+) -> None:
+    """8a: "no observation yet" and "cannot report one" are different facts.
+
+    Claude reports no quota percentage of any kind in `-p` mode -- measured on
+    2.1.202 and again on the installed CLI in Phase 8 -- so calling it
+    `unknown`, the same word Codex uses while waiting for its first read, reads
+    as a defect in Delibra rather than a limit of the provider.
+    """
+
+    settings = Settings(home=tmp_path / "home")
+    app = create_app(
+        settings_override=settings,
+        provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get("/usage/badge")
+
+    claude, codex = response.text.split('data-provider="codex"')
+    assert "status only" in claude
+    assert "no percentage" in claude
+    # Codex is still waiting for its first read, which is a different state.
+    assert "5h: unknown" in codex
+    assert "status only" not in codex
+
+
+def test_a_claude_status_still_renders_its_window_and_reset(tmp_path) -> None:
+    settings = Settings(home=tmp_path / "home")
+    app = create_app(
+        settings_override=settings,
+        provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
+    )
+    now = datetime.now(timezone.utc)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        app.state.usage_monitor.record(
+            RateLimitObservation(
+                provider="claude",
+                account_key="default",
+                window="five_hour",
+                used_percent=None,
+                status="warning",
+                resets_at=now + timedelta(hours=2),
+                observed_at=now,
+                source="claude_rate_limit_event",
+            )
+        )
+        response = client.get("/usage/badge")
+
+    assert "status warning" in response.text
+    assert "status only" in response.text

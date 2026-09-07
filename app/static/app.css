@@ -40,6 +40,9 @@ textarea { min-height: 7rem; }
 .usage-window.warning { color: #b47b20; }
 .usage-window.pause { color: #c43b2f; font-weight: 600; }
 .usage-window.unknown { opacity: .7; }
+/* A capability the provider does not have is an aside, not a warning: it will
+   never change, and nothing is wrong with Delibra when it shows. */
+.usage-gap { opacity: .7; font-style: italic; }
 .health { font-size: .85rem; }
 .chat-workspace {
   display: grid;

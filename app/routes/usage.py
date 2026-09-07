@@ -14,6 +14,13 @@ router = APIRouter()
 
 _PROVIDERS = ("claude", "codex")
 _WINDOWS = (("five_hour", "5h"), ("seven_day", "weekly"))
+# Which providers can report a quota percentage at all. Claude cannot: `-p`
+# mode carries no percentage for either window, measured in Phase 0 and again
+# on the installed CLI in Phase 8, and `/usage` in `-p` mode returns prose with
+# no figure. That is a permanent capability gap, not missing data, and the
+# badge must not spell the two the same way (8a).
+_PERCENTAGE_PROVIDERS = frozenset({"codex"})
+PERCENTAGE_GAP_NOTICE = "status only — no percentage available"
 _VERDICT_STRENGTH = {"unknown": 0, "ok": 1, "warning": 2, "pause": 3}
 
 
@@ -66,7 +73,16 @@ def usage_badge_context(request: Request, *, oob: bool = False) -> dict[str, Any
                 }
             )
         providers.append(
-            {"name": provider, "label": provider.title(), "windows": windows}
+            {
+                "name": provider,
+                "label": provider.title(),
+                "windows": windows,
+                "percentage_gap": (
+                    None
+                    if provider in _PERCENTAGE_PROVIDERS
+                    else PERCENTAGE_GAP_NOTICE
+                ),
+            }
         )
     badge_state = {
         "pause": "paused",
