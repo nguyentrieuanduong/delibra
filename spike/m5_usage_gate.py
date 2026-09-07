@@ -128,6 +128,28 @@ CODEX_CANDIDATES = (
     "rate_limits.secondary.resets_at",
 )
 
+# Fields computed from candidates rather than read from a line.
+#
+# Claude splits one conversation's context across three counters: a resumed
+# turn reads back as `cache_read_input_tokens` what the previous turn wrote as
+# `cache_creation_input_tokens`. No single counter therefore traces occupancy.
+# Measured over the four-turn experiment, `cache_read` reads "cumulative" and
+# `cache_creation` "did not return to baseline", while their sum with
+# `input_tokens` traces 8118 -> 42952 -> 42970 -> 8118: a textbook occupancy
+# curve, +18 at C against a 34,834-token jump at B, exactly the shape Codex
+# showed. Grading the counters individually left Claude with no context signal
+# at all, which would have made Phase 6/7 compaction impossible for it.
+DERIVED_CANDIDATES: dict[str, dict[str, tuple[str, ...]]] = {
+    "claude": {
+        "usage.total_prompt_tokens (derived)": (
+            "usage.input_tokens",
+            "usage.cache_read_input_tokens",
+            "usage.cache_creation_input_tokens",
+        ),
+    },
+    "codex": {},
+}
+
 CAPABILITIES = (
     "turn_billing",
     "context_occupancy",
@@ -505,22 +527,64 @@ def occupancy_verdict(readings: dict[str, list[Any]]) -> dict[str, str]:
     return verdicts
 
 
+def read_candidates(
+    provider: str, lines: list[dict[str, Any]], candidates: tuple[str, ...]
+) -> dict[str, Any]:
+    """Read every candidate for one turn, then add the derived fields.
+
+    A derived field is `None` unless *every* component is numeric. A partial
+    sum is a wrong number that looks like a right one, and it would be graded
+    against the occupancy discriminator as if it were a measurement.
+    """
+
+    readings: dict[str, Any] = {path: scan(lines, path) for path in candidates}
+    for name, parts in DERIVED_CANDIDATES.get(provider, {}).items():
+        values = [readings.get(part) for part in parts]
+        readings[name] = (
+            sum(values)
+            if all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in values
+            )
+            else None
+        )
+    return readings
+
+
+def resolved_model(lines: list[dict[str, Any]]) -> str | None:
+    """The model Claude actually ran, from its `system`/`init` line.
+
+    The user-typed alias (`sonnet`) never matches a `modelUsage` key, and the
+    experiment interleaves a model-change turn, so a run carries two models'
+    entries. Reading the resolved name is the only way to key the denominator
+    to the model that produced the turn.
+    """
+
+    for line in lines:
+        if line.get("type") == "system" and line.get("subtype") == "init":
+            model = line.get("model")
+            if isinstance(model, str) and model:
+                return model
+    return None
+
+
 def build_capabilities(
     provider: str,
     turns: list[TurnResult],
     candidates: tuple[str, ...],
     induced: TurnResult | None = None,
 ) -> dict[str, Any]:
-    readings = {path: [scan(t.lines, path) for t in turns] for path in candidates}
+    per_turn = [read_candidates(provider, t.lines, candidates) for t in turns]
+    paths = list(candidates) + list(DERIVED_CANDIDATES.get(provider, {}))
+    readings = {path: [reading[path] for reading in per_turn] for path in paths}
     # Select the experiment's four turns by label. `turns` also carries the
     # interleaved model-change turn, and positional indexing would compare the
     # wrong sessions -- reading an occupancy field as cumulative.
-    by_label = {t.label: t for t in turns}
-    experiment = [by_label[label] for label in OCCUPANCY_SEQUENCE if label in by_label]
+    by_index = {t.label: i for i, t in enumerate(turns)}
+    experiment = [by_index[label] for label in OCCUPANCY_SEQUENCE if label in by_index]
     verdicts = occupancy_verdict(
         {
-            path: [scan(t.lines, path) for t in experiment]
-            for path in candidates
+            path: [readings[path][i] for i in experiment]
+            for path in paths
             if "token" in path or "usage" in path
         }
     )
@@ -575,18 +639,28 @@ def build_capabilities(
         window_values = readings.get("info.model_context_window", [])
         evidence = "info.model_context_window"
     else:
-        window_values = [
-            entry.get("contextWindow")
-            for usage in readings.get("modelUsage", [])
-            if isinstance(usage, dict)
-            for entry in usage.values()
-            if isinstance(entry, dict)
-        ]
-        # Claude's denominator must be keyed by the RESOLVED model name; a
-        # lookup by the user-typed alias misses, and picking the first or
-        # largest entry can select the auxiliary model.
-        evidence = "modelUsage[<resolved model>].contextWindow"
-    if any(isinstance(v, (int, float)) and v > 0 for v in window_values):
+        # Claude's denominator must be keyed by the RESOLVED model name. A
+        # lookup by the user-typed alias (`sonnet`) misses entirely, and taking
+        # the first or largest entry can select the model-change turn's
+        # auxiliary model -- measured, the run carries claude-sonnet-5 at
+        # 1,000,000 alongside claude-haiku-4-5 at 200,000, and every Phase 6
+        # threshold computed against the wrong one is wrong by 5x.
+        window_values = []
+        keyed: set[str] = set()
+        for turn, usage in zip(turns, readings.get("modelUsage", [])):
+            model = resolved_model(turn.lines)
+            entry = usage.get(model) if isinstance(usage, dict) and model else None
+            if isinstance(entry, dict):
+                window_values.append(entry.get("contextWindow"))
+                keyed.add(model)
+        # Every turn, not any turn. Keying that works on one turn out of five is
+        # partial evidence: it would let the model-change turn's auxiliary
+        # entry certify a denominator the primary model never reported.
+        if len(window_values) < len(turns):
+            window_values = []
+        names = ", ".join(sorted(keyed)) if keyed else "<no resolved model matched>"
+        evidence = f"modelUsage[{names}].contextWindow"
+    if window_values and all(isinstance(v, (int, float)) and v > 0 for v in window_values):
         capabilities["context_window"] = {
             "proven": True,
             "unit": "tokens",
@@ -603,7 +677,25 @@ def build_capabilities(
     # the 5-hour figure and pause an Auto run far too early.
     for prefix in ("rate_limits.primary", "rate_limits.secondary"):
         percent = readings.get(f"{prefix}.used_percent")
-        if not percent or not any(isinstance(v, (int, float)) for v in percent):
+        # In range, not merely numeric. 0.16, 16 and 1600 are the same
+        # measurement under three different units, and the plan forbids
+        # guessing between them -- a value outside 0..100 says the unit is not
+        # the one the evidence string would claim.
+        if not percent or not any(
+            isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and 0 <= v <= 100
+            for v in percent
+        ):
+            continue
+        # Phase 5 renders a reset time beside the number. Without one the badge
+        # would have to invent it, so the percentage alone is not the capability.
+        resets = [
+            v
+            for v in readings.get(f"{prefix}.resets_at", [])
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+        ]
+        if not resets:
             continue
         minutes = [v for v in readings.get(f"{prefix}.window_minutes", []) if v]
         window = quota_window_from_minutes(minutes[-1] if minutes else None)
@@ -702,11 +794,18 @@ def quota_window(rate_limit_type: Any) -> str | None:
 def classify_induced(provider: str, induced: TurnResult) -> dict[str, Any]:
     """Grade the deliberately induced error against the structured fields.
 
-    Only a *permanent* 4xx can be induced safely; a 429 needs a genuinely
-    exhausted quota and a 5xx needs a provider outage, so neither is
-    reachable here. The capability is therefore proven only for what was
-    actually observed, and the evidence says which categories remain untested
-    -- Phase 4 must not assume the 429 path is covered by this run.
+    The plan's criterion is that the structured fields distinguish 429, 5xx,
+    and a transport failure. Only a *permanent* 4xx can be induced safely: a
+    429 needs a genuinely exhausted quota and a 5xx needs a provider outage.
+    So this gate cannot prove the capability, and marking it proven from one
+    404 is the same defect this file has already been corrected for four times
+    -- asserting a semantic the probe never established. It stays unproven, and
+    the observed field is recorded so a later run that does catch a 429 can
+    build on it rather than rediscover it.
+
+    Consequence, deliberately accepted: error classification is `unknown` for
+    both providers, so Phase 4's existing text classifier remains the mechanism
+    and Phases 5-7 may not gate a quota pause on a structured status.
     """
 
     status = scan(induced.lines, "api_error_status") or scan(induced.lines, "status")
@@ -726,12 +825,14 @@ def classify_induced(provider: str, induced: TurnResult) -> dict[str, Any]:
             ),
         }
     return {
-        "proven": True,
-        "unit": "http_status_code",
+        "proven": False,
+        "unit": None,
         "evidence": (
             f"{provider}: induced invalid-model request reported status {status} "
-            "in a structured field. 429 and 5xx remain UNTESTED -- neither can "
-            "be induced without an exhausted quota or a real outage."
+            "in the structured field `api_error_status`. That is one permanent "
+            "4xx; the criterion is 429, 5xx and a transport failure, and those "
+            "three remain UNTESTED -- none can be induced without an exhausted "
+            "quota or a real outage. Partial evidence, so unproven."
         ),
     }
 

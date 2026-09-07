@@ -16,9 +16,11 @@ from typing import Any
 import pytest
 
 from spike.m5_usage_gate import (
+    CLAUDE_CANDIDATES,
     CODEX_CANDIDATES,
     TurnResult,
     build_capabilities,
+    classify_induced,
     is_identifier_key,
     merge_capabilities,
     occupancy_verdict,
@@ -120,7 +122,17 @@ class TestCapabilitiesRequireSuccess:
         assert report["capabilities"]["context_window"]["proven"] is False
 
     def test_a_nested_numeric_context_window_does_prove_it(self) -> None:
-        turns = [_turn("a_small_fresh", [CLAUDE_SUCCESS])]
+        # The init line is required: the window is proven only when it can be
+        # keyed by the model that actually ran.
+        turns = [
+            _turn(
+                "a_small_fresh",
+                [
+                    {"type": "system", "subtype": "init", "model": "claude-sonnet-5-20260101"},
+                    CLAUDE_SUCCESS,
+                ],
+            )
+        ]
 
         report = build_capabilities("claude", turns, ("modelUsage",))
 
@@ -208,10 +220,12 @@ class TestQuotaWindowFromWindowMinutes:
                             "primary": {
                                 "used_percent": 7.0,
                                 "window_minutes": primary_minutes,
+                                "resets_at": 1788756684,
                             },
                             "secondary": {
                                 "used_percent": 16.0,
                                 "window_minutes": secondary_minutes,
+                                "resets_at": 1789269494,
                             },
                         }
                     }
@@ -339,6 +353,235 @@ class TestOccupancyReadsTurnsByLabel:
         report = build_capabilities("claude", self._turns(), ("usage.input_tokens",))
 
         assert "cumulative" not in report["occupancy_experiment"]["usage.input_tokens"]
+
+
+class TestClaudeOccupancyIsDerived:
+    """Claude's occupancy lives in the sum of three counters, not in any one.
+
+    A resumed turn reads back as `cache_read_input_tokens` what the previous
+    turn wrote as `cache_creation_input_tokens`, so every individual counter
+    traces a shape that is not the conversation's. Graded alone they read
+    `cumulative` and `did not return to baseline`, and Claude ends up with no
+    context signal at all -- which makes Phase 6/7 compaction impossible.
+    """
+
+    # Measured, from spike/fixtures/m5/claude_*.jsonl.
+    MEASURED = {
+        "a_small_fresh": (2, 6794, 1322),
+        "e_model_change": (10, 4892, 1443),
+        "b_large_resume": (1, 8116, 34835),
+        "c_small_resume": (2, 42951, 17),
+        "d_small_fresh": (2, 8116, 0),
+    }
+    DERIVED = "usage.total_prompt_tokens (derived)"
+
+    def _turns(self) -> list[TurnResult]:
+        return [
+            _turn(
+                label,
+                [
+                    CLAUDE_SUCCESS
+                    | {
+                        "usage": {
+                            "input_tokens": inp,
+                            "output_tokens": 4,
+                            "cache_read_input_tokens": read,
+                            "cache_creation_input_tokens": created,
+                        }
+                    }
+                ],
+            )
+            for label, (inp, read, created) in self.MEASURED.items()
+        ]
+
+    def test_no_single_measured_counter_reads_as_occupancy(self) -> None:
+        # The premise of the fix: this is why the derived field is needed.
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        singles = {
+            path: verdict
+            for path, verdict in report["occupancy_experiment"].items()
+            if path != self.DERIVED
+        }
+        assert singles, singles
+        assert not any(v.startswith("occupancy") for v in singles.values()), singles
+
+    def test_the_derived_sum_reads_as_occupancy(self) -> None:
+        # 8118 -> 42952 -> 42970 -> 8118: a 34,834-token jump at B, +18 at C,
+        # and an exact return to baseline at D.
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        assert report["occupancy_experiment"][self.DERIVED].startswith("occupancy")
+
+    def test_context_occupancy_is_proven_for_claude(self) -> None:
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        capability = report["capabilities"]["context_occupancy"]
+        assert capability["proven"] is True
+        assert capability["unit"] == "tokens"
+        assert self.DERIVED in capability["evidence"]
+
+    def test_the_derived_field_is_recorded_for_every_turn(self) -> None:
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        assert report["observed"][self.DERIVED] == [8118, 6345, 42952, 42970, 8118]
+
+    def test_a_missing_component_reads_as_absent_not_as_a_partial_sum(self) -> None:
+        # A partial sum is a wrong number that looks like a right one.
+        turns = self._turns()
+        turns[0].lines[0]["usage"] = {"input_tokens": 2, "output_tokens": 4}
+        report = build_capabilities("claude", turns, CLAUDE_CANDIDATES)
+
+        assert report["observed"][self.DERIVED][0] is None
+
+    def test_the_derived_field_is_not_offered_as_billing_evidence(self) -> None:
+        # It double-counts cached reads; billing must stay per-counter.
+        report = build_capabilities("claude", self._turns(), CLAUDE_CANDIDATES)
+
+        assert self.DERIVED not in report["capabilities"]["turn_billing"]["evidence"]
+
+
+class TestErrorClassificationAgainstThePlanCriterion:
+    """One permanent 4xx is not the three categories the plan requires.
+
+    The criterion is that the structured fields distinguish 429, 5xx, and a
+    transport failure. Only a permanent 4xx can be induced safely, so the
+    capability cannot be proven by this gate -- recording the observed field
+    while marking it unproven keeps the evidence without letting Phases 5-7
+    build a quota pause on an extrapolation.
+    """
+
+    def _induced(self, status: int | None) -> TurnResult:
+        return _turn(
+            "f_induced_error",
+            [{"type": "result", "is_error": True, "api_error_status": status}],
+        )
+
+    def test_a_structured_404_does_not_prove_the_capability(self) -> None:
+        capability = classify_induced("claude", self._induced(404))
+
+        assert capability["proven"] is False
+
+    def test_the_observed_status_field_is_still_recorded(self) -> None:
+        capability = classify_induced("claude", self._induced(404))
+
+        assert "api_error_status" in capability["evidence"]
+        assert "404" in capability["evidence"]
+
+    def test_the_untested_categories_are_named(self) -> None:
+        capability = classify_induced("claude", self._induced(404))
+
+        assert "429" in capability["evidence"]
+        assert "5xx" in capability["evidence"]
+
+    def test_codex_without_a_structured_status_is_also_unproven(self) -> None:
+        capability = classify_induced("codex", self._induced(None))
+
+        assert capability["proven"] is False
+
+
+class TestContextWindowIsKeyedByTheResolvedModel:
+    """The denominator must come from the model that ran, not the largest entry.
+
+    The experiment interleaves a model-change turn, so a run's `modelUsage`
+    carries both models. Taking any positive entry would let a 200,000-token
+    auxiliary window stand in for the primary model's, and every Phase 6
+    threshold would be computed against the wrong denominator.
+    """
+
+    def _turns(self, *, resolved: str) -> list[TurnResult]:
+        init = {"type": "system", "subtype": "init", "model": resolved}
+        usage = {"claude-sonnet-5": {"contextWindow": 1000000}}
+        alternate = {"claude-haiku-4-5-20251001": {"contextWindow": 200000}}
+        return [
+            _turn("a_small_fresh", [init, CLAUDE_SUCCESS | {"modelUsage": usage}]),
+            _turn(
+                "e_model_change",
+                [
+                    {"type": "system", "subtype": "init", "model": "claude-haiku-4-5-20251001"},
+                    CLAUDE_SUCCESS | {"modelUsage": alternate},
+                ],
+            ),
+            _turn("b_large_resume", [init, CLAUDE_SUCCESS | {"modelUsage": usage}]),
+            _turn("c_small_resume", [init, CLAUDE_SUCCESS | {"modelUsage": usage}]),
+            _turn("d_small_fresh", [init, CLAUDE_SUCCESS | {"modelUsage": usage}]),
+        ]
+
+    def test_the_resolved_model_names_the_evidence(self) -> None:
+        report = build_capabilities(
+            "claude", self._turns(resolved="claude-sonnet-5"), CLAUDE_CANDIDATES
+        )
+
+        capability = report["capabilities"]["context_window"]
+        assert capability["proven"] is True
+        assert "claude-sonnet-5" in capability["evidence"]
+
+    def test_each_turns_window_comes_from_that_turns_own_model(self) -> None:
+        # Both models are keyed, each from its own turn -- that is the point:
+        # the lookup follows the model change instead of picking a winner.
+        report = build_capabilities(
+            "claude", self._turns(resolved="claude-sonnet-5"), CLAUDE_CANDIDATES
+        )
+
+        evidence = report["capabilities"]["context_window"]["evidence"]
+        assert "claude-sonnet-5" in evidence and "haiku" in evidence
+
+    def test_one_turn_that_cannot_be_keyed_leaves_the_capability_unproven(self) -> None:
+        # Partial keying is partial evidence. Four good turns must not certify a
+        # denominator the fifth could not produce.
+        turns = self._turns(resolved="claude-sonnet-5")
+        turns[0].lines[1] = CLAUDE_SUCCESS | {
+            "modelUsage": {"claude-haiku-4-5-20251001": {"contextWindow": 200000}}
+        }
+        report = build_capabilities("claude", turns, CLAUDE_CANDIDATES)
+
+        assert report["capabilities"]["context_window"]["proven"] is False
+
+    def test_a_model_with_no_matching_usage_entry_is_unproven(self) -> None:
+        # Structural presence of *some* window proves nothing about this run's.
+        report = build_capabilities(
+            "claude", self._turns(resolved="claude-opus-4-8"), CLAUDE_CANDIDATES
+        )
+
+        assert report["capabilities"]["context_window"]["proven"] is False
+
+
+class TestQuotaPercentIsValidatedNotMerelyNumeric:
+    """A percentage is proven by its range and its reset, not by being a float."""
+
+    def _turns(self, **overrides: Any) -> list[TurnResult]:
+        limits = {
+            "primary": {"used_percent": 7.0, "window_minutes": 300, "resets_at": 1788756684}
+            | overrides,
+        }
+        return [
+            _turn(label, [{"type": "turn.completed", "usage": {"input_tokens": 1}, "rate_limits": limits}])
+            for label in ("a_small_fresh", "e_model_change", "b_large_resume", "c_small_resume", "d_small_fresh")
+        ]
+
+    def test_a_valid_percentage_is_proven(self) -> None:
+        report = build_capabilities("codex", self._turns(), CODEX_CANDIDATES)
+
+        assert report["capabilities"]["five_hour_quota_percent"]["proven"] is True
+
+    def test_a_percentage_above_100_is_not_a_percentage(self) -> None:
+        # 0.16 vs 16 vs 1600 is exactly the unit ambiguity the plan forbids
+        # guessing at.
+        report = build_capabilities("codex", self._turns(used_percent=1600.0), CODEX_CANDIDATES)
+
+        assert report["capabilities"]["five_hour_quota_percent"]["proven"] is False
+
+    def test_a_negative_percentage_is_rejected(self) -> None:
+        report = build_capabilities("codex", self._turns(used_percent=-1.0), CODEX_CANDIDATES)
+
+        assert report["capabilities"]["five_hour_quota_percent"]["proven"] is False
+
+    def test_a_percentage_without_a_reset_is_unproven(self) -> None:
+        # Phase 5 shows a reset time next to the number; without one the badge
+        # would have to invent one.
+        report = build_capabilities("codex", self._turns(resets_at=None), CODEX_CANDIDATES)
+
+        assert report["capabilities"]["five_hour_quota_percent"]["proven"] is False
 
 
 class TestSanitize:
