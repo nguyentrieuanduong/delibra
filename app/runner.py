@@ -311,7 +311,7 @@ class RunManager:
     ) -> AutoRunRecord:
         validate_id(request.auto_id, "Auto run id")
         record = store.require_auto_owner(request.auto_id)
-        if request.phase not in {"preparation", "discussion"}:
+        if request.phase not in {"preparation", "discussion", "compaction"}:
             raise StorageError("Auto phase is invalid")
         expected_status = (
             "preparing" if request.phase == "preparation" else "discussing"
@@ -323,11 +323,16 @@ class RunManager:
             or record.active_timeout is not None
         ):
             raise ConflictError("Auto run already has an active turn")
-        if (
-            type(request.position) is not int
-            or request.position != record.next_participant
-            or not 0 <= request.position < len(record.participants)
+        if type(request.position) is not int or not (
+            0 <= request.position < len(record.participants)
         ):
+            raise ConflictError("Auto next participant changed")
+        if (
+            request.phase != "compaction"
+            and request.position != record.next_participant
+        ):
+            # A compaction may be spoken by any participant: the summarizer is
+            # named in the run's policy and need not be the next speaker.
             raise ConflictError("Auto next participant changed")
         participant = record.participants[request.position]
         if (

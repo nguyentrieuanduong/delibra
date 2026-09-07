@@ -622,6 +622,20 @@ async def wait_for_auto_terminal(
     raise AssertionError("Auto run did not reach a terminal state")
 
 
+async def wait_for_discussion_turns(
+    manager: AutoManager,
+    project_id: str,
+    auto_id: str,
+    count: int,
+):
+    for _ in range(300):
+        record = manager.get(project_id, auto_id)
+        if len(record.discussion) >= count:
+            return record
+        await asyncio.sleep(0.01)
+    raise AssertionError("Auto run did not record the expected discussion turns")
+
+
 async def wait_for_active_auto_key(
     manager: AutoManager,
     project_id: str,
@@ -1829,6 +1843,409 @@ async def test_the_frozen_candidate_prompt_is_reused_for_the_turn(
 
     assert record.status == "limit_reached"
     assert renders == 2
+
+
+@pytest.mark.asyncio
+async def test_compaction_summarizes_a_cycle_without_consuming_a_speaking_slot(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("Answer 1", "continue"),
+            PlannedOutput("Summary of cycle one"),
+            PlannedOutput("Answer 2", "continue"),
+            PlannedOutput("Answer 3", "continue"),
+        ],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Compact topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="cycles", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "limit_reached"
+    assert len(record.summaries) == 1
+    summary = record.summaries[0]
+    assert summary.path == "summaries/01.md"
+    assert summary.session_id == session_ids[0]
+    assert record.retired_discussion_count == 2
+    assert record.retired_baseline_count == len(record.baseline_entries)
+    # Compaction is not a discussion turn: it must not consume a slot.
+    assert [turn.cycle for turn in record.discussion] == [1, 1, 2, 2]
+    assert [turn.position for turn in record.discussion] == [0, 1, 0, 1]
+    assert [item.outcome for item in record.compaction_attempts] == ["summarized"]
+    assert record.compaction_attempts[0].summary_index == 0
+    # The next prompt carries the summary and none of what it replaced.
+    material = factory.calls[3]["material"]
+    assert b"Summary of cycle one" in material
+    assert b"Answer 0" not in material
+    assert b"Answer 1" not in material
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_round_never_re_enters_history_or_a_later_baseline(
+    tmp_path: Path,
+) -> None:
+    # Its output is already carried by the summary; staging the round as well
+    # would re-admit the material the run just retired.
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("Answer 1", "continue"),
+            PlannedOutput("Summary of cycle one"),
+            PlannedOutput("Answer 2", "agree"),
+            PlannedOutput("Answer 3", "agree"),
+        ],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Exclusion topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="cycles", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+    compaction_round = next(
+        item
+        for item in store.load_session(record.summaries[0].session_id).rounds
+        if item.auto is not None and item.auto.phase == "compaction"
+    )
+
+    assert compaction_round.status == "complete"
+    assert compaction_round.auto.verdict is None
+    assert AutoManager._baseline_eligible(compaction_round) is False
+
+
+@pytest.mark.asyncio
+async def test_a_named_summarizer_need_not_be_the_next_speaker(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("Answer 1", "continue"),
+            PlannedOutput("Summary by the second agent"),
+            PlannedOutput("Answer 2", "continue"),
+            PlannedOutput("Answer 3", "continue"),
+        ],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Named summarizer topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(
+            mode="compact",
+            unit="cycles",
+            interval=1,
+            summarizer=session_ids[1],
+        ),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.summaries[0].session_id == session_ids[1]
+    assert record.next_participant == 0 or record.current_cycle == 2
+
+
+@pytest.mark.asyncio
+async def test_a_summarizer_outside_the_participant_set_is_refused(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(tmp_path, [])
+
+    with pytest.raises(StorageError, match="summarizer"):
+        await manager.create(
+            project_id,
+            topic="Rejected summarizer topic",
+            participant_ids=session_ids,
+            agreement_policy="all_agree",
+            max_cycles=1,
+            preparation_enabled=False,
+            context_policy=AutoContextPolicy(mode="compact", summarizer="d" * 32),
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_compaction_leaves_the_run_discussing_with_a_warning(
+    tmp_path: Path,
+) -> None:
+    # No content is lost and the render-time budget still protects the next
+    # prompt, so ending the run would destroy a discussion for nothing.
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("Answer 1", "continue"),
+            PlannedOutput("compaction fails", provider_error=True),
+            PlannedOutput("Answer 2", "continue"),
+            PlannedOutput("Answer 3", "continue"),
+        ],
+    )
+    manager.settings = replace(manager.settings, auto_turn_retries=0)
+
+    created = await manager.create(
+        project_id,
+        topic="Failing compaction topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="cycles", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "limit_reached"
+    assert record.summaries == []
+    assert record.retired_discussion_count == 0
+    assert [item.outcome for item in record.compaction_attempts] == ["failed"]
+    assert record.compaction_attempts[0].warning is not None
+    assert record.consecutive_compaction_failures == 1
+    # The cooldown spans a whole speaking round, not one turn.
+    assert record.compaction_cooldown_until_discussion_len == 2 + len(session_ids)
+    assert factory.created == 5
+
+
+@pytest.mark.asyncio
+async def test_a_failed_compaction_waits_a_whole_interval_before_trying_again(
+    tmp_path: Path,
+) -> None:
+    # Rev. 7's one-turn cooldown permitted a fresh retry batch after every
+    # single turn in turns mode -- the loop this cursor exists to stop.
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("Answer 1", "continue"),
+            PlannedOutput("compaction fails", provider_error=True),
+            PlannedOutput("Answer 2", "continue"),
+            PlannedOutput("Answer 3", "continue"),
+            PlannedOutput("Summary after the cooldown"),
+            PlannedOutput("Answer 4", "continue"),
+            PlannedOutput("Answer 5", "continue"),
+        ],
+    )
+    manager.settings = replace(manager.settings, auto_turn_retries=0)
+
+    created = await manager.create(
+        project_id,
+        topic="Cooldown topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=3,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="turns", interval=2),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    outcomes = [item.outcome for item in record.compaction_attempts]
+    assert outcomes == ["failed", "summarized"]
+    # The failure was recorded two turns in; a whole interval of further turns
+    # ran to completion before the policy was allowed to attempt again.
+    assert record.compaction_attempts[0].discussion_len == 2
+    assert record.compaction_attempts[1].discussion_len == 4
+
+
+@pytest.mark.asyncio
+async def test_consecutive_failures_disable_compaction_for_the_run(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("fails once", provider_error=True),
+            PlannedOutput("Answer 1", "continue"),
+            PlannedOutput("fails twice", provider_error=True),
+            *[PlannedOutput(f"Answer {index}", "continue") for index in range(2, 8)],
+        ],
+    )
+    manager.settings = replace(
+        manager.settings,
+        auto_turn_retries=0,
+        auto_compact_max_failures=2,
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Disablement topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=4,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="turns", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert [item.outcome for item in record.compaction_attempts] == ["failed", "failed"]
+    assert record.compaction_disabled_reason is not None
+    assert "2 consecutive" in record.compaction_disabled_reason
+
+
+@pytest.mark.asyncio
+async def test_quota_during_compaction_pauses_to_a_resumable_stopped(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("must not run"),
+        ],
+    )
+    manager._backoff_before_retry = _no_backoff
+
+    created = await manager.create(
+        project_id,
+        topic="Compaction quota topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="turns", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "stopped"
+    assert "quota" in (record.terminal_reason or "")
+    assert factory.created == 2
+    assert record.summaries == []
+    # The cursor is still parked where the discussion left it.
+    assert reconstruct_resume_cursor(record) == ResumeCursor("discussing", 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_summary_is_a_failed_attempt_not_a_retirement(
+    tmp_path: Path,
+) -> None:
+    # The budget is a prediction; reading the real output is the check, and a
+    # summary that fails it must not retire anything.
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("S" * 5_000),
+            PlannedOutput("Answer 1", "continue"),
+        ],
+    )
+    manager.settings = replace(
+        manager.settings,
+        auto_turn_retries=0,
+        auto_compact_output_limit=1_000,
+        auto_compact_min_output=100,
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Oversized summary topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="turns", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.summaries == []
+    assert record.retired_discussion_count == 0
+    assert record.compaction_attempts[0].outcome == "failed"
+    assert "summary" in (record.compaction_attempts[0].warning or "")
+
+
+@pytest.mark.asyncio
+async def test_stop_during_a_compaction_terminates_cleanly(tmp_path: Path) -> None:
+    # Stop claims the active key and cancels exactly as it does for a
+    # discussion turn; a compaction holds no special state to unwind.
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("never completes", sleep=True),
+            PlannedOutput("must not run"),
+        ],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Stop during compaction topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="turns", interval=1),
+    )
+    await wait_for_discussion_turns(manager, project_id, created.id, 1)
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    assert factory.created == 2
+    await manager.stop(project_id, created.id)
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "stopped"
+    assert record.summaries == []
+    assert record.retired_discussion_count == 0
+    assert factory.created == 2
+
+
+@pytest.mark.asyncio
+async def test_a_run_interrupted_mid_compaction_resumes_where_it_was_parked(
+    tmp_path: Path,
+) -> None:
+    # A compaction touches neither the discussion list nor the cursor, so the
+    # reconstruction is unaffected by one and the trigger is simply re-evaluated.
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Answer 0", "continue"),
+            PlannedOutput("Answer 1", "continue"),
+            PlannedOutput("never completes", sleep=True),
+            PlannedOutput("Summary after the restart"),
+            PlannedOutput("Answer 2", "continue"),
+            PlannedOutput("Answer 3", "continue"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Interrupted compaction topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="turns", interval=2),
+    )
+    await wait_for_discussion_turns(manager, project_id, created.id, 2)
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    await manager.stop(project_id, created.id)
+    stopped = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert reconstruct_resume_cursor(stopped) == ResumeCursor("discussing", 2, 0)
+
+    await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=120,
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "limit_reached"
+    assert [item.outcome for item in record.compaction_attempts] == ["summarized"]
+    assert record.retired_discussion_count == 2
 
 
 @pytest.mark.asyncio
