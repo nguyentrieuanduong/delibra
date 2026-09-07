@@ -21,6 +21,7 @@ from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
     AutoCompactionAttempt,
+    AutoContextPolicy,
     AutoParticipant,
     AutoQuotaOverride,
     AutoQuotaPause,
@@ -36,6 +37,7 @@ from app.models import (
 )
 from app.storage import (
     ACTIVE_AUTO_STATUSES,
+    AUTO_MAX_COMPACTION_ATTEMPTS,
     AUTO_MAX_INITIAL_CYCLES,
     AUTO_MAX_LIFETIME_CYCLES,
     TERMINAL_AUTO_STATUSES,
@@ -409,6 +411,7 @@ class AutoManager:
         max_cycles: int,
         preparation_enabled: bool = True,
         turn_timeout_seconds: int | None = None,
+        context_policy: AutoContextPolicy | None = None,
     ) -> AutoRunRecord:
         if self._quiescing:
             raise ConflictError("Auto manager is shutting down")
@@ -430,6 +433,8 @@ class AutoManager:
             else turn_timeout_seconds,
             maximum=self.settings.max_run_timeout,
         )
+        if context_policy is not None and type(context_policy) is not AutoContextPolicy:
+            raise StorageError("Auto context policy is invalid")
         requested_ids = list(participant_ids)
         if len(requested_ids) < 2 or len(requested_ids) != len(set(requested_ids)):
             raise StorageError("Auto requires at least two unique participants")
@@ -449,6 +454,14 @@ class AutoManager:
             by_id = {item.id: item for item in sessions}
             if any(session_id not in by_id for session_id in requested_ids):
                 raise StorageError("Auto participant does not belong to the project")
+            if (
+                context_policy is not None
+                and context_policy.summarizer != "next"
+                and context_policy.summarizer not in requested_ids
+            ):
+                raise StorageError(
+                    "Auto context summarizer must be one of the participants"
+                )
             store.require_auto_inactive()
             if any(session.status == "running" for session in sessions) or any(
                 self.runner.active_key(project_id, session.id) is not None
@@ -515,6 +528,7 @@ class AutoManager:
                 started_at=utc_now(),
                 finished_at=None,
                 terminal_reason=None,
+                context_policy=context_policy,
             )
             store.create_auto_run(
                 record,
@@ -918,7 +932,14 @@ class AutoManager:
                         await self._begin_discussion(record)
                     continue
                 if record.status == "discussing":
-                    await self._run_discussion(record)
+                    # A sibling step, never inside the post-turn locked block:
+                    # that block must not make provider calls.
+                    store = ProjectStore(self.registry.get(project_id))
+                    due, frozen = self._compaction_decision(store, record)
+                    if due:
+                        await self._run_context_operation(record)
+                        continue
+                    await self._run_discussion(record, context=frozen)
                     continue
                 return
             await self._transition_terminal(
@@ -1147,6 +1168,117 @@ class AutoManager:
                 store.save_auto_run(current)
         self._publish_status(current)
 
+    async def _run_context_operation(self, record: AutoRunRecord) -> None:
+        """Run the retirement this run's policy asks for, at a due boundary."""
+
+        if record.effective_context_policy.mode == "clear":
+            await self._run_context_clear(record)
+            return
+        await self._run_context_compaction(record)
+
+    def _record_compaction_attempt(
+        self,
+        record: AutoRunRecord,
+        *,
+        outcome: str,
+        warning: str | None = None,
+        round_n: int | None = None,
+        session_id: str | None = None,
+        summary_index: int | None = None,
+    ) -> None:
+        """Append one attempt, successful or not, and move 7b's counters."""
+
+        policy = record.effective_context_policy
+        record.compaction_attempts.append(
+            AutoCompactionAttempt(
+                trigger_key=auto_trigger_key(
+                    policy.unit,
+                    record.current_cycle,
+                    len(record.discussion),
+                ),
+                unit=policy.unit,
+                cycle=record.current_cycle,
+                discussion_len=len(record.discussion),
+                attempted_at=utc_now(),
+                outcome=outcome,
+                round_n=round_n,
+                session_id=session_id,
+                summary_index=summary_index,
+                warning=warning,
+            )
+        )
+        if outcome in {"summarized", "cleared"}:
+            record.consecutive_compaction_failures = 0
+            return
+        if outcome in {"skipped_no_headroom", "skipped_overflow"}:
+            # Structural: computed from topic, preparations and the previous
+            # summary, none of which another discussion turn can shrink, so
+            # re-testing them every cycle is pure waste.
+            record.compaction_disabled_reason = warning or f"compaction {outcome}"
+            return
+        record.consecutive_compaction_failures += 1
+        record.compaction_cooldown_until_discussion_len = compaction_cooldown_target(
+            record
+        )
+        if (
+            record.consecutive_compaction_failures
+            >= self.settings.auto_compact_max_failures
+        ):
+            # A provider that has failed this many spaced-out compactions will
+            # not succeed on the next one for reasons the run can influence.
+            record.compaction_disabled_reason = (
+                f"{record.consecutive_compaction_failures} consecutive compaction "
+                "failures"
+            )
+
+    def _compaction_writer_exhausted(self, record: AutoRunRecord) -> bool:
+        """Whether the writer's own cap stops this run attempting again.
+
+        Enforced here rather than in the validator, whose limit sits above it:
+        reaching a validator bound would make a live record unloadable, turning
+        a cosmetic overflow into data loss.
+        """
+
+        if len(record.compaction_attempts) < AUTO_MAX_COMPACTION_ATTEMPTS:
+            return False
+        record.compaction_disabled_reason = "compaction attempt limit reached"
+        return True
+
+    async def _run_context_clear(self, record: AutoRunRecord) -> None:
+        """Retire everything pending, synchronously and without a provider call.
+
+        The retired content stays on disk and in the run history; it simply
+        stops entering prompts.
+        """
+
+        project = self.registry.get(record.project_id)
+        store = ProjectStore(project)
+        session_ids = [participant.session_id for participant in record.participants]
+        async with self.locks.project_sessions(record.project_id, session_ids):
+            current = store.load_auto_run(record.id)
+            if self._quiescing:
+                self._transition_terminal_locked(
+                    store,
+                    current,
+                    "interrupted",
+                    "application shutdown",
+                )
+            elif current.stop_requested:
+                self._transition_terminal_locked(
+                    store,
+                    current,
+                    "stopped",
+                    "stopped by user",
+                )
+            elif self._compaction_writer_exhausted(current):
+                store.save_auto_run(current)
+            else:
+                current.retired_baseline_count = len(current.baseline_entries)
+                current.retired_discussion_count = len(current.discussion)
+                self._record_compaction_attempt(current, outcome="cleared")
+                store.save_auto_run(current)
+        self._publish_status(current)
+
     def _classify_turn_failure(
         self,
         store: ProjectStore,
@@ -1192,10 +1324,21 @@ class AutoManager:
         base = self.settings.auto_retry_backoff_seconds
         await asyncio.sleep(min(base * 2 ** (attempt - 1), 4 * base))
 
-    async def _run_discussion(self, record: AutoRunRecord) -> None:
+    async def _run_discussion(
+        self,
+        record: AutoRunRecord,
+        *,
+        context: bytes | None = None,
+    ) -> None:
         attempt = 0
         while True:
-            if await self._run_discussion_attempt(record, attempt) != "retry":
+            # Only the first attempt may reuse the frozen candidate rendering;
+            # a retry re-renders, because the record it describes was reloaded.
+            if await self._run_discussion_attempt(
+                record,
+                attempt,
+                context if attempt == 0 else None,
+            ) != "retry":
                 return
             attempt += 1
             await self._backoff_before_retry(attempt)
@@ -1222,12 +1365,17 @@ class AutoManager:
         self,
         record: AutoRunRecord,
         attempt: int,
+        frozen_context: bytes | None = None,
     ) -> Literal["done", "retry"]:
         from app.runner import AutoRunRequest
 
         project = self.registry.get(record.project_id)
         store = ProjectStore(project)
-        context = self._discussion_context(store, record)
+        context = (
+            frozen_context
+            if frozen_context is not None
+            else self._discussion_context(store, record)
+        )
         context_source, context_digest = store.write_auto_context(record.id, context)
         participant = record.participants[record.next_participant]
         key = None

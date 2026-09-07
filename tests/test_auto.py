@@ -1708,6 +1708,130 @@ def test_a_stale_session_occupancy_figure_cannot_fire_the_trigger(
 
 
 @pytest.mark.asyncio
+async def test_clear_retires_without_a_provider_call_and_records_the_attempt(
+    tmp_path: Path,
+) -> None:
+    # Clear is synchronous and provider-free: the retired content stays on disk
+    # and in the run history, it simply stops entering prompts.
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput(f"Answer {index}", "continue") for index in range(4)],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Clear topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="clear", unit="cycles", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "limit_reached"
+    # Four discussion turns and no compaction call of any kind.
+    assert factory.created == 4
+    assert record.retired_discussion_count == 2
+    assert [item.outcome for item in record.compaction_attempts] == ["cleared"]
+    assert record.compaction_attempts[0].round_n is None
+    assert record.consecutive_compaction_failures == 0
+    # The cycle-2 prompts carry none of the cycle-1 discussion.
+    assert b"Answer 0" not in factory.calls[2]["material"]
+    assert b"Answer 1" not in factory.calls[2]["material"]
+    assert b"Answer 2" in factory.calls[3]["material"]
+
+
+@pytest.mark.asyncio
+async def test_an_off_policy_leaves_every_prompt_and_counter_untouched(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput(f"Answer {index}", "continue") for index in range(4)],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Off topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.context_policy is None
+    assert record.retired_discussion_count == 0
+    assert record.compaction_attempts == []
+    assert b"Answer 0" in factory.calls[3]["material"]
+
+
+@pytest.mark.asyncio
+async def test_a_boundary_is_never_cleared_twice(tmp_path: Path) -> None:
+    # Nothing between one attempt and the next pass through _drive changes the
+    # cursor, so without the duplicate guard the boundary is due again at once.
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput(f"Answer {index}", "continue") for index in range(6)],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Repeat topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=3,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="clear", unit="turns", interval=1),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    keys = [item.trigger_key for item in record.compaction_attempts]
+    assert len(keys) == len(set(keys))
+    assert all(item.outcome == "cleared" for item in record.compaction_attempts)
+
+
+@pytest.mark.asyncio
+async def test_the_frozen_candidate_prompt_is_reused_for_the_turn(
+    tmp_path: Path,
+) -> None:
+    # The boundary check is a relocation of the render the turn already does,
+    # not a second one -- and reusing it is what closes the check/use gap.
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput(f"Answer {index}", "continue") for index in range(2)],
+    )
+    renders = 0
+    original = manager._discussion_context
+
+    def counting(store, record):
+        nonlocal renders
+        renders += 1
+        return original(store, record)
+
+    manager._discussion_context = counting
+
+    created = await manager.create(
+        project_id,
+        topic="Freeze topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+        context_policy=AutoContextPolicy(
+            mode="clear",
+            unit="context",
+            threshold_percent=95,
+        ),
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert record.status == "limit_reached"
+    assert renders == 2
+
+
+@pytest.mark.asyncio
 def _seed_baseline_round(
     store,
     session_id: str,
