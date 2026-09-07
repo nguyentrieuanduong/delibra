@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 import math
+from pathlib import PurePosixPath
+import re
 from typing import Any
 
 
@@ -509,6 +511,57 @@ class ContextObservation:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ContextSummaryArtifact:
+    """One session's durable context summary, owned by that session's directory.
+
+    Not a ``SharedContextDescriptor``: that type's ``staged_file`` denotes a
+    round-scoped input copy, while this outlives every round it summarizes and
+    is re-staged, digest-checked, into each later turn.
+    """
+
+    path: str
+    sha256: str
+    source_round: int
+    created_at: str
+    model: str | None = None
+
+    def __post_init__(self) -> None:
+        # The summary is read back and handed to a provider as context, so a
+        # path that could leave the session directory is refused here -- which
+        # is also what refuses a tampered config on load.
+        if type(self.path) is not str or not self.path:
+            raise ValueError("context summary path is required")
+        parts = PurePosixPath(self.path).parts
+        if (
+            self.path.startswith("/")
+            or ".." in parts
+            or PurePosixPath(self.path).is_absolute()
+        ):
+            raise ValueError("context summary path must stay inside the session")
+        if type(self.sha256) is not str or re.fullmatch(r"[0-9a-f]{64}", self.sha256) is None:
+            raise ValueError("context summary digest must be a sha256 hex string")
+        if type(self.source_round) is not int or self.source_round < 1:
+            raise ValueError("context summary source round must be positive")
+        if type(self.created_at) is not str or not self.created_at:
+            raise ValueError("context summary created_at must be a non-empty string")
+        if self.model is not None and type(self.model) is not str:
+            raise ValueError("context summary model must be a string or None")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ContextSummaryArtifact":
+        return cls(
+            path=_strict_str(data, "path"),
+            sha256=_strict_str(data, "sha256"),
+            source_round=_strict_int(data, "source_round"),
+            created_at=_strict_str(data, "created_at"),
+            model=data.get("model"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 RATE_LIMIT_WINDOWS = frozenset({"five_hour", "seven_day"})
 RATE_LIMIT_STATUSES = frozenset({"healthy", "warning", "rejected", "unknown"})
 # Every quota source Phase 0 proved, named so a later gate can change one
@@ -908,6 +961,17 @@ class SessionConfig:
     # discards the provider-side context this describes. Absent on legacy
     # records.
     context_observation: ContextObservation | None = None
+    # Rounds at or below this number have been retired by Clear or Compact and
+    # are never staged again. The upper bound is enforced where the operations
+    # run, which is the only place that knows the latest allocated round.
+    context_baseline_round: int = 0
+    context_summary: ContextSummaryArtifact | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.context_baseline_round) is not int or (
+            self.context_baseline_round < 0
+        ):
+            raise ValueError("context_baseline_round must be a non-negative integer")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SessionConfig":
@@ -927,6 +991,14 @@ class SessionConfig:
                 if data.get("context_observation") is not None
                 else None
             ),
+            context_baseline_round=_strict_int(
+                data, "context_baseline_round", default=0
+            ),
+            context_summary=(
+                ContextSummaryArtifact.from_dict(data["context_summary"])
+                if data.get("context_summary") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -935,6 +1007,11 @@ class SessionConfig:
         result["context_observation"] = (
             self.context_observation.to_dict()
             if self.context_observation is not None
+            else None
+        )
+        result["context_summary"] = (
+            self.context_summary.to_dict()
+            if self.context_summary is not None
             else None
         )
         return result

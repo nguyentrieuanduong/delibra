@@ -14,6 +14,7 @@ import pytest
 
 from app.models import (
     ContextObservation,
+    ContextSummaryArtifact,
     Project,
     RoundRecord,
     SessionConfig,
@@ -352,6 +353,96 @@ def test_session_config_context_observation_is_backward_compatible() -> None:
     )
     restored = SessionConfig.from_dict(legacy.to_dict())
     assert restored.context_observation == legacy.context_observation
+
+
+def test_session_config_context_boundary_is_backward_compatible() -> None:
+    legacy_data = {
+        "id": "b" * 32,
+        "name": "researcher",
+        "agent": "claude",
+        "model": "sonnet",
+        "effort": "high",
+        "role_instructions": "",
+        "cli_session_id": None,
+        "status": "idle",
+        "created_at": "2026-09-07T00:00:00Z",
+    }
+
+    legacy = SessionConfig.from_dict(legacy_data)
+    assert legacy.context_baseline_round == 0
+    assert legacy.context_summary is None
+
+    legacy.context_baseline_round = 4
+    legacy.context_summary = ContextSummaryArtifact(
+        path="context/summary-04.md",
+        sha256="a" * 64,
+        source_round=4,
+        created_at="2026-09-07T00:00:02Z",
+        model="claude-sonnet-5",
+    )
+    restored = SessionConfig.from_dict(legacy.to_dict())
+    assert restored.context_baseline_round == 4
+    assert restored.context_summary == legacy.context_summary
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/etc/passwd",
+        "../other/summary.md",
+        "context/../../escape.md",
+        "",
+    ],
+)
+def test_context_summary_refuses_a_path_it_does_not_own(path: str) -> None:
+    # The summary is read back and fed to a provider as context, so a path that
+    # leaves the session's own directory must fail on construction -- which is
+    # also what refuses it on load.
+    with pytest.raises(ValueError):
+        ContextSummaryArtifact(
+            path=path,
+            sha256="a" * 64,
+            source_round=1,
+            created_at="2026-09-07T00:00:02Z",
+            model=None,
+        )
+
+
+def test_context_summary_refuses_a_malformed_digest_or_round() -> None:
+    with pytest.raises(ValueError):
+        ContextSummaryArtifact(
+            path="context/summary-01.md",
+            sha256="not-a-digest",
+            source_round=1,
+            created_at="2026-09-07T00:00:02Z",
+            model=None,
+        )
+    with pytest.raises(ValueError):
+        ContextSummaryArtifact(
+            path="context/summary-01.md",
+            sha256="a" * 64,
+            source_round=0,
+            created_at="2026-09-07T00:00:02Z",
+            model=None,
+        )
+
+
+def test_context_baseline_round_refuses_a_negative_boundary() -> None:
+    with pytest.raises(ValueError):
+        SessionConfig.from_dict(
+            {
+                "id": "b" * 32,
+                "name": "researcher",
+                "agent": "claude",
+                "model": "sonnet",
+                "effort": "high",
+                "role_instructions": "",
+                "cli_session_id": None,
+                "status": "idle",
+                "created_at": "2026-09-07T00:00:00Z",
+                "context_baseline_round": -1,
+            }
+        )
 
 
 def test_totals_never_claim_a_figure_no_round_reported() -> None:
