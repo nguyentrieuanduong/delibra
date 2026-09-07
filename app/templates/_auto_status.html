@@ -12,7 +12,8 @@
 {% endif %}
 <section
   id="auto-status"
-  class="auto-status {{ auto.status }}"
+  {# A quota pause keeps its terminal status but never the failure tier. #}
+  class="auto-status {{ auto.status }}{% if auto.quota_pause %} quota-paused{% endif %}"
   data-auto-id="{{ auto.id }}"
   data-auto-active="{{ 'true' if auto_active else 'false' }}"
 >

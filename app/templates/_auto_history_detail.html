@@ -1,5 +1,5 @@
 {% from "_turn_usage.html" import turn_usage %}
-<article class="auto-history-detail" aria-label="Auto run history detail">
+<article class="auto-history-detail{% if auto.quota_pause %} quota-paused{% endif %}" aria-label="Auto run history detail">
   <h3>{% if auto.number %}Auto {{ auto.number }}{% else %}Legacy Auto{% endif %} · {{ auto.status }}</h3>
   {{ turn_usage(auto_usage, "Run total, every round included") }}
   {% if auto_resumable|default(false) %}

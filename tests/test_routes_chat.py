@@ -1292,6 +1292,116 @@ def test_chat_shows_what_a_round_cost_and_stays_silent_when_nothing_was_reported
     assert "32,018 in" in focused.text
 
 
+def quota_round(round_n: int, *, auto_id: str | None) -> RoundRecord:
+    """A round the provider refused for quota: stored as an error, shown as a pause."""
+
+    return RoundRecord(
+        n=round_n,
+        status="error",
+        error="discussion provider failed: API Error: 429 rate limit exceeded",
+        warnings=[],
+        agent="claude",
+        model="success",
+        effort="low",
+        started_at=f"2026-01-01T00:00:0{round_n}Z",
+        finished_at=f"2026-01-01T00:00:0{round_n}Z",
+        source=SourceDescriptor(type="auto" if auto_id else "user"),
+        auto=(
+            AutoRoundDescriptor(
+                auto_id=auto_id,
+                phase="discussion",
+                cycle=1,
+                position=0,
+                context_file=f"inputs/round-{round_n:02d}/auto-context.md",
+                context_sha256="0" * 64,
+                verdict="continue",
+            )
+            if auto_id
+            else None
+        ),
+        error_category="quota",
+    )
+
+
+def failed_round(round_n: int) -> RoundRecord:
+    return RoundRecord(
+        n=round_n,
+        status="error",
+        error="agent stream failed",
+        warnings=[],
+        agent="claude",
+        model="success",
+        effort="low",
+        started_at=f"2026-01-01T00:00:0{round_n}Z",
+        finished_at=f"2026-01-01T00:00:0{round_n}Z",
+        source=SourceDescriptor(type="user"),
+        error_category="permanent",
+    )
+
+
+def test_a_quota_round_renders_as_a_pause_while_other_failures_stay_red(
+    tmp_path: Path,
+) -> None:
+    # The stored record must not change -- reconciliation and every status query
+    # depend on `status == "error"` -- so only the presentation branches, on the
+    # folded category.
+    alpha = session(
+        "a" * 32,
+        "Alpha",
+        rounds=[quota_round(1, auto_id="c" * 32), failed_round(2)],
+    )
+    app, project, _ = setup_project(tmp_path, [alpha])
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{prefix}/chat")
+        focus = client.get(f"{prefix}/sessions/{alpha.id}/rounds/1/focus")
+
+    paused = re.search(
+        rf'<article[^>]+id="round-{alpha.id}-1".*?</article>',
+        page.text,
+        flags=re.DOTALL,
+    ).group()
+    crashed = re.search(
+        rf'<article[^>]+id="round-{alpha.id}-2".*?</article>',
+        page.text,
+        flags=re.DOTALL,
+    ).group()
+
+    assert "quota-paused" in paused.split(">", 1)[0]
+    assert "round error" not in paused
+    assert '<p class="error">' not in paused
+    assert '<p class="notice" role="status">' in paused
+    assert "Auto paused: Claude quota limit reached." in paused
+    # Nothing is hidden: the provider's own words stay, collapsed.
+    assert "429 rate limit exceeded" in paused
+    assert "<summary>Provider message</summary>" in paused
+    # A genuine failure is untouched.
+    assert "round error" in crashed.split(">", 1)[0]
+    assert '<p class="error">agent stream failed</p>' in crashed
+    # The focused view tells the same story.
+    assert '<p class="notice" role="status">' in focus.text
+    assert '<p class="error">' not in focus.text
+    assert "quota-paused" in focus.text
+    assert "429 rate limit exceeded" in focus.text
+
+
+def test_a_manual_quota_round_does_not_claim_auto_was_paused(tmp_path: Path) -> None:
+    # A 429 on a hand-sent prompt paused nothing; saying "Auto paused" there
+    # would be a fabricated explanation.
+    alpha = session("a" * 32, "Alpha", rounds=[quota_round(1, auto_id=None)])
+    app, project, _ = setup_project(tmp_path, [alpha])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+
+    assert "Auto paused" not in page.text
+    assert "Claude quota limit reached; this turn did not run." in page.text
+    assert '<p class="notice" role="status">' in page.text
+    # Retry stays available: this round is not Auto-owned.
+    assert ">Retry</button>" in page.text
+
+
 def test_chat_prompt_rereads_codex_quota_once_for_the_provider_it_spends(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

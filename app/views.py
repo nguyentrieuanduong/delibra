@@ -6,7 +6,13 @@ from typing import Any
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
-from app.models import Project, SessionConfig, TurnUsage, total_turn_usage
+from app.models import (
+    Project,
+    RoundRecord,
+    SessionConfig,
+    TurnUsage,
+    total_turn_usage,
+)
 from app.storage import (
     NotFoundError,
     ProjectStore,
@@ -46,6 +52,30 @@ def round_dom_id(session_id: str, round_n: int) -> str:
     return f"round-{session_id}-{round_n}"
 
 
+def quota_notice(record: RoundRecord | None) -> str | None:
+    """State a quota refusal as a pause, or ``None`` for any other round.
+
+    The stored round stays an error -- a call really did fail, and every status
+    query and the startup reconciliation depend on that -- so the pause exists
+    only in presentation, branched on the folded category.
+    """
+
+    if record is None or record.error_category != "quota":
+        return None
+    provider = record.agent.title()
+    if record.source.type == "auto":
+        return (
+            f"Auto paused: {provider} quota limit reached."
+            " Continue Auto when you are ready."
+        )
+    # Nothing was paused on a hand-sent prompt; claiming otherwise would be a
+    # fabricated explanation.
+    return (
+        f"{provider} quota limit reached; this turn did not run."
+        " Retry once the quota window resets."
+    )
+
+
 def round_views(
     store: ProjectStore,
     session_id: str,
@@ -71,6 +101,7 @@ def round_views(
             {
                 "n": record.n,
                 "record": record,
+                "quota_notice": quota_notice(record),
                 "prompt": prompt.read_text(encoding="utf-8") if prompt.exists() else "",
                 "output": (
                     output.read_text(encoding="utf-8")
@@ -101,6 +132,7 @@ def round_views(
             {
                 "n": number,
                 "record": None,
+                "quota_notice": None,
                 "prompt": prompt.read_text(encoding="utf-8") if prompt.exists() else "",
                 "output": (
                     output.read_text(encoding="utf-8")
