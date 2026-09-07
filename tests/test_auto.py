@@ -36,6 +36,7 @@ from app.models import (
     AutoRunRecord,
     AutoTurn,
     ContextObservation,
+    ContextSummaryArtifact,
     RateLimitObservation,
     RoundRecord,
     RunKey,
@@ -1024,6 +1025,128 @@ async def test_auto_manager_provider_failure_stops_without_skipping(
     assert terminal.discussion == []
     assert factory.created == 2
     assert factory.maximum_active == 1
+
+
+@pytest.mark.asyncio
+def _seed_baseline_round(
+    store,
+    session_id: str,
+    number: int,
+    *,
+    text: str,
+) -> None:
+    config = store.load_session(session_id)
+    rounds = store.rounds_dir(session_id)
+    (rounds / f"round-{number:02d}.prompt.md").write_text(f"Prompt {number}")
+    (rounds / f"round-{number:02d}.md").write_text(text)
+    config.rounds.append(
+        RoundRecord(
+            n=number,
+            status="complete",
+            error=None,
+            warnings=[],
+            agent="fake",
+            model="success",
+            effort="low",
+            started_at=f"2026-07-19T00:00:0{number}Z",
+            finished_at=f"2026-07-19T00:00:0{number}Z",
+            source=SourceDescriptor(type="user"),
+        )
+    )
+    store.save_session(config)
+
+
+def _seed_session_summary(store, session_id: str, text: str, *, source_round: int):
+    config = store.load_session(session_id)
+    context_dir = store.context_dir(session_id)
+    context_dir.mkdir(mode=0o700, exist_ok=True)
+    body = text.encode("utf-8")
+    (context_dir / f"summary-{source_round:02d}.md").write_bytes(body)
+    config.context_summary = ContextSummaryArtifact(
+        path=f"context/summary-{source_round:02d}.md",
+        sha256=sha256(body).hexdigest(),
+        source_round=source_round,
+        created_at=f"2026-07-19T00:00:0{source_round}Z",
+        model="fake",
+    )
+    config.context_baseline_round = source_round
+    store.save_session(config)
+
+
+@pytest.mark.asyncio
+async def test_auto_baseline_honours_each_session_clear_and_compact(
+    tmp_path: Path,
+) -> None:
+    # Without this, one Auto run undoes both operations: cleared rounds
+    # reappear in baseline.md and a compacted session contributes the very
+    # rounds its summary replaced.
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Done", "agree"), PlannedOutput("Second", "continue")],
+    )
+    compacted, cleared = session_ids
+    _seed_baseline_round(store, compacted, 1, text="Retired answer")
+    _seed_baseline_round(store, compacted, 2, text="Surviving answer")
+    _seed_session_summary(store, compacted, "Summary of round 1", source_round=1)
+    _seed_baseline_round(store, cleared, 1, text="Forgotten answer")
+    config = store.load_session(cleared)
+    config.context_baseline_round = 1
+    store.save_session(config)
+
+    created = await manager.create(
+        project_id,
+        topic="Baseline topic",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=1,
+    )
+    baseline = store.load_auto_artifact(
+        created.id,
+        created.baseline,
+        manager.settings.stateless_history_limit,
+    )
+    # Drained before asserting: a failed assertion must not leave a run driving.
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert b"Retired answer" not in baseline
+    assert b"Forgotten answer" not in baseline
+    assert b"Surviving answer" in baseline
+    assert baseline.count(b"Summary of round 1") == 1
+    assert b"Summarized through round: 1" in baseline
+    # The summary is a verified entry like any other, so the per-entry digest
+    # check in the discussion prompt covers it for free.
+    entry = next(
+        item for item in created.baseline_entries if item.round_n == 1
+    )
+    contents = baseline[entry.offset : entry.offset + entry.length]
+    assert sha256(contents).hexdigest() == entry.sha256
+
+
+@pytest.mark.asyncio
+async def test_auto_creation_fails_when_summaries_alone_exceed_the_budget(
+    tmp_path: Path,
+) -> None:
+    # Creation is interactive, so refusing is safe; silently starting a run on
+    # misrepresented history is not.
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Done", "agree")],
+    )
+    manager.settings = replace(manager.settings, stateless_history_limit=200)
+    for session_id in session_ids:
+        _seed_session_summary(store, session_id, "S" * 150, source_round=1)
+
+    try:
+        with pytest.raises(StorageError, match="summaries"):
+            await manager.create(
+                project_id,
+                topic="Baseline topic",
+                participant_ids=session_ids,
+                agreement_policy="first_agree",
+                max_cycles=1,
+            )
+    finally:
+        await manager.shutdown()
 
 
 @pytest.mark.asyncio
