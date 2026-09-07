@@ -18,7 +18,16 @@ Run it as:
     envs/bin/python -m spike.m5_usage_gate
 
 It performs real, billable provider calls, including one ~100 KiB prompt for the
-occupancy experiment. Nothing else in the test suite calls it.
+occupancy experiment. Nothing else in the test suite calls it, but
+`tests/test_m5_gate.py` covers every pure decision it makes.
+
+**A turn counts only on a provider success terminal** — Claude `result` with
+`is_error == false`, Codex `turn.completed`. Exit status and the presence of
+JSON on stdout prove nothing: the first live run exited 0 while emitting an
+`authentication_failed` payload whose zero token counters were then read as
+proof of billing support. Fixtures are staged in a temp directory and published
+only when every probed turn succeeded, so a half-run can never masquerade as
+evidence, and a per-provider rerun can never erase the other provider.
 
 This is a disposable CLI entry point, not production code: **stdout is the CLI
 interface**, so it prints rather than logging, exactly like the other spike gates.
@@ -28,10 +37,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -54,6 +64,11 @@ FIXTURES = ROOT / "spike" / "fixtures" / "m5"
 # enough to stay within a single prompt.
 FILLER_BYTES = 100 * 1024
 SMALL_PROMPT = "Reply with exactly the word: ok"
+
+# A model name no provider can resolve, used to induce a permanent 4xx on
+# demand. 429 and 5xx cannot be induced without an exhausted quota or a real
+# outage, so `error_classification` never claims to cover them.
+INVALID_MODEL = "delibra-nonexistent-model-for-error-classification"
 
 # Candidate fields, recorded for every turn so the reasoning stays auditable and
 # re-checkable when a CLI version changes.
@@ -105,6 +120,7 @@ CAPABILITIES = (
 class TurnResult:
     label: str
     lines: list[dict[str, Any]] = field(default_factory=list)
+    rollout_lines: list[dict[str, Any]] = field(default_factory=list)
     cli_session_id: str | None = None
     failed: str | None = None
 
@@ -136,17 +152,51 @@ def scan(lines: list[dict[str, Any]], path: str) -> Any:
     return found
 
 
+IDENTIFIER_KEYS = frozenset(
+    {
+        "id",
+        "session_id",
+        "thread_id",
+        "turn_id",
+        "root_turn_id",
+        "parent_tool_use_id",
+        "uuid",
+        "cwd",
+        "workspace_roots",
+        "account_id",
+        "user_id",
+    }
+)
+
+# A bare identifier is short enough to survive the length rule, so it needs its
+# own detector rather than relying on the key name alone.
+UUID_LIKE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
+
+
+def is_identifier_key(key: str) -> bool:
+    return key in IDENTIFIER_KEYS
+
+
 def sanitize(value: Any, *, depth: int = 0) -> Any:
     """Preserve structure and types; replace anything that could be content.
 
     Numbers are kept: they are the whole point of the fixture, and they are
-    usage counters, not prompt or response text.
+    usage counters, not prompt or response text. Identifiers are dropped even
+    though they are short -- a fixture is checked in, and a real session or
+    thread id in it is a leak, not a parser input.
     """
 
     if depth > 12:
         return "<deep>"
     if isinstance(value, dict):
-        return {key: sanitize(item, depth=depth + 1) for key, item in value.items()}
+        return {
+            key: "<redacted>"
+            if is_identifier_key(key) and not isinstance(value[key], (dict, list))
+            else sanitize(value[key], depth=depth + 1)
+            for key in value
+        }
     if isinstance(value, list):
         return [sanitize(item, depth=depth + 1) for item in value[:20]]
     if isinstance(value, bool) or value is None:
@@ -154,10 +204,44 @@ def sanitize(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, (int, float)):
         return value
     if isinstance(value, str):
+        if UUID_LIKE.match(value):
+            return "<redacted>"
         # Model names, statuses, and ISO instants are the strings the parsers
         # key on, so keep short ones and redact anything long enough to be text.
         return value if len(value) <= 64 and "\n" not in value else "<redacted>"
     return "<redacted>"
+
+
+def terminal_failure(provider: str, lines: list[dict[str, Any]]) -> str | None:
+    """Return why the turn failed, or None if the provider confirmed success.
+
+    Both CLIs exit 0 and emit well-formed JSON while failing, so neither the
+    exit status nor the presence of parseable output is evidence. Only a
+    provider success terminal is: Claude `result` with `is_error == false`,
+    Codex `turn.completed`.
+    """
+
+    if provider == "claude":
+        results = [line for line in lines if line.get("type") == "result"]
+        if not results:
+            return "no result event"
+        final = results[-1]
+        if final.get("is_error") is False:
+            return None
+        message = final.get("result") or final.get("errors") or final.get("subtype")
+        return f"claude result is_error: {message}"
+
+    for line in lines:
+        if line.get("type") == "turn.completed":
+            return None
+    for line in lines:
+        if line.get("type") in {"turn.failed", "error"}:
+            error = line.get("error")
+            message = (
+                error.get("message") if isinstance(error, dict) else line.get("message")
+            )
+            return f"codex {line['type']}: {message}"
+    return "no turn.completed event"
 
 
 async def run_turn(
@@ -168,6 +252,7 @@ async def run_turn(
     prompt: str,
     resume_id: str | None,
     label: str,
+    rollout_seen: dict[str, int],
 ) -> TurnResult:
     context = RunContext(
         user_prompt=prompt,
@@ -201,10 +286,56 @@ async def run_turn(
                 value = payload.get(key) or dig(payload, f"msg.{key}")
                 if isinstance(value, str) and value:
                     result.cli_session_id = value
-    if process.returncode not in (0, None) and not result.lines:
+
+    provider = "claude" if isinstance(adapter, ClaudeAdapter) else "codex"
+    # Judge success from stdout alone. A resumed Codex thread shares one rollout
+    # file across turns, so folding it in first would let an earlier turn's
+    # terminal answer for this one.
+    failure = terminal_failure(provider, result.lines)
+    if failure is not None:
         tail = stderr.decode("utf-8", errors="replace").strip()[-400:]
-        result.failed = f"exit {process.returncode}: {tail}"
+        result.failed = f"exit {process.returncode}: {failure}" + (
+            f" | stderr: {tail}" if tail else ""
+        )
+
+    if provider == "codex" and result.cli_session_id:
+        # Codex keeps `token_count` -- which carries `last_token_usage`,
+        # `total_token_usage`, `info.model_context_window`, and both rate-limit
+        # windows -- in the app-owned rollout, never on `exec --json` stdout.
+        # Without this the gate can never see the evidence the plan requires.
+        thread = result.cli_session_id
+        payloads = read_rollout(thread)[rollout_seen.get(thread, 0) :]
+        rollout_seen[thread] = rollout_seen.get(thread, 0) + len(payloads)
+        result.rollout_lines = payloads
+        result.lines.extend(payloads)
     return result
+
+
+def read_rollout(thread_id: str) -> list[dict[str, Any]]:
+    """Return the `event_msg` payloads of the rollout for `thread_id`.
+
+    The rollout also records the full prompt and response, so only event
+    payloads are lifted -- never `response_item` -- and everything still goes
+    through `sanitize` before it reaches a fixture.
+    """
+
+    home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    matches = sorted(home.glob(f"sessions/**/rollout-*-{thread_id}.jsonl"))
+    payloads: list[dict[str, Any]] = []
+    for path in matches:
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or record.get("type") != "event_msg":
+                continue
+            payload = record.get("payload")
+            if isinstance(payload, dict):
+                payloads.append(payload)
+    return payloads
 
 
 async def probe_provider(
@@ -212,6 +343,7 @@ async def probe_provider(
     adapter: Any,
     config: SessionConfig,
     workspace: Path,
+    alternate_model: str,
 ) -> list[TurnResult]:
     """The 0a controlled-size experiment: A small, B huge, C small, D fresh.
 
@@ -220,56 +352,54 @@ async def probe_provider(
     rises at B, keeps rising at C, and resets only at D. C is the decisive
     comparison: occupancy is flat-to-lower against B while cumulative is
     strictly higher.
+
+    A fifth turn changes the model, because the plan requires a model-change
+    fixture: Claude's context-window denominator is keyed by the *resolved*
+    model name, and a single-model fixture cannot catch a lookup that silently
+    misses.
+
+    The sequence stops at the first failed turn. Continuing past one produces
+    exactly the artifact that made the first live run worthless -- a full set of
+    fixtures in which every number is an error payload.
     """
 
     turns: list[TurnResult] = []
-
-    turn_a = await run_turn(
-        adapter=adapter,
-        config=config,
-        workspace=workspace,
-        prompt=SMALL_PROMPT,
-        resume_id=None,
-        label="a_small_fresh",
-    )
-    turns.append(turn_a)
-    if turn_a.failed:
-        print(f"  {name}: turn A failed: {turn_a.failed}")
-        return turns
-
+    rollout_seen: dict[str, int] = {}
     filler = ("delibra filler line for the occupancy experiment.\n" * 4096)[
         :FILLER_BYTES
     ]
-    turns.append(
-        await run_turn(
+
+    async def attempt(
+        label: str, prompt: str, resume_id: str | None, model: str | None = None
+    ) -> bool:
+        turn = await run_turn(
             adapter=adapter,
-            config=config,
+            config=config if model is None else replace(config, model=model),
             workspace=workspace,
-            prompt=f"Reply with exactly the word: ok\n\n{filler}",
-            resume_id=turn_a.cli_session_id,
-            label="b_large_resume",
+            prompt=prompt,
+            resume_id=resume_id,
+            label=label,
+            rollout_seen=rollout_seen,
         )
-    )
-    turns.append(
-        await run_turn(
-            adapter=adapter,
-            config=config,
-            workspace=workspace,
-            prompt=SMALL_PROMPT,
-            resume_id=turns[-1].cli_session_id or turn_a.cli_session_id,
-            label="c_small_resume",
-        )
-    )
-    turns.append(
-        await run_turn(
-            adapter=adapter,
-            config=config,
-            workspace=workspace,
-            prompt=SMALL_PROMPT,
-            resume_id=None,
-            label="d_small_fresh",
-        )
-    )
+        turns.append(turn)
+        if turn.failed:
+            print(f"  {name}: turn {label} failed: {turn.failed}")
+            return False
+        return True
+
+    if not await attempt("a_small_fresh", SMALL_PROMPT, None):
+        return turns
+    first = turns[0].cli_session_id
+
+    if not await attempt("b_large_resume", f"{SMALL_PROMPT}\n\n{filler}", first):
+        return turns
+    if not await attempt(
+        "c_small_resume", SMALL_PROMPT, turns[-1].cli_session_id or first
+    ):
+        return turns
+    if not await attempt("d_small_fresh", SMALL_PROMPT, None):
+        return turns
+    await attempt("e_model_change", SMALL_PROMPT, None, model=alternate_model)
     return turns
 
 
@@ -297,6 +427,7 @@ def build_capabilities(
     provider: str,
     turns: list[TurnResult],
     candidates: tuple[str, ...],
+    induced: TurnResult | None = None,
 ) -> dict[str, Any]:
     readings = {path: [scan(t.lines, path) for t in turns] for path in candidates}
     verdicts = occupancy_verdict(
@@ -312,13 +443,36 @@ def build_capabilities(
     ]
 
     capabilities = {name: {"proven": False, "unit": None, "evidence": None} for name in CAPABILITIES}
+    failures = {t.label: t.failed for t in turns if t.failed}
+    if failures:
+        # A failed probe is not evidence of absence, and its payload is not
+        # evidence of presence. The first live run proved `turn_billing` and
+        # `context_window` from an authentication error whose counters were all
+        # zero; nothing may be proven unless every turn reached a success
+        # terminal.
+        return {
+            "provider": provider,
+            "turns": [t.label for t in turns],
+            "failures": failures,
+            "observed": observed,
+            "occupancy_experiment": verdicts,
+            "capabilities": capabilities,
+            "note": "probe failed; every capability is unknown, not absent",
+        }
 
     billing = [p for p in candidates if p.endswith(("input_tokens", "output_tokens"))]
-    if any(isinstance(readings.get(p, [None])[0], (int, float)) for p in billing):
+    # Strictly positive: an error payload reports zero for every counter, so
+    # zero cannot distinguish "billed nothing" from "never reached the model".
+    billed = [
+        p
+        for p in billing
+        if any(isinstance(v, (int, float)) and v > 0 for v in readings.get(p, []))
+    ]
+    if billed:
         capabilities["turn_billing"] = {
             "proven": True,
             "unit": "tokens",
-            "evidence": [p for p in billing if readings.get(p, [None])[0] is not None],
+            "evidence": billed,
         }
     if proven_occupancy:
         capabilities["context_occupancy"] = {
@@ -326,17 +480,30 @@ def build_capabilities(
             "unit": "tokens",
             "evidence": proven_occupancy,
         }
-    window = readings.get("info.model_context_window") or readings.get("modelUsage")
-    if window and any(v is not None for v in window):
+    # The window is proven only by a positive number. `modelUsage: {}` -- what an
+    # authentication error emits -- is structurally present and semantically
+    # empty, and treating "not null" as proof is exactly how the first live run
+    # certified a capability it had never observed.
+    if provider == "codex":
+        window_values = readings.get("info.model_context_window", [])
+        evidence = "info.model_context_window"
+    else:
+        window_values = [
+            entry.get("contextWindow")
+            for usage in readings.get("modelUsage", [])
+            if isinstance(usage, dict)
+            for entry in usage.values()
+            if isinstance(entry, dict)
+        ]
+        # Claude's denominator must be keyed by the RESOLVED model name; a
+        # lookup by the user-typed alias misses, and picking the first or
+        # largest entry can select the auxiliary model.
+        evidence = "modelUsage[<resolved model>].contextWindow"
+    if any(isinstance(v, (int, float)) and v > 0 for v in window_values):
         capabilities["context_window"] = {
             "proven": True,
             "unit": "tokens",
-            # Claude's denominator must be keyed by the RESOLVED model name; a
-            # lookup by the user-typed alias misses, and picking the first or
-            # largest entry can select the auxiliary model.
-            "evidence": "info.model_context_window"
-            if provider == "codex"
-            else "modelUsage[<resolved model>].contextWindow",
+            "evidence": evidence,
         }
 
     # Quota. Codex reports used_percent directly. Claude nests everything under
@@ -369,24 +536,110 @@ def build_capabilities(
             "evidence": f"observed rate_limit_info.utilization={utilization}",
         }
 
+    if induced is not None:
+        capabilities["error_classification"] = classify_induced(provider, induced)
+
     return {
         "provider": provider,
         "turns": [t.label for t in turns],
-        "failures": {t.label: t.failed for t in turns if t.failed},
+        "failures": {},
         "observed": observed,
         "occupancy_experiment": verdicts,
         "capabilities": capabilities,
     }
 
 
-def write_fixtures(provider: str, turns: list[TurnResult]) -> None:
-    FIXTURES.mkdir(parents=True, exist_ok=True)
+def classify_induced(provider: str, induced: TurnResult) -> dict[str, Any]:
+    """Grade the deliberately induced error against the structured fields.
+
+    Only a *permanent* 4xx can be induced safely; a 429 needs a genuinely
+    exhausted quota and a 5xx needs a provider outage, so neither is
+    reachable here. The capability is therefore proven only for what was
+    actually observed, and the evidence says which categories remain untested
+    -- Phase 4 must not assume the 429 path is covered by this run.
+    """
+
+    status = scan(induced.lines, "api_error_status") or scan(induced.lines, "status")
+    if status is None:
+        for line in induced.lines:
+            error = line.get("error")
+            if isinstance(error, dict) and isinstance(error.get("status"), int):
+                status = error["status"]
+                break
+    if not isinstance(status, int):
+        return {
+            "proven": False,
+            "unit": None,
+            "evidence": (
+                f"{provider}: induced error carried no structured status code; "
+                "classification would have to parse free text"
+            ),
+        }
+    return {
+        "proven": True,
+        "unit": "http_status_code",
+        "evidence": (
+            f"{provider}: induced invalid-model request reported status {status} "
+            "in a structured field. 429 and 5xx remain UNTESTED -- neither can "
+            "be induced without an exhausted quota or a real outage."
+        ),
+    }
+
+
+def merge_capabilities(
+    existing: dict[str, Any], fresh: dict[str, Any]
+) -> dict[str, Any]:
+    """Overlay this run's providers onto the previous report.
+
+    `--provider codex` must not delete the Claude evidence: the two probes are
+    independent, they are expensive, and they will routinely be run apart
+    because only one provider's authentication is broken at a time.
+    """
+
+    return {**existing, **fresh}
+
+
+def publish(*, staging: Path, target: Path, summary: dict[str, Any]) -> bool:
+    """Move staged fixtures into place, but only if every probe passed.
+
+    Fixtures are checked in and Phases 5-7 are written against them, so a
+    partial set is worse than none: it looks like evidence.
+    """
+
+    failed = {
+        provider: report.get("failures")
+        for provider, report in summary.items()
+        if report.get("failures")
+    }
+    if failed:
+        return False
+
+    target.mkdir(parents=True, exist_ok=True)
+    capabilities = target / "capabilities.json"
+    existing: dict[str, Any] = {}
+    if capabilities.exists():
+        try:
+            existing = json.loads(capabilities.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = {}
+    for path in sorted(staging.iterdir()):
+        shutil.copy2(path, target / path.name)
+    capabilities.write_text(
+        json.dumps(merge_capabilities(existing, summary), indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def write_fixtures(staging: Path, provider: str, turns: list[TurnResult]) -> None:
+    staging.mkdir(parents=True, exist_ok=True)
     for turn in turns:
-        path = FIXTURES / f"{provider}_{turn.label}.jsonl"
+        path = staging / f"{provider}_{turn.label}.jsonl"
         with path.open("w", encoding="utf-8") as handle:
             for line in turn.lines:
                 handle.write(json.dumps(sanitize(line), sort_keys=True) + "\n")
-        print(f"  wrote {path.relative_to(ROOT)} ({len(turn.lines)} lines)")
+        print(f"  staged {path.name} ({len(turn.lines)} lines)")
 
 
 async def main() -> int:
@@ -397,13 +650,21 @@ async def main() -> int:
         default="both",
     )
     parser.add_argument("--claude-model", default="sonnet")
-    parser.add_argument("--codex-model", default="gpt-5-codex")
+    parser.add_argument("--claude-alternate-model", default="haiku")
+    # `gpt-5-codex` is rejected with HTTP 400 for a ChatGPT login ("not
+    # supported when using Codex with a ChatGPT account"), which is how the
+    # first live run failed. `gpt-5.4` is what spike/spike_codex.py:566 already
+    # exercises against this account.
+    parser.add_argument("--codex-model", default="gpt-5.4")
+    parser.add_argument("--codex-alternate-model", default="gpt-5.4-mini")
     args = parser.parse_args()
 
     settings = Settings.from_env()
     os.environ.setdefault("CODEX_HOME", str(settings.codex_home))
 
     workspace = Path(tempfile.mkdtemp(prefix="delibra-m5-gate-"))
+    staging = Path(tempfile.mkdtemp(prefix="delibra-m5-staging-"))
+    published = False
     summary: dict[str, Any] = {}
     try:
         selected = (
@@ -424,22 +685,46 @@ async def main() -> int:
                 created_at="2026-09-07T00:00:00Z",
                 rounds=[],
             )
-            turns = await probe_provider(provider, adapter, config, workspace)
-            write_fixtures(provider, turns)
+            alternate = (
+                args.claude_alternate_model
+                if provider == "claude"
+                else args.codex_alternate_model
+            )
+            turns = await probe_provider(
+                provider, adapter, config, workspace, alternate
+            )
+            induced = None
+            if not any(t.failed for t in turns):
+                # Only worth doing once the provider is known to work: against a
+                # broken login every turn already errors, and a second error
+                # proves nothing about classification.
+                print(f"{provider}: inducing a permanent error for classification...")
+                induced = await run_turn(
+                    adapter=adapter,
+                    config=replace(config, model=INVALID_MODEL),
+                    workspace=workspace,
+                    prompt=SMALL_PROMPT,
+                    resume_id=None,
+                    label="f_induced_error",
+                    rollout_seen={},
+                )
+                # This turn is *expected* to fail; it must not block publication.
+                induced.failed = None
+                turns_for_fixtures = [*turns, induced]
+            else:
+                turns_for_fixtures = turns
+            write_fixtures(staging, provider, turns_for_fixtures)
             candidates = (
                 CLAUDE_CANDIDATES if provider == "claude" else CODEX_CANDIDATES
             )
-            summary[provider] = build_capabilities(provider, turns, candidates)
+            summary[provider] = build_capabilities(
+                provider, turns, candidates, induced=induced
+            )
+
+        published = publish(staging=staging, target=FIXTURES, summary=summary)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
-
-    FIXTURES.mkdir(parents=True, exist_ok=True)
-    target = FIXTURES / "capabilities.json"
-    target.write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    print(f"\nwrote {target.relative_to(ROOT)}")
+        shutil.rmtree(staging, ignore_errors=True)
 
     print("\nCapability summary (proven means unit verified, not merely present):")
     for provider, report in summary.items():
@@ -449,6 +734,16 @@ async def main() -> int:
             print(f"    {name:26s} {mark:9s} unit={entry['unit']}")
         if report["failures"]:
             print(f"    failures: {report['failures']}")
+
+    if not published:
+        print(
+            "\nGATE FAILED. Nothing was published: a probe did not reach a provider"
+            "\nsuccess terminal, so its payloads are error artifacts, not evidence."
+            "\nPhases 5-7 stay blocked. Fix the failure above and rerun."
+        )
+        return 1
+
+    print(f"\nwrote {(FIXTURES / 'capabilities.json').relative_to(ROOT)}")
     print(
         "\nAny capability not marked PROVEN is implemented as `unknown` end to end,"
         "\nand `unknown` never warns and never pauses."
