@@ -25,6 +25,7 @@ from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
 from app.models import (
     AutoRoundDescriptor,
     AutoRunRecord,
+    ContextReading,
     Project,
     RoundRecord,
     RunKey,
@@ -33,6 +34,7 @@ from app.models import (
     SourceDescriptor,
     TimeoutExtensionRecord,
     TimeoutRecord,
+    TurnUsage,
 )
 from app.storage import (
     ConflictError,
@@ -96,6 +98,8 @@ class ActiveRun:
     error_categories: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     cli_session_id: str | None = None
+    usage: TurnUsage | None = None
+    context_reading: ContextReading | None = None
     cancel_requested: bool = False
     timeout_claimed: bool = False
     finalized: bool = False
@@ -1111,6 +1115,14 @@ class RunManager:
                 self._signal_process(active, signal.SIGTERM)
                 return False
             return True
+        if event.kind == "turn_usage":
+            # Latest wins: an adapter reports once per turn, and a second
+            # report would describe the same round more completely.
+            active.usage = event.usage
+            return True
+        if event.kind == "context_usage":
+            active.context_reading = event.context
+            return True
         if event.kind == "progress":
             self._publish(active, "progress", event.text)
         elif event.kind == "warning":
@@ -1250,6 +1262,15 @@ class RunManager:
         )
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
+        record.usage = active.usage
+        if active.context_reading is not None:
+            # Only the runner knows which round the reading belongs to. A turn
+            # that reported nothing leaves the last known observation alone: a
+            # silent turn is not evidence that the window emptied.
+            active.config.context_observation = active.context_reading.observed(
+                round_n=record.n,
+                observed_at=record.finished_at,
+            )
         active.config.status = "idle" if status in {"complete", "cancelled"} else "error"
         if active.cli_session_id and not suppress_native_warning:
             active.config.cli_session_id = active.cli_session_id
