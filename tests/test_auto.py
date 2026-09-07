@@ -15,12 +15,14 @@ from fastapi.testclient import TestClient
 from app.agents.base import AgentEvent, Command, RunContext
 from app.auto import (
     AUTO_MAX_INITIAL_CYCLES,
+    AUTO_SUMMARY_LABEL,
     AUTO_MAX_LIFETIME_CYCLES,
     AutoManager,
     ContextEntry,
     ResumeCursor,
     parse_auto_verdict,
     reconstruct_resume_cursor,
+    render_compaction_context,
     render_discussion_context,
     render_preparation_context,
     validate_turn_timeout_seconds,
@@ -1281,6 +1283,157 @@ def test_a_summary_is_mandatory_rather_than_dropped_for_budget(tmp_path: Path) -
     assert b"S" * 200 in context
     assert b"D" * 100 in context
     assert b"B" * 400 not in context
+
+
+def _compaction_material(manager, store, record):
+    return manager._context_material(store, store.load_auto_run(record.id))
+
+
+def test_headroom_is_computed_through_the_production_renderer(
+    tmp_path: Path,
+) -> None:
+    # Computed by calling the renderer, never by re-deriving the arithmetic:
+    # heading, label and separator bytes are exactly what would drift.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(store, session_ids, baseline_texts=["Baseline"])
+    manager.settings = replace(
+        manager.settings,
+        stateless_history_limit=100_000,
+        auto_compact_output_limit=64 * 1024,
+    )
+
+    material = _compaction_material(manager, store, record)
+    plan = manager._plan_compaction(material)
+
+    fixed = len(
+        render_discussion_context(
+            material.topic,
+            preparations=material.preparations,
+            baseline_entries=[],
+            discussion_entries=[],
+            summary=ContextEntry(AUTO_SUMMARY_LABEL, b""),
+        )
+    )
+    assert plan.max_summary == min(
+        manager.settings.effective_auto_compact_output_limit,
+        100_000 - fixed,
+    )
+    assert plan.outcome == "ready"
+
+
+def test_no_headroom_skips_the_provider_call_entirely(tmp_path: Path) -> None:
+    # Paying for a summary that could not be rendered afterwards is strictly
+    # worse than not compacting, and `fixed` cannot shrink for the run's life.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(store, session_ids, baseline_texts=["Baseline"])
+    manager.settings = replace(
+        manager.settings,
+        stateless_history_limit=200,
+        auto_compact_min_output=4 * 1024,
+    )
+
+    plan = manager._plan_compaction(_compaction_material(manager, store, record))
+
+    assert plan.outcome == "skipped_no_headroom"
+    assert plan.rendered is None
+    assert plan.warning is not None and "headroom" in plan.warning
+
+
+def test_mandatory_input_over_the_limit_is_a_structural_overflow(
+    tmp_path: Path,
+) -> None:
+    # None of topic, preparations or the previous summary shrinks when another
+    # turn runs, so dropping old entries cannot make this request fit.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(store, session_ids, baseline_texts=["Baseline"])
+    _seed_auto_summary(store, record, session_ids[0], "S" * 4_000)
+    store.save_auto_run(record)
+    manager.settings = replace(manager.settings, auto_compact_input_limit=1_000)
+
+    plan = manager._plan_compaction(_compaction_material(manager, store, record))
+
+    assert plan.outcome == "skipped_overflow"
+    assert plan.rendered is None
+    assert plan.warning is not None
+
+
+def test_pending_entry_overflow_drops_the_oldest_and_records_them(
+    tmp_path: Path,
+) -> None:
+    # The alternative -- failing the run -- destroys a long discussion for a
+    # bookkeeping reason, and today those entries are dropped silently anyway.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(store, session_ids, baseline_texts=["Baseline"])
+    for index in range(3):
+        _seed_auto_discussion_turn(
+            store,
+            record,
+            session_ids[index % 2],
+            cycle=1,
+            position=index % 2,
+            round_n=index + 1,
+            text=f"{'ABC'[index] * 500}",
+        )
+    store.save_auto_run(record)
+    material = _compaction_material(manager, store, record)
+    # The limit is taken from the renderer itself, so the test states which
+    # entries must survive rather than guessing at framing bytes.
+    manager.settings = replace(
+        manager.settings,
+        auto_compact_input_limit=len(
+            render_compaction_context(
+                material.topic,
+                preparations=material.preparations,
+                previous_summary=material.summary,
+                baseline_entries=[],
+                discussion_entries=material.discussion_entries[1:],
+            )
+        ),
+    )
+
+    plan = manager._plan_compaction(_compaction_material(manager, store, record))
+
+    assert plan.outcome == "ready"
+    assert plan.rendered is not None
+    assert b"A" * 500 not in plan.rendered
+    assert b"B" * 500 in plan.rendered
+    assert b"C" * 500 in plan.rendered
+    assert plan.dropped_entries == (
+        material.baseline_entries[0].label,
+        material.discussion_entries[0].label,
+    )
+    assert plan.warning is not None and "dropped" in plan.warning
+
+
+@pytest.mark.parametrize("previous_summary", [False, True])
+def test_the_post_compaction_prompt_is_validated_at_the_exact_byte(
+    tmp_path: Path,
+    previous_summary: bool,
+) -> None:
+    # The budget is a prediction; this is the check. Summary framing bytes are
+    # counted because the real prompt is rendered, not estimated.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(store, session_ids, baseline_texts=["Baseline"])
+    if previous_summary:
+        _seed_auto_summary(store, record, session_ids[0], "Earlier summary")
+        store.save_auto_run(record)
+    material = _compaction_material(manager, store, record)
+    fixed = len(
+        render_discussion_context(
+            material.topic,
+            preparations=material.preparations,
+            baseline_entries=[],
+            discussion_entries=[],
+            summary=ContextEntry(AUTO_SUMMARY_LABEL, b""),
+        )
+    )
+    manager.settings = replace(
+        manager.settings,
+        stateless_history_limit=fixed + 100,
+    )
+
+    assert manager._post_compaction_fits(material, b"X" * 100)
+    assert not manager._post_compaction_fits(material, b"X" * 101)
 
 
 @pytest.mark.asyncio
