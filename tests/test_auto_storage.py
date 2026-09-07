@@ -1167,3 +1167,305 @@ def test_a_tampered_quota_pause_on_disk_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(StorageError, match="Auto run config is invalid"):
         store.load_auto_run(record.id)
+
+
+def compaction_policy(**overrides) -> models.AutoContextPolicy:
+    return models.AutoContextPolicy(
+        **{
+            "mode": "compact",
+            "unit": "cycles",
+            "interval": 3,
+            "threshold_percent": 70,
+            "summarizer": "next",
+            **overrides,
+        }
+    )
+
+
+def summary_fixture(**overrides) -> models.AutoSummary:
+    body = b"Summary body"
+    return models.AutoSummary(
+        **{
+            "path": "summaries/01.md",
+            "sha256": sha256(body).hexdigest(),
+            "created_at": "2026-09-07T12:00:00Z",
+            "cycle": 2,
+            "round_n": 4,
+            "session_id": "b" * 32,
+            "retired_baseline_count": 0,
+            "retired_discussion_count": 2,
+            "dropped_entries": (),
+            **overrides,
+        }
+    )
+
+
+def attempt_fixture(**overrides) -> models.AutoCompactionAttempt:
+    fields = {
+        "unit": "cycles",
+        "cycle": 2,
+        "discussion_len": 2,
+        "attempted_at": "2026-09-07T12:00:00Z",
+        "outcome": "summarized",
+        "round_n": 4,
+        "session_id": "b" * 32,
+        "summary_index": 0,
+        "warning": None,
+        **overrides,
+    }
+    fields.setdefault(
+        "trigger_key",
+        models.auto_trigger_key(
+            fields["unit"],
+            fields["cycle"],
+            fields["discussion_len"],
+        ),
+    )
+    return models.AutoCompactionAttempt(**fields)
+
+
+def test_auto_record_loads_delibra_auto_1_records_without_a_context_policy(
+    tmp_path: Path,
+) -> None:
+    # An absent policy means off: a run created before Phase 7 must never start
+    # retiring its own material on reload.
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+    encoded = record.to_dict()
+    for key in (
+        "context_policy",
+        "retired_baseline_count",
+        "retired_discussion_count",
+        "summaries",
+        "compaction_attempts",
+        "compaction_cooldown_until_discussion_len",
+        "consecutive_compaction_failures",
+        "compaction_disabled_reason",
+    ):
+        encoded.pop(key, None)
+
+    decoded = models.AutoRunRecord.from_dict(encoded)
+
+    assert decoded.context_policy is None
+    assert decoded.effective_context_policy.mode == "off"
+    assert decoded.retired_baseline_count == 0
+    assert decoded.retired_discussion_count == 0
+    assert decoded.summaries == []
+    assert decoded.compaction_attempts == []
+    assert decoded.compaction_cooldown_until_discussion_len == 0
+    assert decoded.consecutive_compaction_failures == 0
+    assert decoded.compaction_disabled_reason is None
+
+
+def test_auto_record_round_trips_the_policy_its_cursors_and_its_attempts(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.status = "discussing"
+    record.current_cycle = 2
+    record.discussion = [
+        models.AutoTurn(
+            phase="discussion",
+            session_id="b" * 32,
+            round_n=index + 1,
+            cycle=1,
+            position=index,
+            output_sha256=sha256(f"out {index}".encode()).hexdigest(),
+            verdict="continue",
+        )
+        for index in range(2)
+    ]
+    record.context_policy = compaction_policy(summarizer="c" * 32)
+    record.retired_discussion_count = 2
+    record.summaries = [summary_fixture()]
+    record.compaction_attempts = [attempt_fixture()]
+    record.compaction_cooldown_until_discussion_len = 4
+    record.consecutive_compaction_failures = 1
+    record.compaction_disabled_reason = None
+    store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+    reloaded = store.load_auto_run(record.id)
+
+    assert reloaded.context_policy == record.context_policy
+    assert reloaded.effective_context_policy == record.context_policy
+    assert reloaded.retired_discussion_count == 2
+    assert reloaded.summaries == record.summaries
+    assert reloaded.compaction_attempts == record.compaction_attempts
+    assert reloaded.compaction_cooldown_until_discussion_len == 4
+    assert reloaded.consecutive_compaction_failures == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"mode": "summarise"},
+        {"unit": "tokens"},
+        {"interval": 0},
+        {"interval": 21},
+        {"threshold_percent": 9},
+        {"threshold_percent": 96},
+        {"summarizer": ""},
+        {"interval": True},
+        {"threshold_percent": 70.0},
+    ],
+)
+def test_auto_context_policy_rejects_values_outside_its_declared_range(
+    mutation: dict,
+) -> None:
+    with pytest.raises(ValueError):
+        compaction_policy(**mutation)
+
+
+def test_auto_store_rejects_a_summarizer_that_is_not_a_participant(
+    tmp_path: Path,
+) -> None:
+    # A named summarizer is the one policy field that cannot be validated by the
+    # model alone: only the record knows who is speaking.
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.context_policy = compaction_policy(summarizer="d" * 32)
+
+    with pytest.raises(OwnershipError, match="summarizer"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("retired_baseline_count", -1),
+        ("retired_baseline_count", 1),
+        ("retired_discussion_count", -1),
+        ("retired_discussion_count", 3),
+        ("compaction_cooldown_until_discussion_len", -1),
+        ("consecutive_compaction_failures", -1),
+    ],
+)
+def test_auto_store_rejects_retirement_cursors_outside_their_lists(
+    tmp_path: Path,
+    field_name: str,
+    value: int,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.discussion = [
+        models.AutoTurn(
+            phase="discussion",
+            session_id="b" * 32,
+            round_n=index + 1,
+            cycle=1,
+            position=index,
+            output_sha256=sha256(f"out {index}".encode()).hexdigest(),
+            verdict="continue",
+        )
+        for index in range(2)
+    ]
+    setattr(record, field_name, value)
+
+    with pytest.raises(OwnershipError, match="compaction"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+def test_auto_store_recomputes_every_trigger_key_rather_than_trusting_it(
+    tmp_path: Path,
+) -> None:
+    # The key is the same-boundary duplicate guard, so a forged one would
+    # silently suppress a real future boundary -- a failure nothing surfaces.
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.compaction_attempts = [attempt_fixture(trigger_key="cycles:99:99")]
+
+    with pytest.raises(OwnershipError, match="trigger key"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+def test_auto_store_rejects_duplicate_trigger_keys(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.compaction_attempts = [
+        attempt_fixture(outcome="failed", summary_index=None, round_n=None),
+        attempt_fixture(outcome="failed", summary_index=None, round_n=None),
+    ]
+
+    with pytest.raises(OwnershipError, match="trigger key"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+def test_the_validator_bound_sits_above_the_writer_cap_and_is_unreachable(
+    tmp_path: Path,
+) -> None:
+    # A validator bound alone is a trap: reaching it would make a live record
+    # unloadable. The writer stops first, so this bound only catches corruption.
+    assert storage.AUTO_MAX_COMPACTION_ATTEMPTS < storage.AUTO_MAX_STORED_COMPACTION_ATTEMPTS
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.compaction_attempts = [
+        attempt_fixture(cycle=index + 1, summary_index=None, round_n=None)
+        for index in range(storage.AUTO_MAX_STORED_COMPACTION_ATTEMPTS + 1)
+    ]
+
+    with pytest.raises(OwnershipError, match="compaction attempts"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"path": "../escape.md"},
+        {"path": "summaries/01.txt"},
+        {"sha256": "nope"},
+        {"cycle": 0},
+        {"round_n": 0},
+        {"created_at": ""},
+        {"retired_baseline_count": -1},
+        {"retired_discussion_count": -1},
+    ],
+)
+def test_auto_summary_rejects_malformed_references(mutation: dict) -> None:
+    with pytest.raises(ValueError):
+        summary_fixture(**mutation)
+
+
+def test_auto_store_rejects_a_summary_from_a_non_participant(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.summaries = [summary_fixture(session_id="d" * 32)]
+
+    with pytest.raises(OwnershipError, match="summary"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+def test_auto_store_rejects_an_attempt_pointing_at_a_missing_summary(
+    tmp_path: Path,
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.compaction_attempts = [attempt_fixture(summary_index=3)]
+
+    with pytest.raises(OwnershipError, match="summary"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"outcome": "invented"},
+        {"cycle": -1},
+        {"discussion_len": -1},
+        {"attempted_at": ""},
+        {"unit": "tokens"},
+    ],
+)
+def test_auto_compaction_attempt_rejects_malformed_entries(mutation: dict) -> None:
+    with pytest.raises(ValueError):
+        attempt_fixture(**mutation)

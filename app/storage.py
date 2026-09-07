@@ -74,6 +74,14 @@ AUTO_MAX_INITIAL_CYCLES = 20
 # Widening a validation bound is backward compatible: every existing record
 # already satisfies it.
 AUTO_MAX_LIFETIME_CYCLES = 100
+# The working cap, enforced on the writer: on reaching it a run stops attempting
+# compaction and keeps discussing.
+AUTO_MAX_COMPACTION_ATTEMPTS = 50
+# Corruption guards, deliberately above the writer's cap so a live record can
+# never reach them -- a validator bound alone would turn a cosmetic overflow
+# into an unloadable run.
+AUTO_MAX_STORED_COMPACTION_ATTEMPTS = 200
+AUTO_MAX_STORED_SUMMARIES = 200
 AUTO_INDEX_FORMAT = "delibra-auto-index/1"
 CANONICAL_AUTO_NUMBER = re.compile(r"[1-9][0-9]*\Z")
 AUTO_CREATING_PATTERN = re.compile(r"\.creating-([0-9a-f]{32})-([1-9][0-9]*)\Z")
@@ -1892,6 +1900,7 @@ class ProjectStore:
         for artifact in (record.topic, record.baseline, record.shared_context):
             if artifact is not None and not SHA256_PATTERN.fullmatch(artifact.sha256):
                 raise OwnershipError("Auto artifact digest is invalid")
+        ProjectStore._validate_auto_context_policy(record, set(session_ids))
         for resumption in record.resumptions:
             if resumption.from_status not in TERMINAL_AUTO_STATUSES:
                 raise OwnershipError("Auto resumption source status is invalid")
@@ -1901,6 +1910,64 @@ class ProjectStore:
                 raise OwnershipError("Auto resumption turn timeout is invalid")
             if not _is_utc_timestamp(resumption.resumed_at):
                 raise OwnershipError("Auto resumption timestamp is invalid")
+
+    @staticmethod
+    def _validate_auto_context_policy(
+        record: AutoRunRecord,
+        session_ids: set[str],
+    ) -> None:
+        """Check the parts of Phase 7's state only the whole record can settle.
+
+        The policy, summaries and attempts validate their own shapes on
+        construction; what needs the record is who the participants are, how
+        long the append-only lists are, and whether a stored trigger key really
+        describes the boundary its own fields name.
+        """
+
+        policy = record.context_policy
+        if policy is not None and policy.summarizer != "next":
+            if policy.summarizer not in session_ids:
+                raise OwnershipError("Auto context summarizer is not a participant")
+        if not 0 <= record.retired_baseline_count <= len(record.baseline_entries):
+            raise OwnershipError("Auto compaction baseline cursor is invalid")
+        if not 0 <= record.retired_discussion_count <= len(record.discussion):
+            raise OwnershipError("Auto compaction discussion cursor is invalid")
+        if record.compaction_cooldown_until_discussion_len < 0:
+            raise OwnershipError("Auto compaction cooldown cursor is invalid")
+        if record.consecutive_compaction_failures < 0:
+            raise OwnershipError("Auto compaction failure count is invalid")
+        if len(record.summaries) > AUTO_MAX_STORED_SUMMARIES:
+            raise OwnershipError("Auto run has too many compaction summaries")
+        if len(record.compaction_attempts) > AUTO_MAX_STORED_COMPACTION_ATTEMPTS:
+            raise OwnershipError("Auto run has too many compaction attempts")
+        for summary in record.summaries:
+            if not SHA256_PATTERN.fullmatch(summary.sha256):
+                raise OwnershipError("Auto summary digest is invalid")
+            if summary.session_id not in session_ids:
+                raise OwnershipError("Auto summary summarizer is not a participant")
+            if summary.retired_baseline_count > len(record.baseline_entries):
+                raise OwnershipError("Auto summary baseline cursor is invalid")
+            if summary.retired_discussion_count > len(record.discussion):
+                raise OwnershipError("Auto summary discussion cursor is invalid")
+        seen_keys: set[str] = set()
+        for attempt in record.compaction_attempts:
+            # Recomputed, never shape-checked: a forged key would suppress a
+            # real future boundary, and nothing surfaces "compaction never ran".
+            if attempt.trigger_key != attempt.expected_trigger_key:
+                raise OwnershipError("Auto compaction trigger key does not match")
+            if attempt.trigger_key in seen_keys:
+                raise OwnershipError("Auto compaction trigger key is duplicated")
+            seen_keys.add(attempt.trigger_key)
+            if attempt.session_id is not None and attempt.session_id not in session_ids:
+                raise OwnershipError("Auto compaction summarizer is not a participant")
+            if attempt.summary_index is not None and not (
+                0 <= attempt.summary_index < len(record.summaries)
+            ):
+                raise OwnershipError("Auto compaction summary reference is invalid")
+        if record.compaction_disabled_reason is not None and (
+            len(record.compaction_disabled_reason) > 2_000
+        ):
+            raise OwnershipError("Auto compaction disabled reason is too long")
 
     @staticmethod
     def _auto_artifact_path(

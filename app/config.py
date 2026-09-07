@@ -60,6 +60,15 @@ class Settings:
     # mandatory in every later prompt, so both ends are bounded explicitly.
     compact_input_limit: int = 2 * MIB
     compact_output_limit: int = 256 * 1024
+    # Auto compaction has its own budgets: it summarizes the Auto record's own
+    # material into a prompt section, not a session's staged history.
+    auto_compact_input_limit: int = 2 * MIB
+    auto_compact_output_limit: int = 256 * 1024
+    auto_compact_min_output: int = 4 * 1024
+    auto_compact_max_failures: int = 3
+    # A percentage of the Auto prompt's *byte* budget, never of a provider
+    # token window; a per-run policy overrides it.
+    auto_context_trigger_percent: int = 70
 
     def __post_init__(self) -> None:
         if self.max_run_timeout < self.run_timeout:
@@ -92,6 +101,48 @@ class Settings:
         """
 
         return max(1, min(self.compact_output_limit, self.stateless_history_limit // 2))
+
+    @property
+    def effective_auto_compact_output_limit(self) -> int:
+        """The largest Auto summary that can still be a mandatory prompt section.
+
+        Clamped for the same reason as ``effective_compact_output_limit``: the
+        cross-field invariant is real, but lowering only the prompt limit must
+        not refuse to start the app. The per-attempt ``max_summary`` in 7e is
+        tighter still, because it also charges topic, preparations and framing.
+        """
+
+        return max(
+            1,
+            min(self.auto_compact_output_limit, self.stateless_history_limit // 2),
+        )
+
+    @property
+    def effective_auto_compact_min_output(self) -> int:
+        """The smallest summary worth paying a provider for.
+
+        Never above the budget it is compared against: that combination would
+        skip every compaction while reporting "no headroom", blaming the run's
+        content for a configuration mistake.
+        """
+
+        return min(
+            self.auto_compact_min_output,
+            self.effective_auto_compact_output_limit,
+        )
+
+    @property
+    def effective_auto_compact_input_limit(self) -> int:
+        """How much unretired material one compaction may read.
+
+        Bounded by the prompt limit: reading more than a prompt could ever hold
+        cannot help, since the summary must fit that same budget afterwards.
+        """
+
+        return max(
+            1,
+            min(self.auto_compact_input_limit, self.stateless_history_limit),
+        )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -190,6 +241,36 @@ class Settings:
                 256 * 1024,
                 minimum=1,
                 maximum=64 * MIB,
+            ),
+            auto_compact_input_limit=_integer(
+                "DELIBRA_AUTO_COMPACT_INPUT_LIMIT",
+                2 * MIB,
+                minimum=1,
+                maximum=64 * MIB,
+            ),
+            auto_compact_output_limit=_integer(
+                "DELIBRA_AUTO_COMPACT_OUTPUT_LIMIT",
+                256 * 1024,
+                minimum=1,
+                maximum=64 * MIB,
+            ),
+            auto_compact_min_output=_integer(
+                "DELIBRA_AUTO_COMPACT_MIN_OUTPUT",
+                4 * 1024,
+                minimum=1,
+                maximum=64 * MIB,
+            ),
+            auto_compact_max_failures=_integer(
+                "DELIBRA_AUTO_COMPACT_MAX_FAILURES",
+                3,
+                minimum=1,
+                maximum=10,
+            ),
+            auto_context_trigger_percent=_integer(
+                "DELIBRA_AUTO_CONTEXT_TRIGGER_PERCENT",
+                70,
+                minimum=10,
+                maximum=95,
             ),
         )
 

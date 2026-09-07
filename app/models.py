@@ -238,6 +238,223 @@ class AutoResumption:
         return result
 
 
+AUTO_CONTEXT_MODES = frozenset({"off", "clear", "compact"})
+# ``context`` measures rendered prompt bytes, never a provider token window;
+# every user-facing string says so (7g).
+AUTO_CONTEXT_UNITS = frozenset({"cycles", "turns", "context"})
+AUTO_COMPACTION_OUTCOMES = frozenset(
+    {
+        "summarized",
+        "cleared",
+        "skipped_no_headroom",
+        "skipped_overflow",
+        "failed",
+    }
+)
+AUTO_SUMMARY_PATH_PATTERN = re.compile(r"summaries/\d{2,4}\.md")
+
+
+def auto_trigger_key(unit: str, cycle: int, discussion_len: int) -> str:
+    """Name one compaction boundary, so the same one is never attempted twice.
+
+    Written and re-derived through this single function: validation recomputes
+    the key from the attempt's own fields rather than shape-checking it, because
+    a forged key would silently suppress a real future boundary.
+    """
+
+    return f"{unit}:{cycle}:{discussion_len}"
+
+
+def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
+    # ``type(...) is not int`` and not ``isinstance``: ``True`` is an ``int``.
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be an integer from {minimum} through {maximum}")
+    return value
+
+
+@dataclass(frozen=True)
+class AutoContextPolicy:
+    """How one Auto run retires its own material, chosen at setup.
+
+    Carried unchanged across a resume: editing it would change the meaning of
+    content the run has already retired.
+    """
+
+    mode: str = "compact"
+    unit: str = "cycles"
+    interval: int = 3
+    threshold_percent: int = 70
+    # ``"next"`` or a participant session id. Membership needs the record, so
+    # it is checked where the record is validated.
+    summarizer: str = "next"
+
+    def __post_init__(self) -> None:
+        if self.mode not in AUTO_CONTEXT_MODES:
+            raise ValueError(f"unknown Auto context mode: {self.mode}")
+        if self.unit not in AUTO_CONTEXT_UNITS:
+            raise ValueError(f"unknown Auto context unit: {self.unit}")
+        _bounded_int(self.interval, "interval", minimum=1, maximum=20)
+        _bounded_int(
+            self.threshold_percent,
+            "threshold_percent",
+            minimum=10,
+            maximum=95,
+        )
+        if type(self.summarizer) is not str or not self.summarizer:
+            raise ValueError("summarizer must be a non-empty string")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoContextPolicy":
+        return cls(
+            mode=_strict_str(data, "mode"),
+            unit=_strict_str(data, "unit"),
+            interval=_strict_int(data, "interval"),
+            threshold_percent=_strict_int(data, "threshold_percent"),
+            summarizer=_strict_str(data, "summarizer"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AutoSummary:
+    """One durable Auto summary and exactly what it retired."""
+
+    path: str
+    sha256: str
+    created_at: str
+    cycle: int
+    round_n: int
+    session_id: str
+    retired_baseline_count: int
+    retired_discussion_count: int
+    # Entries an input overflow retired without summarizing. The one place
+    # content is deliberately discarded, so it is named rather than counted.
+    dropped_entries: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.path) is not str
+            or AUTO_SUMMARY_PATH_PATTERN.fullmatch(self.path) is None
+        ):
+            raise ValueError("Auto summary path must be summaries/NN.md")
+        if (
+            type(self.sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", self.sha256) is None
+        ):
+            raise ValueError("Auto summary digest must be a sha256 hex string")
+        if type(self.created_at) is not str or not self.created_at:
+            raise ValueError("Auto summary created_at must be a non-empty string")
+        _bounded_int(self.cycle, "cycle", minimum=1, maximum=1_000_000)
+        _bounded_int(self.round_n, "round_n", minimum=1, maximum=1_000_000)
+        if type(self.session_id) is not str or not self.session_id:
+            raise ValueError("Auto summary session_id must be a non-empty string")
+        for name in ("retired_baseline_count", "retired_discussion_count"):
+            _bounded_int(getattr(self, name), name, minimum=0, maximum=1_000_000)
+        object.__setattr__(
+            self, "dropped_entries", tuple(str(item) for item in self.dropped_entries)
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoSummary":
+        return cls(
+            path=_strict_str(data, "path"),
+            sha256=_strict_str(data, "sha256"),
+            created_at=_strict_str(data, "created_at"),
+            cycle=_strict_int(data, "cycle"),
+            round_n=_strict_int(data, "round_n"),
+            session_id=_strict_str(data, "session_id"),
+            retired_baseline_count=_strict_int(data, "retired_baseline_count"),
+            retired_discussion_count=_strict_int(data, "retired_discussion_count"),
+            dropped_entries=tuple(data.get("dropped_entries", ())),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["dropped_entries"] = list(self.dropped_entries)
+        return result
+
+
+@dataclass(frozen=True)
+class AutoCompactionAttempt:
+    """Every compaction attempt, successful or not.
+
+    A failure produces no ``AutoSummary``, so without this record the warning
+    that explains it would have nowhere to live.
+    """
+
+    trigger_key: str
+    unit: str
+    cycle: int
+    discussion_len: int
+    attempted_at: str
+    outcome: str
+    round_n: int | None = None
+    session_id: str | None = None
+    summary_index: int | None = None
+    warning: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.unit not in AUTO_CONTEXT_UNITS:
+            raise ValueError(f"unknown Auto context unit: {self.unit}")
+        if self.outcome not in AUTO_COMPACTION_OUTCOMES:
+            raise ValueError(f"unknown Auto compaction outcome: {self.outcome}")
+        _bounded_int(self.cycle, "cycle", minimum=0, maximum=1_000_000)
+        _bounded_int(
+            self.discussion_len,
+            "discussion_len",
+            minimum=0,
+            maximum=1_000_000,
+        )
+        if type(self.attempted_at) is not str or not self.attempted_at:
+            raise ValueError("Auto compaction attempted_at must be a non-empty string")
+        if type(self.trigger_key) is not str or not self.trigger_key:
+            raise ValueError("Auto compaction trigger key must be a non-empty string")
+        for name in ("round_n", "summary_index"):
+            value = getattr(self, name)
+            if value is not None:
+                _bounded_int(value, name, minimum=0, maximum=1_000_000)
+        if self.session_id is not None and (
+            type(self.session_id) is not str or not self.session_id
+        ):
+            raise ValueError("Auto compaction session_id must be a string or None")
+        if self.warning is not None:
+            if type(self.warning) is not str:
+                raise ValueError("Auto compaction warning must be a string or None")
+            object.__setattr__(self, "warning", self.warning[:2_000])
+
+    @property
+    def expected_trigger_key(self) -> str:
+        return auto_trigger_key(self.unit, self.cycle, self.discussion_len)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoCompactionAttempt":
+        return cls(
+            trigger_key=_strict_str(data, "trigger_key"),
+            unit=_strict_str(data, "unit"),
+            cycle=_strict_int(data, "cycle"),
+            discussion_len=_strict_int(data, "discussion_len"),
+            attempted_at=_strict_str(data, "attempted_at"),
+            outcome=_strict_str(data, "outcome"),
+            round_n=(
+                _strict_int(data, "round_n")
+                if data.get("round_n") is not None
+                else None
+            ),
+            session_id=data.get("session_id"),
+            summary_index=(
+                _strict_int(data, "summary_index")
+                if data.get("summary_index") is not None
+                else None
+            ),
+            warning=data.get("warning"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
+
+
 @dataclass(frozen=True)
 class AutoArtifact:
     path: str
@@ -1066,6 +1283,31 @@ class AutoRunRecord:
     resumptions: list[AutoResumption] = field(default_factory=list)
     quota_pause: AutoQuotaPause | None = None
     quota_override: AutoQuotaOverride | None = None
+    # Absent means off, so a delibra-auto/1 run never starts retiring material.
+    context_policy: AutoContextPolicy | None = None
+    # Leading entries of each append-only list that have been retired, which is
+    # what makes the counts stable identifiers rather than positions.
+    retired_baseline_count: int = 0
+    retired_discussion_count: int = 0
+    summaries: list[AutoSummary] = field(default_factory=list)
+    compaction_attempts: list[AutoCompactionAttempt] = field(default_factory=list)
+    # 7b's real rate limiter: a failed attempt waits out a whole interval or
+    # speaking round rather than retrying after one turn.
+    compaction_cooldown_until_discussion_len: int = 0
+    consecutive_compaction_failures: int = 0
+    compaction_disabled_reason: str | None = None
+
+    @property
+    def effective_context_policy(self) -> AutoContextPolicy:
+        """The policy in force, with an absent one meaning off."""
+
+        return self.context_policy or AutoContextPolicy(mode="off")
+
+    @property
+    def latest_summary(self) -> AutoSummary | None:
+        """Only the newest summary is ever rendered; the rest are audit."""
+
+        return self.summaries[-1] if self.summaries else None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoRunRecord":
@@ -1155,6 +1397,35 @@ class AutoRunRecord:
                 if data.get("quota_override") is not None
                 else None
             ),
+            context_policy=(
+                AutoContextPolicy.from_dict(data["context_policy"])
+                if data.get("context_policy") is not None
+                else None
+            ),
+            retired_baseline_count=_strict_int(
+                data, "retired_baseline_count", default=0
+            ),
+            retired_discussion_count=_strict_int(
+                data, "retired_discussion_count", default=0
+            ),
+            summaries=[
+                AutoSummary.from_dict(item) for item in data.get("summaries", [])
+            ],
+            compaction_attempts=[
+                AutoCompactionAttempt.from_dict(item)
+                for item in data.get("compaction_attempts", [])
+            ],
+            compaction_cooldown_until_discussion_len=_strict_int(
+                data, "compaction_cooldown_until_discussion_len", default=0
+            ),
+            consecutive_compaction_failures=_strict_int(
+                data, "consecutive_compaction_failures", default=0
+            ),
+            compaction_disabled_reason=(
+                str(data["compaction_disabled_reason"])
+                if data.get("compaction_disabled_reason") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1200,4 +1471,20 @@ class AutoRunRecord:
                 if self.quota_override is not None
                 else None
             ),
+            "context_policy": (
+                self.context_policy.to_dict()
+                if self.context_policy is not None
+                else None
+            ),
+            "retired_baseline_count": self.retired_baseline_count,
+            "retired_discussion_count": self.retired_discussion_count,
+            "summaries": [item.to_dict() for item in self.summaries],
+            "compaction_attempts": [
+                item.to_dict() for item in self.compaction_attempts
+            ],
+            "compaction_cooldown_until_discussion_len": (
+                self.compaction_cooldown_until_discussion_len
+            ),
+            "consecutive_compaction_failures": self.consecutive_compaction_failures,
+            "compaction_disabled_reason": self.compaction_disabled_reason,
         }
