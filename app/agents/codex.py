@@ -11,7 +11,59 @@ from app.agents.errors import (
     classify_status_code,
     classify_text,
 )
-from app.models import SessionConfig
+from app.models import ContextReading, SessionConfig, TurnUsage
+
+
+def _tokens(container: Any, key: str) -> int | None:
+    """Read one non-negative token count, degrading anything else to unknown."""
+
+    if not isinstance(container, dict):
+        return None
+    value = container.get(key)
+    # ``type(...) is not int`` and not ``isinstance``: ``True`` is an ``int``.
+    if type(value) is not int or value < 0:
+        return None
+    return value
+
+
+def _usage_events(usage: Any) -> list[AgentEvent]:
+    """Report what the turn cost and how full the window now is.
+
+    `turn.completed.usage` is `last_token_usage` without its precomputed total:
+    across every Phase 0 turn, `input_tokens + output_tokens` equalled the
+    rollout's `last_token_usage.total_tokens` exactly, which is why the reading
+    can carry that proven source label while reading stdout. The denominator
+    (`info.model_context_window`) has no stdout equivalent and stays unknown
+    until the rollout is read.
+    """
+
+    billing = TurnUsage(
+        input_tokens=_tokens(usage, "input_tokens"),
+        output_tokens=_tokens(usage, "output_tokens"),
+        cache_read_tokens=_tokens(usage, "cached_input_tokens"),
+        cache_creation_tokens=_tokens(usage, "cache_write_input_tokens"),
+        reasoning_tokens=_tokens(usage, "reasoning_output_tokens"),
+    )
+    events = [AgentEvent("turn_usage", usage=billing)] if billing.reported else []
+
+    # A partial sum is not occupancy, so both components must be present.
+    used = (
+        billing.input_tokens + billing.output_tokens
+        if billing.input_tokens is not None and billing.output_tokens is not None
+        else None
+    )
+    if used is not None:
+        events.append(
+            AgentEvent(
+                "context_usage",
+                context=ContextReading(
+                    used_tokens=used,
+                    context_window=None,
+                    numerator_source="codex_last_token_usage",
+                ),
+            )
+        )
+    return events
 
 
 class CodexAdapter:
@@ -139,11 +191,12 @@ class CodexAdapter:
         if event_type in {"item.started", "item.completed"}:
             return self._parse_item(event_type, event.get("item"))
         if event_type == "turn.completed":
+            usage = _usage_events(event.get("usage"))
             if not self._pending_message:
-                return [AgentEvent("error", "Codex returned an empty result")]
+                return [AgentEvent("error", "Codex returned an empty result"), *usage]
             self._final = self._pending_message
             self._pending_message = None
-            return [AgentEvent("result", self._final)]
+            return [AgentEvent("result", self._final), *usage]
         if event_type == "error":
             return [self._error_event(event.get("message"), code=event.get("code"))]
         if event_type == "turn.failed":

@@ -372,6 +372,45 @@ class TurnUsage:
 
 
 @dataclass(frozen=True)
+class ContextReading:
+    """One provider's occupancy report for a turn, before Delibra stamps it.
+
+    Adapters know what the provider said; only the runner knows which round it
+    belongs to and when it landed, so the durable ``ContextObservation`` is
+    assembled at finalization.
+    """
+
+    used_tokens: int | None
+    context_window: int | None
+    numerator_source: str
+    resolved_model: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "used_tokens", _checked_tokens(self.used_tokens, "used_tokens")
+        )
+        object.__setattr__(
+            self,
+            "context_window",
+            _checked_tokens(self.context_window, "context_window"),
+        )
+        if self.numerator_source not in NUMERATOR_SOURCES:
+            raise ValueError(
+                f"unknown context numerator source: {self.numerator_source}"
+            )
+
+    def observed(self, *, round_n: int, observed_at: str) -> "ContextObservation":
+        return ContextObservation(
+            used_tokens=self.used_tokens,
+            context_window=self.context_window,
+            numerator_source=self.numerator_source,
+            resolved_model=self.resolved_model,
+            round_n=round_n,
+            observed_at=observed_at,
+        )
+
+
+@dataclass(frozen=True)
 class ContextObservation:
     """How full one session's provider context window was after a round.
 

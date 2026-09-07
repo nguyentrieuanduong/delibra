@@ -7,10 +7,19 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from app.agents.errors import ProviderErrorInfo
-from app.models import SessionConfig
+from app.models import ContextReading, SessionConfig, TurnUsage
 
 
-EventKind = Literal["init", "text_delta", "progress", "result", "warning", "error"]
+EventKind = Literal[
+    "init",
+    "text_delta",
+    "progress",
+    "result",
+    "warning",
+    "error",
+    "turn_usage",
+    "context_usage",
+]
 
 
 @dataclass(frozen=True)
@@ -24,6 +33,10 @@ class AgentEvent:
     # provider structure rather than from prose. ProviderErrorInfo carries only
     # normalized scalars, preserving this class's contract.
     error_info: ProviderErrorInfo | None = None
+    # Set on "turn_usage" and "context_usage" events. Both are typed records of
+    # allowlisted numbers, so neither reintroduces a provider payload.
+    usage: TurnUsage | None = None
+    context: ContextReading | None = None
 
 
 @dataclass(frozen=True)

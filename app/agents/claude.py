@@ -11,7 +11,7 @@ from app.agents.errors import (
     classify_status_code,
     classify_text,
 )
-from app.models import SessionConfig
+from app.models import ContextReading, SessionConfig, TurnUsage
 
 
 _TOOL_PROGRESS = {
@@ -25,6 +25,50 @@ _TOOL_PROGRESS = {
 
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _tokens(container: Any, key: str) -> int | None:
+    """Read one non-negative token count, degrading anything else to unknown."""
+
+    if not isinstance(container, dict):
+        return None
+    value = container.get(key)
+    # ``type(...) is not int`` and not ``isinstance``: ``True`` is an ``int``.
+    if type(value) is not int or value < 0:
+        return None
+    return value
+
+
+def _positive_tokens(container: Any, key: str) -> int | None:
+    value = _tokens(container, key)
+    return value if value else None
+
+
+def _cost(value: Any) -> float | None:
+    if type(value) not in (int, float) or value < 0:
+        return None
+    return float(value)
+
+
+def _prompt_tokens(usage: Any) -> int | None:
+    """Sum the three counters that together trace one conversation.
+
+    Claude splits a conversation's context across `input`, `cache_read` and
+    `cache_creation`: a resumed turn reads back as `cache_read_input_tokens`
+    what the previous turn wrote as `cache_creation_input_tokens`, so no single
+    counter traces occupancy. The sum was verified over the Phase 0 experiment
+    (8118 -> 42952 -> 42970 -> 8118). A partial sum is not occupancy, so every
+    component must be present.
+    """
+
+    parts = [
+        _tokens(usage, "input_tokens"),
+        _tokens(usage, "cache_read_input_tokens"),
+        _tokens(usage, "cache_creation_input_tokens"),
+    ]
+    if any(part is None for part in parts):
+        return None
+    return sum(parts)  # type: ignore[arg-type]
 
 
 def _classify_result(event: dict[str, Any], message: str) -> ProviderErrorInfo:
@@ -64,6 +108,8 @@ class ClaudeAdapter:
         self.executable = executable
         self._deltas: list[str] = []
         self._final = ""
+        self._resolved_model: str | None = None
+        self._final_assistant_usage: dict[str, Any] | None = None
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
         if config.effort not in self.EFFORT_LEVELS:
@@ -138,6 +184,7 @@ class ClaudeAdapter:
         event_type = event.get("type")
         if event_type == "system" and event.get("subtype") == "init":
             session_id = event.get("session_id")
+            self._resolved_model = _optional_str(event.get("model"))
             return [
                 AgentEvent(
                     "init",
@@ -156,15 +203,70 @@ class ClaudeAdapter:
                         "error",
                         message,
                         error_info=_classify_result(event, message),
-                    )
+                    ),
+                    *self._usage_events(event),
                 ]
             if not text:
                 return [AgentEvent("error", "Claude returned an empty result")]
             self._final = text
-            return [AgentEvent("result", text)]
-        if event_type in {"assistant", "user", "system"}:
+            return [AgentEvent("result", text), *self._usage_events(event)]
+        if event_type == "assistant":
+            self._observe_assistant(event.get("message"))
+            return []
+        if event_type in {"user", "system"}:
             return []
         return [AgentEvent("warning", "Claude emitted an unknown event type")]
+
+    def _observe_assistant(self, message: Any) -> None:
+        """Keep the newest usage the primary model reported.
+
+        Sub-agents answer on their own model, and the induced-error run answers
+        as `<synthetic>`; neither describes the conversation Delibra is
+        measuring, so only a message from the resolved model counts.
+        """
+
+        if not isinstance(message, dict) or self._resolved_model is None:
+            return
+        if _optional_str(message.get("model")) != self._resolved_model:
+            return
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            self._final_assistant_usage = usage
+
+    def _usage_events(self, event: dict[str, Any]) -> list[AgentEvent]:
+        """Report what the round cost and how full the window now is.
+
+        The two answers come from different lines on purpose: the result-level
+        usage may aggregate a whole agent loop (`num_turns` > 1), so it bills
+        the round correctly but would overstate occupancy.
+        """
+
+        model_usage = event.get("modelUsage")
+        resolved = (
+            model_usage.get(self._resolved_model)
+            if isinstance(model_usage, dict) and self._resolved_model is not None
+            else None
+        )
+        result_usage = event.get("usage")
+        usage = TurnUsage(
+            input_tokens=_tokens(result_usage, "input_tokens"),
+            output_tokens=_tokens(result_usage, "output_tokens"),
+            cache_read_tokens=_tokens(result_usage, "cache_read_input_tokens"),
+            cache_creation_tokens=_tokens(result_usage, "cache_creation_input_tokens"),
+            total_cost_usd=_cost(event.get("total_cost_usd")),
+            max_output_tokens=_positive_tokens(resolved, "maxOutputTokens"),
+        )
+        events = [AgentEvent("turn_usage", usage=usage)] if usage.reported else []
+
+        reading = ContextReading(
+            used_tokens=_prompt_tokens(self._final_assistant_usage),
+            context_window=_positive_tokens(resolved, "contextWindow"),
+            numerator_source="claude_final_assistant",
+            resolved_model=self._resolved_model,
+        )
+        if reading.used_tokens is not None or reading.context_window is not None:
+            events.append(AgentEvent("context_usage", context=reading))
+        return events
 
     def _parse_stream_event(self, stream_event: Any) -> list[AgentEvent]:
         if not isinstance(stream_event, dict):
