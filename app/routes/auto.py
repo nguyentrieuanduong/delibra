@@ -18,7 +18,13 @@ from app.auto import (
     TERMINAL_AUTO_STATUSES,
     reconstruct_resume_cursor,
 )
-from app.models import AutoRunRecord, AutoTurn, Project, SessionConfig
+from app.models import (
+    AutoContextPolicy,
+    AutoRunRecord,
+    AutoTurn,
+    Project,
+    SessionConfig,
+)
 from app.project_routing import request_project
 from app.security import validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
@@ -187,7 +193,54 @@ def _auto_material_context(
                 ),
             }
         )
-    return {"topic": topic, "preparations": preparations}
+    return {
+        "topic": topic,
+        "preparations": preparations,
+        **_context_policy_context(request, store, record),
+    }
+
+
+def _context_policy_context(
+    request: Request,
+    store: ProjectStore,
+    record: AutoRunRecord,
+) -> dict:
+    """What this run retires, what stands in for it, and what went wrong."""
+
+    policy = record.context_policy
+    summary = record.latest_summary
+    text = None
+    if summary is not None:
+        try:
+            text = _decode_text(
+                store.load_auto_summary(
+                    record.id,
+                    summary,
+                    request.app.state.settings.captured_output_limit,
+                ),
+                "Auto summary",
+            )
+        except StorageError:
+            text = None
+    if policy is None or policy.mode == "off":
+        sentence = None
+    elif policy.unit == "context":
+        sentence = (
+            f"{policy.mode} at {policy.threshold_percent}% of the Auto prompt "
+            "byte budget"
+        )
+    else:
+        sentence = f"{policy.mode} every {policy.interval} {policy.unit}"
+    return {
+        "context_policy_sentence": sentence,
+        "context_summary": summary,
+        "context_summary_text": text,
+        "context_summary_unavailable": summary is not None and text is None,
+        "latest_compaction_attempt": (
+            record.compaction_attempts[-1] if record.compaction_attempts else None
+        ),
+        "compaction_disabled_reason": record.compaction_disabled_reason,
+    }
 
 
 def _resume_context(
@@ -373,6 +426,9 @@ def projected_auto_setup_context(
         "topic_source": "durable" if topic is not None else "composer",
         "turn_timeout_seconds": settings.run_timeout,
         "max_turn_timeout_seconds": settings.max_run_timeout,
+        "context_interval": AutoContextPolicy.interval,
+        "context_threshold_percent": settings.auto_context_trigger_percent,
+        "stateless_history_limit": settings.stateless_history_limit,
     }
 
 
@@ -439,10 +495,25 @@ async def start_auto(
     max_cycles: int = Form(...),
     turn_timeout_seconds: int = Form(...),
     prepare_first: bool = Form(False),
+    context_mode: str = Form("off"),
+    context_unit: str = Form("cycles"),
+    context_interval: int = Form(AutoContextPolicy.interval),
+    context_threshold_percent: int = Form(AutoContextPolicy.threshold_percent),
+    context_summarizer: str = Form("next"),
 ) -> HTMLResponse:
     topic = validate_field(topic, "Topic", maximum=100_000)
     project = request_project(request, project_id)
     resolved_project_id = project.id
+    try:
+        context_policy = AutoContextPolicy(
+            mode=context_mode,
+            unit=context_unit,
+            interval=context_interval,
+            threshold_percent=context_threshold_percent,
+            summarizer=context_summarizer,
+        )
+    except ValueError as exc:
+        raise StorageError(str(exc)) from exc
     record = await request.app.state.auto_manager.create(
         resolved_project_id,
         topic=topic,
@@ -451,6 +522,7 @@ async def start_auto(
         max_cycles=max_cycles,
         preparation_enabled=prepare_first,
         turn_timeout_seconds=turn_timeout_seconds,
+        context_policy=context_policy,
     )
     return _status_response(
         request,

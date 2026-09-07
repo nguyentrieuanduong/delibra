@@ -64,6 +64,62 @@
       ({{ (max_turn_timeout_seconds / 60)|round(1) }} minutes). Extending a turn
       while Auto is running raises this budget for later turns too.
     </p>
+    <fieldset>
+      <legend>Context management</legend>
+      <label class="auto-choice">
+        <input type="radio" name="context_mode" value="compact" checked>
+        Compact: one agent summarizes the discussion so far
+      </label>
+      <label class="auto-choice">
+        <input type="radio" name="context_mode" value="clear">
+        Clear: drop the discussion so far, with no summary
+      </label>
+      <label class="auto-choice">
+        <input type="radio" name="context_mode" value="off">
+        Off: keep sending everything
+      </label>
+      <label>When
+        <select name="context_unit">
+          <option value="cycles" selected>Every N cycles</option>
+          <option value="turns">Every N turns</option>
+          <option value="context">Auto prompt byte budget</option>
+        </select>
+      </label>
+      <label>Every N cycles or turns
+        <input
+          name="context_interval"
+          type="number"
+          min="1"
+          max="20"
+          value="{{ context_interval }}"
+          required
+        >
+      </label>
+      <label>Auto prompt byte budget (%)
+        <input
+          name="context_threshold_percent"
+          type="number"
+          min="10"
+          max="95"
+          value="{{ context_threshold_percent }}"
+          required
+        >
+      </label>
+      <label>Summarized by
+        <select name="context_summarizer">
+          <option value="next" selected>Next agent to speak</option>
+          {% for session in sessions %}
+            <option value="{{ session.id }}">{{ session.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <p class="hint">
+        The Auto prompt byte budget is a percentage of the assembled prompt's
+        byte limit ({{ stateless_history_limit }} bytes), not of an agent's
+        token context window. Retired material stays in the run history; it
+        simply stops being sent.
+      </p>
+    </fieldset>
     <p class="hint">
       Maximum discussion calls at the default cycle limit: {{ sessions|length * 3 }};
       enabling preparation adds {{ sessions|length }} calls.

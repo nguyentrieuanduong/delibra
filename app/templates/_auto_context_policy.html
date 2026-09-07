@@ -1,0 +1,32 @@
+{% if context_policy_sentence|default(none) is not none %}
+  <p class="auto-context-policy">Context management: {{ context_policy_sentence }}
+    · {{ auto.retired_discussion_count }} of {{ auto.discussion|length }} discussion
+    turn{{ '' if auto.discussion|length == 1 else 's' }} retired</p>
+{% endif %}
+{% if context_summary|default(none) is not none %}
+  <details class="auto-context-summary">
+    <summary>Latest Auto summary</summary>
+    {% if context_summary_unavailable %}
+      <p class="auto-summary-unavailable">Auto summary unavailable.</p>
+    {% else %}
+      <p class="provenance">
+        Cycle {{ context_summary.cycle }} · round {{ context_summary.round_n }}
+        · SHA-256 {{ context_summary.sha256 }}
+      </p>
+      <pre>{{ context_summary_text }}</pre>
+    {% endif %}
+  </details>
+{% endif %}
+{% if latest_compaction_attempt|default(none) is not none %}
+  <p class="auto-compaction-attempt">
+    Last compaction: {{ latest_compaction_attempt.outcome }}
+    {% if latest_compaction_attempt.warning %}· {{ latest_compaction_attempt.warning }}{% endif %}
+  </p>
+{% endif %}
+{% if compaction_disabled_reason|default(none) is not none %}
+  {# A notice, not a failure: the run keeps discussing without compaction. #}
+  <p class="notice" role="status">
+    Context management is off for the rest of this run:
+    {{ compaction_disabled_reason }}
+  </p>
+{% endif %}

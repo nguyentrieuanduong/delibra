@@ -335,6 +335,46 @@ or a provider quota error ends the grant. The grant remains anchored to the
 observation shown to the user even if the shared monitor changes before submit,
 and the resumption audit retains each grant after the active override is cleared.
 
+An Auto run manages its own context, because it never uses a session's staged
+history: every Auto turn is stateless with the prompt Auto assembles. The setup
+box chooses a mode — **compact** (the default), **clear**, or **off** — a trigger
+unit, an interval, and a summarizer (the next agent to speak by default, or a
+named participant). New runs default to compacting every 3 cycles. The policy is
+carried unchanged across **Continue Auto**: editing it would change the meaning of
+material the run has already retired.
+
+The trigger unit is cycles, turns, or the **Auto prompt byte budget** — a
+percentage of `DELIBRA_STATELESS_HISTORY_LIMIT` measured in rendered bytes, and
+deliberately not called a context threshold: it is not comparable to the
+provider-reported context occupancy on an agent card. The byte-budget unit
+measures the prompt that is *about to be sent*, frozen once and reused for that
+turn when it is below the threshold, because the response that just landed is
+what pushes the next prompt over.
+
+Clear retires the pending material with no provider call. Compact spends one
+extra turn, outside the speaking order: it never advances the cycle or the next
+participant, its round is excluded from staged history and from later Auto
+baselines, and no convergence verdict is read from it. It summarizes its own
+snapshot of every unretired entry, not the prompt rendering, which has already
+dropped the oldest entries to fit. If that snapshot exceeds
+`DELIBRA_AUTO_COMPACT_INPUT_LIMIT`, the oldest excess is retired unsummarized and
+named in the summary's `dropped_entries` with a surfaced warning — the one place
+content is deliberately discarded, and the same entries the prompt renderer
+already dropped silently. The resulting summary is mandatory in every later
+prompt, charged before any optional entry, and fails the turn closed if it is
+missing or tampered with.
+
+A failed compaction never ends the run: nothing is retired, so no content is
+lost. The run waits a whole interval — or one full speaking round for the cycles
+and byte-budget units — before attempting again, and after
+`DELIBRA_AUTO_COMPACT_MAX_FAILURES` consecutive failures it turns compaction off
+for the rest of the run and says so once. Two conditions turn it off on the first
+occurrence, because neither can improve while the run continues: no headroom for
+a summary (`DELIBRA_AUTO_COMPACT_MIN_OUTPUT` against what the prompt limit leaves
+after topic, preparations and framing) and a mandatory input already over the
+input limit. Quota during a compaction pauses the run to a resumable `stopped`
+like any other turn.
+
 The Auto setup box sets the starting per-turn budget in **seconds**, from 1 through
 `DELIBRA_MAX_RUN_TIMEOUT`, defaulting to `DELIBRA_RUN_TIMEOUT`. It applies to every
 preparation and discussion turn of that run and is stored exactly as submitted; it is
@@ -434,6 +474,18 @@ The main environment settings are:
   **0 disables retry**)
 - `DELIBRA_AUTO_RETRY_BACKOFF_SECONDS` (default 5; 1 through 300) — attempt *k*
   waits `min(base * 2**(k-1), 4 * base)` seconds
+- `DELIBRA_COMPACT_INPUT_LIMIT` (default 2 MiB) and `DELIBRA_COMPACT_OUTPUT_LIMIT`
+  (default 256 KiB) — a session Compact's snapshot and its summary
+- `DELIBRA_AUTO_COMPACT_INPUT_LIMIT` (default 2 MiB),
+  `DELIBRA_AUTO_COMPACT_OUTPUT_LIMIT` (default 256 KiB), and
+  `DELIBRA_AUTO_COMPACT_MIN_OUTPUT` (default 4 KiB) — the same three bounds for an
+  Auto run's own compaction. Each is clamped at the point of use against the
+  prompt limit rather than validated at startup, so lowering only
+  `DELIBRA_STATELESS_HISTORY_LIMIT` cannot refuse to start the app
+- `DELIBRA_AUTO_COMPACT_MAX_FAILURES` (default 3; 1 through 10) — consecutive
+  failed compactions before compaction turns off for that run
+- `DELIBRA_AUTO_CONTEXT_TRIGGER_PERCENT` (default 70; 10 through 95) — the
+  Auto prompt byte budget offered in the setup box; each run stores its own
 
 Names/models are capped at 200 characters, role instructions at 20,000, prompts at
 100,000, and pass instructions at 10,000.

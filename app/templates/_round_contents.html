@@ -49,7 +49,7 @@
   {% endif %}
   {% if round.record.auto %}
     <p class="provenance auto-provenance">
-      {% if round.record.auto.phase == 'preparation' %}Auto preparation{% else %}discussion cycle {{ round.record.auto.cycle }}{% endif %}
+      {% if round.record.auto.phase == 'preparation' %}Auto preparation{% elif round.record.auto.phase == 'compaction' %}Auto compaction · cycle {{ round.record.auto.cycle }}{% else %}discussion cycle {{ round.record.auto.cycle }}{% endif %}
       · position {{ round.record.auto.position + 1 }}
       {% if round.record.auto.verdict %}· verdict {{ round.record.auto.verdict }}{% endif %}
     </p>

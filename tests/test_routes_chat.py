@@ -1589,3 +1589,41 @@ def test_chat_error_javascript_contract_runs_under_node() -> None:
         timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_compaction_round_is_labelled_as_one(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    # Without a third branch it would read "discussion cycle N", which is the
+    # one thing a compaction is not.
+    auto_id = "e" * 32
+    compaction = auto_round(1, auto_id)
+    compaction.auto = replace(
+        compaction.auto,
+        phase="compaction",
+        cycle=2,
+        verdict=None,
+    )
+    alpha = session("a" * 32, "Alpha", rounds=[compaction])
+    beta = session("b" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+    auto = reserve_auto_run(store, auto_id=auto_id)
+    auto.status = "converged"
+    auto.finished_at = "2026-01-01T00:01:00Z"
+    auto.terminal_reason = "all agents agreed"
+    store.save_auto_run(auto)
+    store.clear_auto_reservation(auto.id)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+
+    provenance = re.search(
+        r'<p class="provenance auto-provenance">(.*?)</p>',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert provenance is not None
+    assert "Auto compaction" in provenance.group(1)
+    assert "discussion cycle" not in provenance.group(1)
+

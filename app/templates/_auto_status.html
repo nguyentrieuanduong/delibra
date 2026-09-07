@@ -91,6 +91,7 @@
       </ol>
     </details>
   {% endif %}
+  {% include "_auto_context_policy.html" %}
   {{ turn_usage(auto_usage, "Run total, every round included") }}
   {% if auto.terminal_reason %}<p class="auto-terminal-reason">{{ auto.terminal_reason }}</p>{% endif %}
   {% if auto_active %}
