@@ -54,6 +54,11 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 AUTO_STOP_MAX_ATTEMPTS = 100
 AUTO_STOP_RETRY_SECONDS = 0.01
+# Constant by design: 7e computes the post-compaction budget by rendering this
+# exact label with an empty body, before the summary that will carry it exists.
+# Provenance lives on ``AutoSummary``, which the render is digest-checked
+# against, not in the heading.
+AUTO_SUMMARY_LABEL = "Auto summary of retired material"
 
 
 AUTO_CONVERGENCE = re.compile(r"\bconverged\b|\bhội tụ\b", re.IGNORECASE)
@@ -189,10 +194,21 @@ def render_discussion_context(
     preparations: Sequence[ContextEntry],
     baseline_entries: Sequence[ContextEntry],
     discussion_entries: Sequence[ContextEntry],
+    summary: ContextEntry | None = None,
 ) -> bytes:
-    """Render already-selected discussion material in caller-supplied stable order."""
+    """Render already-selected discussion material in caller-supplied stable order.
+
+    The summary, when present, is mandatory and sits directly after the topic:
+    it stands for everything the run has retired, so it is charged before any
+    optional entry rather than competing with them for the byte budget. The
+    default keeps every pre-Phase-7 call site byte-identical, and 7e's headroom
+    is computed through this same function so the budget cannot drift from the
+    prompt it predicts.
+    """
 
     sections = [b"# Auto discussion material\n\n", _untrusted_section("Topic", topic)]
+    if summary is not None:
+        sections.append(_untrusted_section(summary.label, summary.content))
     sections.extend(
         _untrusted_section(f"Preparation: {entry.label}", entry.content)
         for entry in preparations
@@ -1232,9 +1248,10 @@ class AutoManager:
             record.baseline,
             self.settings.stateless_history_limit,
         )
+        summary = self._summary_entry(store, record)
         baseline_entries: list[ContextEntry] = []
         previous_end = 0
-        for entry in record.baseline_entries:
+        for entry in record.baseline_entries[record.retired_baseline_count:]:
             end = entry.offset + entry.length
             if (
                 entry.offset < 0
@@ -1260,7 +1277,7 @@ class AutoManager:
                 )
             )
         discussion_entries: list[ContextEntry] = []
-        for turn in record.discussion:
+        for turn in record.discussion[record.retired_discussion_count:]:
             contents = store.load_round_artifact(
                 turn.session_id,
                 turn.round_n,
@@ -1284,6 +1301,7 @@ class AutoManager:
             preparations=preparations,
             baseline_entries=[],
             discussion_entries=[],
+            summary=summary,
         )
         if len(mandatory) > self.settings.stateless_history_limit:
             raise StorageError("mandatory Auto discussion material exceeds context limit")
@@ -1304,6 +1322,7 @@ class AutoManager:
                 preparations=preparations,
                 baseline_entries=candidate_baseline,
                 discussion_entries=candidate_discussion,
+                summary=summary,
             )
             if len(rendered) <= self.settings.stateless_history_limit:
                 selected.append((kind, entry))
@@ -1317,6 +1336,33 @@ class AutoManager:
             discussion_entries=[
                 entry for kind, entry in selected if kind == "discussion"
             ],
+            summary=summary,
+        )
+
+    def _summary_entry(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+    ) -> ContextEntry | None:
+        """The newest Auto summary, digest-verified, or nothing.
+
+        Only the newest is rendered: the older ones are audit, and re-admitting
+        them would restore material the newest one already stands for. A missing
+        or tampered summary raises like every other Auto artifact -- it stands in
+        for content the run has stopped sending, so failing closed is the only
+        honest answer.
+        """
+
+        summary = record.latest_summary
+        if summary is None:
+            return None
+        return ContextEntry(
+            AUTO_SUMMARY_LABEL,
+            store.load_auto_summary(
+                record.id,
+                summary,
+                self.settings.captured_output_limit,
+            ),
         )
 
     @staticmethod
