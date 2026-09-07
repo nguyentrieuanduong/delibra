@@ -37,6 +37,7 @@ from app.storage import (
     StorageError,
 )
 from app.urls import project_url
+from app.usage import UsageMonitor
 from app.views import project_card
 
 
@@ -70,11 +71,15 @@ def create_app(
     async def lifespan(app: FastAPI):
         registry = RegistryStore(app_settings.home)
         locks = LockCoordinator()
+        # One account-wide quota view: it can change because of a run in any
+        # project, so every component reads the same instance.
+        usage_monitor = UsageMonitor(settings=app_settings)
         manager = RunManager(
             registry=registry,
             locks=locks,
             settings=app_settings,
             adapter_factory=adapter_factory,
+            usage_monitor=usage_monitor,
         )
         auto_manager = AutoManager(
             registry=registry,
@@ -86,6 +91,7 @@ def create_app(
         app.state.locks = locks
         app.state.manager = manager
         app.state.auto_manager = auto_manager
+        app.state.usage_monitor = usage_monitor
         app.state.health = checking_health(commands)
 
         async def refresh_health() -> None:
@@ -155,6 +161,7 @@ def create_app(
     app.state.locks = None
     app.state.manager = None
     app.state.auto_manager = None
+    app.state.usage_monitor = None
     app.state.templates = templates
     app.state.health = []
     app.include_router(projects_router)

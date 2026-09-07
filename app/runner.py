@@ -27,6 +27,7 @@ from app.models import (
     AutoRunRecord,
     ContextReading,
     Project,
+    RateLimitReading,
     RoundRecord,
     RunKey,
     SessionConfig,
@@ -48,10 +49,12 @@ from app.storage import (
     atomic_write_json,
     atomic_write_text,
     ensure_owned_directory,
+    read_codex_rate_limits,
     safe_copy_file,
     utc_now,
     validate_id,
 )
+from app.usage import UsageMonitor
 
 
 LOGGER = logging.getLogger(__name__)
@@ -98,6 +101,10 @@ class ActiveRun:
     error_categories: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     cli_session_id: str | None = None
+    # Captured unconditionally and never adopted for native resume: Codex quota
+    # lives in the thread's own rollout, and every Auto turn -- exactly where
+    # pause decisions matter -- discards the resumable session id.
+    provider_thread_id: str | None = None
     usage: TurnUsage | None = None
     context_reading: ContextReading | None = None
     cancel_requested: bool = False
@@ -161,12 +168,14 @@ class RunManager:
         settings: Settings,
         adapter_factory: AdapterFactory,
         final_writer: Callable[[Path, str], None] = atomic_write_text,
+        usage_monitor: UsageMonitor | None = None,
     ) -> None:
         self.registry = registry
         self.locks = locks
         self.settings = settings
         self.adapter_factory = adapter_factory
         self.final_writer = final_writer
+        self.usage = usage_monitor or UsageMonitor(settings=settings)
         self._active: dict[RunKey, ActiveRun] = {}
         self._completed: dict[RunKey, CompletedRun] = {}
 
@@ -1082,6 +1091,8 @@ class RunManager:
 
     async def _handle_agent_event(self, active: ActiveRun, event: AgentEvent) -> bool:
         if event.kind == "init":
+            if event.cli_session_id:
+                active.provider_thread_id = event.cli_session_id
             if event.cli_session_id and not (
                 active.auto_request is not None
                 and active.auto_request.ignore_returned_session
@@ -1123,6 +1134,9 @@ class RunManager:
         if event.kind == "context_usage":
             active.context_reading = event.context
             return True
+        if event.kind == "rate_limit":
+            self._record_rate_limit(active, event.rate_limit)
+            return True
         if event.kind == "progress":
             self._publish(active, "progress", event.text)
         elif event.kind == "warning":
@@ -1141,6 +1155,40 @@ class RunManager:
             )
             self._publish(active, "error", message)
         return True
+
+    def _record_rate_limit(self, active: ActiveRun, reading: RateLimitReading) -> None:
+        """Stamp a provider's quota report with the account it was speaking for.
+
+        ``account_key`` is ``"default"`` for both providers today -- Delibra owns
+        one login per provider -- but it is carried explicitly so a future
+        multi-account setup cannot silently merge two accounts.
+        """
+
+        self.usage.record(
+            reading.observed(
+                provider=active.config.agent,
+                account_key="default",
+                observed_at=datetime.now(UTC),
+            )
+        )
+
+    def _seed_codex_quota(self, active: ActiveRun) -> None:
+        """Read the quota Codex wrote to Delibra's own CODEX_HOME.
+
+        Codex never puts `token_count` on `exec --json` stdout, so this is the
+        only place its percentages can be observed -- and it costs no provider
+        call, because the rollout is app-owned state.
+        """
+
+        if active.config.agent != "codex" or active.provider_thread_id is None:
+            return
+        for reading in read_codex_rate_limits(
+            self.settings.codex_home,
+            active.provider_thread_id,
+            scan_limit=self.settings.codex_rollout_scan_limit,
+            read_limit=self.settings.codex_rollout_read_limit,
+        ):
+            self._record_rate_limit(active, reading)
 
     async def _consume_stderr(self, active: ActiveRun) -> None:
         process = active.process
@@ -1262,6 +1310,7 @@ class RunManager:
         )
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
+        self._seed_codex_quota(active)
         record.usage = active.usage
         if active.context_reading is not None:
             # Only the runner knows which round the reading belongs to. A turn

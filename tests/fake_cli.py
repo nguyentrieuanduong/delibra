@@ -96,6 +96,16 @@ def main() -> int:
             emit({"kind": "delta", "text": "0123456789"})
     time.sleep(args.delay)
     emit({"kind": "delta", "text": "lo"})
+    if mode == "rate-limit":
+        emit(
+            {
+                "kind": "rate_limit",
+                "window": "five_hour",
+                "status": "rejected",
+                # Relative, so the observation is live whenever the suite runs.
+                "resets_at": time.time() + 3600,
+            }
+        )
     if mode in {"usage", "usage-error"}:
         emit({"kind": "usage", "input": 11, "output": 3, "used": 14, "window": 100})
     if mode == "usage-error":
