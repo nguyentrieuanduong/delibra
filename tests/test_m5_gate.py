@@ -226,35 +226,78 @@ class TestPublish:
 
         assert merge_capabilities(existing, fresh)["codex"]["note"] == "new"
 
-    def test_publish_writes_nothing_when_a_probe_failed(self, tmp_path: Path) -> None:
+    def _staging(self, tmp_path: Path) -> Path:
         staging = tmp_path / "staging"
         staging.mkdir()
-        (staging / "codex_a_small_fresh.jsonl").write_text("{}\n", encoding="utf-8")
+        for name in ("claude_a_small_fresh", "codex_a_small_fresh"):
+            (staging / f"{name}.jsonl").write_text("{}\n", encoding="utf-8")
+        return staging
+
+    def test_a_failed_provider_publishes_nothing_of_its_own(self, tmp_path: Path) -> None:
         target = tmp_path / "m5"
 
         published = publish(
-            staging=staging,
+            staging=self._staging(tmp_path),
             target=target,
             summary={"codex": {"failures": {"a_small_fresh": "400"}}},
         )
 
-        assert published is False
-        assert not target.exists()
+        assert published == []
+        assert not (target / "codex_a_small_fresh.jsonl").exists()
 
-    def test_publish_writes_fixtures_and_capabilities_when_every_probe_passed(
+    def test_a_passing_provider_publishes_even_when_the_other_failed(
         self, tmp_path: Path
     ) -> None:
-        staging = tmp_path / "staging"
-        staging.mkdir()
-        (staging / "codex_a_small_fresh.jsonl").write_text("{}\n", encoding="utf-8")
+        # Each probe is separately billable and the providers are independent.
+        # Discarding good Claude evidence because Codex was misconfigured just
+        # makes the operator pay for the same turns twice.
         target = tmp_path / "m5"
 
         published = publish(
-            staging=staging,
+            staging=self._staging(tmp_path),
             target=target,
-            summary={"codex": {"failures": {}, "capabilities": {}}},
+            summary={
+                "claude": {"failures": {}, "capabilities": {}},
+                "codex": {"failures": {"a_small_fresh": "400"}},
+            },
         )
 
-        assert published is True
-        assert (target / "codex_a_small_fresh.jsonl").exists()
-        assert json.loads((target / "capabilities.json").read_text(encoding="utf-8"))["codex"]
+        assert published == ["claude"]
+        assert (target / "claude_a_small_fresh.jsonl").exists()
+        assert not (target / "codex_a_small_fresh.jsonl").exists()
+
+    def test_a_failed_provider_is_absent_from_capabilities(self, tmp_path: Path) -> None:
+        target = tmp_path / "m5"
+
+        publish(
+            staging=self._staging(tmp_path),
+            target=target,
+            summary={
+                "claude": {"failures": {}, "capabilities": {}},
+                "codex": {"failures": {"a_small_fresh": "400"}},
+            },
+        )
+
+        recorded = json.loads((target / "capabilities.json").read_text(encoding="utf-8"))
+        assert set(recorded) == {"claude"}
+
+    def test_a_failed_provider_does_not_erase_its_earlier_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        # A later misconfigured Codex run must not delete a Codex report that an
+        # earlier run legitimately proved.
+        target = tmp_path / "m5"
+        target.mkdir()
+        (target / "capabilities.json").write_text(
+            json.dumps({"codex": {"provider": "codex", "note": "earlier good run"}}),
+            encoding="utf-8",
+        )
+
+        publish(
+            staging=self._staging(tmp_path),
+            target=target,
+            summary={"codex": {"failures": {"a_small_fresh": "400"}}},
+        )
+
+        recorded = json.loads((target / "capabilities.json").read_text(encoding="utf-8"))
+        assert recorded["codex"]["note"] == "earlier good run"
