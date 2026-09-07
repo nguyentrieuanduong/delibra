@@ -448,6 +448,12 @@ class RunManager:
         ):
             raise SessionBusy("session already has a running agent")
 
+        if auto_request is None and config.agent == "codex":
+            # One quota check per manual prompt, on the provider about to be
+            # spent. Auto keeps its own pre-dispatch check and must not
+            # re-stamp the observation once per turn.
+            self.refresh_codex_quota()
+
         round_n = store.allocate_round(session_id)
         key = RunKey(project_id, session_id, round_n)
         workspace = store.workspace_dir(session_id)
@@ -1201,6 +1207,18 @@ class RunManager:
 
         if self._codex_quota_hydrated:
             return
+        self.refresh_codex_quota()
+
+    def refresh_codex_quota(self) -> None:
+        """Re-read the newest app-owned Codex rollout, costing no provider call.
+
+        Called before every manual Codex prompt, which is the moment a stale
+        figure would be acted on. It is deliberately not called for other
+        providers: the read stamps `observed_at` with the read time, so an
+        unconditional refresh would keep an ageing Codex figure alive past its
+        staleness window while a different account was being spent.
+        """
+
         self._codex_quota_hydrated = True
         observed_at = datetime.now(UTC)
         for reading in read_latest_codex_rate_limits(

@@ -72,7 +72,14 @@ def test_max_run_timeout_defaults_to_four_hours_and_rejects_smaller_run_timeout(
             "-1",
             "101",
         ),
-        ("DELIBRA_USAGE_POLL_SECONDS", "usage_poll_seconds", 60, "4", "3601"),
+        ("DELIBRA_USAGE_POLL_SECONDS", "usage_poll_seconds", 1800, "9", "3601"),
+        (
+            "DELIBRA_USAGE_LOW_QUOTA_POLL_SECONDS",
+            "usage_low_quota_poll_seconds",
+            300,
+            "9",
+            "3601",
+        ),
         ("DELIBRA_USAGE_STALENESS_SECONDS", "usage_staleness_seconds", 1800, "59", "86401"),
         (
             "DELIBRA_CODEX_ROLLOUT_SCAN_LIMIT",
@@ -115,6 +122,17 @@ def test_pause_threshold_must_stay_below_the_warning_threshold() -> None:
             home=Path("/tmp/delibra-settings-test"),
             usage_warn_remaining_percent=20,
             usage_pause_remaining_percent=20,
+        )
+
+
+def test_low_quota_polling_must_not_be_slower_than_idle_polling() -> None:
+    # The low-quota tier exists to tighten the badge, so a value above the idle
+    # interval would silently slow it down exactly when quota is running out.
+    with pytest.raises(ValueError, match="DELIBRA_USAGE_POLL_SECONDS"):
+        Settings(
+            home=Path("/tmp/delibra-settings-test"),
+            usage_poll_seconds=300,
+            usage_low_quota_poll_seconds=301,
         )
 
 

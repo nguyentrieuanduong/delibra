@@ -14,6 +14,7 @@ from app.routes.auto import (
     projected_auto_setup_context,
 )
 from app.routes.runs import start_run_fragment
+from app.routes.usage import usage_badge_context
 from app.security import validate_field
 from app.storage import ProjectStore, validate_id
 from app.urls import project_url
@@ -177,7 +178,7 @@ async def chat_page(
             "auto_setup": setup_context,
             "auto_migration_warning": auto_projection.warning,
             "health": request.app.state.health,
-            "usage_poll_seconds": request.app.state.settings.usage_poll_seconds,
+            **usage_badge_context(request),
             "pass_prompt_template": store.effective_pass_prompt_template(),
             **sidebar,
         },

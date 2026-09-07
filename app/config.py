@@ -49,7 +49,10 @@ class Settings:
     usage_warn_remaining_percent: int = 20
     usage_pause_remaining_percent: int = 8
     usage_weekly_pause_remaining_percent: int = 3
-    usage_poll_seconds: int = 60
+    # The badge's idle interval, and the tighter one it switches to while any
+    # live window sits below the warning threshold.
+    usage_poll_seconds: int = 1800
+    usage_low_quota_poll_seconds: int = 300
     usage_staleness_seconds: int = 1800
     codex_rollout_scan_limit: int = 200
     codex_rollout_read_limit: int = 4 * MIB
@@ -63,6 +66,11 @@ class Settings:
             raise ValueError(
                 "DELIBRA_USAGE_PAUSE_REMAINING_PERCENT must be below "
                 "DELIBRA_USAGE_WARN_REMAINING_PERCENT"
+            )
+        if self.usage_low_quota_poll_seconds > self.usage_poll_seconds:
+            raise ValueError(
+                "DELIBRA_USAGE_LOW_QUOTA_POLL_SECONDS must not exceed "
+                "DELIBRA_USAGE_POLL_SECONDS"
             )
 
     @property
@@ -127,8 +135,14 @@ class Settings:
             ),
             usage_poll_seconds=_integer(
                 "DELIBRA_USAGE_POLL_SECONDS",
-                60,
-                minimum=5,
+                1_800,
+                minimum=10,
+                maximum=3_600,
+            ),
+            usage_low_quota_poll_seconds=_integer(
+                "DELIBRA_USAGE_LOW_QUOTA_POLL_SECONDS",
+                300,
+                minimum=10,
                 maximum=3_600,
             ),
             usage_staleness_seconds=_integer(

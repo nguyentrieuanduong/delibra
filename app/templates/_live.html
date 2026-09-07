@@ -40,3 +40,4 @@
     hx-swap="outerHTML"
   ></span>
 </section>
+{% if usage_badge_oob|default(false) %}{% include "_usage_badge.html" %}{% endif %}

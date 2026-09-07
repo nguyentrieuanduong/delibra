@@ -264,7 +264,13 @@ attempts. A quota failure never retries — it pauses the run to a resumable
 `error` with the cursor parked on the participant that failed.
 
 The chat header polls account quota from Delibra's shared monitor every
-`DELIBRA_USAGE_POLL_SECONDS` seconds (default 60); polling never calls a provider.
+`DELIBRA_USAGE_POLL_SECONDS` seconds (default 1800), dropping to
+`DELIBRA_USAGE_LOW_QUOTA_POLL_SECONDS` (default 300) while any observed window is
+below the warning threshold. Polling never calls a provider, so a window that
+reports no percentage at all — every Claude window — keeps the slower interval:
+a faster poll could not learn anything about it. The freshness that matters comes
+from the prompt instead: sending a prompt to a Codex agent re-reads that account's
+quota from the app-owned rollout first, and the response carries the updated badge.
 Live observations are stored in `~/.delibra/usage.json` with expiry and staleness
 checks, so a restart cannot turn an old window into a pause. Codex can also hydrate
 the monitor once from its newest app-owned rollout before the first badge read or
