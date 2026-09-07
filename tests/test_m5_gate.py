@@ -138,6 +138,44 @@ class TestCapabilitiesRequireSuccess:
         assert report["failures"] == {"a_small_fresh": "exit 0: not logged in"}
 
 
+class TestOccupancyReadsTurnsByLabel:
+    """The A/B/C/D comparison must not depend on turn ordering.
+
+    The model-change turn runs second so a bad model name fails before the
+    100 KiB turn is paid for. Indexing the experiment positionally would then
+    silently compare the wrong turns.
+    """
+
+    def _turns(self) -> list[TurnResult]:
+        # An occupancy field rises at B, stays elevated but not higher at C, and
+        # resets at D. Read positionally, B would be 999 and C's 30000 would
+        # look like a cumulative rise.
+        counts = {
+            "a_small_fresh": 100,
+            "e_model_change": 999,  # interleaved, and must be ignored
+            "b_large_resume": 30000,
+            "c_small_resume": 29900,
+            "d_small_fresh": 100,
+        }
+        return [
+            _turn(label, [CLAUDE_SUCCESS | {"usage": {"input_tokens": count}}])
+            for label, count in counts.items()
+        ]
+
+    def test_occupancy_is_computed_from_the_labelled_turns(self) -> None:
+        report = build_capabilities("claude", self._turns(), ("usage.input_tokens",))
+
+        verdict = report["occupancy_experiment"]["usage.input_tokens"]
+        assert verdict.startswith("occupancy"), verdict
+
+    def test_the_interleaved_model_change_turn_does_not_become_turn_b(self) -> None:
+        # Positional indexing would read B as 999, so C (30000) would look like
+        # a cumulative rise and the field would be misclassified.
+        report = build_capabilities("claude", self._turns(), ("usage.input_tokens",))
+
+        assert "cumulative" not in report["occupancy_experiment"]["usage.input_tokens"]
+
+
 class TestSanitize:
     """Identifiers are redacted; parser-relevant values survive."""
 

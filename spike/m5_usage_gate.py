@@ -70,6 +70,15 @@ SMALL_PROMPT = "Reply with exactly the word: ok"
 # outage, so `error_classification` never claims to cover them.
 INVALID_MODEL = "delibra-nonexistent-model-for-error-classification"
 
+# The 0a experiment, in the order the discriminator compares them. The probe
+# runs the model-change turn between A and B, so this is not the run order.
+OCCUPANCY_SEQUENCE = (
+    "a_small_fresh",
+    "b_large_resume",
+    "c_small_resume",
+    "d_small_fresh",
+)
+
 # Candidate fields, recorded for every turn so the reasoning stays auditable and
 # re-checkable when a CLI version changes.
 CLAUDE_CANDIDATES = (
@@ -389,17 +398,25 @@ async def probe_provider(
 
     if not await attempt("a_small_fresh", SMALL_PROMPT, None):
         return turns
-    first = turns[0].cli_session_id
+    first = turns[-1].cli_session_id
+
+    # Second, not last: the alternate model name is an operator guess that no
+    # CLI can validate offline, and a wrong guess must not be discovered only
+    # after the 100 KiB turn has already been paid for.
+    if not await attempt("e_model_change", SMALL_PROMPT, None, model=alternate_model):
+        print(
+            f"  {name}: the alternate model {alternate_model!r} was rejected. "
+            f"Pass a valid one with --{name}-alternate-model and rerun; nothing "
+            "was published."
+        )
+        return turns
 
     if not await attempt("b_large_resume", f"{SMALL_PROMPT}\n\n{filler}", first):
         return turns
-    if not await attempt(
-        "c_small_resume", SMALL_PROMPT, turns[-1].cli_session_id or first
-    ):
+    resumed = turns[-1].cli_session_id or first
+    if not await attempt("c_small_resume", SMALL_PROMPT, resumed):
         return turns
-    if not await attempt("d_small_fresh", SMALL_PROMPT, None):
-        return turns
-    await attempt("e_model_change", SMALL_PROMPT, None, model=alternate_model)
+    await attempt("d_small_fresh", SMALL_PROMPT, None)
     return turns
 
 
@@ -430,10 +447,15 @@ def build_capabilities(
     induced: TurnResult | None = None,
 ) -> dict[str, Any]:
     readings = {path: [scan(t.lines, path) for t in turns] for path in candidates}
+    # Select the experiment's four turns by label. `turns` also carries the
+    # interleaved model-change turn, and positional indexing would compare the
+    # wrong sessions -- reading an occupancy field as cumulative.
+    by_label = {t.label: t for t in turns}
+    experiment = [by_label[label] for label in OCCUPANCY_SEQUENCE if label in by_label]
     verdicts = occupancy_verdict(
         {
-            path: values
-            for path, values in readings.items()
+            path: [scan(t.lines, path) for t in experiment]
+            for path in candidates
             if "token" in path or "usage" in path
         }
     )
