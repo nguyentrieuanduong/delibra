@@ -95,6 +95,41 @@ def test_max_run_timeout_defaults_to_four_hours_and_rejects_smaller_run_timeout(
             "65535",
             str(64 * 1024 * 1024 + 1),
         ),
+        (
+            "DELIBRA_AUTO_COMPACT_INPUT_LIMIT",
+            "auto_compact_input_limit",
+            2 * 1024 * 1024,
+            "0",
+            str(64 * 1024 * 1024 + 1),
+        ),
+        (
+            "DELIBRA_AUTO_COMPACT_OUTPUT_LIMIT",
+            "auto_compact_output_limit",
+            256 * 1024,
+            "0",
+            str(64 * 1024 * 1024 + 1),
+        ),
+        (
+            "DELIBRA_AUTO_COMPACT_MIN_OUTPUT",
+            "auto_compact_min_output",
+            4 * 1024,
+            "0",
+            str(64 * 1024 * 1024 + 1),
+        ),
+        (
+            "DELIBRA_AUTO_COMPACT_MAX_FAILURES",
+            "auto_compact_max_failures",
+            3,
+            "0",
+            "11",
+        ),
+        (
+            "DELIBRA_AUTO_CONTEXT_TRIGGER_PERCENT",
+            "auto_context_trigger_percent",
+            70,
+            "9",
+            "96",
+        ),
     ],
 )
 def test_new_settings_defaults_and_bounds(
@@ -134,6 +169,43 @@ def test_low_quota_polling_must_not_be_slower_than_idle_polling() -> None:
             usage_poll_seconds=300,
             usage_low_quota_poll_seconds=301,
         )
+
+
+def test_auto_summary_budget_is_clamped_rather_than_refused_at_startup() -> None:
+    # Lowering only the stateless budget is a reasonable thing to do, so the
+    # "half the prompt limit" invariant is applied where the summary is read
+    # back -- refusing to start would be a worse answer than compacting less.
+    settings = Settings(
+        home=Path("/tmp/delibra-settings-test"),
+        stateless_history_limit=1_000,
+        auto_compact_output_limit=256 * 1024,
+    )
+
+    assert settings.effective_auto_compact_output_limit == 500
+
+
+def test_auto_summary_minimum_never_exceeds_the_summary_budget() -> None:
+    # A minimum above the budget would skip every compaction while reporting
+    # "no headroom", which is a configuration error rather than a real one.
+    settings = Settings(
+        home=Path("/tmp/delibra-settings-test"),
+        auto_compact_output_limit=4 * 1024,
+        auto_compact_min_output=8 * 1024,
+    )
+
+    assert settings.effective_auto_compact_min_output == 4 * 1024
+
+
+def test_auto_compaction_input_limit_is_bounded_by_the_prompt_limit() -> None:
+    # Reading more material than a prompt could ever hold cannot help: the
+    # summary still has to fit the same stateless budget.
+    settings = Settings(
+        home=Path("/tmp/delibra-settings-test"),
+        stateless_history_limit=1_000,
+        auto_compact_input_limit=2 * 1024 * 1024,
+    )
+
+    assert settings.effective_auto_compact_input_limit == 1_000
 
 
 def test_auto_turn_retries_accepts_zero_to_disable_retry(
