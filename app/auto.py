@@ -224,6 +224,68 @@ def render_discussion_context(
     return b"\n".join(sections)
 
 
+def render_compaction_context(
+    topic: bytes,
+    *,
+    preparations: Sequence[ContextEntry],
+    previous_summary: ContextEntry | None,
+    baseline_entries: Sequence[ContextEntry],
+    discussion_entries: Sequence[ContextEntry],
+) -> bytes:
+    """Render the material one compaction reads, in full and in order.
+
+    Deliberately not the discussion renderer's output: that one selects
+    newest-first until the prompt budget is hit and silently drops the oldest,
+    so summarizing it and then retiring everything would destroy exactly the
+    entries compaction exists to preserve. Anything this snapshot cannot admit
+    is dropped through 7e's recorded path instead.
+    """
+
+    sections = [b"# Auto material to summarize\n\n", _untrusted_section("Topic", topic)]
+    if previous_summary is not None:
+        sections.append(
+            _untrusted_section(
+                f"Previous summary: {previous_summary.label}",
+                previous_summary.content,
+            )
+        )
+    sections.extend(
+        _untrusted_section(f"Preparation: {entry.label}", entry.content)
+        for entry in preparations
+    )
+    sections.extend(
+        _untrusted_section(f"Conversation: {entry.label}", entry.content)
+        for entry in baseline_entries
+    )
+    sections.extend(
+        _untrusted_section(f"Discussion: {entry.label}", entry.content)
+        for entry in discussion_entries
+    )
+    return b"\n".join(sections)
+
+
+@dataclass(frozen=True)
+class AutoMaterial:
+    """One snapshot of everything an Auto run may still send a participant."""
+
+    topic: bytes
+    preparations: list[ContextEntry]
+    baseline_entries: list[ContextEntry]
+    discussion_entries: list[ContextEntry]
+    summary: ContextEntry | None
+
+
+@dataclass(frozen=True)
+class CompactionPlan:
+    """What one compaction attempt can do, decided before any provider call."""
+
+    outcome: Literal["ready", "skipped_no_headroom", "skipped_overflow"]
+    max_summary: int
+    rendered: bytes | None
+    dropped_entries: tuple[str, ...]
+    warning: str | None
+
+
 @dataclass(frozen=True)
 class AutoStatusEvent:
     event_id: int
@@ -1223,6 +1285,68 @@ class AutoManager:
         store: ProjectStore,
         record: AutoRunRecord,
     ) -> bytes:
+        material = self._context_material(store, record)
+        topic = material.topic
+        preparations = material.preparations
+        baseline_entries = material.baseline_entries
+        discussion_entries = material.discussion_entries
+        summary = material.summary
+
+        mandatory = render_discussion_context(
+            topic,
+            preparations=preparations,
+            baseline_entries=[],
+            discussion_entries=[],
+            summary=summary,
+        )
+        if len(mandatory) > self.settings.stateless_history_limit:
+            raise StorageError("mandatory Auto discussion material exceeds context limit")
+        pool: list[tuple[str, ContextEntry]] = [
+            *(('baseline', entry) for entry in baseline_entries),
+            *(('discussion', entry) for entry in discussion_entries),
+        ]
+        selected: list[tuple[str, ContextEntry]] = []
+        newest_discussion = discussion_entries[-1] if discussion_entries else None
+        for kind, entry in reversed(pool):
+            if len(selected) >= self.settings.stateless_round_limit:
+                continue
+            candidate = [entry, *(item[1] for item in reversed(selected))]
+            candidate_baseline = [item for item in candidate if item in baseline_entries]
+            candidate_discussion = [item for item in candidate if item in discussion_entries]
+            rendered = render_discussion_context(
+                topic,
+                preparations=preparations,
+                baseline_entries=candidate_baseline,
+                discussion_entries=candidate_discussion,
+                summary=summary,
+            )
+            if len(rendered) <= self.settings.stateless_history_limit:
+                selected.append((kind, entry))
+            elif entry is newest_discussion:
+                raise StorageError("newest Auto discussion entry exceeds context limit")
+        selected.reverse()
+        return render_discussion_context(
+            topic,
+            preparations=preparations,
+            baseline_entries=[entry for kind, entry in selected if kind == "baseline"],
+            discussion_entries=[
+                entry for kind, entry in selected if kind == "discussion"
+            ],
+            summary=summary,
+        )
+
+    def _context_material(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+    ) -> AutoMaterial:
+        """Every unretired, digest-verified piece of this run's own material.
+
+        One loader for three readers -- the discussion prompt, 7e's headroom,
+        and the compaction input -- so a compaction can never summarize a
+        different set of entries from the one it is about to retire.
+        """
+
         topic = store.load_auto_artifact(
             record.id,
             record.topic,
@@ -1248,7 +1372,6 @@ class AutoManager:
             record.baseline,
             self.settings.stateless_history_limit,
         )
-        summary = self._summary_entry(store, record)
         baseline_entries: list[ContextEntry] = []
         previous_end = 0
         for entry in record.baseline_entries[record.retired_baseline_count:]:
@@ -1295,48 +1418,147 @@ class AutoManager:
                     contents,
                 )
             )
-
-        mandatory = render_discussion_context(
-            topic,
+        return AutoMaterial(
+            topic=topic,
             preparations=preparations,
+            baseline_entries=baseline_entries,
+            discussion_entries=discussion_entries,
+            summary=self._summary_entry(store, record),
+        )
+
+    def _compaction_headroom(self, material: AutoMaterial) -> int:
+        """The largest summary that still leaves a renderable next prompt.
+
+        ``fixed`` is produced by the same call the next turn will make, with an
+        empty body and the real label, so every heading, separator and trailing
+        newline is counted exactly once and the arithmetic cannot drift from the
+        renderer. The model is that everything pending is summarized and
+        retired, so the post-compaction prompt is topic + preparations + one
+        summary section.
+        """
+
+        fixed = len(
+            render_discussion_context(
+                material.topic,
+                preparations=material.preparations,
+                baseline_entries=[],
+                discussion_entries=[],
+                summary=ContextEntry(AUTO_SUMMARY_LABEL, b""),
+            )
+        )
+        return min(
+            self.settings.effective_auto_compact_output_limit,
+            self.settings.stateless_history_limit - fixed,
+        )
+
+    def _post_compaction_fits(self, material: AutoMaterial, body: bytes) -> bool:
+        """Whether the real post-compaction prompt fits, rendered not estimated."""
+
+        rendered = render_discussion_context(
+            material.topic,
+            preparations=material.preparations,
             baseline_entries=[],
             discussion_entries=[],
-            summary=summary,
+            summary=ContextEntry(AUTO_SUMMARY_LABEL, body),
         )
-        if len(mandatory) > self.settings.stateless_history_limit:
-            raise StorageError("mandatory Auto discussion material exceeds context limit")
-        pool: list[tuple[str, ContextEntry]] = [
-            *(('baseline', entry) for entry in baseline_entries),
-            *(('discussion', entry) for entry in discussion_entries),
+        return len(rendered) <= self.settings.stateless_history_limit
+
+    def _plan_compaction(self, material: AutoMaterial) -> CompactionPlan:
+        """Decide, without calling a provider, whether this compaction can work.
+
+        Both skip outcomes are properties of fixed inputs -- topic, preparations
+        and the previous summary, none of which another discussion turn can
+        shrink -- so 7b treats them as structural and disables the policy rather
+        than re-testing them every cycle.
+        """
+
+        max_summary = self._compaction_headroom(material)
+        minimum = self.settings.effective_auto_compact_min_output
+        if max_summary < minimum:
+            # Paying for a summary that cannot be rendered afterwards is
+            # strictly worse than not compacting at all.
+            return CompactionPlan(
+                outcome="skipped_no_headroom",
+                max_summary=max_summary,
+                rendered=None,
+                dropped_entries=(),
+                warning=(
+                    "no headroom for an Auto summary: mandatory material and "
+                    "summary framing take "
+                    f"{self.settings.stateless_history_limit - max_summary} of "
+                    f"{self.settings.stateless_history_limit} bytes, leaving "
+                    f"{max_summary} against a {minimum}-byte minimum"
+                ),
+            )
+        limit = self.settings.effective_auto_compact_input_limit
+        mandatory = len(
+            render_compaction_context(
+                material.topic,
+                preparations=material.preparations,
+                previous_summary=material.summary,
+                baseline_entries=[],
+                discussion_entries=[],
+            )
+        )
+        if mandatory > limit:
+            return CompactionPlan(
+                outcome="skipped_overflow",
+                max_summary=max_summary,
+                rendered=None,
+                dropped_entries=(),
+                warning=(
+                    "Auto compaction input cannot fit its mandatory material: "
+                    f"{mandatory} bytes against a {limit}-byte limit"
+                ),
+            )
+        pending = [
+            *(("baseline", entry) for entry in material.baseline_entries),
+            *(("discussion", entry) for entry in material.discussion_entries),
         ]
         selected: list[tuple[str, ContextEntry]] = []
-        newest_discussion = discussion_entries[-1] if discussion_entries else None
-        for kind, entry in reversed(pool):
-            if len(selected) >= self.settings.stateless_round_limit:
-                continue
-            candidate = [entry, *(item[1] for item in reversed(selected))]
-            candidate_baseline = [item for item in candidate if item in baseline_entries]
-            candidate_discussion = [item for item in candidate if item in discussion_entries]
-            rendered = render_discussion_context(
-                topic,
-                preparations=preparations,
-                baseline_entries=candidate_baseline,
-                discussion_entries=candidate_discussion,
-                summary=summary,
+        dropped: list[str] = []
+        for kind, entry in reversed(pending):
+            candidate = [(kind, entry), *selected]
+            rendered = render_compaction_context(
+                material.topic,
+                preparations=material.preparations,
+                previous_summary=material.summary,
+                baseline_entries=[
+                    item for item_kind, item in candidate if item_kind == "baseline"
+                ],
+                discussion_entries=[
+                    item for item_kind, item in candidate if item_kind == "discussion"
+                ],
             )
-            if len(rendered) <= self.settings.stateless_history_limit:
-                selected.append((kind, entry))
-            elif entry is newest_discussion:
-                raise StorageError("newest Auto discussion entry exceeds context limit")
-        selected.reverse()
-        return render_discussion_context(
-            topic,
-            preparations=preparations,
-            baseline_entries=[entry for kind, entry in selected if kind == "baseline"],
-            discussion_entries=[
-                entry for kind, entry in selected if kind == "discussion"
-            ],
-            summary=summary,
+            if len(rendered) <= limit:
+                selected = candidate
+            else:
+                # The one place content is deliberately discarded. These are the
+                # same oldest entries the discussion renderer already drops
+                # silently; here the drop is explicit, audited and surfaced.
+                dropped.append(entry.label)
+        dropped.reverse()
+        return CompactionPlan(
+            outcome="ready",
+            max_summary=max_summary,
+            rendered=render_compaction_context(
+                material.topic,
+                preparations=material.preparations,
+                previous_summary=material.summary,
+                baseline_entries=[
+                    entry for kind, entry in selected if kind == "baseline"
+                ],
+                discussion_entries=[
+                    entry for kind, entry in selected if kind == "discussion"
+                ],
+            ),
+            dropped_entries=tuple(dropped),
+            warning=(
+                f"{len(dropped)} Auto entries were dropped without being "
+                f"summarized to fit the {limit}-byte compaction input limit"
+                if dropped
+                else None
+            ),
         )
 
     def _summary_entry(
