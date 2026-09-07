@@ -263,6 +263,18 @@ attempts. A quota failure never retries — it pauses the run to a resumable
 `stopped`, which **Continue Auto** recovers. Anything else ends the run as
 `error` with the cursor parked on the participant that failed.
 
+The chat header polls account quota from Delibra's shared monitor every
+`DELIBRA_USAGE_POLL_SECONDS` seconds (default 60); polling never calls a provider.
+Live observations are stored in `~/.delibra/usage.json` with expiry and staleness
+checks, so a restart cannot turn an old window into a pause. Codex can also hydrate
+the monitor once from its newest app-owned rollout before the first badge read or
+Auto dispatch. Claude has no equivalent cold-start source: on a machine with no
+persisted observation, the first-ever Claude turn runs with quota unknown. A
+threshold reported during a running turn takes effect before the following turn;
+Delibra deliberately does not cancel the turn already in flight. If quota storage
+fails, current-process enforcement continues and the round and badge warn that the
+state will not survive a restart.
+
 **Continue Auto** resumes a finished run in place, from any of the five terminal
 states (`stopped`, `interrupted`, `error`, `limit_reached`, `converged`). It is
 offered when no Auto is active anywhere in the project. The cursor is

@@ -1418,6 +1418,27 @@ async def test_a_rate_limit_event_reaches_the_shared_account_wide_monitor(
     assert observed.source == "claude_rate_limit_event"
 
 
+@pytest.mark.asyncio
+async def test_quota_write_failure_warns_without_failing_a_successful_round(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_usage_write(*_args, **_kwargs) -> None:
+        raise OSError("read-only quota store")
+
+    monkeypatch.setattr("app.usage.atomic_write_owned_json", fail_usage_write)
+    manager, project_id, session_id, _ = setup_manager(tmp_path, mode="rate-limit")
+
+    record = await manager.wait(await manager.start(project_id, session_id, "Ask"))
+
+    assert record.status == "complete"
+    assert record.warnings == [
+        "quota state could not be persisted; it will not survive a restart"
+    ]
+    assert manager.usage.durability_degraded is True
+    assert manager.usage.report("fake", "five_hour").status == "rejected"
+
+
 def write_codex_rollout(home: Path, thread_id: str) -> None:
     directory = home / "codex-home" / "sessions" / "2026" / "09" / "07"
     directory.mkdir(parents=True)

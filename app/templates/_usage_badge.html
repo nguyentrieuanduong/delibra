@@ -7,6 +7,9 @@
   hx-target="this"
   hx-swap="outerHTML"
 >
+  {% if durability_warning|default(none) is not none %}
+    <span class="usage-durability notice" role="status">{{ durability_warning }}</span>
+  {% endif %}
   {% for provider in providers|default([]) %}
     <span class="usage-provider" data-provider="{{ provider.name }}">
       <strong>{{ provider.label }}</strong>

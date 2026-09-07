@@ -10,9 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+import json
+import logging
+import os
+from pathlib import Path
 
 from app.config import Settings
 from app.models import RateLimitObservation
+from app.storage import atomic_write_owned_json, read_owned_bytes
 
 
 # `rejected > warning > healthy > unknown`, the strength order the merge and the
@@ -21,23 +26,16 @@ _STATUS_STRENGTH = {"unknown": 0, "healthy": 1, "warning": 2, "rejected": 3}
 
 _VERDICT_STRENGTH = {"unknown": 0, "ok": 1, "warning": 2, "pause": 3}
 
+LOGGER = logging.getLogger(__name__)
+USAGE_FORMAT = "delibra-usage/1"
+USAGE_FILE_LIMIT = 256 * 1024
+USAGE_PERSISTENCE_WARNING = (
+    "quota state could not be persisted; it will not survive a restart"
+)
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def epoch_instant(value: object) -> datetime | None:
-    """Read a provider's epoch-second reset time, degrading anything else.
-
-    Both providers report the reset as epoch seconds (Claude ``resetsAt``,
-    Codex ``resets_at``); a missing or unusable one leaves the window without an
-    expiry rather than inventing one.
-    """
-
-    # ``type(...) not in`` and not ``isinstance``: ``True`` is an ``int``.
-    if type(value) not in (int, float) or value <= 0:
-        return None
-    return datetime.fromtimestamp(value, timezone.utc)
 
 
 def merge_rate_limit(
@@ -131,15 +129,40 @@ class UsageMonitor:
         *,
         settings: Settings,
         clock: Callable[[], datetime] = _utc_now,
+        persist: bool = True,
     ) -> None:
         self._settings = settings
         self._clock = clock
-        self._entries: dict[tuple[str, str, str], RateLimitObservation] = {}
+        self._persist = persist
+        self._path = settings.home / "usage.json"
+        self.durability_degraded = False
+        self._entries = self._load() if persist else {}
 
-    def record(self, observation: RateLimitObservation) -> None:
+    def record(self, observation: RateLimitObservation) -> str | None:
         self._entries[observation.key] = merge_rate_limit(
             self._live(self._entries.get(observation.key)), observation
         )
+        if not self._persist:
+            return None
+        try:
+            atomic_write_owned_json(
+                self._path,
+                self._settings.home,
+                {
+                    "format": USAGE_FORMAT,
+                    "observations": [
+                        item.to_dict()
+                        for _, item in sorted(self._entries.items())
+                        if self._live(item) is not None
+                    ],
+                },
+            )
+        except Exception:
+            self.durability_degraded = True
+            LOGGER.warning("Quota state persistence failed", exc_info=True)
+            return USAGE_PERSISTENCE_WARNING
+        self.durability_degraded = False
+        return None
 
     def report(
         self, provider: str, window: str, account_key: str = "default"
@@ -167,3 +190,46 @@ class UsageMonitor:
         if now - observation.observed_at > staleness:
             return None
         return observation
+
+    def _load(self) -> dict[tuple[str, str, str], RateLimitObservation]:
+        if not os.path.lexists(self._path):
+            return {}
+        try:
+            contents = read_owned_bytes(
+                self._path, self._settings.home, USAGE_FILE_LIMIT
+            )
+            if contents.truncated:
+                raise ValueError("usage state exceeds its byte limit")
+            raw = json.loads(contents.data.decode("utf-8"))
+            if (
+                not isinstance(raw, dict)
+                or set(raw) != {"format", "observations"}
+                or raw.get("format") != USAGE_FORMAT
+                or not isinstance(raw.get("observations"), list)
+            ):
+                raise ValueError("usage state has an invalid shape")
+            entries: dict[tuple[str, str, str], RateLimitObservation] = {}
+            for item in raw["observations"]:
+                if not isinstance(item, dict):
+                    raise ValueError("usage observation has an invalid shape")
+                required = {
+                    "provider",
+                    "account_key",
+                    "window",
+                    "status",
+                    "observed_at",
+                    "source",
+                }
+                if not required.issubset(item) or not set(item).issubset(
+                    required | {"used_percent", "resets_at"}
+                ):
+                    raise ValueError("usage observation has an invalid shape")
+                observation = RateLimitObservation.from_dict(item)
+                if observation.key in entries:
+                    raise ValueError("usage state repeats one quota window")
+                if self._live(observation) is not None:
+                    entries[observation.key] = observation
+            return entries
+        except Exception:
+            LOGGER.warning("Discarding unavailable quota state", exc_info=True)
+            return {}
