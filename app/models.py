@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 import math
 from typing import Any
 
@@ -354,7 +354,9 @@ class TurnUsage:
     def reported(self) -> bool:
         """True when the provider reported at least one figure."""
 
-        return any(value is not None for value in asdict(self).values())
+        return any(
+            getattr(self, field.name) is not None for field in fields(self)
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TurnUsage":

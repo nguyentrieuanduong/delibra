@@ -1557,3 +1557,50 @@ def test_auto_run_total_counts_every_round_including_failed_attempts(
     assert "127 in" in detail.text
     assert "3 out" in detail.text
     assert "$0.7500" in detail.text
+
+
+def test_auto_run_total_renders_on_both_status_paths(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    """chat.html unpacks the status context field by field, so a key added to
+    auto_status_context reaches the fragment and silently misses the page."""
+
+    app, _, project, store, _, _ = auto_route_app(tmp_path)
+    record = reserve_auto_run(store)
+    config = store.load_session(record.participants[0].session_id)
+    # Two rounds, so the total is a number no single round's own usage line
+    # can supply -- otherwise the timeline would answer for the panel.
+    for index, tokens in enumerate((4242, 1000), start=1):
+        config.rounds.append(
+            RoundRecord(
+                n=index,
+                status="complete",
+                error=None,
+                warnings=[],
+                agent=config.agent,
+                model=config.model,
+                effort=config.effort,
+                started_at=f"2026-09-07T00:00:0{index}Z",
+                finished_at=f"2026-09-07T00:00:0{index}Z",
+                source=SourceDescriptor(type="auto"),
+                auto=AutoRoundDescriptor(
+                    auto_id=record.id,
+                    phase="preparation",
+                    cycle=None,
+                    position=0,
+                    context_file=f"inputs/round-{index:02d}/auto-context.md",
+                    context_sha256="0" * 64,
+                ),
+                usage=TurnUsage(input_tokens=tokens),
+            )
+        )
+    store.save_session(config)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        fragment = client.get(f"{prefix}/auto-runs/{record.number}")
+        page = client.get(f"{prefix}/chat")
+
+    assert "5,242 in" in fragment.text
+    assert "5,242 in" in page.text
