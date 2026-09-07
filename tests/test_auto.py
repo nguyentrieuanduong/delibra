@@ -34,6 +34,7 @@ from app.models import (
     AutoQuotaOverride,
     AutoRoundDescriptor,
     AutoRunRecord,
+    AutoSummary,
     AutoTurn,
     ContextObservation,
     ContextSummaryArtifact,
@@ -1025,6 +1026,261 @@ async def test_auto_manager_provider_failure_stops_without_skipping(
     assert terminal.discussion == []
     assert factory.created == 2
     assert factory.maximum_active == 1
+
+
+def _seed_retirement_auto(
+    store,
+    session_ids: list[str],
+    *,
+    baseline_texts: list[str],
+    auto_id: str = "e" * 32,
+) -> AutoRunRecord:
+    """A discussing run whose baseline entries are addressable one by one."""
+
+    topic = b"Retirement topic"
+    baseline = bytearray()
+    entries: list[AutoBaselineEntry] = []
+    for index, text in enumerate(baseline_texts):
+        contents = text.encode("utf-8")
+        if baseline:
+            baseline.extend(b"\n\n")
+        offset = len(baseline)
+        baseline.extend(contents)
+        entries.append(
+            AutoBaselineEntry(
+                session_id=session_ids[0],
+                round_n=index + 1,
+                started_at=f"2026-07-19T00:00:0{index}Z",
+                offset=offset,
+                length=len(contents),
+                sha256=sha256(contents).hexdigest(),
+            )
+        )
+    record = AutoRunRecord(
+        id=auto_id,
+        project_id=store.project.id,
+        number=store.reserve_auto_run_number(),
+        status="discussing",
+        agreement_policy="all_agree",
+        preparation_enabled=False,
+        max_cycles=5,
+        current_cycle=1,
+        next_participant=0,
+        participants=[
+            AutoParticipant(
+                session.id,
+                session.name,
+                session.agent,
+                session.model,
+                session.effort,
+            )
+            for session in store.list_sessions()
+        ],
+        topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
+        baseline=AutoArtifact("baseline.md", sha256(bytes(baseline)).hexdigest()),
+        baseline_entries=entries,
+        shared_context=None,
+        shared_context_source=None,
+        preparations=[],
+        discussion=[],
+        active_key=None,
+        future_turn_timeout_seconds=2,
+        active_timeout=None,
+        stop_requested=False,
+        created_at="2026-07-19T00:00:00Z",
+        started_at="2026-07-19T00:00:00Z",
+        finished_at=None,
+        terminal_reason=None,
+    )
+    store.create_auto_run(record, topic=topic, baseline=bytes(baseline))
+    return record
+
+
+def _seed_auto_discussion_turn(
+    store,
+    record: AutoRunRecord,
+    session_id: str,
+    *,
+    cycle: int,
+    position: int,
+    round_n: int,
+    text: str,
+) -> None:
+    contents = text.encode("utf-8")
+    (store.rounds_dir(session_id) / f"round-{round_n:02d}.md").write_bytes(contents)
+    record.discussion.append(
+        AutoTurn(
+            phase="discussion",
+            session_id=session_id,
+            round_n=round_n,
+            cycle=cycle,
+            position=position,
+            output_sha256=sha256(contents).hexdigest(),
+            verdict="continue",
+        )
+    )
+
+
+def _seed_auto_summary(
+    store,
+    record: AutoRunRecord,
+    session_id: str,
+    text: str,
+    *,
+    round_n: int = 90,
+) -> None:
+    contents = text.encode("utf-8")
+    (store.rounds_dir(session_id) / f"round-{round_n:02d}.md").write_bytes(contents)
+    index = len(record.summaries) + 1
+    digest = store.copy_auto_summary(
+        record.id,
+        index,
+        store.rounds_dir(session_id) / f"round-{round_n:02d}.md",
+        store.rounds_dir(session_id),
+    )
+    record.summaries.append(
+        AutoSummary(
+            path=f"summaries/{index:02d}.md",
+            sha256=digest,
+            created_at="2026-07-19T00:01:00Z",
+            cycle=record.current_cycle,
+            round_n=round_n,
+            session_id=session_id,
+            retired_baseline_count=record.retired_baseline_count,
+            retired_discussion_count=record.retired_discussion_count,
+        )
+    )
+
+
+def test_a_rendered_summary_sits_directly_after_the_topic() -> None:
+    # One renderer for the budget and the real prompt, so 7e's arithmetic can
+    # never drift from what is actually sent.
+    topic = b"Topic"
+    summary = ContextEntry("Auto summary", b"Everything retired so far")
+    preparation = ContextEntry("participant 1", b"Alpha preparation")
+
+    rendered = render_discussion_context(
+        topic,
+        preparations=[preparation],
+        baseline_entries=[],
+        discussion_entries=[],
+        summary=summary,
+    )
+
+    assert rendered.count(b"UNTRUSTED MATERIAL") == 3
+    assert rendered.index(topic) < rendered.index(summary.content)
+    assert rendered.index(summary.content) < rendered.index(preparation.content)
+    # The default keeps every existing call site byte-identical.
+    assert render_discussion_context(
+        topic,
+        preparations=[preparation],
+        baseline_entries=[],
+        discussion_entries=[],
+    ) == render_discussion_context(
+        topic,
+        preparations=[preparation],
+        baseline_entries=[],
+        discussion_entries=[],
+        summary=None,
+    )
+
+
+def test_discussion_context_drops_retired_entries_and_carries_one_summary(
+    tmp_path: Path,
+) -> None:
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(
+        store,
+        session_ids,
+        baseline_texts=["Retired baseline", "Surviving baseline"],
+    )
+    _seed_auto_discussion_turn(
+        store,
+        record,
+        session_ids[0],
+        cycle=1,
+        position=0,
+        round_n=1,
+        text="Retired discussion",
+    )
+    _seed_auto_discussion_turn(
+        store,
+        record,
+        session_ids[1],
+        cycle=1,
+        position=1,
+        round_n=2,
+        text="Surviving discussion",
+    )
+    record.retired_baseline_count = 1
+    record.retired_discussion_count = 1
+    _seed_auto_summary(store, record, session_ids[0], "Summary of the retired half")
+    store.save_auto_run(record)
+
+    context = manager._discussion_context(store, store.load_auto_run(record.id))
+
+    assert b"Retired baseline" not in context
+    assert b"Retired discussion" not in context
+    assert b"Surviving baseline" in context
+    assert b"Surviving discussion" in context
+    assert context.count(b"Summary of the retired half") == 1
+
+
+def test_discussion_context_renders_only_the_newest_summary(tmp_path: Path) -> None:
+    # Every summary is kept for audit; rendering more than the newest would
+    # re-admit material the newer one already stands for.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(store, session_ids, baseline_texts=["Baseline"])
+    _seed_auto_summary(store, record, session_ids[0], "First summary", round_n=90)
+    _seed_auto_summary(store, record, session_ids[0], "Second summary", round_n=91)
+    store.save_auto_run(record)
+
+    context = manager._discussion_context(store, store.load_auto_run(record.id))
+
+    assert b"First summary" not in context
+    assert b"Second summary" in context
+
+
+def test_a_tampered_summary_fails_the_turn_closed(tmp_path: Path) -> None:
+    # The summary stands in for content the run has already stopped sending, so
+    # a mismatch must stop the turn rather than quietly shrink its context.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(store, session_ids, baseline_texts=["Baseline"])
+    _seed_auto_summary(store, record, session_ids[0], "Original summary")
+    store.save_auto_run(record)
+    (store.auto_run_dir(record.id) / "summaries" / "01.md").write_bytes(b"Rewritten")
+
+    with pytest.raises(OwnershipError, match="summary"):
+        manager._discussion_context(store, store.load_auto_run(record.id))
+
+
+def test_a_summary_is_mandatory_rather_than_dropped_for_budget(tmp_path: Path) -> None:
+    # Selection drops the oldest optional entries first; a summary that could be
+    # dropped would silently discard everything it stands for.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _seed_retirement_auto(
+        store,
+        session_ids,
+        baseline_texts=["B" * 400],
+    )
+    _seed_auto_discussion_turn(
+        store,
+        record,
+        session_ids[0],
+        cycle=1,
+        position=0,
+        round_n=1,
+        text="D" * 100,
+    )
+    _seed_auto_summary(store, record, session_ids[0], "S" * 200)
+    store.save_auto_run(record)
+    manager.settings = replace(manager.settings, stateless_history_limit=700)
+
+    context = manager._discussion_context(store, store.load_auto_run(record.id))
+
+    assert b"S" * 200 in context
+    assert b"D" * 100 in context
+    assert b"B" * 400 not in context
 
 
 @pytest.mark.asyncio

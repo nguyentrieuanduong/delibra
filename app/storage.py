@@ -30,6 +30,7 @@ from app.models import (
     AUTO_FORMAT,
     AutoArtifact,
     AutoRunRecord,
+    AutoSummary,
     ContextSummaryArtifact,
     Project,
     RateLimitReading,
@@ -2266,6 +2267,71 @@ class ProjectStore:
         )
         if sha256(contents).hexdigest() != expected_sha256:
             raise OwnershipError("Auto preparation digest does not match")
+        return contents
+
+    def _auto_summaries_dir(self, auto_id: str) -> Path:
+        run_dir = self.auto_run_dir(auto_id)
+        _assert_no_symlink_components(
+            run_dir,
+            self.auto_runs_root,
+            allow_missing_leaf=False,
+        )
+        summaries = run_dir / "summaries"
+        _assert_no_symlink_components(summaries, run_dir, allow_missing_leaf=True)
+        return summaries
+
+    @staticmethod
+    def _auto_summary_name(index: int) -> str:
+        # The same ``summaries/NN.md`` shape ``AutoSummary`` validates, minted in
+        # one place so a record can never name a file this store would refuse.
+        if type(index) is not int or not 1 <= index <= 9_999:
+            raise OwnershipError("Auto summary index is invalid")
+        return f"{index:02d}.md"
+
+    def copy_auto_summary(
+        self,
+        auto_id: str,
+        index: int,
+        source: Path,
+        source_root: Path,
+    ) -> str:
+        """Adopt a completed compaction round as this run's newest summary.
+
+        Mirrors ``copy_auto_preparation``: the round file is copied into the run
+        directory so the summary outlives the session round that produced it.
+        The directory is created on demand, because runs created before Phase 7
+        have no ``summaries/`` at all.
+        """
+
+        summaries = self._auto_summaries_dir(auto_id)
+        ensure_owned_directory(summaries, self.auto_run_dir(auto_id))
+        return safe_copy_file(
+            source,
+            source_root,
+            summaries / self._auto_summary_name(index),
+            summaries,
+        )
+
+    def load_auto_summary(
+        self,
+        auto_id: str,
+        summary: AutoSummary,
+        maximum_bytes: int,
+    ) -> bytes:
+        """Read a summary, refusing anything but the exact bytes it names."""
+
+        if maximum_bytes < 1:
+            raise ValueError("Auto summary limit must be positive")
+        summaries = self._auto_summaries_dir(auto_id)
+        name = PurePosixPath(summary.path).name
+        contents = self._load_owned_bytes(
+            summaries / name,
+            summaries,
+            maximum_bytes,
+            "Auto summary",
+        )
+        if sha256(contents).hexdigest() != summary.sha256:
+            raise OwnershipError("Auto summary digest does not match")
         return contents
 
     def write_auto_context(self, auto_id: str, contents: bytes) -> tuple[Path, str]:
