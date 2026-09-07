@@ -235,3 +235,112 @@ def test_effort_levels_match_installed_codex() -> None:
 
 def test_native_resume_after_config_change_matches_real_m4_gate() -> None:
     assert CodexAdapter.RESUME_AFTER_CONFIG_CHANGE is True
+
+
+def usage_events(name: str) -> tuple[list, list]:
+    """Split one m5 fixture's events into billing and occupancy reports.
+
+    The m5 fixtures append the app-owned rollout records after stdout, so the
+    adapter sees lines it will never see in production too; parsing them must
+    not manufacture a second reading.
+    """
+
+    _, events = parse_fixture(f"m5/{name}")
+    return (
+        [event for event in events if event.kind == "turn_usage"],
+        [event for event in events if event.kind == "context_usage"],
+    )
+
+
+def test_codex_bills_a_round_from_turn_completed() -> None:
+    billing, _ = usage_events("codex_c_small_resume.jsonl")
+
+    assert len(billing) == 1
+    usage = billing[0].usage
+    # Measured, spike/fixtures/m5/codex_c_small_resume.jsonl.
+    assert usage.input_tokens == 32018
+    assert usage.output_tokens == 5
+    assert usage.cache_read_tokens == 31872
+    assert usage.cache_creation_tokens == 0
+    assert usage.reasoning_tokens == 0
+    assert usage.total_cost_usd is None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "codex_a_small_fresh.jsonl",
+        "codex_b_large_resume.jsonl",
+        "codex_c_small_resume.jsonl",
+        "codex_d_small_fresh.jsonl",
+        "codex_e_model_change.jsonl",
+    ],
+)
+def test_codex_stdout_occupancy_equals_the_rollout_last_token_usage(name: str) -> None:
+    """`last_token_usage` is the field Phase 0 proved, and it lives only in the
+    rollout. This asserts the stdout sum Delibra reads is the same number, so
+    the `codex_last_token_usage` label stays honest before Phase 5b's rollout
+    reader exists."""
+
+    _, occupancy = usage_events(name)
+    rollout_total = None
+    for line in (FIXTURES / "m5" / name).read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        if payload.get("type") == "token_count":
+            rollout_total = payload["info"]["last_token_usage"]["total_tokens"]
+
+    assert rollout_total is not None
+    assert occupancy[0].context.used_tokens == rollout_total
+    assert occupancy[0].context.numerator_source == "codex_last_token_usage"
+
+
+def test_codex_denominator_is_unknown_until_the_rollout_is_read() -> None:
+    """`model_context_window` is absent from `exec --json` stdout; Phase 5b's
+    rollout reader supplies it. Reporting `unknown` beats guessing."""
+
+    _, occupancy = usage_events("codex_c_small_resume.jsonl")
+
+    assert occupancy[0].context.context_window is None
+    assert occupancy[0].context.resolved_model is None
+
+
+def mutate_turn_completed(name: str, mutate) -> tuple[list, list]:
+    adapter = CodexAdapter()
+    events = []
+    for line in (FIXTURES / "m5" / name).read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        if payload.get("type") == "turn.completed":
+            mutate(payload)
+            line = json.dumps(payload)
+        events.extend(adapter.parse_line(line))
+    return (
+        [event for event in events if event.kind == "turn_usage"],
+        [event for event in events if event.kind == "context_usage"],
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.pop("usage"),
+        lambda payload: payload.update({"usage": {"input_tokens": "many"}}),
+        lambda payload: payload.update({"usage": {"input_tokens": -3}}),
+        lambda payload: payload.update({"usage": {"output_tokens": 5}}),
+    ],
+)
+def test_codex_occupancy_degrades_to_unknown_rather_than_guessing(mutate) -> None:
+    """A partial sum is not occupancy: both components must be numeric."""
+
+    _, occupancy = mutate_turn_completed("codex_c_small_resume.jsonl", mutate)
+
+    for event in occupancy:
+        assert event.context.used_tokens is None
+
+
+def test_codex_reports_no_usage_when_the_provider_reported_none() -> None:
+    billing, occupancy = mutate_turn_completed(
+        "codex_c_small_resume.jsonl",
+        lambda payload: payload.pop("usage"),
+    )
+
+    assert billing == []

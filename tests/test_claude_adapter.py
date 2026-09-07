@@ -209,3 +209,130 @@ def test_effort_levels_match_installed_claude() -> None:
 
 def test_native_resume_after_config_change_matches_real_m4_gate() -> None:
     assert ClaudeAdapter.RESUME_AFTER_CONFIG_CHANGE is True
+
+
+def usage_events(name: str) -> tuple[list, list]:
+    """Split one m5 fixture's events into billing and occupancy reports."""
+
+    _, events = parse_fixture(f"m5/{name}")
+    return (
+        [event for event in events if event.kind == "turn_usage"],
+        [event for event in events if event.kind == "context_usage"],
+    )
+
+
+def test_claude_bills_a_round_from_the_result_line() -> None:
+    billing, _ = usage_events("claude_c_small_resume.jsonl")
+
+    assert len(billing) == 1
+    usage = billing[0].usage
+    # Measured, spike/fixtures/m5/claude_c_small_resume.jsonl.
+    assert usage.input_tokens == 2
+    assert usage.output_tokens == 4
+    assert usage.cache_read_tokens == 42951
+    assert usage.cache_creation_tokens == 17
+    assert usage.total_cost_usd == pytest.approx(0.0130533)
+    assert usage.max_output_tokens == 64000
+
+
+def test_claude_occupancy_sums_the_three_counters_of_the_final_assistant() -> None:
+    _, occupancy = usage_events("claude_c_small_resume.jsonl")
+
+    assert len(occupancy) == 1
+    reading = occupancy[0].context
+    # 2 + 42951 + 17: no single Claude counter traces a conversation, because a
+    # resumed turn reads back as cache_read what the previous turn wrote as
+    # cache_creation.
+    assert reading.used_tokens == 42970
+    assert reading.context_window == 1_000_000
+    assert reading.resolved_model == "claude-sonnet-5"
+    assert reading.numerator_source == "claude_final_assistant"
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("claude_a_small_fresh.jsonl", 8118),
+        ("claude_b_large_resume.jsonl", 42952),
+        ("claude_c_small_resume.jsonl", 42970),
+        ("claude_d_small_fresh.jsonl", 8118),
+    ],
+)
+def test_claude_occupancy_traces_the_phase_0_experiment(
+    name: str,
+    expected: int,
+) -> None:
+    """The measured curve: +18 at C against a 34,834-token jump at B, and an
+    exact return to A's value on a fresh session at D."""
+
+    _, occupancy = usage_events(name)
+
+    assert occupancy[0].context.used_tokens == expected
+
+
+def test_claude_context_window_is_keyed_by_the_model_the_turn_resolved() -> None:
+    """The experiment interleaves a model change, so a run can carry two
+    modelUsage entries; picking the wrong one is a 5x error in the denominator."""
+
+    _, occupancy = usage_events("claude_e_model_change.jsonl")
+
+    assert occupancy[0].context.resolved_model == "claude-haiku-4-5-20251001"
+    assert occupancy[0].context.context_window == 200_000
+
+
+def test_claude_occupancy_is_unknown_when_the_assistant_model_is_unrecognized() -> None:
+    """The induced-error run answers as `<synthetic>`, not as the resolved
+    model, so nothing describes the real conversation."""
+
+    _, occupancy = usage_events("claude_f_induced_error.jsonl")
+
+    assert occupancy == [] or occupancy[0].context.used_tokens is None
+
+
+def mutate_result(name: str, mutate) -> tuple[list, list]:
+    adapter = ClaudeAdapter()
+    events = []
+    for line in (FIXTURES / "m5" / name).read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        if payload.get("type") == "result":
+            mutate(payload)
+            line = json.dumps(payload)
+        events.extend(adapter.parse_line(line))
+    return (
+        [event for event in events if event.kind == "turn_usage"],
+        [event for event in events if event.kind == "context_usage"],
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.pop("usage"),
+        lambda payload: payload.update({"usage": {"input_tokens": "many"}}),
+        lambda payload: payload.update({"usage": {"input_tokens": -3}}),
+        lambda payload: payload.update({"usage": {"input_tokens": True}}),
+        lambda payload: payload.update({"total_cost_usd": "free"}),
+    ],
+)
+def test_claude_billing_degrades_to_unknown_rather_than_failing(mutate) -> None:
+    billing, _ = mutate_result("claude_c_small_resume.jsonl", mutate)
+
+    for event in billing:
+        assert event.usage.reported
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.pop("modelUsage"),
+        lambda payload: payload.update({"modelUsage": {"claude-sonnet-5": "wide"}}),
+        lambda payload: payload.update(
+            {"modelUsage": {"claude-sonnet-5": {"contextWindow": 0}}}
+        ),
+    ],
+)
+def test_claude_never_guesses_a_denominator(mutate) -> None:
+    _, occupancy = mutate_result("claude_c_small_resume.jsonl", mutate)
+
+    assert occupancy[0].context.context_window is None
+    assert occupancy[0].context.used_tokens == 42970
