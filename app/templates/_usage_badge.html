@@ -17,6 +17,11 @@
   {% for provider in providers|default([]) %}
     <span class="usage-provider" data-provider="{{ provider.name }}">
       <strong>{{ provider.label }}</strong>
+      {% if provider.percentage_gap is not none %}
+        {# A provider that cannot report a percentage says so once, rather than
+           letting each window read like data Delibra failed to collect. #}
+        <span class="usage-gap">{{ provider.percentage_gap }}</span>
+      {% endif %}
       {% for window in provider.windows %}
         <span class="usage-window {{ window.verdict }}">{{ window.label }}:{% if window.observation is none %} unknown{% elif window.remaining_percent is not none %} {{ window.remaining_percent }}% remaining{% else %}
             unavailable (status {{ window.observation.status }};

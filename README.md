@@ -10,7 +10,9 @@ Requirements:
 
 - Python 3.12+
 - Claude Code 2.1.202, authenticated through its normal CLI login
-- Codex CLI 0.144.5, authenticated in Delibra's isolated home as described below
+- Codex CLI, authenticated in Delibra's isolated home as described below —
+  verified against 0.144.5 and 0.153.4; newer versions are accepted and
+  rate-limit fields are feature-detected at runtime
 
 Create the project environment and install the reproducible lock:
 
@@ -268,14 +270,37 @@ The chat header polls account quota from Delibra's shared monitor every
 `DELIBRA_USAGE_LOW_QUOTA_POLL_SECONDS` (default 300) while any observed window is
 below the warning threshold. Polling never calls a provider, so a window that
 reports no percentage at all — every Claude window — keeps the slower interval:
-a faster poll could not learn anything about it. The freshness that matters comes
-from the prompt instead: sending a prompt to a Codex agent re-reads that account's
-quota from the app-owned rollout first, and the response carries the updated badge.
+a faster poll could not learn anything about it.
+
+**The 20 % / 8 % / 3 % thresholds are Codex-only, because only Codex reports a
+percentage.** Claude's `-p` mode carries no five-hour or weekly figure: its
+`rate_limit_event` reports a status and a reset time, `utilization` is absent
+unless the account is already warned or refused, and `claude -p "/usage"` returns
+prose with no percentage. Delibra therefore runs Claude on status alone —
+`allowed_warning` warns, `rejected` pauses — and the badge says *status only — no
+percentage available* rather than `unknown`, which is the word it reserves for a
+window it simply has not observed yet. A per-model weekly refusal
+(`seven_day_opus`, `seven_day_sonnet`) counts as a weekly refusal; `overageStatus`
+never reaches the policy, because it reports whether pay-as-you-go is available
+and reads `rejected` on perfectly healthy accounts.
+
+Codex quota comes from the account, not from Delibra's own files. Delibra
+isolates Codex into its own `CODEX_HOME`, so a `codex` run in your terminal
+spends the same subscription and never appears in the rollouts Delibra can read —
+measured at 19 points of drift on the weekly window. It therefore asks
+`codex app-server` for `account/rateLimits/read`, which reports the whole account,
+and falls back to the newest app-owned rollout when that is unavailable. The read
+costs no model turn but does spawn a process, so it runs at most once every
+`DELIBRA_CODEX_QUOTA_REFRESH_SECONDS` (default 300) and is bounded by
+`DELIBRA_CODEX_APP_SERVER_TIMEOUT_SECONDS` (default 15). Page renders never wait
+for it: they ship what the monitor holds and the next poll carries the newer
+figure. The two moments that act on the answer — Auto's pre-dispatch check and a
+hand-sent Codex prompt — do wait for it.
+
 Live observations are stored in `~/.delibra/usage.json` with expiry and staleness
-checks, so a restart cannot turn an old window into a pause. Codex can also hydrate
-the monitor once from its newest app-owned rollout before the first badge read or
-Auto dispatch. Claude has no equivalent cold-start source: on a machine with no
-persisted observation, the first-ever Claude turn runs with quota unknown. A
+checks, so a restart cannot turn an old window into a pause. Claude has no
+cold-start source at all: on a machine with no persisted observation, the
+first-ever Claude turn runs with quota unknown. A
 threshold reported during a running turn takes effect before the following turn;
 Delibra deliberately does not cancel the turn already in flight. If quota storage
 fails, current-process enforcement continues and the round and badge warn that the
