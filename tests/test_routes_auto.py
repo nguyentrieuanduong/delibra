@@ -15,10 +15,12 @@ from app.config import Settings
 from app.main import create_app
 from app.models import (
     AutoArtifact,
+    AutoRoundDescriptor,
     AutoRunRecord,
     RoundRecord,
     SessionConfig,
     SourceDescriptor,
+    TurnUsage,
 )
 from app.storage import ProjectStore, RegistryStore
 
@@ -1475,3 +1477,83 @@ def test_auto_history_rejects_tampered_copy_and_ignores_live_round_drift(
     assert "Tampered Auto copy" not in detail.text
     assert drifted_focus not in detail.text
     assert tampered_focus not in detail.text
+
+
+def test_auto_run_total_counts_every_round_including_failed_attempts(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    """A retried turn bills for each attempt, so a total that omitted the
+    failures would understate the run every time Phase 4's retry fires."""
+
+    app, _, project, store, _, _ = auto_route_app(tmp_path)
+    record = reserve_auto_run(store)
+    billed = {
+        record.participants[0].session_id: [
+            ("preparation", "complete", TurnUsage(input_tokens=100, total_cost_usd=0.5)),
+            ("discussion", "error", TurnUsage(input_tokens=7, total_cost_usd=0.25)),
+        ],
+        record.participants[1].session_id: [
+            ("discussion", "complete", TurnUsage(input_tokens=20, output_tokens=3)),
+        ],
+    }
+    for session_id, rounds in billed.items():
+        config = store.load_session(session_id)
+        for index, (phase, status, usage) in enumerate(rounds, start=1):
+            config.rounds.append(
+                RoundRecord(
+                    n=index,
+                    status=status,
+                    error=None if status == "complete" else "transient",
+                    warnings=[],
+                    agent=config.agent,
+                    model=config.model,
+                    effort=config.effort,
+                    started_at=f"2026-09-07T00:00:0{index}Z",
+                    finished_at=f"2026-09-07T00:00:0{index}Z",
+                    source=SourceDescriptor(type="auto"),
+                    auto=AutoRoundDescriptor(
+                        auto_id=record.id,
+                        phase=phase,
+                        cycle=None if phase == "preparation" else 1,
+                        position=0,
+                        context_file=f"inputs/round-{index:02d}/auto-context.md",
+                        context_sha256="0" * 64,
+                    ),
+                    usage=usage,
+                )
+            )
+        store.save_session(config)
+    # A manual round in the same project must not be counted.
+    other = store.load_session(record.participants[1].session_id)
+    other.rounds.append(
+        RoundRecord(
+            n=len(other.rounds) + 1,
+            status="complete",
+            error=None,
+            warnings=[],
+            agent=other.agent,
+            model=other.model,
+            effort=other.effort,
+            started_at="2026-09-07T00:00:09Z",
+            finished_at="2026-09-07T00:00:09Z",
+            source=SourceDescriptor(type="user"),
+            usage=TurnUsage(input_tokens=9_000_000),
+        )
+    )
+    store.save_session(other)
+    finish_reserved_auto(
+        store,
+        record,
+        status="converged",
+        preparation_enabled=True,
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        detail = client.get(f"{prefix}/auto-runs/{record.number}/history")
+
+    assert detail.status_code == 200
+    assert "127 in" in detail.text
+    assert "3 out" in detail.text
+    assert "$0.7500" in detail.text

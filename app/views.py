@@ -6,7 +6,7 @@ from typing import Any
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
-from app.models import Project, SessionConfig
+from app.models import Project, SessionConfig, TurnUsage, total_turn_usage
 from app.storage import (
     NotFoundError,
     ProjectStore,
@@ -127,6 +127,22 @@ def conversation_round_views(
     """Project rounds visible as shared conversation messages."""
 
     return round_views(store, session_id, auto_numbers=auto_numbers)
+
+
+def auto_run_usage(store: ProjectStore, auto_id: str) -> TurnUsage:
+    """Total what one Auto run cost, across every round it produced.
+
+    Preparation, discussion and failed attempts all bill, so all of them
+    count: a total that silently omitted the failures would understate the
+    run every time a turn was retried.
+    """
+
+    return total_turn_usage(
+        record.usage
+        for session in store.list_sessions()
+        for record in session.rounds
+        if record.auto is not None and record.auto.auto_id == auto_id
+    )
 
 
 def effort_levels() -> dict[str, list[str]]:

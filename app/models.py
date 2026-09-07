@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 import math
 from typing import Any
@@ -369,6 +370,36 @@ class TurnUsage:
 
     def to_dict(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+_SUMMABLE_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_tokens",
+    "total_cost_usd",
+)
+
+
+def total_turn_usage(usages: Iterable["TurnUsage | None"]) -> TurnUsage:
+    """Add up what a set of rounds cost.
+
+    A field stays ``None`` unless at least one round reported it, so a total
+    never claims a provider reported a zero it never sent. ``max_output_tokens``
+    is a per-turn cap rather than a quantity, so it is never summed.
+    """
+
+    totals: dict[str, float | None] = dict.fromkeys(_SUMMABLE_USAGE_FIELDS, None)
+    for usage in usages:
+        if usage is None:
+            continue
+        for name in _SUMMABLE_USAGE_FIELDS:
+            value = getattr(usage, name)
+            if value is None:
+                continue
+            totals[name] = (totals[name] or 0) + value
+    return TurnUsage(**totals)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,7 @@ from app.models import (
     SessionConfig,
     SharedContextDescriptor,
     SourceDescriptor,
+    TurnUsage,
 )
 from app.storage import ProjectStore, RegistryStore
 
@@ -93,6 +94,22 @@ def auto_round(round_n: int, auto_id: str) -> RoundRecord:
             context_sha256="0" * 64,
             verdict="continue",
         ),
+    )
+
+
+def billed_round(round_n: int, usage: TurnUsage | None) -> RoundRecord:
+    return RoundRecord(
+        n=round_n,
+        status="complete",
+        error=None,
+        warnings=[],
+        agent="fake",
+        model="success",
+        effort="low",
+        started_at=f"2026-01-01T00:00:0{round_n}Z",
+        finished_at=f"2026-01-01T00:00:0{round_n}Z",
+        source=SourceDescriptor(type="user"),
+        usage=usage,
     )
 
 
@@ -1225,6 +1242,52 @@ def test_preparation_is_visible_in_chat_timeline_but_hidden_from_sidebar_preview
     assert "Auto preparation" in chat.text
     assert "Latest round 1" in chat.text
     assert "Visible preparation" in detail.text
+
+
+def test_chat_shows_what_a_round_cost_and_stays_silent_when_nothing_was_reported(
+    tmp_path: Path,
+) -> None:
+    alpha = session(
+        "a" * 32,
+        "Alpha",
+        rounds=[
+            billed_round(
+                1,
+                TurnUsage(
+                    input_tokens=32018,
+                    output_tokens=5,
+                    cache_read_tokens=31872,
+                    total_cost_usd=0.0130533,
+                ),
+            ),
+            billed_round(2, None),
+        ],
+    )
+    app, project, _ = setup_project(tmp_path, [alpha])
+    project_prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"{project_prefix}/chat")
+        focused = client.get(f"{project_prefix}/sessions/{alpha.id}/rounds/1/focus")
+
+    bubbles = {
+        n: re.search(
+            rf'<article[^>]+id="round-{alpha.id}-{n}".*?</article>',
+            response.text,
+            flags=re.DOTALL,
+        )
+        for n in (1, 2)
+    }
+    assert all(bubble is not None for bubble in bubbles.values())
+    billed = bubbles[1].group()
+    assert "32,018 in" in billed
+    assert "5 out" in billed
+    assert "31,872 cache read" in billed
+    assert "$0.0131" in billed
+    # Unreported figures are absent, never rendered as a fabricated zero.
+    assert "cache write" not in billed
+    assert 'class="provenance usage"' not in bubbles[2].group()
+    assert "32,018 in" in focused.text
 
 
 def test_chat_error_javascript_contract_runs_under_node() -> None:

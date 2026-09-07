@@ -1,3 +1,4 @@
+{% from "_turn_usage.html" import turn_usage %}
 <article
   id="{{ focus_dom_id }}"
   class="round-focus {{ round.record.status }}"
@@ -21,6 +22,7 @@
       · SHA-256 {{ round.record.shared_context.sha256 }}
     </p>
   {% endif %}
+  {{ turn_usage(round.record.usage, "Usage") }}
   {% if round.record.error %}<p class="error">{{ round.record.error }}</p>{% endif %}
   {% if round.record.warnings %}
     <ul class="warnings">

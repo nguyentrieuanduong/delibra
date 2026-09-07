@@ -1,3 +1,4 @@
+{% from "_turn_usage.html" import turn_usage %}
 {% if clear_auto_setup %}<div id="auto-setup-host" hx-swap-oob="innerHTML"></div>{% endif %}
 {% if auto_history_oob_runs|default(none) is not none %}
   {% with auto_runs=auto_history_oob_runs|default([]), auto_history_oob=true %}
@@ -89,6 +90,7 @@
       </ol>
     </details>
   {% endif %}
+  {{ turn_usage(auto_usage, "Run total, every round included") }}
   {% if auto.terminal_reason %}<p class="auto-terminal-reason">{{ auto.terminal_reason }}</p>{% endif %}
   {% if auto_active %}
     <span
