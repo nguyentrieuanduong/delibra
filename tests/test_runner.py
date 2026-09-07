@@ -22,6 +22,7 @@ from app.models import (
     AutoRoundDescriptor,
     AutoRunRecord,
     ContextObservation,
+    ContextSummaryArtifact,
     ContextReading,
     RateLimitReading,
     RoundRecord,
@@ -39,6 +40,7 @@ from app.runner import (
 from app.storage import (
     ConflictError,
     LockCoordinator,
+    OwnershipError,
     ProjectFileDisplayError,
     ProjectStore,
     RegistryStore,
@@ -1365,6 +1367,170 @@ def test_stateless_history_excludes_auto_preparation_rounds(tmp_path: Path) -> N
 
     assert [path.name for path in staged] == ["round-01.prompt.md", "round-01.md"]
     manager._cleanup_input_root(input_root)
+
+
+def seed_rounds(
+    store: ProjectStore,
+    config: SessionConfig,
+    numbers,
+    *,
+    size: int = 8,
+    phase: str | None = None,
+) -> None:
+    rounds = store.rounds_dir(config.id)
+    for number in numbers:
+        (rounds / f"round-{number:02d}.prompt.md").write_text("p" * size)
+        (rounds / f"round-{number:02d}.md").write_text("a" * size)
+        config.rounds.append(
+            RoundRecord(
+                n=number,
+                status="complete",
+                error=None,
+                warnings=[],
+                agent="fake",
+                model="success",
+                effort="low",
+                started_at=f"2026-07-17T00:00:{number:02d}Z",
+                finished_at=f"2026-07-17T00:00:{number:02d}Z",
+                source=SourceDescriptor(type="auto" if phase else "user"),
+                auto=(
+                    AutoRoundDescriptor(
+                        auto_id="c" * 32,
+                        phase=phase,
+                        cycle=1,
+                        position=0,
+                        context_file=f"inputs/round-{number:02d}/auto-context.md",
+                        context_sha256="d" * 64,
+                    )
+                    if phase
+                    else None
+                ),
+            )
+        )
+    store.save_session(config)
+
+
+def write_summary(
+    store: ProjectStore,
+    config: SessionConfig,
+    text: str,
+    *,
+    source_round: int,
+) -> None:
+    context_dir = store.context_dir(config.id)
+    context_dir.mkdir(mode=0o700, exist_ok=True)
+    body = text.encode("utf-8")
+    path = context_dir / f"summary-{source_round:02d}.md"
+    path.write_bytes(body)
+    config.context_summary = ContextSummaryArtifact(
+        path=f"context/summary-{source_round:02d}.md",
+        sha256=sha256(body).hexdigest(),
+        source_round=source_round,
+        created_at="2026-07-17T00:01:00Z",
+        model="fake",
+    )
+    store.save_session(config)
+
+
+def test_stage_history_retires_rounds_at_or_below_the_context_baseline(
+    tmp_path: Path,
+) -> None:
+    manager, _, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1, 2, 3))
+    config.context_baseline_round = 2
+    store.save_session(config)
+
+    input_root, staged = manager._stage_history(store, config, 4)
+
+    assert [path.name for path in staged] == ["round-03.prompt.md", "round-03.md"]
+    manifest = json.loads((input_root / "history" / "manifest.json").read_text())
+    assert manifest["included_rounds"] == [3]
+    # Retired rounds are not "omitted for budget": they are gone by decision.
+    assert manifest["omitted_rounds"] == []
+    assert manifest["context_baseline_round"] == 2
+    manager._cleanup_input_root(input_root)
+
+
+def test_stage_history_excludes_auto_compaction_rounds(tmp_path: Path) -> None:
+    # A compaction round summarizes Auto's own material; leaking it into an
+    # unrelated manual chat would import context the user never sent there.
+    manager, _, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1,))
+    seed_rounds(store, config, (2,), phase="compaction")
+
+    input_root, staged = manager._stage_history(store, config, 3)
+
+    assert [path.name for path in staged] == ["round-01.prompt.md", "round-01.md"]
+    manager._cleanup_input_root(input_root)
+
+
+def test_stage_history_charges_the_summary_first_and_never_drops_it(
+    tmp_path: Path,
+) -> None:
+    # The summary stands in for every retired round, so it is mandatory and is
+    # charged before any round competes for the remaining budget.
+    bounded = lambda settings: replace(settings, stateless_history_limit=120)
+    manager, _, session_id, store = setup_manager(
+        tmp_path,
+        settings_transform=bounded,
+    )
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1, 2, 3), size=20)
+    config.context_baseline_round = 1
+    store.save_session(config)
+    write_summary(store, config, "S" * 60, source_round=1)
+
+    input_root, staged = manager._stage_history(store, config, 4)
+
+    assert [path.name for path in staged] == [
+        "summary.md",
+        "round-03.prompt.md",
+        "round-03.md",
+    ]
+    manifest = json.loads((input_root / "history" / "manifest.json").read_text())
+    assert manifest["summary_bytes"] == 60
+    assert manifest["summary_source_round"] == 1
+    assert manifest["included_rounds"] == [3]
+    assert manifest["omitted_rounds"] == [2]
+    manager._cleanup_input_root(input_root)
+
+
+def test_stage_history_fails_when_the_summary_cannot_fit_with_the_newest_round(
+    tmp_path: Path,
+) -> None:
+    bounded = lambda settings: replace(settings, stateless_history_limit=100)
+    manager, _, session_id, store = setup_manager(
+        tmp_path,
+        settings_transform=bounded,
+    )
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1,), size=30)
+    write_summary(store, config, "S" * 90, source_round=1)
+
+    with pytest.raises(StorageError, match="summary"):
+        manager._stage_history(store, config, 2)
+
+    # Nothing is silently dropped, and the boundary survives the refusal.
+    reloaded = store.load_session(session_id)
+    assert reloaded.context_summary is not None
+    assert not (store.workspace_dir(session_id) / "inputs/round-02").exists()
+
+
+def test_stage_history_fails_closed_on_a_tampered_summary(tmp_path: Path) -> None:
+    manager, _, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    seed_rounds(store, config, (1,))
+    write_summary(store, config, "Original summary", source_round=1)
+    (store.context_dir(session_id) / "summary-01.md").write_text("Tampered")
+
+    with pytest.raises(OwnershipError):
+        manager._stage_history(store, config, 2)
+
+    reloaded = store.load_session(session_id)
+    assert reloaded.context_summary is not None
+    assert reloaded.context_baseline_round == config.context_baseline_round
 
 
 @pytest.mark.asyncio

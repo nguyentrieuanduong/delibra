@@ -852,9 +852,12 @@ class RunManager:
                 record
                 for record in config.rounds
                 if record.status == "complete"
+                # Retired by Clear or Compact: the summary, if any, stands in
+                # for these, and re-staging them would undo the operation.
+                and record.n > config.context_baseline_round
                 and not (
                     record.auto is not None
-                    and record.auto.phase == "preparation"
+                    and record.auto.phase in {"preparation", "compaction"}
                 )
             ),
             key=lambda record: record.n,
@@ -864,6 +867,23 @@ class RunManager:
         omitted: list[int] = []
         total = 0
         rounds_dir = store.rounds_dir(config.id)
+        # The summary is charged first and is mandatory: it is the only
+        # remaining record of everything below the baseline, so a budget that
+        # cannot hold it fails the turn rather than dropping it.
+        summary = config.context_summary
+        summary_bytes = b""
+        if summary is not None:
+            summary_bytes = store.load_context_summary(
+                config.id,
+                summary,
+                self.settings.stateless_history_limit,
+            )
+            total = len(summary_bytes)
+            if total > self.settings.stateless_history_limit:
+                raise StorageError(
+                    "context summary exceeds the stateless byte limit "
+                    f"({total} > {self.settings.stateless_history_limit})"
+                )
         for index, record in enumerate(completed):
             prompt = rounds_dir / f"round-{record.n:02d}.prompt.md"
             output = rounds_dir / f"round-{record.n:02d}.md"
@@ -871,7 +891,16 @@ class RunManager:
                 pair_size = prompt.stat().st_size + output.stat().st_size
             except OSError as exc:
                 raise StorageError(f"history files unavailable for round {record.n}") from exc
-            if index == 0 and pair_size > self.settings.stateless_history_limit:
+            if index == 0 and total + pair_size > self.settings.stateless_history_limit:
+                # The newest round is never omitted either, so a budget that
+                # cannot hold both it and the summary is a failure, not a
+                # silent choice between them.
+                if summary is not None:
+                    raise StorageError(
+                        "context summary and the newest history round exceed the "
+                        f"stateless byte limit ({total} + {pair_size} > "
+                        f"{self.settings.stateless_history_limit})"
+                    )
                 raise StorageError("newest history round exceeds the stateless byte limit")
             if (
                 len(selected) >= self.settings.stateless_round_limit
@@ -888,6 +917,14 @@ class RunManager:
             history_root = input_root / "history"
             history_root.mkdir(mode=0o700)
             staged: list[Path] = []
+            if summary is not None:
+                # First in the list, which is also chronologically honest: it
+                # stands for everything older than the surviving rounds.
+                destination = history_root / "summary.md"
+                atomic_write_bytes(destination, summary_bytes)
+                staged.append(
+                    destination.relative_to(store.workspace_dir(config.id))
+                )
             for number, prompt, output, _ in sorted(selected, key=lambda item: item[0]):
                 for source in (prompt, output):
                     destination = history_root / source.name
@@ -901,6 +938,13 @@ class RunManager:
                 "omitted_rounds": sorted(omitted),
                 "omission_reason": "round or byte budget" if omitted else None,
                 "staged_bytes": total,
+                # Recorded so an omission stays auditable against the boundary
+                # that caused it, not just against the byte budget.
+                "context_baseline_round": config.context_baseline_round,
+                "summary_bytes": len(summary_bytes) if summary is not None else None,
+                "summary_source_round": (
+                    summary.source_round if summary is not None else None
+                ),
             }
             atomic_write_json(history_root / "manifest.json", manifest)
             return input_root, staged

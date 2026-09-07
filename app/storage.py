@@ -30,6 +30,7 @@ from app.models import (
     AUTO_FORMAT,
     AutoArtifact,
     AutoRunRecord,
+    ContextSummaryArtifact,
     Project,
     RateLimitReading,
     RoundRecord,
@@ -2052,6 +2053,48 @@ class ProjectStore:
         if sha256(contents.data).hexdigest() != artifact.sha256:
             raise OwnershipError("Auto artifact digest does not match")
         return contents.data
+
+    def context_dir(self, session_id: str) -> Path:
+        """The session's durable context artifacts, outliving every round."""
+
+        path = self.session_dir(session_id) / "context"
+        _assert_no_symlink_components(path, self.sessions_root, allow_missing_leaf=True)
+        return path
+
+    def context_summary_path(
+        self,
+        session_id: str,
+        summary: ContextSummaryArtifact,
+    ) -> Path:
+        root = self.session_dir(session_id)
+        path = root / summary.path
+        _assert_no_symlink_components(path, root, allow_missing_leaf=False)
+        return path
+
+    def load_context_summary(
+        self,
+        session_id: str,
+        summary: ContextSummaryArtifact,
+        maximum_bytes: int,
+    ) -> bytes:
+        """Read a session's summary, refusing anything but the exact bytes it names.
+
+        Fails closed on a missing, oversized or tampered artifact: the caller is
+        about to retire the rounds this stands in for, so a summary that cannot
+        be verified must stop the turn rather than quietly shrink its context.
+        """
+
+        if maximum_bytes < 1:
+            raise ValueError("context summary limit must be positive")
+        data = self._load_owned_bytes(
+            self.context_summary_path(session_id, summary),
+            self.session_dir(session_id),
+            maximum_bytes,
+            "context summary",
+        )
+        if sha256(data).hexdigest() != summary.sha256:
+            raise OwnershipError("context summary digest does not match")
+        return data
 
     def load_round_artifact(
         self,
