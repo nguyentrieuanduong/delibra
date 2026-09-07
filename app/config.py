@@ -56,6 +56,10 @@ class Settings:
     usage_staleness_seconds: int = 1800
     codex_rollout_scan_limit: int = 200
     codex_rollout_read_limit: int = 4 * MIB
+    # Compaction reads every unretired round at once, and its summary is
+    # mandatory in every later prompt, so both ends are bounded explicitly.
+    compact_input_limit: int = 2 * MIB
+    compact_output_limit: int = 256 * 1024
 
     def __post_init__(self) -> None:
         if self.max_run_timeout < self.run_timeout:
@@ -76,6 +80,18 @@ class Settings:
     @property
     def codex_home(self) -> Path:
         return self.home / "codex-home"
+
+    @property
+    def effective_compact_output_limit(self) -> int:
+        """The largest summary that can still be staged into every later turn.
+
+        The summary is charged before any round and is never dropped, so it may
+        claim at most half the stateless budget. Clamped rather than validated
+        on construction: lowering only ``stateless_history_limit`` is a
+        reasonable thing to do, and it should not refuse to start.
+        """
+
+        return max(1, min(self.compact_output_limit, self.stateless_history_limit // 2))
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -161,6 +177,18 @@ class Settings:
                 "DELIBRA_CODEX_ROLLOUT_READ_LIMIT",
                 4 * MIB,
                 minimum=64 * 1024,
+                maximum=64 * MIB,
+            ),
+            compact_input_limit=_integer(
+                "DELIBRA_COMPACT_INPUT_LIMIT",
+                2 * MIB,
+                minimum=1,
+                maximum=64 * MIB,
+            ),
+            compact_output_limit=_integer(
+                "DELIBRA_COMPACT_OUTPUT_LIMIT",
+                256 * 1024,
+                minimum=1,
                 maximum=64 * MIB,
             ),
         )

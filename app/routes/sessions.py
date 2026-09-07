@@ -235,6 +235,26 @@ async def set_permanent_session_name(
     )
 
 
+@router.post("/projects/{project_id}/sessions/{session_id}/context/clear")
+async def clear_session_context(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    agent: str | None = Query(None),
+):
+    """Retire this session's context without spending a provider call."""
+
+    validate_id(session_id, "session id")
+    project = request_project(request, project_id)
+    await request.app.state.manager.clear_context(project.id, session_id)
+    return sidebar_response(
+        request,
+        request.app.state.registry.get(project.id),
+        selected_id=agent or session_id,
+        composer_oob=False,
+    )
+
+
 @router.post("/projects/{project_id}/sessions/{session_id}/delete")
 async def delete_session(
     request: Request,

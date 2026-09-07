@@ -32,6 +32,49 @@
     {% if agent_view.latest_round %}<p>Latest round {{ agent_view.latest_round }} · {{ agent_view.preview_status }}</p>{% endif %}
     <p class="agent-preview {{ agent_view.preview_status }}">{{ agent_view.preview }}</p>
     {% if agent_view.preview_error %}<p class="error">{{ agent_view.preview_error }}</p>{% endif %}
+    <section class="agent-context" aria-label="Context">
+      <h4>Context</h4>
+      <p class="agent-context-state">
+        {% if agent.context_summary %}
+          Summarized through round {{ agent.context_summary.source_round }}
+        {% elif agent.context_baseline_round %}
+          Cleared through round {{ agent.context_baseline_round }}
+        {% else %}
+          Full conversation
+        {% endif %}
+      </p>
+      <div class="agent-context-actions">
+        <form
+          method="post"
+          action="{{ project_url(project.name, '/sessions/' ~ agent.id ~ '/context/compact?view=chat') }}"
+          hx-post="{{ project_url(project.name, '/sessions/' ~ agent.id ~ '/context/compact?view=chat') }}"
+          hx-target=".chat-timeline"
+          hx-swap="beforeend"
+        >
+          <button
+            type="submit"
+            data-disable-during-auto
+            {% if agent.status == 'running' or auto_active %}disabled{% endif %}
+            {% if auto_active %}data-auto-disabled="true"{% endif %}
+          >Compact</button>
+        </form>
+        <form
+          method="post"
+          action="{{ project_url(project.name, '/sessions/' ~ agent.id ~ '/context/clear?agent=' ~ (selected_session.id if selected_session else agent.id)) }}"
+          hx-post="{{ project_url(project.name, '/sessions/' ~ agent.id ~ '/context/clear?agent=' ~ (selected_session.id if selected_session else agent.id)) }}"
+          hx-target="#agent-sidebar"
+          hx-swap="outerHTML"
+          hx-confirm="Clear this agent's context? Later turns start from nothing."
+        >
+          <button
+            type="submit"
+            data-disable-during-auto
+            {% if agent.status == 'running' or auto_active %}disabled{% endif %}
+            {% if auto_active %}data-auto-disabled="true"{% endif %}
+          >Clear context</button>
+        </form>
+      </div>
+    </section>
     <details>
       <summary>Edit</summary>
       <form

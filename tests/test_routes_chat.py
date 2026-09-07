@@ -1488,6 +1488,49 @@ def test_session_view_prompt_carries_no_out_of_band_usage_badge(
     assert "usage-badge" not in response.text
 
 
+def test_chat_offers_clear_and_compact_and_both_change_the_boundary(
+    tmp_path: Path,
+) -> None:
+    alpha = session(
+        "a" * 32,
+        "Alpha",
+        rounds=[record(1, "2026-01-01T00:00:01Z"), record(2, "2026-01-01T00:00:02Z")],
+    )
+    app, project, store = setup_project(tmp_path, [alpha])
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        before = client.get(f"{prefix}/chat")
+        compacted = client.post(
+            f"{prefix}/sessions/{alpha.id}/context/compact?view=chat"
+        )
+        with client.stream(
+            "GET",
+            f"{prefix}/sessions/{alpha.id}/rounds/3/stream",
+        ) as stream:
+            stream.read()
+        after_compact = client.get(f"{prefix}/chat")
+        summarized = store.load_session(alpha.id)
+        cleared = client.post(
+            f"{prefix}/sessions/{alpha.id}/context/clear?agent={alpha.id}"
+        )
+
+    assert ">Compact</button>" in before.text
+    assert ">Clear context</button>" in before.text
+    assert "Full conversation" in before.text
+
+    assert compacted.status_code == 202
+    assert summarized.context_summary is not None
+    assert summarized.context_baseline_round == 3
+    assert "Summarized through round 3" in after_compact.text
+
+    assert cleared.status_code == 200
+    assert "Cleared through round 3" in cleared.text
+    emptied = store.load_session(alpha.id)
+    assert emptied.context_summary is None
+    assert emptied.context_baseline_round == 3
+
+
 def test_chat_error_javascript_contract_runs_under_node() -> None:
     node = shutil.which("node")
     if node is None:
