@@ -83,6 +83,9 @@ AUTO_MAX_COMPACTION_ATTEMPTS = 50
 # into an unloadable run.
 AUTO_MAX_STORED_COMPACTION_ATTEMPTS = 200
 AUTO_MAX_STORED_SUMMARIES = 200
+# One summary can only name entries the run actually had, and retirement is
+# monotone, so a real run stays far below this.
+AUTO_MAX_STORED_DROPPED_ENTRIES = 5_000
 AUTO_INDEX_FORMAT = "delibra-auto-index/1"
 CANONICAL_AUTO_NUMBER = re.compile(r"[1-9][0-9]*\Z")
 AUTO_CREATING_PATTERN = re.compile(r"\.creating-([0-9a-f]{32})-([1-9][0-9]*)\Z")
@@ -1950,6 +1953,8 @@ class ProjectStore:
                 raise OwnershipError("Auto summary baseline cursor is invalid")
             if summary.retired_discussion_count > len(record.discussion):
                 raise OwnershipError("Auto summary discussion cursor is invalid")
+            if len(summary.dropped_entries) > AUTO_MAX_STORED_DROPPED_ENTRIES:
+                raise OwnershipError("Auto summary names too many dropped entries")
         seen_keys: set[str] = set()
         for attempt in record.compaction_attempts:
             # Recomputed, never shape-checked: a forged key would suppress a

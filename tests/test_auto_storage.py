@@ -1469,3 +1469,25 @@ def test_auto_store_rejects_an_attempt_pointing_at_a_missing_summary(
 def test_auto_compaction_attempt_rejects_malformed_entries(mutation: dict) -> None:
     with pytest.raises(ValueError):
         attempt_fixture(**mutation)
+
+
+def test_a_summary_cannot_name_an_unbounded_list_of_dropped_entries(
+    tmp_path: Path,
+) -> None:
+    # A corruption guard, not a working limit: retirement is monotone, so a real
+    # summary can only ever name entries the run actually had.
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.number = store.reserve_auto_run_number()
+    record.summaries = [
+        summary_fixture(
+            retired_discussion_count=0,
+            dropped_entries=tuple(
+                f"entry {index}"
+                for index in range(storage.AUTO_MAX_STORED_DROPPED_ENTRIES + 1)
+            )
+        )
+    ]
+
+    with pytest.raises(OwnershipError, match="dropped entries"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"")
