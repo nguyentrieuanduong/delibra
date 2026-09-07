@@ -26,6 +26,7 @@ from app.models import (
     AutoResumption,
     AutoRunRecord,
     AutoTurn,
+    ContextSummaryArtifact,
     RateLimitObservation,
     RoundRecord,
     SessionConfig,
@@ -584,10 +585,33 @@ class AutoManager:
         sessions: Sequence[SessionConfig],
     ) -> tuple[bytes, list[AutoBaselineEntry]]:
         candidates: list[_BaselineCandidate] = []
+        # Summaries stand in for everything a session retired, so they are
+        # preferred candidates: charged first and never dropped in favour of a
+        # newer ordinary round.
+        mandatory: list[_BaselineCandidate] = []
         limit = self.settings.stateless_history_limit
         for session in sessions:
+            summary = session.context_summary
+            if summary is not None:
+                contents = self._render_summary_entry(
+                    session,
+                    summary,
+                    store.load_context_summary(session.id, summary, limit),
+                )
+                mandatory.append(
+                    _BaselineCandidate(
+                        session.id,
+                        summary.source_round,
+                        summary.created_at,
+                        contents,
+                    )
+                )
             for record in session.rounds:
                 if not self._baseline_eligible(record):
+                    continue
+                if record.n <= session.context_baseline_round:
+                    # Retired by Clear or Compact. Re-admitting it here would
+                    # undo the operation one Auto run later.
                     continue
                 output = store.load_round_artifact(
                     session.id,
@@ -617,6 +641,16 @@ class AutoManager:
         candidates.sort(key=lambda item: (item.started_at, item.session_id, item.round_n))
         selected: list[_BaselineCandidate] = []
         total = 0
+        for candidate in mandatory:
+            total += (2 if selected else 0) + len(candidate.contents)
+            selected.append(candidate)
+        if total > limit:
+            # Creation is interactive, so refusing is safe. Starting a run on
+            # history that misrepresents what these sessions know is not.
+            raise StorageError(
+                f"context summaries alone exceed the Auto baseline budget "
+                f"({total} > {limit})"
+            )
         for candidate in reversed(candidates):
             separator = 2 if selected else 0
             if (
@@ -626,7 +660,7 @@ class AutoManager:
                 continue
             selected.append(candidate)
             total += separator + len(candidate.contents)
-        selected.reverse()
+        selected.sort(key=lambda item: (item.started_at, item.session_id, item.round_n))
 
         baseline = bytearray()
         entries: list[AutoBaselineEntry] = []
@@ -654,6 +688,29 @@ class AutoManager:
         if record.auto is not None:
             return record.auto.phase == "discussion"
         return record.source.type in {"user", "pass"}
+
+    @staticmethod
+    def _render_summary_entry(
+        session: SessionConfig,
+        summary: ContextSummaryArtifact,
+        contents: bytes,
+    ) -> bytes:
+        """Frame a session summary exactly like any other baseline entry.
+
+        Same untrusted framing, so the per-entry verification in the discussion
+        prompt covers it for free, and labelled with the round it replaces so
+        the entry stays traceable.
+        """
+
+        heading = (
+            "# Conversation summary\n"
+            f"Session: {session.id}\n"
+            f"Summarized through round: {summary.source_round}\n"
+            f"Created: {summary.created_at}\n\n"
+        ).encode("utf-8")
+        return b"\n".join(
+            [heading, _untrusted_section("Context summary", contents)]
+        )
 
     @staticmethod
     def _render_baseline_entry(
