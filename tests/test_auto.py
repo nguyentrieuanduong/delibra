@@ -33,6 +33,7 @@ from app.models import (
     AutoRoundDescriptor,
     AutoRunRecord,
     AutoTurn,
+    ContextObservation,
     RoundRecord,
     RunKey,
     SessionConfig,
@@ -812,6 +813,15 @@ async def test_auto_manager_skips_preparation_and_clears_native_sessions(
     for session_id in session_ids:
         config = store.load_session(session_id)
         config.cli_session_id = f"stale-{session_id}"
+        # Occupancy of the manual conversation Auto is about to discard.
+        config.context_observation = ContextObservation(
+            used_tokens=42970,
+            context_window=1_000_000,
+            numerator_source="claude_final_assistant",
+            resolved_model="claude-sonnet-5",
+            round_n=1,
+            observed_at="2026-09-07T00:00:00Z",
+        )
         store.save_session(config)
 
     created = await manager.create(
@@ -832,6 +842,12 @@ async def test_auto_manager_skips_preparation_and_clears_native_sessions(
     assert b"Preparation:" not in factory.calls[0]["material"]
     assert all(
         store.load_session(session_id).cli_session_id is None
+        for session_id in session_ids
+    )
+    # Discarding the native session discards what its occupancy described; a
+    # surviving figure would keep describing a conversation Auto threw away.
+    assert all(
+        store.load_session(session_id).context_observation is None
         for session_id in session_ids
     )
     discussion = store.load_session(session_ids[0]).rounds[-1]

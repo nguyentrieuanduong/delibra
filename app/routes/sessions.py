@@ -170,6 +170,12 @@ async def edit_session(
             effort_changed = updated[2] != config.effort
             config.model = updated[1]
             config.effort = updated[2]
+            if model_changed:
+                # A window measured against one model does not describe
+                # another. This is unconditional on purpose: whether to keep
+                # the native session is a separate provider-policy decision,
+                # and its branch below never runs for either built-in adapter.
+                config.context_observation = None
             if (
                 (model_changed or effort_changed)
                 and not _resume_after_config_change(config.agent)
