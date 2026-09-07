@@ -281,6 +281,13 @@ Delibra deliberately does not cancel the turn already in flight. If quota storag
 fails, current-process enforcement continues and the round and badge warn that the
 state will not survive a restart.
 
+A round the provider refused for quota stays stored as an `error` — a call really
+did fail, and reconciliation and every status query depend on that — but it is
+shown as a pause: amber rather than red, with a plain sentence and the provider's
+own message kept collapsed beside it. Any other failure still renders red. On an
+Auto round the sentence points at **Continue Auto**; on a hand-sent prompt it says
+the turn did not run, because nothing was paused there.
+
 **Continue Auto** resumes a finished run in place, from any of the five terminal
 states (`stopped`, `interrupted`, `error`, `limit_reached`, `converged`). It is
 offered when no Auto is active anywhere in the project. The cursor is

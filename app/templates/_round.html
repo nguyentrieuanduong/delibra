@@ -1,4 +1,6 @@
-<article class="round {{ round.record.status if round.record else 'orphan' }}{% if round.record and round.record.auto %} auto-{{ round.record.auto.phase }}{% endif %}" id="{{ round.dom_id }}">
+{# A quota refusal is stored as an error but shown as a pause, so the card
+   class comes from the category before the status. #}
+<article class="round {{ 'quota-paused' if round.quota_notice|default(none) else (round.record.status if round.record else 'orphan') }}{% if round.record and round.record.auto %} auto-{{ round.record.auto.phase }}{% endif %}" id="{{ round.dom_id }}">
   <div class="round-header">
     <h2>
       {{ session.name }} · Round {{ round.n }}{% if round.orphan %} · orphaned files{% endif %}

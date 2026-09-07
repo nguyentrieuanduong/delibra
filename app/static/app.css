@@ -21,6 +21,25 @@ label { display: grid; gap: .25rem; }
 textarea { min-height: 7rem; }
 .markdown pre { overflow-x: auto; padding: .75rem; background: #8882; }
 .error, .warning, .warnings { color: #c43b2f; }
+/* A quota pause is a state, not a failure: amber, matching .round.cancelled,
+   and deliberately separate from the red .error/.warning rule above. */
+.notice { color: #b47b20; }
+.round.quota-paused { border-color: #b47b20; }
+.auto-status.quota-paused, .auto-history-detail.quota-paused {
+  border-color: #b47b20;
+}
+.quota-provider-message { font-size: .9rem; opacity: .8; }
+.auto-quota-disclosure {
+  border-left: .2rem solid #b47b20;
+  margin: .5rem 0;
+  padding-left: .5rem;
+}
+.usage-badge { display: flex; flex-wrap: wrap; font-size: .85rem; gap: .5rem; }
+.usage-badge.warn { color: #b47b20; }
+.usage-badge.paused { color: #c43b2f; font-weight: 600; }
+.usage-window.warning { color: #b47b20; }
+.usage-window.pause { color: #c43b2f; font-weight: 600; }
+.usage-window.unknown { opacity: .7; }
 .health { font-size: .85rem; }
 .chat-workspace {
   display: grid;

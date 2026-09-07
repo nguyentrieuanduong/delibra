@@ -773,6 +773,29 @@ def test_quota_paused_continue_discloses_the_window_and_spending_choice(
         assert f'datetime="{reset.isoformat()}"' in response.text
         assert "keep spending this quota until it resets" in response.text
         assert ">Continue and spend quota<" in response.text
+    # A pause is not a crash: the run carries the same amber tier as the round
+    # that stopped it, never the failure class.
+    for response in (status, chat):
+        assert "auto-status stopped quota-paused" in response.text
+    assert "auto-history-detail quota-paused" in history.text
+
+
+def test_a_run_that_failed_without_quota_keeps_the_plain_status_class(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [session.id for session in sessions], cycles=1)
+        record = wait_for_auto(store, terminal=True)
+        record.status = "error"
+        record.terminal_reason = "discussion provider failed"
+        store.save_auto_run(record)
+        status = client.get(f"{base}/auto-runs/{record.number}")
+
+    assert 'class="auto-status error"' in status.text
+    assert "quota-paused" not in status.text
 
 
 def test_auto_resume_route_rejects_a_cycle_limit_below_the_parked_cycle(
