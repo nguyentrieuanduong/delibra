@@ -21,6 +21,7 @@ from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
     AutoParticipant,
+    AutoQuotaOverride,
     AutoQuotaPause,
     AutoResumption,
     AutoRunRecord,
@@ -500,6 +501,20 @@ class AutoManager:
             self._discussion_context(store, record)
 
             snapshot = deepcopy(record)
+            granted_at = datetime.now(UTC)
+            if record.quota_pause is not None:
+                paused_observation = record.quota_pause.observation
+                record.quota_override = AutoQuotaOverride(
+                    provider=paused_observation.provider,
+                    account_key=paused_observation.account_key,
+                    window=paused_observation.window,
+                    resets_at=paused_observation.resets_at,
+                    used_percent_at_grant=paused_observation.used_percent,
+                    granted_at=granted_at,
+                    granted_from_status=paused_observation.status,
+                )
+            else:
+                record.quota_override = None
             # Model and effort are editable by design, so refresh them from the
             # live SessionConfig; _validate_auto_request compares the exact tuple
             # and would otherwise reject the first resumed turn.
@@ -516,10 +531,11 @@ class AutoManager:
             record.resumptions = [
                 *record.resumptions,
                 AutoResumption(
-                    resumed_at=utc_now(),
+                    resumed_at=granted_at.isoformat().replace("+00:00", "Z"),
                     from_status=record.status,
                     max_cycles=max_cycles,
                     turn_timeout_seconds=turn_timeout,
+                    quota_override=record.quota_override,
                 ),
             ]
             record.status = cursor.status
@@ -680,7 +696,10 @@ class AutoManager:
                     else None
                 )
                 quota_pause = (
-                    self.runner.quota_pause_observation(participant.agent)
+                    self.runner.quota_pause_observation(
+                        participant.agent,
+                        record.quota_override,
+                    )
                     if participant is not None
                     else None
                 )
@@ -737,10 +756,11 @@ class AutoManager:
         session_ids = [participant.session_id for participant in record.participants]
         async with self.locks.project_sessions(record.project_id, session_ids):
             current = store.load_auto_run(record.id)
-            current.quota_pause = AutoQuotaPause(
+            pause = AutoQuotaPause(
                 observation=observation,
                 paused_at=datetime.now(UTC),
             )
+            current.quota_override = None
             window = "5-hour" if observation.window == "five_hour" else "weekly"
             remaining = observation.remaining_percent
             signal = (
@@ -753,6 +773,7 @@ class AutoManager:
                 current,
                 "stopped",
                 f"paused: {observation.provider.title()} {window} limit, {signal}",
+                quota_pause=pause,
             )
         self._publish_status(current)
 
@@ -943,6 +964,7 @@ class AutoManager:
             # A provider 429 proves the call cannot succeed; retrying it burns
             # nothing but latency. Pause to a resumable stopped instead, so
             # Continue Auto can recover the run.
+            current.quota_override = None
             self._transition_terminal_locked(
                 store,
                 current,
@@ -1332,11 +1354,14 @@ class AutoManager:
         record: AutoRunRecord,
         status: str,
         reason: str,
+        *,
+        quota_pause: AutoQuotaPause | None = None,
     ) -> None:
         if status not in TERMINAL_AUTO_STATUSES:
             raise ValueError("Auto terminal status is invalid")
         if record.status in ACTIVE_AUTO_STATUSES:
             record.status = status
+            record.quota_pause = quota_pause
             record.terminal_reason = reason[:2_000]
             record.finished_at = utc_now()
             record.active_key = None

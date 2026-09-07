@@ -23,6 +23,7 @@ from app.auto import parse_auto_verdict
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
 from app.models import (
+    AutoQuotaOverride,
     AutoRoundDescriptor,
     AutoRunRecord,
     ContextReading,
@@ -1216,7 +1217,9 @@ class RunManager:
             )
 
     def quota_pause_observation(
-        self, provider: str
+        self,
+        provider: str,
+        quota_override: AutoQuotaOverride | None = None,
     ) -> RateLimitObservation | None:
         """Return the first live provider window whose policy requires pause."""
 
@@ -1227,6 +1230,14 @@ class RunManager:
             if (
                 observation is not None
                 and quota_verdict(observation, settings=self.settings) == "pause"
+                and (
+                    quota_override is None
+                    or not quota_override.is_live_for(
+                        observation,
+                        now=datetime.now(UTC),
+                        staleness_seconds=self.settings.usage_staleness_seconds,
+                    )
+                )
             ):
                 return observation
         return None

@@ -7,6 +7,29 @@
     hx-target="#auto-status"
     hx-swap="outerHTML"
   >
+    {% if quota_resume|default(none) is not none %}
+      <div class="auto-quota-disclosure notice" role="status">
+        <p>
+          <strong>{{ quota_resume.provider }} {{ quota_resume.window }} quota</strong>:
+          {% if quota_resume.remaining_percent is not none %}
+            {{ quota_resume.remaining_percent }}% remaining.
+          {% else %}
+            percentage unavailable; status {{ quota_resume.status }}.
+          {% endif %}
+          {% if quota_resume.resets_at is not none %}
+            Resets
+            <time datetime="{{ quota_resume.resets_at.isoformat() }}">
+              {{ quota_resume.resets_at.strftime('%Y-%m-%d %H:%M UTC') }}
+            </time>.
+          {% else %}
+            Reset time unavailable.
+          {% endif %}
+        </p>
+        <p>
+          Continuing will keep spending this quota until it resets{% if quota_resume.resets_at is none %} or this observation expires{% endif %}.
+        </p>
+      </div>
+    {% endif %}
     <label>Maximum discussion cycles
       <input
         name="max_cycles"
@@ -31,6 +54,6 @@
       Continues from cycle {{ resume_min_cycles }}, on the participant that was
       next to speak. The cycle counter continues rather than restarting.
     </p>
-    <button type="submit">Continue Auto</button>
+    <button type="submit">{% if quota_resume|default(none) is not none %}Continue and spend quota{% else %}Continue Auto{% endif %}</button>
   </form>
 </details>
