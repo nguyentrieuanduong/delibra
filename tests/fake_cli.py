@@ -96,6 +96,10 @@ def main() -> int:
             emit({"kind": "delta", "text": "0123456789"})
     time.sleep(args.delay)
     emit({"kind": "delta", "text": "lo"})
+    if mode in {"usage", "usage-error"}:
+        emit({"kind": "usage", "input": 11, "output": 3, "used": 14, "window": 100})
+    if mode == "usage-error":
+        emit({"kind": "error", "text": "provider rejected request"})
     if mode != "empty-result":
         emit({"kind": "result", "text": "Hello"})
     if mode in {"nonzero", "stderr"}:

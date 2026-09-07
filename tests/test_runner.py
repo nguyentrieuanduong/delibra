@@ -19,10 +19,13 @@ from app.models import (
     AutoParticipant,
     AutoRoundDescriptor,
     AutoRunRecord,
+    ContextObservation,
+    ContextReading,
     RoundRecord,
     SessionConfig,
     SharedContextDescriptor,
     SourceDescriptor,
+    TurnUsage,
 )
 from app.runner import (
     STATELESS_CONTINUATION_WARNING,
@@ -76,6 +79,24 @@ class FakeAdapter:
             return [AgentEvent("progress", "Fake progress")]
         if kind == "error":
             return [AgentEvent("error", payload.get("text", "fake provider error"))]
+        if kind == "usage":
+            return [
+                AgentEvent(
+                    "turn_usage",
+                    usage=TurnUsage(
+                        input_tokens=payload["input"],
+                        output_tokens=payload["output"],
+                    ),
+                ),
+                AgentEvent(
+                    "context_usage",
+                    context=ContextReading(
+                        used_tokens=payload["used"],
+                        context_window=payload["window"],
+                        numerator_source="claude_final_assistant",
+                    ),
+                ),
+            ]
         if kind == "result":
             self._final = payload.get("text", "")
             return [AgentEvent("result", self._final)]
@@ -716,6 +737,65 @@ async def test_codex_auth_failures_classify_as_auth_despite_normalization(
     assert record.status == "error"
     assert record.error_category == "auth"
     assert "codex login --device-auth" in (record.error or "")
+
+
+@pytest.mark.asyncio
+async def test_round_persists_billing_and_the_session_context_observation(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="usage")
+
+    key = await manager.start(project_id, session_id, "Measure me")
+    record = await manager.wait(key)
+
+    assert record.usage == TurnUsage(input_tokens=11, output_tokens=3)
+    reloaded = store.load_session(session_id)
+    assert reloaded.rounds[-1].usage == record.usage
+    observation = reloaded.context_observation
+    assert observation is not None
+    assert observation.used_tokens == 14
+    assert observation.context_window == 100
+    # Only the runner knows which round the reading belongs to.
+    assert observation.round_n == record.n
+    assert observation.observed_at
+
+
+@pytest.mark.asyncio
+async def test_a_failed_round_still_records_what_it_cost(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="usage-error")
+
+    key = await manager.start(project_id, session_id, "Bill me anyway")
+    record = await manager.wait(key)
+
+    assert record.status == "error"
+    assert record.usage == TurnUsage(input_tokens=11, output_tokens=3)
+    assert store.load_session(session_id).rounds[-1].usage == record.usage
+
+
+@pytest.mark.asyncio
+async def test_a_round_reporting_no_usage_keeps_the_last_known_observation(
+    tmp_path: Path,
+) -> None:
+    """A silent turn is not evidence that the window emptied."""
+
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    config = store.load_session(session_id)
+    config.context_observation = ContextObservation(
+        used_tokens=14,
+        context_window=100,
+        numerator_source="claude_final_assistant",
+        resolved_model="claude-sonnet-5",
+        round_n=1,
+        observed_at="2026-09-07T00:00:00Z",
+    )
+    store.save_session(config)
+
+    key = await manager.start(project_id, session_id, "Say nothing about usage")
+    record = await manager.wait(key)
+
+    assert record.usage is None
+    assert "usage" not in record.to_dict()
+    assert store.load_session(session_id).context_observation == config.context_observation
 
 
 @pytest.mark.asyncio
