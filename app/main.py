@@ -24,6 +24,7 @@ from app.routes.files import router as files_router
 from app.routes.projects import router as projects_router
 from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
+from app.routes.usage import router as usage_router
 from app.runner import AdapterFactory, RunManager
 from app.security import LocalSecurityMiddleware
 from app.storage import (
@@ -170,6 +171,7 @@ def create_app(
     app.include_router(files_router)
     app.include_router(sessions_router)
     app.include_router(runs_router)
+    app.include_router(usage_router)
 
     @app.exception_handler(NotFoundError)
     async def not_found(_: Request, exc: NotFoundError):
