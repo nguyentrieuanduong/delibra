@@ -545,11 +545,32 @@ def build_capabilities(
             }
     status = readings.get("rate_limit_info.status")
     if status and any(v is not None for v in status):
-        capabilities["five_hour_quota_status"] = {
-            "proven": True,
-            "unit": "status_string",
-            "evidence": "rate_limit_info.status",
-        }
+        # Claude reports a single `rate_limit_info`. Only `rateLimitType` says
+        # which window it covers, and Phase 5 warns and pauses per window -- so
+        # attributing an unlabelled status to the 5-hour window is a guess that
+        # would pause an Auto run for the wrong reason.
+        kinds = [v for v in readings.get("rate_limit_info.rateLimitType", []) if v]
+        window = quota_window(kinds[-1] if kinds else None)
+        if window is None:
+            reason = (
+                f"rate_limit_info.status observed, but rateLimitType={kinds[-1]!r} "
+                "does not name a known window"
+                if kinds
+                else "rate_limit_info.status observed with no rateLimitType, so "
+                "the window it covers is unknown"
+            )
+            for name in ("five_hour_quota_status", "seven_day_quota_status"):
+                capabilities[name] = {
+                    "proven": False,
+                    "unit": None,
+                    "evidence": reason,
+                }
+        else:
+            capabilities[f"{window}_quota_status"] = {
+                "proven": True,
+                "unit": "status_string",
+                "evidence": f"rate_limit_info.status with rateLimitType={kinds[-1]!r}",
+            }
     utilization = readings.get("rate_limit_info.utilization")
     if utilization and any(v is not None for v in utilization):
         capabilities["five_hour_quota_percent"] = {
@@ -569,6 +590,24 @@ def build_capabilities(
         "occupancy_experiment": verdicts,
         "capabilities": capabilities,
     }
+
+
+def quota_window(rate_limit_type: Any) -> str | None:
+    """Map a provider window label onto ours, or None if it is unrecognised.
+
+    Unrecognised is the safe answer: a new label must stay `unknown` until a
+    later run observes it, rather than defaulting to a window and warning about
+    quota the account has not actually spent.
+    """
+
+    if not isinstance(rate_limit_type, str):
+        return None
+    lowered = rate_limit_type.casefold()
+    if any(mark in lowered for mark in ("five_hour", "5h", "five-hour", "hourly")):
+        return "five_hour"
+    if any(mark in lowered for mark in ("seven_day", "7d", "week")):
+        return "seven_day"
+    return None
 
 
 def classify_induced(provider: str, induced: TurnResult) -> dict[str, Any]:

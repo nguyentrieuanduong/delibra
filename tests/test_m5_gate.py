@@ -138,6 +138,61 @@ class TestCapabilitiesRequireSuccess:
         assert report["failures"] == {"a_small_fresh": "exit 0: not logged in"}
 
 
+class TestQuotaStatusWindowAttribution:
+    """A status proves a window only when the payload names that window.
+
+    Claude reports one `rate_limit_info` object. Which window it describes comes
+    from `rateLimitType`, and Phase 5's whole policy -- warn, then pause -- turns
+    on knowing whether a status covers the 5-hour or the weekly window. Assuming
+    5-hour is a guess, and a wrong guess pauses an Auto run for the wrong reason.
+    """
+
+    def _turn_with(self, rate_limit_type: str | None) -> list[TurnResult]:
+        info: dict[str, Any] = {"status": "allowed"}
+        if rate_limit_type is not None:
+            info["rateLimitType"] = rate_limit_type
+        return [_turn("a_small_fresh", [CLAUDE_SUCCESS | {"rate_limit_info": info}])]
+
+    def test_an_unlabelled_status_proves_neither_window(self) -> None:
+        report = build_capabilities(
+            "claude", self._turn_with(None), ("rate_limit_info.status",)
+        )
+
+        assert report["capabilities"]["five_hour_quota_status"]["proven"] is False
+        assert report["capabilities"]["seven_day_quota_status"]["proven"] is False
+
+    def test_an_unrecognised_window_name_is_recorded_not_assumed(self) -> None:
+        report = build_capabilities(
+            "claude",
+            self._turn_with("something_new"),
+            ("rate_limit_info.status", "rate_limit_info.rateLimitType"),
+        )
+
+        entry = report["capabilities"]["five_hour_quota_status"]
+        assert entry["proven"] is False
+        assert "something_new" in entry["evidence"]
+
+    def test_a_five_hour_label_proves_only_the_five_hour_window(self) -> None:
+        report = build_capabilities(
+            "claude",
+            self._turn_with("five_hour"),
+            ("rate_limit_info.status", "rate_limit_info.rateLimitType"),
+        )
+
+        assert report["capabilities"]["five_hour_quota_status"]["proven"] is True
+        assert report["capabilities"]["seven_day_quota_status"]["proven"] is False
+
+    def test_a_weekly_label_proves_only_the_weekly_window(self) -> None:
+        report = build_capabilities(
+            "claude",
+            self._turn_with("seven_day"),
+            ("rate_limit_info.status", "rate_limit_info.rateLimitType"),
+        )
+
+        assert report["capabilities"]["seven_day_quota_status"]["proven"] is True
+        assert report["capabilities"]["five_hour_quota_status"]["proven"] is False
+
+
 class TestOccupancyReadsTurnsByLabel:
     """The A/B/C/D comparison must not depend on turn ordering.
 
