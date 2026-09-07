@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from app.agents.errors import ProviderErrorInfo
-from app.models import ContextReading, SessionConfig, TurnUsage
+from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsage
 
 
 EventKind = Literal[
@@ -19,6 +19,7 @@ EventKind = Literal[
     "error",
     "turn_usage",
     "context_usage",
+    "rate_limit",
 ]
 
 
@@ -33,10 +34,12 @@ class AgentEvent:
     # provider structure rather than from prose. ProviderErrorInfo carries only
     # normalized scalars, preserving this class's contract.
     error_info: ProviderErrorInfo | None = None
-    # Set on "turn_usage" and "context_usage" events. Both are typed records of
-    # allowlisted numbers, so neither reintroduces a provider payload.
+    # Set on "turn_usage", "context_usage" and "rate_limit" events. All three
+    # are typed records of allowlisted scalars, so none reintroduces a provider
+    # payload.
     usage: TurnUsage | None = None
     context: ContextReading | None = None
+    rate_limit: RateLimitReading | None = None
 
 
 @dataclass(frozen=True)

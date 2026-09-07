@@ -31,6 +31,7 @@ from app.models import (
     AutoArtifact,
     AutoRunRecord,
     Project,
+    RateLimitReading,
     RoundRecord,
     SessionConfig,
 )
@@ -39,6 +40,7 @@ from app.pass_prompts import (
     PassPromptTemplateError,
     validate_pass_prompt_template,
 )
+from app.usage import epoch_instant
 
 
 FORMAT = "delibra/1"
@@ -807,6 +809,108 @@ def safe_copy_file(
             os.close(destination_descriptor)
         if created and not completed:
             destination.unlink(missing_ok=True)
+
+
+CODEX_THREAD_PATTERN = re.compile(r"^[0-9a-zA-Z-]{8,64}$")
+# Measured on every Phase 0 turn; any other width is a window Delibra has no
+# policy for and is dropped rather than guessed at.
+CODEX_ROLLOUT_WINDOWS = {300: "five_hour", 10080: "seven_day"}
+
+
+def _rollout_rate_limits(rate_limits: Any) -> list[RateLimitReading]:
+    if not isinstance(rate_limits, dict):
+        return []
+    readings: list[RateLimitReading] = []
+    for slot in ("primary", "secondary"):
+        entry = rate_limits.get(slot)
+        if not isinstance(entry, dict):
+            continue
+        window = CODEX_ROLLOUT_WINDOWS.get(entry.get("window_minutes"))
+        used = entry.get("used_percent")
+        # `used_percent` is the only figure Phase 0 proved for Codex; it proved
+        # no status, so every Codex window is reported status-unknown.
+        if window is None or type(used) not in (int, float):
+            continue
+        try:
+            readings.append(
+                RateLimitReading(
+                    window=window,
+                    used_percent=used,
+                    status="unknown",
+                    resets_at=epoch_instant(entry.get("resets_at")),
+                    source="codex_rollout_token_count",
+                )
+            )
+        except ValueError:
+            continue
+    return readings
+
+
+def _rollout_tail(path: Path, root: Path, read_limit: int) -> list[str]:
+    """Read the end of one rollout through a no-follow descriptor.
+
+    The tail, not the head: a rollout also records every prompt and response, so
+    a session can run far past any sane byte budget while the quota records that
+    matter are the newest ones.
+    """
+
+    _assert_no_symlink_components(path, root, allow_missing_leaf=False)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        size = os.fstat(descriptor).st_size
+        offset = max(0, size - read_limit)
+        os.lseek(descriptor, offset, os.SEEK_SET)
+        blob = os.read(descriptor, read_limit)
+    finally:
+        os.close(descriptor)
+    lines = blob.decode("utf-8", errors="replace").splitlines()
+    return lines[1:] if offset else lines
+
+
+def read_codex_rate_limits(
+    codex_home: Path,
+    thread_id: str,
+    *,
+    scan_limit: int,
+    read_limit: int,
+) -> list[RateLimitReading]:
+    """Read one Codex thread's newest quota record from its own rollout.
+
+    Codex keeps `token_count` in the app-owned `CODEX_HOME` and never on
+    `exec --json` stdout, so this is quota state Delibra can read without
+    spending a provider call. A rollout mid-append, a malformed tail, a missing
+    thread and a symlinked path all report nothing rather than raising: quota
+    state is advisory, and no read of it may fail a round.
+    """
+
+    if not CODEX_THREAD_PATTERN.fullmatch(thread_id):
+        return []
+    try:
+        matches = sorted(
+            codex_home.glob(f"sessions/*/*/*/rollout-*-{thread_id}.jsonl"),
+            reverse=True,
+        )[:scan_limit]
+    except OSError:
+        return []
+    for path in matches:
+        try:
+            lines = _rollout_tail(path, codex_home, read_limit)
+        except (OSError, OwnershipError):
+            continue
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or record.get("type") != "event_msg":
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict) or payload.get("type") != "token_count":
+                continue
+            readings = _rollout_rate_limits(payload.get("rate_limits"))
+            if readings:
+                return readings
+    return []
 
 
 @dataclass(frozen=True)

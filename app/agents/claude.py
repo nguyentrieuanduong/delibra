@@ -11,7 +11,19 @@ from app.agents.errors import (
     classify_status_code,
     classify_text,
 )
-from app.models import ContextReading, SessionConfig, TurnUsage
+from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsage
+from app.usage import epoch_instant
+
+
+# The only window label Phase 0 observed; an unrecognised one proves neither
+# window, so nothing is attributed to either.
+_RATE_LIMIT_WINDOWS = {"five_hour": "five_hour", "seven_day": "seven_day"}
+
+_RATE_LIMIT_STATUSES = {
+    "allowed": "healthy",
+    "allowed_warning": "warning",
+    "rejected": "rejected",
+}
 
 
 _TOOL_PROGRESS = {
@@ -69,6 +81,31 @@ def _prompt_tokens(usage: Any) -> int | None:
     if any(part is None for part in parts):
         return None
     return sum(parts)  # type: ignore[arg-type]
+
+
+def _rate_limit_events(info: Any) -> list[AgentEvent]:
+    """Report the quota window Claude named, and only what Phase 0 proved.
+
+    Two traps live in this payload. `overageStatus` read `rejected` on all five
+    successful Phase 0 turns -- it means the account declined pay-as-you-go
+    overage -- so only `status` decides. And `utilization` is either a fraction
+    or a percentage; nothing established which, so no percentage is reported
+    for Claude at all.
+    """
+
+    if not isinstance(info, dict):
+        return []
+    window = _RATE_LIMIT_WINDOWS.get(_optional_str(info.get("rateLimitType")))
+    if window is None:
+        return []
+    reading = RateLimitReading(
+        window=window,
+        used_percent=None,
+        status=_RATE_LIMIT_STATUSES.get(_optional_str(info.get("status")), "unknown"),
+        resets_at=epoch_instant(info.get("resetsAt")),
+        source="claude_rate_limit_event",
+    )
+    return [AgentEvent("rate_limit", rate_limit=reading)]
 
 
 def _classify_result(event: dict[str, Any], message: str) -> ProviderErrorInfo:
@@ -210,6 +247,8 @@ class ClaudeAdapter:
                 return [AgentEvent("error", "Claude returned an empty result")]
             self._final = text
             return [AgentEvent("result", text), *self._usage_events(event)]
+        if event_type == "rate_limit_event":
+            return _rate_limit_events(event.get("rate_limit_info"))
         if event_type == "assistant":
             self._observe_assistant(event.get("message"))
             return []

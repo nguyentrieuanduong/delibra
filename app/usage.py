@@ -26,6 +26,20 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def epoch_instant(value: object) -> datetime | None:
+    """Read a provider's epoch-second reset time, degrading anything else.
+
+    Both providers report the reset as epoch seconds (Claude ``resetsAt``,
+    Codex ``resets_at``); a missing or unusable one leaves the window without an
+    expiry rather than inventing one.
+    """
+
+    # ``type(...) not in`` and not ``isinstance``: ``True`` is an ``int``.
+    if type(value) not in (int, float) or value <= 0:
+        return None
+    return datetime.fromtimestamp(value, timezone.utc)
+
+
 def merge_rate_limit(
     stored: RateLimitObservation | None, incoming: RateLimitObservation
 ) -> RateLimitObservation:
