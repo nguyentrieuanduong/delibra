@@ -16,6 +16,8 @@ from app.agents.base import AgentEvent, Command, RunContext
 from app.auto import (
     AUTO_MAX_INITIAL_CYCLES,
     AUTO_SUMMARY_LABEL,
+    compaction_boundary_due,
+    compaction_cooldown_target,
     AUTO_MAX_LIFETIME_CYCLES,
     AutoManager,
     ContextEntry,
@@ -32,12 +34,15 @@ from app.main import create_app
 from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
+    AutoCompactionAttempt,
+    AutoContextPolicy,
     AutoParticipant,
     AutoQuotaOverride,
     AutoRoundDescriptor,
     AutoRunRecord,
     AutoSummary,
     AutoTurn,
+    auto_trigger_key,
     ContextObservation,
     ContextSummaryArtifact,
     RateLimitObservation,
@@ -1434,6 +1439,272 @@ def test_the_post_compaction_prompt_is_validated_at_the_exact_byte(
 
     assert manager._post_compaction_fits(material, b"X" * 100)
     assert not manager._post_compaction_fits(material, b"X" * 101)
+
+
+def _policy_record(
+    store,
+    session_ids: list[str],
+    *,
+    mode: str = "compact",
+    unit: str = "cycles",
+    interval: int = 3,
+    threshold_percent: int = 70,
+    discussion_turns: int = 0,
+    cycle: int = 1,
+    next_participant: int = 0,
+    auto_id: str = "e" * 32,
+) -> AutoRunRecord:
+    record = _seed_retirement_auto(
+        store,
+        session_ids,
+        baseline_texts=["Baseline"],
+        auto_id=auto_id,
+    )
+    record.context_policy = AutoContextPolicy(
+        mode=mode,
+        unit=unit,
+        interval=interval,
+        threshold_percent=threshold_percent,
+    )
+    for index in range(discussion_turns):
+        _seed_auto_discussion_turn(
+            store,
+            record,
+            session_ids[index % len(session_ids)],
+            cycle=1 + index // len(session_ids),
+            position=index % len(session_ids),
+            round_n=index + 1,
+            text=f"Turn {index}",
+        )
+    record.current_cycle = cycle
+    record.next_participant = next_participant
+    return record
+
+
+@pytest.mark.parametrize(
+    ("cycle", "next_participant", "expected"),
+    [
+        (1, 0, False),
+        (2, 0, False),
+        (3, 0, False),
+        (4, 0, True),
+        (4, 1, False),
+        (7, 0, True),
+    ],
+)
+def test_cycle_boundaries_fire_once_per_interval_at_the_first_speaker(
+    tmp_path: Path,
+    cycle: int,
+    next_participant: int,
+    expected: bool,
+) -> None:
+    # Firing only at position 0 keeps every participant in one cycle reading the
+    # same context, which is what convergence semantics depend on.
+    _, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _policy_record(
+        store,
+        session_ids,
+        unit="cycles",
+        interval=3,
+        discussion_turns=2,
+        cycle=cycle,
+        next_participant=next_participant,
+    )
+
+    assert compaction_boundary_due(record, prompt_limit=1_000) is expected
+
+
+@pytest.mark.parametrize(
+    ("turns", "expected"),
+    [(1, False), (2, True), (5, True)],
+)
+def test_turn_boundaries_count_only_unretired_turns(
+    tmp_path: Path,
+    turns: int,
+    expected: bool,
+) -> None:
+    _, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _policy_record(
+        store,
+        session_ids,
+        unit="turns",
+        interval=2,
+        discussion_turns=turns,
+    )
+
+    assert compaction_boundary_due(record, prompt_limit=1_000) is expected
+
+    record.retired_discussion_count = turns
+    assert compaction_boundary_due(record, prompt_limit=1_000) is False
+
+
+@pytest.mark.parametrize(
+    ("rendered", "expected"),
+    [(699, False), (700, True), (701, True)],
+)
+def test_the_prompt_size_unit_fires_at_the_threshold_not_one_byte_below(
+    tmp_path: Path,
+    rendered: int,
+    expected: bool,
+) -> None:
+    # `>=` is chosen so a threshold of 100 is not unreachable.
+    _, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _policy_record(
+        store,
+        session_ids,
+        unit="context",
+        threshold_percent=70,
+        discussion_turns=1,
+    )
+
+    assert (
+        compaction_boundary_due(
+            record,
+            prompt_limit=1_000,
+            rendered_bytes=rendered,
+        )
+        is expected
+    )
+
+
+def test_an_off_policy_and_a_disabled_one_never_reach_a_boundary(
+    tmp_path: Path,
+) -> None:
+    _, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    off = _policy_record(
+        store,
+        session_ids,
+        mode="off",
+        unit="turns",
+        interval=1,
+        discussion_turns=2,
+    )
+    assert compaction_boundary_due(off, prompt_limit=1_000) is False
+
+    disabled = _policy_record(
+        store,
+        session_ids,
+        unit="turns",
+        interval=1,
+        discussion_turns=2,
+        auto_id="f" * 32,
+    )
+    disabled.compaction_disabled_reason = "compaction attempt limit reached"
+    assert compaction_boundary_due(disabled, prompt_limit=1_000) is False
+
+
+def test_the_cooldown_cursor_suppresses_a_boundary_until_a_whole_interval_runs(
+    tmp_path: Path,
+) -> None:
+    # Retrying after one turn was the defect: in turns and context modes the
+    # boundary is still due after every single turn, so a failed attempt would
+    # start a fresh retry batch forever.
+    _, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _policy_record(
+        store,
+        session_ids,
+        unit="turns",
+        interval=2,
+        discussion_turns=2,
+    )
+    record.compaction_cooldown_until_discussion_len = compaction_cooldown_target(record)
+
+    assert record.compaction_cooldown_until_discussion_len == 4
+    assert compaction_boundary_due(record, prompt_limit=1_000) is False
+
+    _seed_auto_discussion_turn(
+        store,
+        record,
+        session_ids[0],
+        cycle=2,
+        position=0,
+        round_n=3,
+        text="Turn 3",
+    )
+    assert compaction_boundary_due(record, prompt_limit=1_000) is False
+
+    _seed_auto_discussion_turn(
+        store,
+        record,
+        session_ids[1],
+        cycle=2,
+        position=1,
+        round_n=4,
+        text="Turn 4",
+    )
+    assert compaction_boundary_due(record, prompt_limit=1_000) is True
+
+
+def test_a_cycle_cooldown_spans_one_full_speaking_round(tmp_path: Path) -> None:
+    _, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _policy_record(
+        store,
+        session_ids,
+        unit="cycles",
+        interval=3,
+        discussion_turns=3,
+    )
+
+    assert compaction_cooldown_target(record) == 3 + len(record.participants)
+
+
+def test_the_same_boundary_is_never_attempted_twice(tmp_path: Path) -> None:
+    # A restart mid-attempt must not re-attempt the identical boundary; the key
+    # is retained for exactly that, not as the rate limiter.
+    _, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _policy_record(
+        store,
+        session_ids,
+        unit="turns",
+        interval=2,
+        discussion_turns=2,
+    )
+    assert compaction_boundary_due(record, prompt_limit=1_000) is True
+
+    record.compaction_attempts = [
+        AutoCompactionAttempt(
+            trigger_key=auto_trigger_key("turns", record.current_cycle, 2),
+            unit="turns",
+            cycle=record.current_cycle,
+            discussion_len=2,
+            attempted_at="2026-09-07T12:00:00Z",
+            outcome="failed",
+        )
+    ]
+
+    assert compaction_boundary_due(record, prompt_limit=1_000) is False
+
+
+def test_a_stale_session_occupancy_figure_cannot_fire_the_trigger(
+    tmp_path: Path,
+) -> None:
+    # The observation is not scoped to this Auto run: before a participant's
+    # first discussion turn it can describe an unrelated manual session.
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = _policy_record(
+        store,
+        session_ids,
+        unit="context",
+        threshold_percent=70,
+        discussion_turns=1,
+    )
+    store.save_auto_run(record)
+    for session_id in session_ids:
+        config = store.load_session(session_id)
+        config.context_observation = ContextObservation(
+            used_tokens=999_000,
+            context_window=1_000_000,
+            numerator_source="claude_final_assistant",
+            resolved_model="claude-sonnet-5",
+            round_n=1,
+            observed_at="2026-09-07T12:00:00Z",
+        )
+        store.save_session(config)
+
+    due, frozen = manager._compaction_decision(store, store.load_auto_run(record.id))
+
+    assert due is False
+    assert frozen is not None
 
 
 @pytest.mark.asyncio
