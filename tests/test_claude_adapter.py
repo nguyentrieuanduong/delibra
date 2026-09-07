@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -336,3 +337,108 @@ def test_claude_never_guesses_a_denominator(mutate) -> None:
 
     assert occupancy[0].context.context_window is None
     assert occupancy[0].context.used_tokens == 42970
+
+
+def rate_limit_events(name: str) -> list:
+    adapter = ClaudeAdapter()
+    events = []
+    for line in (FIXTURES / "m5" / name).read_text(encoding="utf-8").splitlines():
+        events.extend(adapter.parse_line(line))
+    return [event for event in events if event.kind == "rate_limit"]
+
+
+def rate_limit_from(info: dict) -> list:
+    line = json.dumps({"type": "rate_limit_event", "rate_limit_info": info})
+    return [
+        event for event in ClaudeAdapter().parse_line(line) if event.kind == "rate_limit"
+    ]
+
+
+def test_claude_reports_the_window_its_rate_limit_event_names() -> None:
+    events = rate_limit_events("claude_a_small_fresh.jsonl")
+
+    assert len(events) == 1
+    reading = events[0].rate_limit
+    assert reading.window == "five_hour"
+    assert reading.status == "healthy"
+    # Measured: resetsAt is epoch seconds, spike/fixtures/m5/claude_a_small_fresh.jsonl.
+    assert reading.resets_at == datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc)
+    assert reading.source == "claude_rate_limit_event"
+
+
+def test_claude_percentages_stay_unknown_because_their_unit_is_unproven() -> None:
+    # `utilization` was null on all five Phase 0 turns, and 0.8 is either 0.8%
+    # or 80%: structural presence does not establish a unit.
+    events = rate_limit_from(
+        {
+            "rateLimitType": "five_hour",
+            "status": "allowed",
+            "resetsAt": 1788750000,
+            "utilization": 0.8,
+        }
+    )
+
+    assert events[0].rate_limit.used_percent is None
+
+
+def test_claude_overage_status_never_decides_the_quota_state() -> None:
+    # `overageStatus: rejected` means the account declined pay-as-you-go
+    # overage, not that anything was refused: it read `rejected` on all five
+    # successful Phase 0 turns, so reading it would pause every single run.
+    events = rate_limit_from(
+        {
+            "rateLimitType": "five_hour",
+            "status": "allowed",
+            "overageStatus": "rejected",
+            "resetsAt": 1788750000,
+        }
+    )
+
+    assert events[0].rate_limit.status == "healthy"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("allowed", "healthy"),
+        ("allowed_warning", "warning"),
+        ("rejected", "rejected"),
+        ("throttled_soon", "unknown"),
+        (None, "unknown"),
+    ],
+)
+def test_claude_status_maps_to_the_status_only_policy(status, expected: str) -> None:
+    events = rate_limit_from(
+        {"rateLimitType": "five_hour", "status": status, "resetsAt": 1788750000}
+    )
+
+    assert events[0].rate_limit.status == expected
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        {"status": "allowed", "resetsAt": 1788750000},
+        {"rateLimitType": "monthly", "status": "allowed", "resetsAt": 1788750000},
+        {"rateLimitType": 5, "status": "allowed"},
+    ],
+)
+def test_an_unlabelled_window_is_attributed_to_neither(info: dict) -> None:
+    assert rate_limit_from(info) == []
+
+
+@pytest.mark.parametrize("resets_at", ["soon", -1, None, True])
+def test_an_unusable_reset_instant_still_reports_the_status(resets_at) -> None:
+    events = rate_limit_from(
+        {"rateLimitType": "seven_day", "status": "rejected", "resetsAt": resets_at}
+    )
+
+    assert events[0].rate_limit.resets_at is None
+    assert events[0].rate_limit.window == "seven_day"
+    assert events[0].rate_limit.status == "rejected"
+
+
+def test_a_rate_limit_event_is_no_longer_an_unknown_event() -> None:
+    line = json.dumps({"type": "rate_limit_event", "rate_limit_info": "wrong shape"})
+
+    assert ClaudeAdapter().parse_line(line) == []
