@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import (
     AutoRoundDescriptor,
+    ContextObservation,
     RateLimitReading,
     RoundRecord,
     SessionConfig,
@@ -25,7 +27,7 @@ from app.models import (
     SourceDescriptor,
     TurnUsage,
 )
-from app.storage import ProjectStore, RegistryStore
+from app.storage import CodexRolloutState, ProjectStore, RegistryStore
 
 
 FAKE_CLI = Path(__file__).with_name("fake_cli.py")
@@ -1416,19 +1418,21 @@ def test_chat_prompt_rereads_codex_quota_once_for_the_provider_it_spends(
     reset = datetime.now(timezone.utc) + timedelta(hours=2)
     reads: list[Path] = []
 
-    def fake_scan(codex_home: Path, **_kwargs) -> list[RateLimitReading]:
+    def fake_scan(codex_home: Path, **_kwargs) -> CodexRolloutState:
         reads.append(codex_home)
-        return [
-            RateLimitReading(
-                window="five_hour",
-                used_percent=64.0,
-                status="unknown",
-                resets_at=reset,
-                source="codex_rollout_token_count",
-            )
-        ]
+        return CodexRolloutState(
+            [
+                RateLimitReading(
+                    window="five_hour",
+                    used_percent=64.0,
+                    status="unknown",
+                    resets_at=reset,
+                    source="codex_rollout_token_count",
+                )
+            ]
+        )
 
-    monkeypatch.setattr("app.runner.read_latest_codex_rate_limits", fake_scan)
+    monkeypatch.setattr("app.runner.read_latest_codex_rollout_state", fake_scan)
 
     with TestClient(app, base_url="http://localhost") as client:
         codex_run = client.post(
@@ -1486,6 +1490,46 @@ def test_session_view_prompt_carries_no_out_of_band_usage_badge(
 
     assert response.status_code == 202
     assert "usage-badge" not in response.text
+
+
+def test_agent_card_shows_last_observed_occupancy_and_forgets_retired_ones(
+    tmp_path: Path,
+) -> None:
+    alpha = session("a" * 32, "Alpha", rounds=[record(1, "2026-01-01T00:00:01Z")])
+    app, project, store = setup_project(tmp_path, [alpha])
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    observation = ContextObservation(
+        used_tokens=42_970,
+        context_window=1_000_000,
+        numerator_source="claude_final_assistant",
+        resolved_model="claude-sonnet-5",
+        round_n=1,
+        observed_at="2026-01-01T00:00:02Z",
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        config = store.load_session(alpha.id)
+        config.context_observation = observation
+        store.save_session(config)
+        observed = client.get(f"{prefix}/chat")
+        # Clear normally nulls the observation; a boundary that moved past it
+        # by any other route must not resurrect a window that is gone.
+        config = store.load_session(alpha.id)
+        config.context_baseline_round = 1
+        store.save_session(config)
+        retired = client.get(f"{prefix}/chat")
+        # A provider that reports no window shows the numerator, not a guess.
+        config = store.load_session(alpha.id)
+        config.context_baseline_round = 0
+        config.context_observation = replace(observation, context_window=None)
+        store.save_session(config)
+        no_window = client.get(f"{prefix}/chat")
+
+    flat = lambda response: " ".join(response.text.split())
+    assert "42,970 / 1,000,000 tokens (4%) · last observed round 1" in flat(observed)
+    assert "Window occupancy unknown" in flat(retired)
+    assert "42,970" not in retired.text
+    assert "42,970 tokens · window unknown" in flat(no_window)
 
 
 def test_chat_offers_clear_and_compact_and_both_change_the_boundary(

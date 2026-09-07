@@ -38,6 +38,7 @@ from app.runner import (
     SessionBusy,
 )
 from app.storage import (
+    CodexRolloutState,
     ConflictError,
     LockCoordinator,
     OwnershipError,
@@ -1531,6 +1532,33 @@ def test_stage_history_fails_closed_on_a_tampered_summary(tmp_path: Path) -> Non
     reloaded = store.load_session(session_id)
     assert reloaded.context_summary is not None
     assert reloaded.context_baseline_round == config.context_baseline_round
+
+
+@pytest.mark.asyncio
+async def test_codex_occupancy_takes_its_denominator_from_the_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Codex reports the numerator on stdout and the window only in the rollout,
+    # so the observation is only complete once the two are joined.
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        mode="usage-no-window",
+        agent="codex",
+    )
+    manager.settings.codex_home.mkdir(mode=0o700, parents=True)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "app.runner.read_codex_rollout_state",
+        lambda *_args, **_kwargs: CodexRolloutState([], context_window=258_400),
+    )
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    observation = store.load_session(session_id).context_observation
+    assert observation is not None
+    assert observation.used_tokens == 14
+    assert observation.context_window == 258_400
 
 
 @pytest.mark.asyncio

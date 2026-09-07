@@ -205,6 +205,34 @@ def _truncate_plain_text(value: str, maximum: int = 240) -> str:
     return cleaned[: maximum - 1] + "…"
 
 
+def context_occupancy(config: SessionConfig) -> dict[str, Any] | None:
+    """How full this session's provider window was, or ``None`` for unknown.
+
+    Never estimated and never projected: the numerator is the last figure a
+    provider reported, and a missing denominator leaves the percentage unknown
+    rather than being guessed at.
+    """
+
+    observation = config.context_observation
+    if observation is None or observation.used_tokens is None:
+        return None
+    if observation.round_n <= config.context_baseline_round:
+        # It describes context that Clear or Compact has since retired.
+        return None
+    window = observation.context_window
+    return {
+        "used_tokens": observation.used_tokens,
+        "context_window": window,
+        "percent": (
+            round(observation.used_tokens * 100 / window)
+            if window is not None and window > 0
+            else None
+        ),
+        "round_n": observation.round_n,
+        "resolved_model": observation.resolved_model,
+    }
+
+
 def agent_views(
     store: ProjectStore,
     sessions: list[SessionConfig],
@@ -244,6 +272,7 @@ def agent_views(
                 "preview_error": preview_error,
                 "preview_status": preview_status,
                 "latest_round": latest.n if latest is not None else None,
+                "context_occupancy": context_occupancy(session),
             }
         )
     return views

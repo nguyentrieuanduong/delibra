@@ -914,20 +914,30 @@ def _rollout_tail(path: Path, root: Path, read_limit: int) -> list[str]:
     return lines[1:] if offset else lines
 
 
-def _codex_rollout_rate_limits(
+@dataclass(frozen=True)
+class CodexRolloutState:
+    """What one bounded rollout read can tell Delibra about a Codex account."""
+
+    rate_limits: list[RateLimitReading]
+    # `exec --json` never reports the context window, so this rollout read is
+    # the only place the occupancy denominator exists.
+    context_window: int | None = None
+
+
+def _codex_rollout_state(
     codex_home: Path,
     pattern: str,
     *,
     scan_limit: int,
     read_limit: int,
-) -> list[RateLimitReading]:
+) -> CodexRolloutState:
     try:
         matches = sorted(
             codex_home.glob(pattern),
             reverse=True,
         )[:scan_limit]
     except OSError:
-        return []
+        return CodexRolloutState([])
     for path in matches:
         try:
             lines = _rollout_tail(path, codex_home, read_limit)
@@ -944,19 +954,23 @@ def _codex_rollout_rate_limits(
             if not isinstance(payload, dict) or payload.get("type") != "token_count":
                 continue
             readings = _rollout_rate_limits(payload.get("rate_limits"))
-            if readings:
-                return readings
-    return []
+            info = payload.get("info")
+            window = info.get("model_context_window") if isinstance(info, dict) else None
+            if type(window) is not int or window < 1:
+                window = None
+            if readings or window is not None:
+                return CodexRolloutState(readings, window)
+    return CodexRolloutState([])
 
 
-def read_codex_rate_limits(
+def read_codex_rollout_state(
     codex_home: Path,
     thread_id: str,
     *,
     scan_limit: int,
     read_limit: int,
-) -> list[RateLimitReading]:
-    """Read one Codex thread's newest quota record from its own rollout.
+) -> CodexRolloutState:
+    """Read one Codex thread's newest quota and window from its own rollout.
 
     Codex keeps `token_count` in the app-owned `CODEX_HOME` and never on
     `exec --json` stdout, so this is quota state Delibra can read without
@@ -966,8 +980,8 @@ def read_codex_rate_limits(
     """
 
     if not CODEX_THREAD_PATTERN.fullmatch(thread_id):
-        return []
-    return _codex_rollout_rate_limits(
+        return CodexRolloutState([])
+    return _codex_rollout_state(
         codex_home,
         f"sessions/*/*/*/rollout-*-{thread_id}.jsonl",
         scan_limit=scan_limit,
@@ -975,15 +989,15 @@ def read_codex_rate_limits(
     )
 
 
-def read_latest_codex_rate_limits(
+def read_latest_codex_rollout_state(
     codex_home: Path,
     *,
     scan_limit: int,
     read_limit: int,
-) -> list[RateLimitReading]:
-    """Read the newest available Codex quota without needing a thread id."""
+) -> CodexRolloutState:
+    """Read the newest available Codex rollout state without a thread id."""
 
-    return _codex_rollout_rate_limits(
+    return _codex_rollout_state(
         codex_home,
         "sessions/*/*/*/rollout-*.jsonl",
         scan_limit=scan_limit,

@@ -288,6 +288,25 @@ own message kept collapsed beside it. Any other failure still renders red. On an
 Auto round the sentence points at **Continue Auto**; on a hand-sent prompt it says
 the turn did not run, because nothing was paused there.
 
+Each agent card shows how full its provider context window was after the last
+turn it reported one — the numerator as measured, the window as the provider
+reported it, and `unknown` rather than a guess when either is missing. Codex
+reports its window only in the rollout, so it arrives with that round's quota
+read; Claude reports it per resolved model on the turn itself.
+
+**Clear context** retires every round for that agent and drops its summary and
+native session in one write; the rounds stay in the history, they just stop
+being context. **Compact** replaces them with one summary the agent writes
+itself, as a stateless turn over a frozen snapshot of every unretired round —
+never the ordinary bounded history, because advancing the boundary past a round
+nothing summarized would discard it for good. A snapshot over
+`DELIBRA_COMPACT_INPUT_LIMIT` is refused rather than partially summarized, with
+Clear as the escape hatch. The summary, the new boundary and the surrendered
+native session commit together with the round; a failed compaction changes
+nothing. Both operations require the session idle and no Auto running, and the
+next Auto run honours them: cleared rounds do not return to `baseline.md`, and a
+compacted session contributes its summary instead of the rounds it replaced.
+
 **Continue Auto** resumes a finished run in place, from any of the five terminal
 states (`stopped`, `interrupted`, `error`, `limit_reached`, `converged`). It is
 offered when no Auto is active anywhere in the project. The cursor is
