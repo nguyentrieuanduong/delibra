@@ -14,6 +14,7 @@ from starlette.responses import Response
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import RunKey, SourceDescriptor
 from app.project_routing import request_project
+from app.routes.usage import usage_badge_context
 from app.security import validate_field, validate_pass_prompt_template_field
 from app.storage import ConflictError, NotFoundError, ProjectStore, validate_id
 from app.views import round_dom_id
@@ -159,6 +160,10 @@ async def start_run_fragment(
     key = await request.app.state.manager.start(project_id, session_id, prompt)
     project = request.app.state.registry.get(project_id)
     session = ProjectStore(project).load_session(session_id)
+    # Starting the run re-read the provider's quota (5g); the chat view is the
+    # only page carrying `#usage-badge`, so only it gets the refreshed badge
+    # back out of band.
+    badge = usage_badge_context(request, oob=True) if chat_view else {}
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_live.html",
@@ -168,6 +173,7 @@ async def start_run_fragment(
             "session": session,
             "dom_id": round_dom_id(session_id, key.round_n),
             "chat_view": chat_view,
+            **badge,
         },
         status_code=202,
     )

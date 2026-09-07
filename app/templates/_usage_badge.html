@@ -3,9 +3,13 @@
   class="usage-badge {{ badge_state|default('ok') }}"
   aria-label="Account quota"
   hx-get="/usage/badge"
-  hx-trigger="load, every {{ usage_poll_seconds }}s"
+  {# No `load` trigger: htmx re-processes swapped-in content, so a fragment
+     that replaces itself would re-request on every swap. Both render paths
+     ship the current state instead. #}
+  hx-trigger="every {{ usage_poll_seconds }}s"
   hx-target="this"
   hx-swap="outerHTML"
+  {% if usage_badge_oob|default(false) %}hx-swap-oob="outerHTML"{% endif %}
 >
   {% if durability_warning|default(none) is not none %}
     <span class="usage-durability notice" role="status">{{ durability_warning }}</span>

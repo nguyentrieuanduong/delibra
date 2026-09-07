@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -17,6 +18,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import (
     AutoRoundDescriptor,
+    RateLimitReading,
     RoundRecord,
     SessionConfig,
     SharedContextDescriptor,
@@ -1288,6 +1290,92 @@ def test_chat_shows_what_a_round_cost_and_stays_silent_when_nothing_was_reported
     assert "cache write" not in billed
     assert 'class="provenance usage"' not in bubbles[2].group()
     assert "32,018 in" in focused.text
+
+
+def test_chat_prompt_rereads_codex_quota_once_for_the_provider_it_spends(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One check per prompt, scoped to the provider about to be spent: reading
+    # the rollout stamps `observed_at` with the read time, so an unconditional
+    # re-read would let a non-Codex prompt keep an ageing Codex figure alive.
+    codex_agent = session("a" * 32, "Coder", agent="codex")
+    other_agent = session("b" * 32, "Writer")
+    app, project, _ = setup_project(tmp_path, [codex_agent, other_agent])
+    run_url = f"/projects/{quote(project.name, safe='')}/chat/run"
+    reset = datetime.now(timezone.utc) + timedelta(hours=2)
+    reads: list[Path] = []
+
+    def fake_scan(codex_home: Path, **_kwargs) -> list[RateLimitReading]:
+        reads.append(codex_home)
+        return [
+            RateLimitReading(
+                window="five_hour",
+                used_percent=64.0,
+                status="unknown",
+                resets_at=reset,
+                source="codex_rollout_token_count",
+            )
+        ]
+
+    monkeypatch.setattr("app.runner.read_latest_codex_rate_limits", fake_scan)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        codex_run = client.post(
+            run_url,
+            data={"session_id": codex_agent.id, "prompt": "Ask the coder"},
+        )
+        with client.stream(
+            "GET",
+            f"/projects/{quote(project.name, safe='')}/sessions/{codex_agent.id}"
+            "/rounds/1/stream",
+        ) as stream:
+            stream.read()
+        after_codex = len(reads)
+        other_run = client.post(
+            run_url,
+            data={"session_id": other_agent.id, "prompt": "Ask the writer"},
+        )
+        with client.stream(
+            "GET",
+            f"/projects/{quote(project.name, safe='')}/sessions/{other_agent.id}"
+            "/rounds/1/stream",
+        ) as stream:
+            stream.read()
+
+    assert codex_run.status_code == 202
+    assert other_run.status_code == 202
+    assert after_codex == 1
+    assert len(reads) == 1
+    # The check is only meaningful if it is visible, so the chat response
+    # carries the refreshed badge out of band.
+    assert 'id="usage-badge"' in codex_run.text
+    assert 'hx-swap-oob="outerHTML"' in codex_run.text
+    assert "5h: 36% remaining" in codex_run.text
+
+
+def test_session_view_prompt_carries_no_out_of_band_usage_badge(
+    tmp_path: Path,
+) -> None:
+    # Only the chat view renders `#usage-badge`; an out-of-band swap on the
+    # session view would log a missing-target error on every send.
+    alpha = session("a" * 32, "Alpha")
+    app, project, _ = setup_project(tmp_path, [alpha])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}/run",
+            data={"prompt": "Hello"},
+        )
+        with client.stream(
+            "GET",
+            f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}"
+            "/rounds/1/stream",
+        ) as stream:
+            stream.read()
+
+    assert response.status_code == 202
+    assert "usage-badge" not in response.text
 
 
 def test_chat_error_javascript_contract_runs_under_node() -> None:

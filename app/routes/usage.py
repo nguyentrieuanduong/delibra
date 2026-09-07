@@ -17,11 +17,24 @@ _WINDOWS = (("five_hour", "5h"), ("seven_day", "weekly"))
 _VERDICT_STRENGTH = {"unknown": 0, "ok": 1, "warning": 2, "pause": 3}
 
 
-def _badge_context(request: Request) -> dict[str, Any]:
+def usage_badge_context(request: Request, *, oob: bool = False) -> dict[str, Any]:
+    """Render-ready quota state, including the interval its next poll will use.
+
+    The interval is quota-dependent (5g): the badge is otherwise a request a
+    minute per tab, forever, for state that only a finished turn can change.
+
+    Every caller renders the badge itself rather than asking the browser to
+    fetch it on load, so Codex's once-per-process hydration belongs here.
+    """
+
+    request.app.state.manager.hydrate_codex_quota()
     monitor = request.app.state.usage_monitor
     settings = request.app.state.settings
     providers: list[dict[str, Any]] = []
     strongest_verdict = "unknown"
+    # A window with no percentage -- Claude reports none at all -- cannot be
+    # learned about by polling faster, so it keeps the idle interval.
+    low_quota = False
     for provider in _PROVIDERS:
         windows: list[dict[str, Any]] = []
         for window, label in _WINDOWS:
@@ -34,6 +47,11 @@ def _badge_context(request: Request) -> dict[str, Any]:
                 (strongest_verdict, verdict),
                 key=lambda value: _VERDICT_STRENGTH[value],
             )
+            if (
+                remaining_percent is not None
+                and remaining_percent < settings.usage_warn_remaining_percent
+            ):
+                low_quota = True
             windows.append(
                 {
                     "label": label,
@@ -59,15 +77,19 @@ def _badge_context(request: Request) -> dict[str, Any]:
         "durability_warning": (
             USAGE_PERSISTENCE_WARNING if monitor.durability_degraded else None
         ),
-        "usage_poll_seconds": settings.usage_poll_seconds,
+        "usage_poll_seconds": (
+            settings.usage_low_quota_poll_seconds
+            if low_quota
+            else settings.usage_poll_seconds
+        ),
+        "usage_badge_oob": oob,
     }
 
 
 @router.get("/usage/badge", response_class=HTMLResponse)
 async def usage_badge(request: Request) -> HTMLResponse:
-    request.app.state.manager.hydrate_codex_quota()
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_usage_badge.html",
-        context=_badge_context(request),
+        context=usage_badge_context(request),
     )
