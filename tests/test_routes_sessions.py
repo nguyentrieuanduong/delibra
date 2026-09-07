@@ -13,7 +13,12 @@ from app.agents.base import AgentEvent, Command, RunContext
 from app.agents.claude import ClaudeAdapter
 from app.config import Settings
 from app.main import create_app
-from app.models import RoundRecord, SessionConfig, SourceDescriptor
+from app.models import (
+    ContextObservation,
+    RoundRecord,
+    SessionConfig,
+    SourceDescriptor,
+)
 from app.storage import (
     ProjectStore,
     RegistryStore,
@@ -349,6 +354,51 @@ def test_post_round_model_effort_edit_drives_next_run_and_preserves_native_id(
     persisted = store.load_session(session_id)
     assert persisted.rounds[-1].model == "opus"
     assert persisted.rounds[-1].effort == "medium"
+
+
+def test_a_model_change_invalidates_the_context_observation(tmp_path: Path) -> None:
+    """A window measured against one model does not describe another.
+
+    The invalidation cannot live in the branch that clears `cli_session_id`:
+    both built-in adapters resume after a config change, so that branch never
+    runs for them.
+    """
+
+    client, project, store = seeded_client(tmp_path)
+    with client:
+        created = create_session(client, project.id, effort="low")
+        session_id = created_session_id(created)
+        seed_completed_round(store, session_id)
+        config = store.load_session(session_id)
+        config.context_observation = ContextObservation(
+            used_tokens=42970,
+            context_window=1_000_000,
+            numerator_source="claude_final_assistant",
+            resolved_model="claude-sonnet-5",
+            round_n=1,
+            observed_at="2026-09-07T00:00:00Z",
+        )
+        store.save_session(config)
+        edit_path = f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit"
+
+        effort_only = client.post(
+            edit_path,
+            data={"model": config.model, "effort": "medium"},
+            follow_redirects=False,
+        )
+        assert effort_only.status_code == 303
+        assert store.load_session(session_id).context_observation is not None
+
+        changed = client.post(
+            edit_path,
+            data={"model": "opus", "effort": "medium"},
+            follow_redirects=False,
+        )
+        assert changed.status_code == 303
+        reloaded = store.load_session(session_id)
+        assert reloaded.context_observation is None
+        # The native session is a separate provider-policy decision.
+        assert reloaded.cli_session_id == "original-native-id"
 
 
 def test_unsupported_config_change_clears_resume_then_warns_and_adopts_new_id(

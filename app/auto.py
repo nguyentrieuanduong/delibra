@@ -862,6 +862,10 @@ class AutoManager:
                 for participant in current.participants:
                     session = store.load_session(participant.session_id)
                     session.cli_session_id = None
+                    # The occupancy figure described the native context being
+                    # discarded here; keeping it would report a manual
+                    # conversation Auto has just thrown away.
+                    session.context_observation = None
                     store.save_session(session)
                 current.status = "discussing"
                 current.current_cycle = 1
