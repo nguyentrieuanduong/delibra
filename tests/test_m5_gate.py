@@ -16,12 +16,15 @@ from typing import Any
 import pytest
 
 from spike.m5_usage_gate import (
+    CODEX_CANDIDATES,
     TurnResult,
     build_capabilities,
     is_identifier_key,
     merge_capabilities,
+    occupancy_verdict,
     publish,
     sanitize,
+    scan,
     terminal_failure,
 )
 
@@ -136,6 +139,113 @@ class TestCapabilitiesRequireSuccess:
         report = build_capabilities("claude", turns, ("usage.input_tokens",))
 
         assert report["failures"] == {"a_small_fresh": "exit 0: not logged in"}
+
+
+class TestOccupancyDiscriminator:
+    """Occupancy grows slightly at C; it is not flat-to-lower.
+
+    A resumed turn resends the whole conversation, so an occupancy field is a
+    little *higher* at C than at B -- by the size of one small prompt, not by a
+    whole turn. Requiring `c <= b` misreads real occupancy as cumulative, which
+    would leave Codex with no context signal and make Phases 6-7 impossible.
+    """
+
+    # Measured, Codex gpt-5.6-sol, spike/fixtures/m5/codex_*.jsonl.
+    REAL_INPUT_TOKENS = [11501, 32000, 32018, 11501]
+
+    def test_real_measured_occupancy_is_not_called_cumulative(self) -> None:
+        verdict = occupancy_verdict({"usage.input_tokens": self.REAL_INPUT_TOKENS})
+
+        assert verdict["usage.input_tokens"].startswith("occupancy")
+
+    def test_a_genuinely_cumulative_field_is_still_called_cumulative(self) -> None:
+        # Same turns, but each value is the running total instead.
+        totals = [11501, 43501, 75519, 11501]
+
+        verdict = occupancy_verdict({"usage.input_tokens": totals})
+
+        assert verdict["usage.input_tokens"].startswith("cumulative")
+
+    def test_a_field_that_never_returns_to_baseline_is_inconclusive(self) -> None:
+        verdict = occupancy_verdict({"x": [11501, 32000, 32018, 31000]})
+
+        assert verdict["x"].startswith("inconclusive")
+
+
+class TestCodexCandidatePaths:
+    """`last_token_usage` is nested under `info`, not at the top level."""
+
+    def test_total_tokens_is_found_under_info(self) -> None:
+        # The rollout's token_count payload, as actually recorded.
+        line = {
+            "type": "token_count",
+            "info": {
+                "last_token_usage": {"total_tokens": 32023},
+                "model_context_window": 258400,
+            },
+        }
+
+        assert scan([line], "info.last_token_usage.total_tokens") == 32023
+
+    def test_the_candidate_list_uses_the_nested_path(self) -> None:
+        # The flat path silently read None on every turn, so the plan's required
+        # `last_token_usage` evidence was recorded as absent when it was present.
+        assert "info.last_token_usage.total_tokens" in CODEX_CANDIDATES
+        assert "last_token_usage.total_tokens" not in CODEX_CANDIDATES
+
+
+class TestQuotaWindowFromWindowMinutes:
+    """The window comes from `window_minutes`, not from primary/secondary."""
+
+    def _readings(self, primary_minutes: int, secondary_minutes: int) -> list[TurnResult]:
+        return [
+            _turn(
+                "a_small_fresh",
+                [
+                    CODEX_SUCCESS
+                    | {
+                        "rate_limits": {
+                            "primary": {
+                                "used_percent": 7.0,
+                                "window_minutes": primary_minutes,
+                            },
+                            "secondary": {
+                                "used_percent": 16.0,
+                                "window_minutes": secondary_minutes,
+                            },
+                        }
+                    }
+                ],
+            )
+        ]
+
+    def test_measured_windows_map_to_five_hour_and_seven_day(self) -> None:
+        # Measured: primary=300 minutes (5h), secondary=10080 (7d).
+        report = build_capabilities(
+            "codex", self._readings(300, 10080), CODEX_CANDIDATES
+        )
+
+        assert report["capabilities"]["five_hour_quota_percent"]["proven"] is True
+        assert report["capabilities"]["seven_day_quota_percent"]["proven"] is True
+
+    def test_an_unrecognised_window_length_proves_nothing(self) -> None:
+        report = build_capabilities(
+            "codex", self._readings(42, 99), CODEX_CANDIDATES
+        )
+
+        assert report["capabilities"]["five_hour_quota_percent"]["proven"] is False
+        assert report["capabilities"]["seven_day_quota_percent"]["proven"] is False
+
+    def test_swapped_windows_are_attributed_by_length_not_by_name(self) -> None:
+        # If the provider ever puts the weekly window first, following the name
+        # would report weekly usage as the 5-hour figure and pause far too early.
+        report = build_capabilities(
+            "codex", self._readings(10080, 300), CODEX_CANDIDATES
+        )
+
+        five_hour = report["capabilities"]["five_hour_quota_percent"]
+        assert five_hour["proven"] is True
+        assert "secondary" in five_hour["evidence"]
 
 
 class TestQuotaStatusWindowAttribution:
@@ -264,6 +374,25 @@ class TestSanitize:
 
     def test_free_text_is_redacted(self) -> None:
         assert sanitize({"text": "x" * 80}) == {"text": "<redacted>"}
+
+    def test_provider_error_messages_survive_in_full(self) -> None:
+        # Codex carries the HTTP status only inside this string -- there is no
+        # structured status field on stdout. Redacting it for being longer than
+        # 64 characters destroys the one thing the error fixture exists for.
+        message = (
+            '{"type":"error","status":400,"error":{"type":"invalid_request_error",'
+            '"message":"The \'x\' model is not supported when using Codex with a '
+            'ChatGPT account."}}'
+        )
+
+        assert sanitize({"type": "error", "message": message}) == {
+            "type": "error",
+            "message": message,
+        }
+
+    def test_the_agents_reply_is_still_redacted(self) -> None:
+        # Only provider diagnostics are exempt; model output is not.
+        assert sanitize({"item": {"text": "y" * 200}}) == {"item": {"text": "<redacted>"}}
 
 
 class TestPublish:

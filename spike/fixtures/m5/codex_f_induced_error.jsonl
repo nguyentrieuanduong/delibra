@@ -1,0 +1,8 @@
+{"thread_id": "<redacted>", "type": "thread.started"}
+{"item": {"id": "<redacted>", "message": "<redacted>", "type": "error"}, "type": "item.completed"}
+{"type": "turn.started"}
+{"message": "<redacted>", "type": "error"}
+{"error": {"message": "<redacted>"}, "type": "turn.failed"}
+{"collaboration_mode_kind": "default", "model_context_window": 258400, "started_at": 1788745981, "turn_id": "<redacted>", "type": "task_started"}
+{"completed_at_ms": 1788745983839, "item": {"content": [{"text": "<redacted>", "text_elements": [], "type": "text"}], "id": "<redacted>", "type": "UserMessage"}, "started_at_ms": 1788745983839, "thread_id": "<redacted>", "turn_id": "<redacted>", "type": "item_completed"}
+{"completed_at": 1788745987, "duration_ms": 5288, "error": {"codex_error_info": "other", "message": "<redacted>"}, "last_agent_message": null, "started_at": 1788745981, "turn_id": "<redacted>", "type": "task_complete"}
