@@ -16,14 +16,18 @@ from app.config import Settings
 from app.main import create_app
 from app.models import (
     AutoArtifact,
+    AutoCompactionAttempt,
+    AutoContextPolicy,
     AutoQuotaPause,
     AutoRoundDescriptor,
     AutoRunRecord,
+    AutoSummary,
     RateLimitObservation,
     RoundRecord,
     SessionConfig,
     SourceDescriptor,
     TurnUsage,
+    auto_trigger_key,
 )
 from app.storage import ProjectStore, RegistryStore
 
@@ -417,7 +421,9 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     assert "checked" not in prepare_tag
     assert "checked" in first_tag
     assert "checked" not in all_tag
-    assert setup.text.count('class="auto-choice"') == len(sessions) + 3
+    # One row per agent, plus prepare-first, two agreement radios, and the
+    # three context-management modes.
+    assert setup.text.count('class="auto-choice"') == len(sessions) + 6
     assert "enabling preparation adds 2 calls" in setup.text
     assert re.search(
         r'<input[^>]*name="max_cycles"[^>]*min="1"[^>]*max="20"[^>]*value="3"',
@@ -1670,3 +1676,161 @@ def test_auto_run_total_renders_on_both_status_paths(
 
     assert "5,242 in" in fragment.text
     assert "5,242 in" in page.text
+
+
+def test_auto_setup_offers_context_management_with_its_documented_defaults(
+    tmp_path: Path,
+) -> None:
+    # Compact every 3 cycles, summarized by the next speaker, is the default for
+    # new runs; the prompt-size unit is named for what it measures.
+    app, _, project, _store, sessions, _ = auto_route_app(tmp_path)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        fragment = client.get(f"{prefix}/auto/setup")
+        page = client.get(f"{prefix}/chat?auto_setup=true")
+
+    for text in (fragment.text, page.text):
+        assert 'value="compact" checked' in text
+        assert re.search(
+            r'<input[^>]*name="context_interval"[^>]*min="1"[^>]*max="20"'
+            r'[^>]*value="3"',
+            text,
+        )
+        assert re.search(
+            r'<input[^>]*name="context_threshold_percent"[^>]*min="10"'
+            r'[^>]*max="95"[^>]*value="70"',
+            text,
+        )
+        assert 'value="next" selected' in text
+        # Rendered bytes, not a provider token window: the label must not
+        # invite the user to read it as Phase 6's context occupancy.
+        assert "Auto prompt byte budget" in text
+        for session in sessions:
+            assert f'value="{session.id}"' in text
+
+
+def test_starting_auto_carries_the_chosen_context_policy(tmp_path: Path) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    session_ids = [session.id for session in sessions]
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{project.id}/auto-runs",
+            data={
+                "topic": "Policy topic",
+                "participant_id": session_ids,
+                "agreement_policy": "all_agree",
+                "max_cycles": "1",
+                "turn_timeout_seconds": "2",
+                "context_mode": "compact",
+                "context_unit": "context",
+                "context_interval": "5",
+                "context_threshold_percent": "40",
+                "context_summarizer": session_ids[1],
+            },
+        )
+        record = wait_for_auto(store, terminal=True)
+
+    assert response.status_code == 202
+    assert record.context_policy == AutoContextPolicy(
+        mode="compact",
+        unit="context",
+        interval=5,
+        threshold_percent=40,
+        summarizer=session_ids[1],
+    )
+
+
+def test_a_summarizer_outside_the_chosen_participants_is_refused(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    session_ids = [session.id for session in sessions]
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{project.id}/auto-runs",
+            data={
+                "topic": "Rejected policy topic",
+                "participant_id": session_ids,
+                "agreement_policy": "all_agree",
+                "max_cycles": "1",
+                "turn_timeout_seconds": "2",
+                "context_mode": "compact",
+                "context_unit": "cycles",
+                "context_interval": "3",
+                "context_threshold_percent": "70",
+                "context_summarizer": "d" * 32,
+            },
+        )
+
+    assert response.status_code == 422
+    assert "summarizer" in response.json()["detail"]
+    assert store.list_auto_runs() == []
+
+
+def test_the_status_panel_states_the_policy_its_summary_and_its_warnings(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    session_ids = [session.id for session in sessions]
+
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, session_ids)
+        record = wait_for_auto(store, terminal=True)
+        summary_body = b"Summary shown in the panel"
+        (store.rounds_dir(session_ids[0]) / "round-90.md").write_bytes(summary_body)
+        digest = store.copy_auto_summary(
+            record.id,
+            1,
+            store.rounds_dir(session_ids[0]) / "round-90.md",
+            store.rounds_dir(session_ids[0]),
+        )
+        record.context_policy = AutoContextPolicy(
+            mode="compact",
+            unit="cycles",
+            interval=3,
+        )
+        record.summaries = [
+            AutoSummary(
+                path="summaries/01.md",
+                sha256=digest,
+                created_at="2026-09-07T12:00:00Z",
+                cycle=1,
+                round_n=90,
+                session_id=session_ids[0],
+                retired_baseline_count=0,
+                retired_discussion_count=1,
+            )
+        ]
+        record.retired_discussion_count = 1
+        record.compaction_attempts = [
+            AutoCompactionAttempt(
+                trigger_key=auto_trigger_key("cycles", record.current_cycle, 1),
+                unit="cycles",
+                cycle=record.current_cycle,
+                discussion_len=1,
+                attempted_at="2026-09-07T12:00:00Z",
+                outcome="summarized",
+                round_n=90,
+                session_id=session_ids[0],
+                summary_index=0,
+                warning="1 Auto entries were dropped",
+            )
+        ]
+        record.compaction_disabled_reason = "3 consecutive compaction failures"
+        store.save_auto_run(record)
+        status = client.get(f"{prefix}/auto-runs/{record.number}")
+        history = client.get(f"{prefix}/auto-runs/{record.number}/history")
+
+    for text in (status.text, history.text):
+        assert "compact every 3 cycles" in text
+        assert "Summary shown in the panel" in text
+        assert "1 Auto entries were dropped" in text
+        # A disablement is a notice, not a failure: the run kept discussing.
+        assert '<p class="notice"' in text
+        assert "3 consecutive compaction failures" in text
+    assert 'class="error"' not in status.text
+
