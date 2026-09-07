@@ -72,6 +72,7 @@ def test_max_run_timeout_defaults_to_four_hours_and_rejects_smaller_run_timeout(
             "-1",
             "101",
         ),
+        ("DELIBRA_USAGE_POLL_SECONDS", "usage_poll_seconds", 60, "4", "3601"),
         ("DELIBRA_USAGE_STALENESS_SECONDS", "usage_staleness_seconds", 1800, "59", "86401"),
         (
             "DELIBRA_CODEX_ROLLOUT_SCAN_LIMIT",

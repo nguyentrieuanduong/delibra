@@ -1,0 +1,29 @@
+<section
+  id="usage-badge"
+  class="usage-badge {{ badge_state|default('ok') }}"
+  aria-label="Account quota"
+  hx-get="/usage/badge"
+  hx-trigger="load, every {{ usage_poll_seconds }}s"
+  hx-target="this"
+  hx-swap="outerHTML"
+>
+  {% for provider in providers|default([]) %}
+    <span class="usage-provider" data-provider="{{ provider.name }}">
+      <strong>{{ provider.label }}</strong>
+      {% for window in provider.windows %}
+        <span class="usage-window {{ window.verdict }}">{{ window.label }}:{% if window.observation is none %} unknown{% elif window.remaining_percent is not none %} {{ window.remaining_percent }}% remaining{% else %}
+            unavailable (status {{ window.observation.status }};
+            {% if window.observation.resets_at is not none %}
+              resets
+              <time datetime="{{ window.observation.resets_at.isoformat() }}">
+                {{ window.observation.resets_at.strftime('%Y-%m-%d %H:%M UTC') }}
+              </time>
+            {% else %}
+              reset unknown
+            {% endif %})
+          {% endif %}
+        </span>
+      {% endfor %}
+    </span>
+  {% endfor %}
+</section>

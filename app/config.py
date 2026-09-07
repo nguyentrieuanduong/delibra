@@ -49,6 +49,7 @@ class Settings:
     usage_warn_remaining_percent: int = 20
     usage_pause_remaining_percent: int = 8
     usage_weekly_pause_remaining_percent: int = 3
+    usage_poll_seconds: int = 60
     usage_staleness_seconds: int = 1800
     codex_rollout_scan_limit: int = 200
     codex_rollout_read_limit: int = 4 * MIB
@@ -123,6 +124,12 @@ class Settings:
                 3,
                 minimum=0,
                 maximum=100,
+            ),
+            usage_poll_seconds=_integer(
+                "DELIBRA_USAGE_POLL_SECONDS",
+                60,
+                minimum=5,
+                maximum=3_600,
             ),
             usage_staleness_seconds=_integer(
                 "DELIBRA_USAGE_STALENESS_SECONDS",

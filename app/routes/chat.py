@@ -177,6 +177,7 @@ async def chat_page(
             "auto_setup": setup_context,
             "auto_migration_warning": auto_projection.warning,
             "health": request.app.state.health,
+            "usage_poll_seconds": request.app.state.settings.usage_poll_seconds,
             "pass_prompt_template": store.effective_pass_prompt_template(),
             **sidebar,
         },
