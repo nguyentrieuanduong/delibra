@@ -621,20 +621,27 @@ def merge_capabilities(
     return {**existing, **fresh}
 
 
-def publish(*, staging: Path, target: Path, summary: dict[str, Any]) -> bool:
-    """Move staged fixtures into place, but only if every probe passed.
+def publish(*, staging: Path, target: Path, summary: dict[str, Any]) -> list[str]:
+    """Publish each provider that reached a success terminal on every turn.
 
-    Fixtures are checked in and Phases 5-7 are written against them, so a
-    partial set is worse than none: it looks like evidence.
+    Per provider, not all-or-nothing. The two probes are independent and each
+    is separately billable, so discarding a clean Claude run because Codex was
+    pointed at a model the account cannot use only makes the operator pay for
+    the same turns twice. A failed provider publishes nothing -- neither its
+    fixtures nor its capability report -- and crucially does not overwrite
+    whatever an earlier successful run proved about it.
+
+    Returns the providers actually published; the caller still exits nonzero
+    unless every probed provider is in that list.
     """
 
-    failed = {
-        provider: report.get("failures")
-        for provider, report in summary.items()
-        if report.get("failures")
-    }
-    if failed:
-        return False
+    published = [
+        provider
+        for provider, report in sorted(summary.items())
+        if not report.get("failures")
+    ]
+    if not published:
+        return []
 
     target.mkdir(parents=True, exist_ok=True)
     capabilities = target / "capabilities.json"
@@ -645,13 +652,20 @@ def publish(*, staging: Path, target: Path, summary: dict[str, Any]) -> bool:
         except json.JSONDecodeError:
             existing = {}
     for path in sorted(staging.iterdir()):
-        shutil.copy2(path, target / path.name)
+        if any(path.name.startswith(f"{provider}_") for provider in published):
+            shutil.copy2(path, target / path.name)
     capabilities.write_text(
-        json.dumps(merge_capabilities(existing, summary), indent=2, sort_keys=True)
+        json.dumps(
+            merge_capabilities(
+                existing, {name: summary[name] for name in published}
+            ),
+            indent=2,
+            sort_keys=True,
+        )
         + "\n",
         encoding="utf-8",
     )
-    return True
+    return published
 
 
 def write_fixtures(staging: Path, provider: str, turns: list[TurnResult]) -> None:
@@ -673,12 +687,13 @@ async def main() -> int:
     )
     parser.add_argument("--claude-model", default="sonnet")
     parser.add_argument("--claude-alternate-model", default="haiku")
-    # `gpt-5-codex` is rejected with HTTP 400 for a ChatGPT login ("not
-    # supported when using Codex with a ChatGPT account"), which is how the
-    # first live run failed. `gpt-5.4` is what spike/spike_codex.py:566 already
-    # exercises against this account.
-    parser.add_argument("--codex-model", default="gpt-5.4")
-    parser.add_argument("--codex-alternate-model", default="gpt-5.4-mini")
+    # A ChatGPT login rejects most model names with HTTP 400 ("not supported
+    # when using Codex with a ChatGPT account"). Both `gpt-5-codex` (run 1) and
+    # `gpt-5.4` (run 2, copied from spike/spike_codex.py:566, which is stale)
+    # failed that way. These two are the models this account has actually used,
+    # per ~/.codex/config.toml and its own session records -- not a guess.
+    parser.add_argument("--codex-model", default="gpt-5.6-sol")
+    parser.add_argument("--codex-alternate-model", default="gpt-5.5")
     args = parser.parse_args()
 
     settings = Settings.from_env()
@@ -757,15 +772,22 @@ async def main() -> int:
         if report["failures"]:
             print(f"    failures: {report['failures']}")
 
-    if not published:
+    if published:
         print(
-            "\nGATE FAILED. Nothing was published: a probe did not reach a provider"
-            "\nsuccess terminal, so its payloads are error artifacts, not evidence."
-            "\nPhases 5-7 stay blocked. Fix the failure above and rerun."
+            f"\nwrote {(FIXTURES / 'capabilities.json').relative_to(ROOT)} "
+            f"for: {', '.join(published)}"
+        )
+    failed = sorted(set(summary) - set(published))
+    if failed:
+        print(
+            f"\nGATE FAILED for: {', '.join(failed)}. Nothing was published for"
+            "\nthem: a probe did not reach a provider success terminal, so its"
+            "\npayloads are error artifacts, not evidence. Phases 5-7 stay blocked"
+            "\nuntil every provider is present. Rerun just the failed provider"
+            f"\nwith --provider {failed[0]}; the published evidence is kept."
         )
         return 1
 
-    print(f"\nwrote {(FIXTURES / 'capabilities.json').relative_to(ROOT)}")
     print(
         "\nAny capability not marked PROVEN is implemented as `unknown` end to end,"
         "\nand `unknown` never warns and never pauses."
