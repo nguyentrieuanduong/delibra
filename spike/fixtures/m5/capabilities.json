@@ -226,6 +226,15 @@
       "usage.output_tokens": "inconclusive: did not rise at B",
       "usage.total_prompt_tokens (derived)": "occupancy: held at C, reset to baseline at D"
     },
+    "provenance": {
+      "captured_at": null,
+      "cli_version": "2.1.202",
+      "provider": "claude",
+      "resolved_models": [
+        "claude-sonnet-5",
+        "claude-haiku-4-5-20251001"
+      ]
+    },
     "provider": "claude",
     "turns": [
       "a_small_fresh",
@@ -379,6 +388,14 @@
       "usage.cached_input_tokens": "cumulative: gained about another turn at C",
       "usage.input_tokens": "occupancy: held at C, reset to baseline at D",
       "usage.output_tokens": "inconclusive: did not rise at B"
+    },
+    "provenance": {
+      "captured_at": null,
+      "cli_version": null,
+      "provider": "codex",
+      "resolved_models": [
+        "gpt-5.6-sol"
+      ]
     },
     "provider": "codex",
     "turns": [
