@@ -14,13 +14,6 @@
           <h1>{{ project.name }}</h1>
           <p class="project-path">{{ project.path }}</p>
         </div>
-        <div class="topic-health" aria-label="Provider health">
-          {% for provider in health %}
-            <span class="health {{ 'warning' if provider.checking or provider.warning else 'ok' }}">
-              {% if provider.checking %}Checking {{ provider.name|title }}…{% else %}{{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}{% endif %}
-            </span>
-          {% endfor %}
-        </div>
         {% include "_usage_badge.html" %}
       </section>
       {% include "_agent_sidebar.html" %}
