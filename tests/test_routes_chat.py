@@ -1465,7 +1465,10 @@ def test_chat_prompt_rereads_codex_quota_once_for_the_provider_it_spends(
     # carries the refreshed badge out of band.
     assert 'id="usage-badge"' in codex_run.text
     assert 'hx-swap-oob="outerHTML"' in codex_run.text
-    assert "5h: 36% remaining" in codex_run.text
+    codex_row = codex_run.text.split('data-provider="codex"', 1)[1].split(
+        "</tr>", 1
+    )[0]
+    assert 'data-window="five_hour">36% remaining' in codex_row
 
 
 def test_session_view_prompt_carries_no_out_of_band_usage_badge(
