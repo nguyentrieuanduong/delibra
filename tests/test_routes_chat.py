@@ -1763,3 +1763,24 @@ def test_the_composer_refuses_a_send_to_an_agent_that_is_already_running(
         assert "data-auto-disabled" not in control
 
     assert f'data-session-id="{alpha.id}"' in busy_composer
+
+
+def test_agent_card_status_and_preview_are_addressable_but_not_out_of_band(
+    tmp_path: Path,
+) -> None:
+    # Later refreshes target these two ids. On a full page render they must
+    # carry no hx-swap-oob: htmx applies OOB attributes found anywhere in a
+    # swapped fragment, so a stray one would relocate the card.
+    alpha = session("a" * 32, "Alpha", rounds=[record(1, "2026-01-01T00:00:01Z")])
+    beta = session("b" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+
+    assert f'id="agent-status-{alpha.id}"' in page.text
+    assert f'id="agent-preview-{alpha.id}"' in page.text
+    assert 'data-agent-status="idle"' in page.text
+    assert "Latest round 1" in page.text
+    assert "Answer Alpha" in page.text
+    assert "hx-swap-oob" not in page.text
