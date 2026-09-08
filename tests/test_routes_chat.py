@@ -141,6 +141,17 @@ def session(
     )
 
 
+def composer_form(html: str) -> str:
+    """The composer markup alone.
+
+    The sidebar's create-agent form contains a textarea too, and it is rendered
+    first, so an unscoped search matches the wrong control.
+    """
+    match = re.search(r'<form\s+id="chat-composer".*?</form>', html, re.S)
+    assert match is not None, "chat page rendered no composer"
+    return match.group()
+
+
 def setup_project(
     tmp_path: Path,
     sessions: list[SessionConfig],
@@ -358,7 +369,7 @@ def test_chat_empty_project_has_an_explicit_empty_timeline(tmp_path: Path) -> No
     )
 
 
-def test_active_auto_puts_the_message_textarea_in_the_disable_lifecycle(
+def test_active_auto_blocks_composer_without_auto_ownership_markers(
     tmp_path: Path,
     reserve_auto_run,
 ) -> None:
@@ -367,13 +378,29 @@ def test_active_auto_puts_the_message_textarea_in_the_disable_lifecycle(
     app, project, store = setup_project(tmp_path, [alpha, beta])
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store)
-        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
-    assert response.status_code == 200
-    assert 'data-auto-active="true"' in response.text
-    assert re.search(
-        r'<textarea name="prompt"[^>]+data-disable-during-auto[^>]+disabled',
-        response.text,
+        response = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+
+    composer = composer_form(response.text)
+    textarea = re.search(r'<textarea name="prompt"[^>]*>', composer)
+    send = re.search(
+        r'<button[^>]*type="submit"[^>]*>\s*Send</button>', composer
     )
+    auto = re.search(r'<button[^>]*data-auto-open[^>]*>', composer)
+    assert textarea is not None
+    assert send is not None
+    assert auto is not None
+    assert 'data-auto-active="true"' in response.text
+
+    for control in (textarea.group(), send.group()):
+        assert "disabled" in control
+        assert "data-composer-send" in control
+        assert "data-disable-during-auto" not in control
+        assert "data-auto-disabled" not in control
+
+    # The Auto button remains in syncAutoDisabledControls' ownership domain.
+    assert "disabled" in auto.group()
+    assert "data-disable-during-auto" in auto.group()
+    assert 'data-auto-disabled="true"' in auto.group()
 
 
 def test_timeline_reuses_projection_auto_numbers_and_degrades_unmapped(
@@ -871,8 +898,10 @@ def test_round_focus_fragment_is_static_and_keeps_complete_dom_ids_unique(
     ):
         assert forbidden not in focused.text
     assert f'id="round-{beta.id}-1"' not in focused.text
-    page_ids = re.findall(r'\bid="([^"]+)"', page.text)
-    focus_ids = re.findall(r'\bid="([^"]+)"', focused.text)
+    # A real id attribute is never preceded by "-" or a word character, so this
+    # skips data-session-id and data-auto-id, whose values repeat by design.
+    page_ids = re.findall(r'(?<![-\w])id="([^"]+)"', page.text)
+    focus_ids = re.findall(r'(?<![-\w])id="([^"]+)"', focused.text)
     combined_ids = page_ids + focus_ids
     assert len(combined_ids) == len(set(combined_ids))
     for rendered in (page.text, focused.text):
@@ -1667,3 +1696,54 @@ def test_a_compaction_round_is_labelled_as_one(
     assert provenance is not None
     assert "Auto compaction" in provenance.group(1)
     assert "discussion cycle" not in provenance.group(1)
+
+
+def test_the_composer_refuses_a_send_to_an_agent_that_is_already_running(
+    tmp_path: Path,
+) -> None:
+    # The runner answers 409 "session already has a running agent" for a busy
+    # agent. Rendering an enabled Send is what turned that into a dead end
+    # after an Auto run whose last turn was still finishing.
+    alpha = session("a" * 32, "Alpha")
+    beta = session("b" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        # Inside the lifespan: startup reconciliation rewrites a session left
+        # "running" to "error" (app/main.py:131), because at boot that can only
+        # mean a crashed process. Marking it busy earlier would be erased.
+        busy = store.load_session(alpha.id)
+        busy.status = "running"
+        store.save_session(busy)
+        running = client.get(f"/projects/{project.id}/chat?agent={alpha.id}")
+        available = client.get(f"/projects/{project.id}/chat?agent={beta.id}")
+
+    busy_composer = composer_form(running.text)
+    idle_composer = composer_form(available.text)
+    busy_textarea = re.search(r'<textarea name="prompt"[^>]*>', busy_composer)
+    busy_send = re.search(
+        r'<button[^>]*type="submit"[^>]*disabled[^>]*>\s*Send</button>',
+        busy_composer,
+    )
+    idle_textarea = re.search(r'<textarea name="prompt"[^>]*>', idle_composer)
+    idle_send = re.search(
+        r'<button[^>]*type="submit"[^>]*>\s*Send</button>', idle_composer
+    )
+    assert busy_textarea is not None
+    assert busy_send is not None
+    assert idle_textarea is not None
+    assert idle_send is not None
+
+    for control in (busy_textarea.group(), busy_send.group()):
+        assert "disabled" in control
+        assert "data-composer-send" in control
+        assert "data-disable-during-auto" not in control
+        assert "data-auto-disabled" not in control
+
+    for control in (idle_textarea.group(), idle_send.group()):
+        assert "disabled" not in control
+        assert "data-composer-send" in control
+        assert "data-disable-during-auto" not in control
+        assert "data-auto-disabled" not in control
+
+    assert f'data-session-id="{alpha.id}"' in busy_composer
