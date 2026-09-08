@@ -276,8 +276,12 @@ def _resume_context(
     return {
         "auto_resumable": resumable,
         "quota_resume": quota_resume,
-        "resume_min_cycles": max(cursor.current_cycle, 1) if resumable else None,
-        "resume_max_cycles": AUTO_MAX_LIFETIME_CYCLES,
+        "resume_cycle": max(cursor.current_cycle, 1) if resumable else None,
+        "resume_max_additional_cycles": (
+            AUTO_MAX_LIFETIME_CYCLES - max(cursor.current_cycle, 1) + 1
+            if resumable
+            else None
+        ),
         "resume_turn_timeout_seconds": record.future_turn_timeout_seconds,
         "max_turn_timeout_seconds": request.app.state.settings.max_run_timeout,
     }
@@ -624,12 +628,28 @@ async def resume_auto(
     request: Request,
     project_id: str,
     auto_id: str,
-    max_cycles: int = Form(...),
+    additional_cycles: int = Form(...),
     turn_timeout_seconds: int = Form(...),
 ) -> HTMLResponse:
     project = request_project(request, project_id)
     resolved_project_id = project.id
     record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    # The form asks for cycles to add; the manager stores a cumulative limit.
+    # Translate here so the two never have to mean the same number.
+    cursor = reconstruct_resume_cursor(record)
+    resume_cycle = max(cursor.current_cycle, 1)
+    if resume_cycle > AUTO_MAX_LIFETIME_CYCLES:
+        raise StorageError(
+            "Auto run reached the lifetime cycle limit of "
+            f"{AUTO_MAX_LIFETIME_CYCLES} and cannot continue"
+        )
+    max_additional_cycles = AUTO_MAX_LIFETIME_CYCLES - resume_cycle + 1
+    if not 1 <= additional_cycles <= max_additional_cycles:
+        raise StorageError(
+            "Additional Auto cycles must be from 1 through "
+            f"{max_additional_cycles} to continue this run"
+        )
+    max_cycles = resume_cycle + additional_cycles - 1
     record = await request.app.state.auto_manager.resume(
         resolved_project_id,
         record.id,
