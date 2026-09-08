@@ -34,15 +34,22 @@ textarea { min-height: 7rem; }
   margin: .5rem 0;
   padding-left: .5rem;
 }
-.usage-badge { display: flex; flex-wrap: wrap; font-size: .85rem; gap: .5rem; }
+.usage-badge { font-size: .85rem; }
 .usage-badge.warn { color: #b47b20; }
 .usage-badge.paused { color: #c43b2f; font-weight: 600; }
+.usage-table { border-collapse: collapse; font-size: .75rem; width: auto; }
+.usage-table caption { text-align: left; opacity: .7; padding-bottom: .15rem; }
+.usage-table th, .usage-table td {
+  border: 1px solid #8885;
+  padding: .05rem .25rem;
+  text-align: left;
+  vertical-align: top;
+}
+.usage-table thead th { font-weight: 600; opacity: .7; }
+.usage-table tbody th { font-weight: 600; white-space: nowrap; }
 .usage-window.warning { color: #b47b20; }
 .usage-window.pause { color: #c43b2f; font-weight: 600; }
 .usage-window.unknown { opacity: .7; }
-/* A capability the provider does not have is an aside, not a warning: it will
-   never change, and nothing is wrong with Delibra when it shows. */
-.usage-gap { opacity: .7; font-style: italic; }
 .health { font-size: .85rem; }
 .chat-workspace {
   display: grid;
