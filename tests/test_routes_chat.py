@@ -1818,3 +1818,47 @@ def test_a_completed_round_refreshes_its_agent_card_out_of_band(
     assert "usage-badge" not in chat_fragment.text
     # The session page has no sidebar to refresh.
     assert "hx-swap-oob" not in plain_fragment.text
+
+
+def test_starting_a_run_marks_its_agent_busy_out_of_band(
+    tmp_path: Path,
+) -> None:
+    # Starting a run persists status="running" (app/runner.py:828) before this
+    # response renders. Without the OOB card the sidebar still reads "idle",
+    # the composer stays enabled, and the next send hits the 409 below.
+    alpha = session("a" * 32, "Alpha", mode="sleep")
+    beta = session("b" * 32, "Beta")
+    app, project, _ = setup_project(tmp_path, [alpha, beta])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        started = client.post(
+            f"/projects/{project.id}/chat/run",
+            data={"session_id": alpha.id, "prompt": "first"},
+        )
+        second = client.post(
+            f"/projects/{project.id}/chat/run",
+            data={"session_id": alpha.id, "prompt": "second"},
+        )
+        session_run = client.post(
+            f"/projects/{project.id}/sessions/{beta.id}/run",
+            data={"prompt": "beta"},
+        )
+        client.post(f"/projects/{project.id}/sessions/{alpha.id}/cancel")
+        client.post(f"/projects/{project.id}/sessions/{beta.id}/cancel")
+
+    assert started.status_code == 202
+    assert re.search(
+        rf'id="agent-status-{alpha.id}"\s+'
+        rf'data-agent-status="running"\s+hx-swap-oob="outerHTML"',
+        started.text,
+    )
+    assert re.search(
+        rf'id="agent-preview-{alpha.id}"\s+hx-swap-oob="outerHTML"',
+        started.text,
+    )
+    # The invariant the card exists to respect.
+    assert second.status_code == 409
+    assert "session already has a running agent" in second.text
+    # The session page has no sidebar; its run response must stay unchanged.
+    assert session_run.status_code == 202
+    assert "hx-swap-oob" not in session_run.text
