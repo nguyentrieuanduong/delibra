@@ -21,7 +21,7 @@ from app.storage import (
     validate_id,
 )
 from app.urls import project_url
-from app.views import round_views
+from app.views import agent_views, round_views
 
 
 router = APIRouter()
@@ -316,6 +316,11 @@ async def round_fragment(
     )
     if view is None:
         raise NotFoundError(f"round not found: {round_n}")
+    chat_view = display == "chat"
+    # Only the chat view has a sidebar to refresh; the session page does not.
+    # Project only the affected card: agent_views reads each supplied session's
+    # latest output artifact, so passing every session adds unrelated I/O.
+    card = agent_views(store, [session], None)[0] if chat_view else None
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_round.html",
@@ -325,7 +330,9 @@ async def round_fragment(
             "session_id": session_id,
             "round": view,
             "sessions": sessions,
-            "chat_view": display == "chat",
+            "chat_view": chat_view,
+            "agent_card_oob": chat_view,
+            "agent_view": card,
             "auto_active": store.active_auto_run_id() is not None,
             "pass_prompt_template": store.effective_pass_prompt_template(),
         },
