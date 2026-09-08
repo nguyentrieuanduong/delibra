@@ -5,6 +5,7 @@
   hx-post="{{ project_url(project.name, '/chat/run') }}"
   hx-target=".chat-timeline"
   hx-swap="beforeend"
+  data-session-id="{{ selected_session.id if selected_session else '' }}"
   {% if composer_oob %}hx-swap-oob="outerHTML:#chat-composer"{% endif %}
 >
   {% if selected_session %}
@@ -14,14 +15,13 @@
     </p>
   {% endif %}
   <label>Message
-    <textarea name="prompt" maxlength="100000" required data-disable-during-auto{% if not selected_session or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}></textarea>
+    <textarea name="prompt" maxlength="100000" required data-composer-send{% if not selected_session or auto_active or selected_session.status == 'running' %} disabled{% endif %}></textarea>
   </label>
   <div class="composer-actions">
     <button
       type="submit"
-      data-disable-during-auto
-      {% if not selected_session or auto_active %}disabled{% endif %}
-      {% if auto_active %}data-auto-disabled="true"{% endif %}
+      data-composer-send
+      {% if not selected_session or auto_active or selected_session.status == 'running' %}disabled{% endif %}
     >Send</button>
     <button
       type="button"
