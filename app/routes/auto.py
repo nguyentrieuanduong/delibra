@@ -29,7 +29,7 @@ from app.project_routing import request_project
 from app.security import validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
 from app.urls import project_url
-from app.views import auto_run_usage
+from app.views import agent_views, auto_run_usage
 
 
 router = APIRouter()
@@ -341,6 +341,27 @@ def _durable_topic(
     return None
 
 
+def _participant_cards(
+    store: ProjectStore,
+    record: AutoRunRecord,
+) -> list[dict]:
+    """Card fields for this run's participants, for out-of-band refresh.
+
+    Empty while the run is live: the cards are refreshed turn by turn from the
+    round fragments, and a mid-run swap would only repeat what those did.
+    """
+
+    if record.status in ACTIVE_AUTO_STATUSES:
+        return []
+    participant_ids = {item.session_id for item in record.participants}
+    participants = [
+        session
+        for session in store.list_sessions()
+        if session.id in participant_ids
+    ]
+    return agent_views(store, participants, None)
+
+
 def auto_status_context(
     request: Request,
     project_id: str,
@@ -349,6 +370,7 @@ def auto_status_context(
     clear_setup: bool = False,
     refresh_history_index: bool = False,
     refresh_history_status: bool = False,
+    refresh_agent_cards: bool = False,
 ) -> dict:
     project = request_project(request, project_id)
     store = ProjectStore(project)
@@ -383,6 +405,9 @@ def auto_status_context(
             else None
         ),
         "auto_history_status_oob": refresh_history_status,
+        "auto_agent_cards": (
+            _participant_cards(store, record) if refresh_agent_cards else []
+        ),
     }
 
 
@@ -405,6 +430,7 @@ def _status_response(
             clear_setup=clear_setup,
             refresh_history_index=refresh_history_index,
             refresh_history_status=not refresh_history_index,
+            refresh_agent_cards=True,
         ),
         status_code=status_code,
     )
