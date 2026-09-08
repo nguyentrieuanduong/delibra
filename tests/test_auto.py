@@ -20,6 +20,7 @@ from app.auto import (
     compaction_cooldown_target,
     AUTO_MAX_LIFETIME_CYCLES,
     AutoManager,
+    AutoStatusEvent,
     ContextEntry,
     ResumeCursor,
     parse_auto_verdict,
@@ -883,6 +884,53 @@ async def test_auto_manager_skips_preparation_and_clears_native_sessions(
     discussion = store.load_session(session_ids[0]).rounds[-1]
     assert discussion.auto is not None
     assert discussion.auto.phase == "discussion"
+
+
+@pytest.mark.asyncio
+async def test_auto_manager_publishes_each_discussion_round_when_it_starts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("First response", "continue"),
+            PlannedOutput("Second response", sleep=True),
+        ],
+    )
+    published_active_keys: list[RunKey] = []
+    both_rounds_published = asyncio.Event()
+    publish_status = manager._publish_status
+
+    def capture_active_key(record: AutoRunRecord) -> AutoStatusEvent:
+        if record.active_key is not None:
+            published_active_keys.append(record.active_key)
+            if len(published_active_keys) == 2:
+                both_rounds_published.set()
+        return publish_status(record)
+
+    monkeypatch.setattr(manager, "_publish_status", capture_active_key)
+    created = await manager.create(
+        project_id,
+        topic="Live round notifications",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+        turn_timeout_seconds=120,
+    )
+
+    try:
+        # The longer turn timeout keeps the held round active through this
+        # wait, so cleanup can still stop its reservation on the RED path.
+        await asyncio.wait_for(both_rounds_published.wait(), timeout=3)
+
+        assert published_active_keys == [
+            RunKey(project_id, session_ids[0], 1),
+            RunKey(project_id, session_ids[1], 1),
+        ]
+    finally:
+        await manager.stop(project_id, created.id)
 
 
 @pytest.mark.asyncio
@@ -4067,30 +4115,40 @@ async def test_auto_stop_bounds_active_key_churn(
         agreement_policy="all_agree",
         max_cycles=1,
     )
-    active_key = await wait_for_active_auto_key(
-        manager,
-        project_id,
-        created.id,
-    )
-    original_load = ProjectStore.load_auto_run
-    load_calls = 0
-
-    def churning_load(self: ProjectStore, auto_id: str) -> AutoRunRecord:
-        nonlocal load_calls
-        record = original_load(self, auto_id)
-        if auto_id != created.id:
-            return record
-        load_calls += 1
-        return replace(
-            record,
-            active_key=RunKey(
-                active_key.project_id,
-                active_key.session_id,
-                active_key.round_n + (load_calls % 2),
-            ),
-        )
-
     try:
+        start_events = manager.subscribe(
+            project_id,
+            created.id,
+            last_event_id=1,
+        )
+        try:
+            started = await asyncio.wait_for(anext(start_events), timeout=1)
+        finally:
+            await start_events.aclose()
+        assert started.event_id == 2
+        active_key = await wait_for_active_auto_key(
+            manager,
+            project_id,
+            created.id,
+        )
+        original_load = ProjectStore.load_auto_run
+        load_calls = 0
+
+        def churning_load(self: ProjectStore, auto_id: str) -> AutoRunRecord:
+            nonlocal load_calls
+            record = original_load(self, auto_id)
+            if auto_id != created.id:
+                return record
+            load_calls += 1
+            return replace(
+                record,
+                active_key=RunKey(
+                    active_key.project_id,
+                    active_key.session_id,
+                    active_key.round_n + (load_calls % 2),
+                ),
+            )
+
         with monkeypatch.context() as patch:
             patch.setattr(ProjectStore, "load_auto_run", churning_load)
             with pytest.raises(StorageError, match="^stop timed out$"):
