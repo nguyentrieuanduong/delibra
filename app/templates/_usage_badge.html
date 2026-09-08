@@ -14,28 +14,38 @@
   {% if durability_warning|default(none) is not none %}
     <span class="usage-durability notice" role="status">{{ durability_warning }}</span>
   {% endif %}
-  {% for provider in providers|default([]) %}
-    <span class="usage-provider" data-provider="{{ provider.name }}">
-      <strong>{{ provider.label }}</strong>
-      {% if provider.percentage_gap is not none %}
-        {# A provider that cannot report a percentage says so once, rather than
-           letting each window read like data Delibra failed to collect. #}
-        <span class="usage-gap">{{ provider.percentage_gap }}</span>
-      {% endif %}
-      {% for window in provider.windows %}
-        <span class="usage-window {{ window.verdict }}">{{ window.label }}:{% if window.observation is none %} unknown{% elif window.remaining_percent is not none %} {{ window.remaining_percent }}% remaining{% else %}
-            unavailable (status {{ window.observation.status }};
-            {% if window.observation.resets_at is not none %}
-              resets
-              <time datetime="{{ window.observation.resets_at.isoformat() }}">
-                {{ window.observation.resets_at.strftime('%Y-%m-%d %H:%M UTC') }}
-              </time>
-            {% else %}
-              reset unknown
-            {% endif %})
-          {% endif %}
-        </span>
+  <table class="usage-table">
+    <caption>Account quota</caption>
+    <thead>
+      <tr>
+        <th scope="col">Provider</th>
+        {% for label in window_labels|default([]) %}
+          <th scope="col">{{ label }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for provider in providers|default([]) %}
+        <tr data-provider="{{ provider.name }}">
+          <th scope="row">{{ provider.label }}</th>
+          {% for window in provider.windows %}
+            <td class="usage-window {{ window.verdict }}" data-window="{{ window.key }}">
+              {%- if window.observation is none %}unknown
+              {%- elif window.remaining_percent is not none %}{{ window.remaining_percent }}% remaining
+              {%- else %}unavailable (status {{ window.observation.status }};
+                {% if window.observation.resets_at is not none %}
+                  resets
+                  <time datetime="{{ window.observation.resets_at.isoformat() }}">
+                    {{ window.observation.resets_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                  </time>
+                {% else %}
+                  reset unknown
+                {% endif %})
+              {%- endif %}
+            </td>
+          {% endfor %}
+        </tr>
       {% endfor %}
-    </span>
-  {% endfor %}
+    </tbody>
+  </table>
 </section>

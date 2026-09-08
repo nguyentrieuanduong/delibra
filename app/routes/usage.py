@@ -13,14 +13,9 @@ from app.usage import USAGE_PERSISTENCE_WARNING, quota_verdict
 router = APIRouter()
 
 _PROVIDERS = ("claude", "codex")
-_WINDOWS = (("five_hour", "5h"), ("seven_day", "weekly"))
-# Which providers can report a quota percentage at all. Claude cannot: `-p`
-# mode carries no percentage for either window, measured in Phase 0 and again
-# on the installed CLI in Phase 8, and `/usage` in `-p` mode returns prose with
-# no figure. That is a permanent capability gap, not missing data, and the
-# badge must not spell the two the same way (8a).
-_PERCENTAGE_PROVIDERS = frozenset({"codex"})
-PERCENTAGE_GAP_NOTICE = "status only — no percentage available"
+# One row per provider, one column per window. The labels live here rather than
+# in the template so the header and the cells cannot drift apart.
+_WINDOWS = (("five_hour", "5-hour limit"), ("seven_day", "Weekly limit"))
 _VERDICT_STRENGTH = {"unknown": 0, "ok": 1, "warning": 2, "pause": 3}
 
 
@@ -47,7 +42,7 @@ def usage_badge_context(request: Request, *, oob: bool = False) -> dict[str, Any
     low_quota = False
     for provider in _PROVIDERS:
         windows: list[dict[str, Any]] = []
-        for window, label in _WINDOWS:
+        for window, _ in _WINDOWS:
             observation = monitor.report(provider, window)
             verdict = quota_verdict(observation, settings=settings)
             remaining_percent = (
@@ -64,7 +59,7 @@ def usage_badge_context(request: Request, *, oob: bool = False) -> dict[str, Any
                 low_quota = True
             windows.append(
                 {
-                    "label": label,
+                    "key": window,
                     "observation": observation,
                     "remaining_percent": (
                         round(remaining_percent) if remaining_percent is not None else None
@@ -77,11 +72,6 @@ def usage_badge_context(request: Request, *, oob: bool = False) -> dict[str, Any
                 "name": provider,
                 "label": provider.title(),
                 "windows": windows,
-                "percentage_gap": (
-                    None
-                    if provider in _PERCENTAGE_PROVIDERS
-                    else PERCENTAGE_GAP_NOTICE
-                ),
             }
         )
     badge_state = {
@@ -92,6 +82,7 @@ def usage_badge_context(request: Request, *, oob: bool = False) -> dict[str, Any
     }[strongest_verdict]
     return {
         "providers": providers,
+        "window_labels": [label for _, label in _WINDOWS],
         "badge_state": badge_state,
         "durability_warning": (
             USAGE_PERSISTENCE_WARNING if monitor.durability_degraded else None

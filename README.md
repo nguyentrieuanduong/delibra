@@ -277,9 +277,9 @@ percentage.** Claude's `-p` mode carries no five-hour or weekly figure: its
 `rate_limit_event` reports a status and a reset time, `utilization` is absent
 unless the account is already warned or refused, and `claude -p "/usage"` returns
 prose with no percentage. Delibra therefore runs Claude on status alone —
-`allowed_warning` warns, `rejected` pauses — and the badge says *status only — no
-percentage available* rather than `unknown`, which is the word it reserves for a
-window it simply has not observed yet. A per-model weekly refusal
+`allowed_warning` warns, `rejected` pauses — and the table keeps its row label terse as **Claude**. An observed status and
+reset time remain visible in the applicable window cell; `unknown` remains
+reserved for a window not yet observed. A per-model weekly refusal
 (`seven_day_opus`, `seven_day_sonnet`) counts as a weekly refusal; `overageStatus`
 never reaches the policy, because it reports whether pay-as-you-go is available
 and reads `rejected` on perfectly healthy accounts.
