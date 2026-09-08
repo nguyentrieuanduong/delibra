@@ -8,6 +8,7 @@ const {
   formatRemainingSeconds,
   setTimeoutFormPending,
   syncAutoDisabledControls,
+  syncComposerAvailability,
   updateTimeoutCountdown,
 } = require("../../app/static/app.js");
 
@@ -133,4 +134,49 @@ test("copies a composer topic into an opted-in Auto setup using values only", fu
 
   assert.equal(copyAutoComposerTopic(setup), true);
   assert.equal(topic.value, composer.value);
+});
+
+test("the composer is blocked by Auto, by no selection, or by a busy agent", function () {
+  const sessionId = "a".repeat(32);
+  const textarea = { disabled: false, dataset: {} };
+  const send = { disabled: false, dataset: {} };
+  const autoStatus = { dataset: { autoActive: "false" } };
+  const agentStatus = { dataset: { agentStatus: "running" } };
+  const composer = {
+    dataset: { sessionId: sessionId },
+    querySelectorAll(selector) {
+      assert.equal(selector, "[data-composer-send]");
+      return [textarea, send];
+    },
+  };
+  const documentRoot = {
+    querySelector(selector) {
+      if (selector === "#chat-composer") return composer;
+      if (selector === "#auto-status") return autoStatus;
+      if (selector === `#agent-status-${sessionId}`) return agentStatus;
+      throw new Error(`unexpected selector ${selector}`);
+    },
+  };
+
+  // A running agent blocks the send even though Auto has finished.
+  assert.equal(syncComposerAvailability(documentRoot), true);
+  assert.equal(textarea.disabled, true);
+  assert.equal(send.disabled, true);
+
+  // The turn lands; the composer opens without being re-rendered.
+  agentStatus.dataset.agentStatus = "idle";
+  assert.equal(syncComposerAvailability(documentRoot), false);
+  assert.equal(textarea.disabled, false);
+  assert.equal(send.disabled, false);
+
+  // An active Auto run blocks it again.
+  autoStatus.dataset.autoActive = "true";
+  assert.equal(syncComposerAvailability(documentRoot), true);
+  assert.equal(textarea.disabled, true);
+
+  // So does having no agent selected at all.
+  autoStatus.dataset.autoActive = "false";
+  composer.dataset.sessionId = "";
+  assert.equal(syncComposerAvailability(documentRoot), true);
+  assert.equal(textarea.disabled, true);
 });
