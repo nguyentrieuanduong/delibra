@@ -1784,3 +1784,37 @@ def test_agent_card_status_and_preview_are_addressable_but_not_out_of_band(
     assert "Latest round 1" in page.text
     assert "Answer Alpha" in page.text
     assert "hx-swap-oob" not in page.text
+
+
+def test_a_completed_round_refreshes_its_agent_card_out_of_band(
+    tmp_path: Path,
+) -> None:
+    # sse:done fetches this fragment. Without the OOB fields the card keeps
+    # reading "running" until a full reload.
+    alpha = session("a" * 32, "Alpha", rounds=[record(1, "2026-01-01T00:00:01Z")])
+    beta = session("b" * 32, "Beta")
+    app, project, store = setup_project(tmp_path, [alpha, beta])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        chat_fragment = client.get(
+            f"/projects/{project.id}/sessions/{alpha.id}/rounds/1?view=chat"
+        )
+        plain_fragment = client.get(
+            f"/projects/{project.id}/sessions/{alpha.id}/rounds/1"
+        )
+
+    assert chat_fragment.status_code == 200
+    assert re.search(
+        rf'id="agent-status-{alpha.id}"\s+'
+        rf'data-agent-status="idle"\s+hx-swap-oob="outerHTML"',
+        chat_fragment.text,
+    )
+    assert re.search(
+        rf'id="agent-preview-{alpha.id}"\s+hx-swap-oob="outerHTML"',
+        chat_fragment.text,
+    )
+    assert "Answer Alpha" in chat_fragment.text
+    # The badge would schedule a Codex account read on every finished round.
+    assert "usage-badge" not in chat_fragment.text
+    # The session page has no sidebar to refresh.
+    assert "hx-swap-oob" not in plain_fragment.text
