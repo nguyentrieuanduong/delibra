@@ -10,6 +10,9 @@
     {% include "_auto_history_status.html" %}
   {% endwith %}
 {% endif %}
+{% for agent_view in auto_agent_cards|default([]) %}
+  {% include "_agent_card_oob.html" %}
+{% endfor %}
 <section
   id="auto-status"
   {# A quota pause keeps its terminal status but never the failure tier. #}

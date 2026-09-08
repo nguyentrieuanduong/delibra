@@ -1896,3 +1896,43 @@ def test_the_status_panel_states_the_policy_its_summary_and_its_warnings(
         assert "3 consecutive compaction failures" in text
     assert 'class="error"' not in status.text
 
+
+
+def test_a_terminal_auto_run_refreshes_participant_cards_out_of_band(
+    tmp_path: Path,
+) -> None:
+    # The SSE terminal event refetches this fragment. Without the OOB fields
+    # every participant card stays on "running" until a full reload.
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=["I agree with the plan."],
+    )
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(
+            client,
+            project.id,
+            [item.id for item in sessions],
+        )
+        assert started.status_code == 202
+        terminal = wait_for_auto(store, terminal=True)
+        fragment = client.get(
+            f"/projects/{project.id}/auto-runs/{terminal.number}"
+        )
+        page = client.get(f"/projects/{project.id}/chat")
+
+    assert fragment.status_code == 200
+    # Counting hx-swap-oob would also catch _auto_history_status.html, which
+    # _status_response refreshes too, so assert per element instead.
+    for participant in sessions:
+        assert re.search(
+            rf'id="agent-status-{participant.id}"\s+'
+            rf'data-agent-status="idle"\s+hx-swap-oob="outerHTML"',
+            fragment.text,
+        )
+        assert re.search(
+            rf'id="agent-preview-{participant.id}"\s+hx-swap-oob="outerHTML"',
+            fragment.text,
+        )
+    assert 'data-auto-active="false"' in fragment.text
+    # The full page render must not carry OOB attributes.
+    assert "hx-swap-oob" not in page.text
