@@ -1,0 +1,8 @@
+<div
+  id="agent-preview-{{ agent_view.session.id }}"
+  {% if agent_card_oob|default(false) %}hx-swap-oob="outerHTML"{% endif %}
+>
+  {% if agent_view.latest_round %}<p>Latest round {{ agent_view.latest_round }} · {{ agent_view.preview_status }}</p>{% endif %}
+  <p class="agent-preview {{ agent_view.preview_status }}">{{ agent_view.preview }}</p>
+  {% if agent_view.preview_error %}<p class="error">{{ agent_view.preview_error }}</p>{% endif %}
+</div>

@@ -16,7 +16,7 @@
         {% if agent_view.selected %}aria-current="true"{% endif %}
       >{{ agent.name }}</a>
     </h3>
-    <span>{{ agent.status }}</span>
+    {% with agent_card_oob=false %}{% include "_agent_status.html" %}{% endwith %}
   </div>
   <details{% if agent_view.selected %} open{% endif %} class="agent-details">
     <summary>Agent information</summary>
@@ -29,9 +29,7 @@
         <p class="role-instructions empty">No role instructions</p>
       {% endif %}
     </section>
-    {% if agent_view.latest_round %}<p>Latest round {{ agent_view.latest_round }} · {{ agent_view.preview_status }}</p>{% endif %}
-    <p class="agent-preview {{ agent_view.preview_status }}">{{ agent_view.preview }}</p>
-    {% if agent_view.preview_error %}<p class="error">{{ agent_view.preview_error }}</p>{% endif %}
+    {% with agent_card_oob=false %}{% include "_agent_preview.html" %}{% endwith %}
     <section class="agent-context" aria-label="Context">
       <h4>Context</h4>
       <p class="agent-context-occupancy">

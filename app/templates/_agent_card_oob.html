@@ -1,0 +1,6 @@
+{# Kept as siblings of the including fragment's root for readability. htmx
+   1.9.12 would honour them nested too, so this is style, not a requirement. #}
+{% with agent_card_oob=true %}
+{% include "_agent_status.html" %}
+{% include "_agent_preview.html" %}
+{% endwith %}
