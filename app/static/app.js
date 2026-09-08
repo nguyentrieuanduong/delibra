@@ -243,6 +243,33 @@ function syncAutoDisabledControls(documentRoot) {
   return active;
 }
 
+function syncComposerAvailability(documentRoot) {
+  if (!documentRoot || typeof documentRoot.querySelector !== "function") {
+    return false;
+  }
+  const composer = documentRoot.querySelector("#chat-composer");
+  if (!composer) {
+    return false;
+  }
+  const autoStatus = documentRoot.querySelector("#auto-status");
+  const autoActive = Boolean(
+    autoStatus && autoStatus.dataset.autoActive === "true"
+  );
+  const sessionId = composer.dataset.sessionId || "";
+  // The card is the only live record of whether that agent is mid-turn. It is
+  // refreshed at both ends of a run, so it is never behind the server for
+  // longer than one swap.
+  const card = sessionId
+    ? documentRoot.querySelector(`#agent-status-${sessionId}`)
+    : null;
+  const agentBusy = Boolean(card && card.dataset.agentStatus === "running");
+  const blocked = autoActive || !sessionId || agentBusy;
+  composer.querySelectorAll("[data-composer-send]").forEach(function (control) {
+    control.disabled = blocked;
+  });
+  return blocked;
+}
+
 function setTimeoutFormPending(form, pending) {
   if (!form || typeof form.querySelectorAll !== "function") {
     return false;
@@ -294,6 +321,9 @@ function initializeDynamicPresentation(root) {
   }
   const documentRoot = root && root.ownerDocument ? root.ownerDocument : root;
   syncAutoDisabledControls(documentRoot);
+  // Runs second and unconditionally: it owns [data-composer-send] outright,
+  // so it is not fighting the marker bookkeeping above.
+  syncComposerAvailability(documentRoot);
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -315,6 +345,7 @@ if (typeof module !== "undefined" && module.exports) {
     shouldClearChatError,
     syncConversationDisclosure,
     syncAutoDisabledControls,
+    syncComposerAvailability,
     updateTimeoutCountdown,
   };
 }

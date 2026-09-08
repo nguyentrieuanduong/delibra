@@ -1661,6 +1661,22 @@ def test_chat_error_javascript_contract_runs_under_node() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_auto_timeout_javascript_contract_runs_under_node() -> None:
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+
+        pytest.skip("Node unavailable; Auto timeout unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_auto_timeout.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_a_compaction_round_is_labelled_as_one(
     tmp_path: Path,
     reserve_auto_run,
