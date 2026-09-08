@@ -341,16 +341,19 @@ it was parked on, so the cycle counter continues rather than restarting.
 Resume rejects an inconsistent record rather than repairing it, and refuses a run
 whose reconstructed cycle would pass the lifetime cap of 100 cycles.
 
-The cycle limit and the per-turn time limit are editable on resume; the cycle
-limit is bounded below by the reconstructed cycle, so an unchanged limit cannot
-start a cycle beyond it. Participant name and provider are immutable and a drift
+The per-turn time limit and the number of **additional discussion cycles** are
+editable on resume. The reconstructed discussion cycle counts as the first
+additional cycle, so entering 1 runs through that cycle. The route converts
+the delta to the cumulative `max_cycles` stored on the run and its resumption
+audit record. Participant name and provider are immutable and a drift
 is rejected, while model and effort are refreshed from the live agent
 configuration. Every artifact the next turn will read — topic, preparations,
 baseline, prior discussion outputs, and shared context — is digest-verified
 before the run restarts. Each grant is recorded durably in `resumptions`.
 
-A creation-time cap of 20 cycles still applies to the setup box; persistence and
-resume admit up to 100, because a run that ends at cycle 20 reconstructs to 21.
+A creation-time cap of 20 cycles still applies to the setup box. Continue Auto
+offers from 1 through the remaining lifetime allowance; persistence retains
+cumulative limits up to 100.
 
 When quota preflight pauses Auto, **Continue Auto** shows the responsible provider
 window, the observation and reset time before accepting the click. Continuing

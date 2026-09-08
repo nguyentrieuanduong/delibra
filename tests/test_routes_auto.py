@@ -721,16 +721,16 @@ def test_auto_resume_route_continues_the_run_and_offers_the_control(
         status = client.get(f"{base}/auto-runs/{record.number}")
         resumed = client.post(
             f"{base}/auto-runs/{record.number}/resume",
-            data={"max_cycles": "2", "turn_timeout_seconds": "120"},
+            data={"additional_cycles": "1", "turn_timeout_seconds": "120"},
         )
         final = wait_for_auto(store, terminal=True)
 
     assert started.status_code == 202
     # The control is offered on a terminal run with no Auto active project-wide,
-    # bounded by the reconstructed cycle rather than 1..20.
+    # asking for cycles to add rather than for a cumulative limit to restate.
     assert "Continue Auto" in status.text
     assert re.search(
-        r'name="max_cycles"[^>]*min="2"[^>]*max="100"[^>]*value="2"',
+        r'name="additional_cycles"[^>]*min="1"[^>]*max="99"[^>]*value="1"',
         status.text,
     )
     assert resumed.status_code == 202
@@ -739,6 +739,63 @@ def test_auto_resume_route_continues_the_run_and_offers_the_control(
     assert reloaded.future_turn_timeout_seconds == 120
     assert len(reloaded.resumptions) == 1
     assert final.current_cycle >= 2
+
+
+def test_auto_resume_route_accepts_the_remaining_lifetime_allowance(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, factory = auto_route_app(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [s.id for s in sessions], cycles=1)
+        record = wait_for_auto(store, terminal=True)
+        factory.sleep = True
+        accepted = client.post(
+            f"{base}/auto-runs/{record.number}/resume",
+            data={"additional_cycles": "99", "turn_timeout_seconds": "120"},
+        )
+        reloaded = store.load_auto_run(record.id)
+        stopped = client.post(f"{base}/auto-runs/{record.number}/stop")
+        terminal = wait_for_auto(store, terminal=True)
+
+    assert accepted.status_code == 202
+    assert stopped.status_code == 200
+    assert terminal.status == "stopped"
+    assert reloaded.max_cycles == 100
+    assert reloaded.resumptions[-1].max_cycles == 100
+
+
+def test_auto_resume_route_counts_a_preparation_failure_from_cycle_one(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    app, _, project, store, _, _ = auto_route_app(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}"
+    record = finish_reserved_auto(
+        store,
+        reserve_auto_run(store),
+        status="stopped",
+        preparation_enabled=True,
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        status = client.get(f"{base}/auto-runs/{record.number}")
+        resumed = client.post(
+            f"{base}/auto-runs/{record.number}/resume",
+            data={"additional_cycles": "1", "turn_timeout_seconds": "120"},
+        )
+        final = wait_for_auto(store, terminal=True)
+
+    # A run that never reached discussion resumes counting at cycle 1, so the
+    # whole lifetime allowance is still on offer.
+    assert re.search(
+        r'name="additional_cycles"[^>]*min="1"[^>]*max="100"[^>]*value="1"',
+        status.text,
+    )
+    assert resumed.status_code == 202
+    assert final.max_cycles == 1
+    assert final.current_cycle == 1
 
 
 def test_quota_paused_continue_discloses_the_window_and_spending_choice(
@@ -804,8 +861,10 @@ def test_a_run_that_failed_without_quota_keeps_the_plain_status_class(
     assert "quota-paused" not in status.text
 
 
-def test_auto_resume_route_rejects_a_cycle_limit_below_the_parked_cycle(
+@pytest.mark.parametrize("additional_cycles", ["0", "100"])
+def test_auto_resume_route_rejects_an_invalid_additional_cycle_count(
     tmp_path: Path,
+    additional_cycles: str,
 ) -> None:
     app, _, project, store, sessions, _ = auto_route_app(tmp_path)
     base = f"/projects/{quote(project.name, safe='')}"
@@ -815,7 +874,10 @@ def test_auto_resume_route_rejects_a_cycle_limit_below_the_parked_cycle(
         record = wait_for_auto(store, terminal=True)
         rejected = client.post(
             f"{base}/auto-runs/{record.number}/resume",
-            data={"max_cycles": "1", "turn_timeout_seconds": "120"},
+            data={
+                "additional_cycles": additional_cycles,
+                "turn_timeout_seconds": "120",
+            },
         )
 
     assert rejected.status_code == 422

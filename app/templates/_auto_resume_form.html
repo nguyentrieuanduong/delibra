@@ -30,13 +30,13 @@
         </p>
       </div>
     {% endif %}
-    <label>Maximum discussion cycles
+    <label>Additional discussion cycles
       <input
-        name="max_cycles"
+        name="additional_cycles"
         type="number"
-        min="{{ resume_min_cycles }}"
-        max="{{ resume_max_cycles }}"
-        value="{{ resume_min_cycles }}"
+        min="1"
+        max="{{ resume_max_additional_cycles }}"
+        value="1"
         required
       >
     </label>
@@ -51,8 +51,8 @@
       >
     </label>
     <p class="hint">
-      Continues from cycle {{ resume_min_cycles }}, on the participant that was
-      next to speak. The cycle counter continues rather than restarting.
+      Continues at discussion cycle {{ resume_cycle }}. One additional cycle runs
+      through cycle {{ resume_cycle }}.
     </p>
     <button type="submit">{% if quota_resume|default(none) is not none %}Continue and spend quota{% else %}Continue Auto{% endif %}</button>
   </form>
