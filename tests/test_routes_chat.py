@@ -16,6 +16,7 @@ from httpx import Response
 
 from app.agents.base import AgentEvent, Command, RunContext
 from app.config import Settings
+from app.health import ProviderHealth
 from app.main import create_app
 from app.models import (
     AutoRoundDescriptor,
@@ -653,6 +654,43 @@ def test_chat_uses_compact_composer_and_wider_agent_rail(
         ".workspace-agents :is(input, select, textarea, button) { font: inherit; }"
         in css.text
     )
+
+
+def test_chat_topic_header_omits_provider_app_versions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_health = [
+        ProviderHealth(
+            "claude", "claude", True, "2.1.202 (Claude Code)", None
+        ),
+        ProviderHealth("codex", "codex", True, "codex-cli 0.153.4", None),
+    ]
+
+    async def deterministic_probe_all(
+        _commands: dict[str, str],
+    ) -> list[ProviderHealth]:
+        return provider_health
+
+    monkeypatch.setattr("app.main.probe_all", deterministic_probe_all)
+    alpha = session("a" * 32, "Alpha", agent="claude")
+    app, project, _ = setup_project(tmp_path, [alpha])
+    with TestClient(app, base_url="http://localhost") as client:
+        app.state.health = provider_health
+        response = client.get(f"/projects/{project.name}/chat")
+        stylesheet = client.get("/static/app.css")
+
+    topic_header = response.text.split('class="workspace-topic"', 1)[1].split(
+        "</section>", 1
+    )[0]
+    footer = response.text.split("<footer>", 1)[1].split("</footer>", 1)[0]
+    assert 'class="topic-health"' not in topic_header
+    assert "2.1.202 (Claude Code)" not in topic_header
+    assert "codex-cli 0.153.4" not in topic_header
+    assert 'id="usage-badge"' in topic_header
+    assert "2.1.202 (Claude Code)" in footer
+    assert "codex-cli 0.153.4" in footer
+    assert ".topic-health" not in stylesheet.text
 
 
 def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> None:
@@ -1629,4 +1667,3 @@ def test_a_compaction_round_is_labelled_as_one(
     assert provenance is not None
     assert "Auto compaction" in provenance.group(1)
     assert "discussion cycle" not in provenance.group(1)
-

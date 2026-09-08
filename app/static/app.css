@@ -65,13 +65,6 @@ textarea { min-height: 7rem; }
 }
 .workspace-topic h1, .workspace-topic p { margin: .1rem 0; }
 .project-path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
-.topic-health {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: .35rem;
-  text-align: left;
-}
 .workspace-files {
   display: grid;
   gap: .75rem;
