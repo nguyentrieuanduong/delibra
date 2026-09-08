@@ -17,7 +17,7 @@ from app.project_routing import request_project
 from app.routes.usage import usage_badge_context
 from app.security import validate_field, validate_pass_prompt_template_field
 from app.storage import ConflictError, NotFoundError, ProjectStore, validate_id
-from app.views import round_dom_id
+from app.views import agent_views, round_dom_id
 
 
 router = APIRouter()
@@ -159,7 +159,13 @@ async def start_run_fragment(
 ):
     key = await request.app.state.manager.start(project_id, session_id, prompt)
     project = request.app.state.registry.get(project_id)
-    session = ProjectStore(project).load_session(session_id)
+    store = ProjectStore(project)
+    session = store.load_session(session_id)
+    # The start already persisted status="running"; the sidebar must say so
+    # before the operator can type a second prompt into an enabled composer.
+    # Project only the affected card: agent_views reads each supplied session's
+    # latest output artifact, so passing every session adds unrelated I/O.
+    card = agent_views(store, [session], None)[0] if chat_view else None
     # Starting the run re-read the provider's quota (5g); the chat view is the
     # only page carrying `#usage-badge`, so only it gets the refreshed badge
     # back out of band.
@@ -173,6 +179,8 @@ async def start_run_fragment(
             "session": session,
             "dom_id": round_dom_id(session_id, key.round_n),
             "chat_view": chat_view,
+            "agent_card_oob": chat_view,
+            "agent_view": card,
             **badge,
         },
         status_code=202,
