@@ -4108,6 +4108,20 @@ async def test_auto_stop_bounds_active_key_churn(
             PlannedOutput("must not run"),
         ],
     )
+    round_started = asyncio.Event()
+    publish_current_status = manager.publish_current_status
+
+    def note_round_start(project: str, auto_id: str) -> AutoStatusEvent:
+        # Returning means this publication's own load_auto_run has already
+        # happened, so installing churning_load afterwards cannot count it
+        # against the stop bound. Anchoring on the event stream instead would
+        # race: a replayed status event carries no active key.
+        event = publish_current_status(project, auto_id)
+        if manager.get(project, auto_id).active_key is not None:
+            round_started.set()
+        return event
+
+    monkeypatch.setattr(manager, "publish_current_status", note_round_start)
     created = await manager.create(
         project_id,
         topic="Stop churn",
@@ -4116,16 +4130,7 @@ async def test_auto_stop_bounds_active_key_churn(
         max_cycles=1,
     )
     try:
-        start_events = manager.subscribe(
-            project_id,
-            created.id,
-            last_event_id=1,
-        )
-        try:
-            started = await asyncio.wait_for(anext(start_events), timeout=1)
-        finally:
-            await start_events.aclose()
-        assert started.event_id == 2
+        await asyncio.wait_for(round_started.wait(), timeout=3)
         active_key = await wait_for_active_auto_key(
             manager,
             project_id,
