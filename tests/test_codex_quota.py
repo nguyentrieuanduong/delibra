@@ -282,6 +282,14 @@ async def test_the_read_runs_against_delibras_own_codex_home(tmp_path: Path) -> 
 # --- wiring: which quota source the runner asks, and when -------------------
 
 
+# The captured fixture's five-hour window reset at 2026-09-07T15:14:20Z.
+# UsageMonitor._live drops any observation whose reset instant has passed,
+# so a monitor reading this fixture must be held inside that window --
+# otherwise these tests pass until the capture expires and then never
+# again, which is exactly what happened.
+FIXTURE_WINDOW_INSTANT = datetime(2026, 9, 7, 13, 0, tzinfo=UTC)
+
+
 def _manager(
     tmp_path: Path,
     *,
@@ -291,6 +299,7 @@ def _manager(
     from app.config import Settings
     from app.runner import RunManager
     from app.storage import LockCoordinator, RegistryStore
+    from app.usage import UsageMonitor
 
     home = tmp_path / "home"
     settings = Settings(home=home, codex_quota_refresh_seconds=refresh_seconds)
@@ -303,6 +312,10 @@ def _manager(
         settings=settings,
         # No run is started here; these tests exercise the quota read alone.
         adapter_factory=lambda config: None,
+        usage_monitor=UsageMonitor(
+            settings=settings,
+            clock=lambda: FIXTURE_WINDOW_INSTANT,
+        ),
         **kwargs,
     )
 
@@ -530,3 +543,21 @@ async def test_the_pause_check_leaves_other_providers_alone(
     monkeypatch.setattr("app.runner.read_codex_account_rate_limits", account)
 
     assert await manager.quota_pause_observation("claude") is None
+
+
+def test_fixture_window_instant_precedes_every_captured_reset() -> None:
+    """The capture is dated; its test clock must precede every reset.
+
+    Phase 8's value is the exact instants it measured, so the fixture keeps
+    them. That makes every assertion on used_percent a time bomb unless the
+    monitor reading it is frozen inside the captured window.
+    """
+
+    resets = [
+        reading.resets_at for reading in _account_readings() if reading.resets_at
+    ]
+
+    assert resets, "the capture must carry reset instants"
+    assert FIXTURE_WINDOW_INSTANT < min(resets), (
+        "FIXTURE_WINDOW_INSTANT must sit inside every captured window"
+    )
