@@ -4236,3 +4236,61 @@ async def test_auto_shutdown_interrupts_and_cancels_active_provider(
     assert store.active_auto_run_id() is None
     assert store.load_session(key.session_id).rounds[-1].status == "cancelled"
     assert factory.created == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preparation_enabled", [True, False])
+async def test_a_status_event_is_published_while_the_round_key_is_live(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preparation_enabled: bool,
+) -> None:
+    """fa9a0f0: the timeline can render a live round only if a status event is
+    published while active_key is set.
+
+    Persisting active_key does not refresh the browser. Every other publication
+    in a discussion turn carries active_key None -- the status transitions all
+    run before dispatch, and the end-of-turn publish clears the key first
+    (app/auto.py:1806-1809). A publication carrying a live key is therefore
+    exactly the round-start publication, and nothing else can stand in for it.
+
+    Both dispatch sites are covered: preparation_enabled=True exercises
+    _run_preparation and False exercises _run_discussion_attempt, which is the
+    path the browser test takes. Removing either publication fails its case.
+
+    The browser test in tests/browser cannot pin this. #chat-timeline refreshes
+    on any sse:status event (_auto_status.html:117-121) and renders whatever is
+    live when the GET lands, so a neighbouring publication installs the section
+    just as well. That test proves htmx applies the fragment; this one proves
+    the fragment is sent while there is something live to render.
+    """
+
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("never completes", sleep=True),
+            PlannedOutput("must not run"),
+        ],
+    )
+    published_live = asyncio.Event()
+    publish_status = manager._publish_status
+
+    def note_live_publication(record: AutoRunRecord) -> AutoStatusEvent:
+        event = publish_status(record)
+        if record.active_key is not None:
+            published_live.set()
+        return event
+
+    monkeypatch.setattr(manager, "_publish_status", note_live_publication)
+    created = await manager.create(
+        project_id,
+        topic="Live publication",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=preparation_enabled,
+    )
+    try:
+        await asyncio.wait_for(published_live.wait(), timeout=3)
+    finally:
+        await manager.stop(project_id, created.id)
