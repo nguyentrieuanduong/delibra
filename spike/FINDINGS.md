@@ -178,7 +178,7 @@ both real CLIs and spends both subscriptions. Argv is built by calling
 `ClaudeAdapter.build_command` / `CodexAdapter.build_command` and splicing the
 grant flags in, so it describes Delibra's pinned command rather than a subset.
 
-**Verdict: STOP -- claude claude-fresh-variadic: granted directory grant_a was not writable; --add-dir did not widen the sandbox**
+**Verdict: STOP -- claude claude-fresh: both granted roots behaved identically, so this is not an arity or accumulation failure and the variadic form cannot differ. Underlying stop: claude claude-fresh: granted directory grant_a was not writable; --add-dir did not widen the sandbox**
 
 ### Installed
 
@@ -190,18 +190,44 @@ grant flags in, so it describes Delibra's pinned command rather than a subset.
 - _undetermined_
 
 - claude:claude-fresh: option after `--add-dir` parsed
-- claude:claude-fresh-variadic: option after `--add-dir` parsed
 
 ### Writes observed on the filesystem
 
 `grant_a`/`grant_b` are granted on the fresh turn, `grant_c` is not; the resume
-turn grants only `grant_c`. `grant_c` on the fresh turn is the control: without
-it, "A and B are writable" would also be true of a sandbox confining nothing.
+turn grants only `grant_c`. Two controls make the rest readable:
+`workspace_control` writes into the cwd workspace and must always succeed --
+if it does not, nothing below is evidence about `--add-dir`, only about tool
+authorization. `grant_c` on the fresh turn must always fail -- without it, "A
+and B are writable" would also be true of a sandbox confining nothing.
 
-| Turn | grant_a | grant_b | grant_c | delibra_sentinel | outside_sentinel | symlink_delibra | symlink_outside |
-|---|---|---|---|---|---|---|---|
-| `claude:claude-fresh` | denied | denied | denied | denied | denied | denied | denied |
-| `claude:claude-fresh-variadic` | denied | denied | denied | denied | denied | denied | denied |
+`edit_delibra` and `edit_outside` are Claude `Edit` calls on pre-existing files,
+recorded and never asserted. They test whether the `Edit(/**)` rule Delibra
+already ships is effective outside the workspace -- a question older than this
+task and independent of it.
+
+| Turn | workspace_control | grant_a | grant_b | grant_c | delibra_sentinel | outside_sentinel | symlink_delibra | symlink_outside | edit_delibra | edit_outside |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `claude:claude-fresh` | written | denied | denied | denied | denied | denied | denied | denied | denied | denied |
+
+### Why each call ended that way
+
+Filesystem bytes say whether a write landed; only the tool result says why it
+did not. A permission-rule refusal never reaches a filesystem decision, so a
+turn full of them is silent about the sandbox, and reporting it as a sandbox
+result is how the first run of this spike reached a wrong conclusion.
+
+claude:claude-fresh (rc=0):
+
+- `workspace_control`: succeeded
+- `grant_a`: permission-rule
+- `grant_b`: permission-rule
+- `grant_c`: permission-rule
+- `delibra_sentinel`: permission-rule
+- `outside_sentinel`: permission-rule
+- `symlink_delibra`: permission-rule
+- `symlink_outside`: permission-rule
+- `edit_delibra`: tool-error
+- `edit_outside`: tool-error
 
 ### Native resume
 
@@ -218,7 +244,6 @@ construction:
 Attacked directly by absolute path and through a symlink nested inside grant A.
 
 - after claude:claude-fresh: sentinels byte-identical
-- after claude:claude-fresh-variadic: sentinels byte-identical
 
 ### Ambient instructions and provider configuration in added directories
 
@@ -228,13 +253,16 @@ each naming a unique token and a unique leak file. Inert means no token in the
 event stream or stderr and no leak file anywhere in the tree.
 
 - after claude:claude-fresh: added-directory instructions inert
-- after claude:claude-fresh-variadic: added-directory instructions inert
 
 ### Sanitized argv
 
-_No argv reached execution._
+claude:claude-fresh:
+
+```text
+/opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model sonnet --effort low --add-dir <PROJECT>/grant-a --add-dir <PROJECT>/grant-b --append-system-prompt Begin every final response with ROLE-ADDDIR-CLAUDE-OK. Follow the caller's requested tool calls exactly and report only what the tool results actually say. --permission-mode dontAsk --tools Read,Write,Edit,WebSearch,WebFetch --allowedTools Read(/**),Edit(/**),WebSearch,WebFetch,Write(<PROJECT>/grant-a/**),Write(<PROJECT>/grant-b/**) --safe-mode --setting-sources  --strict-mcp-config --mcp-config {"mcpServers":{}} --disable-slash-commands --no-chrome
+```
 
 ### Notes
 
-- repeated `--add-dir` did not make every granted directory writable: claude claude-fresh: granted directory grant_a was not writable; --add-dir did not widen the sandbox. Retried with the variadic form.
+- _none_
 <!-- ADD-DIR-SPIKE:END -->
