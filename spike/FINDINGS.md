@@ -169,3 +169,72 @@ Resume uses the same global policy options followed by `exec resume --json --ski
   first delta, reconnected with `Last-Event-ID`, received three strictly newer
   events and exactly one `done`, and persisted a complete result.
 <!-- FINAL-PARITY-GATE:END -->
+
+<!-- ADD-DIR-SPIKE:START -->
+## Shared agent directories (`--add-dir`)
+
+Produced by `spike/spike_add_dir.py` for Task 9.1. Not part of pytest: it drives
+both real CLIs and spends both subscriptions. Argv is built by calling
+`ClaudeAdapter.build_command` / `CodexAdapter.build_command` and splicing the
+grant flags in, so it describes Delibra's pinned command rather than a subset.
+
+**Verdict: STOP -- claude claude-fresh-variadic: granted directory grant_a was not writable; --add-dir did not widen the sandbox**
+
+### Installed
+
+- claude: `2.1.202 (Claude Code)`
+- codex: `codex-cli 0.153.4`
+
+### Argv form that accumulates
+
+- _undetermined_
+
+- claude:claude-fresh: option after `--add-dir` parsed
+- claude:claude-fresh-variadic: option after `--add-dir` parsed
+
+### Writes observed on the filesystem
+
+`grant_a`/`grant_b` are granted on the fresh turn, `grant_c` is not; the resume
+turn grants only `grant_c`. `grant_c` on the fresh turn is the control: without
+it, "A and B are writable" would also be true of a sandbox confining nothing.
+
+| Turn | grant_a | grant_b | grant_c | delibra_sentinel | outside_sentinel | symlink_delibra | symlink_outside |
+|---|---|---|---|---|---|---|---|
+| `claude:claude-fresh` | denied | denied | denied | denied | denied | denied | denied |
+| `claude:claude-fresh-variadic` | denied | denied | denied | denied | denied | denied | denied |
+
+### Native resume
+
+- _no resume was reached_
+
+Retention of the *removed* grants across the resume is recorded, not asserted --
+9.5 drops the native session id on any grant change, so Delibra revokes by
+construction:
+
+- _no resume was reached_
+
+### Protected sentinels
+
+Attacked directly by absolute path and through a symlink nested inside grant A.
+
+- after claude:claude-fresh: sentinels byte-identical
+- after claude:claude-fresh-variadic: sentinels byte-identical
+
+### Ambient instructions and provider configuration in added directories
+
+Each of A, B and C carries a hostile `CLAUDE.md`, `AGENTS.md`, `.claude/settings.json`
+hook, `.claude/skills/*/SKILL.md`, `.mcp.json`, and `.codex/config.toml` + `hooks.json`,
+each naming a unique token and a unique leak file. Inert means no token in the
+event stream or stderr and no leak file anywhere in the tree.
+
+- after claude:claude-fresh: added-directory instructions inert
+- after claude:claude-fresh-variadic: added-directory instructions inert
+
+### Sanitized argv
+
+_No argv reached execution._
+
+### Notes
+
+- repeated `--add-dir` did not make every granted directory writable: claude claude-fresh: granted directory grant_a was not writable; --add-dir did not widen the sandbox. Retried with the variadic form.
+<!-- ADD-DIR-SPIKE:END -->
