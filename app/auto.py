@@ -739,11 +739,6 @@ class AutoManager:
     def publish_current_status(self, project_id: str, auto_id: str) -> AutoStatusEvent:
         return self._publish_status(self.get(project_id, auto_id))
 
-    def _publish_round_started(self, project_id: str, auto_id: str) -> None:
-        """Announce the active key persisted by ``start_auto_locked``."""
-
-        self.publish_current_status(project_id, auto_id)
-
     def _build_baseline(
         self,
         store: ProjectStore,
@@ -1102,7 +1097,10 @@ class AutoManager:
             self._publish_status(terminal)
             return
         assert key is not None
-        self._publish_round_started(record.project_id, record.id)
+        # Persisting active_key does not refresh the browser. Publish while the
+        # key is live; otherwise the next automatic status event occurs only
+        # after this round finishes and the timeline can never render it live.
+        self.publish_current_status(record.project_id, record.id)
         result = await self.runner.wait(key)
         async with self.locks.project_sessions(record.project_id, [participant.session_id]):
             current = store.load_auto_run(record.id)
@@ -1436,7 +1434,10 @@ class AutoManager:
             self._publish_status(finished)
             return "done"
         assert key is not None
-        self._publish_round_started(record.project_id, record.id)
+        # Persisting active_key does not refresh the browser. Publish while the
+        # key is live; otherwise the next automatic status event occurs only
+        # after this round finishes and the timeline can never render it live.
+        self.publish_current_status(record.project_id, record.id)
         result = await self.runner.wait(key)
         outcome: Literal["done", "retry"] = "done"
         async with self.locks.project_sessions(
@@ -1757,7 +1758,10 @@ class AutoManager:
             self._publish_status(terminal)
             return "done"
         assert key is not None
-        self._publish_round_started(record.project_id, record.id)
+        # Persisting active_key does not refresh the browser. Publish while the
+        # key is live; otherwise the next automatic status event occurs only
+        # after this round finishes and the timeline can never render it live.
+        self.publish_current_status(record.project_id, record.id)
         result = await self.runner.wait(key)
         outcome: Literal["done", "retry"] = "done"
         async with self.locks.project_sessions(record.project_id, [participant.session_id]):
