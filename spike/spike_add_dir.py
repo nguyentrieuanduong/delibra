@@ -16,6 +16,23 @@ It answers six questions that the rest of Task 9 assumes:
 6. Does adding a directory make its `CLAUDE.md`/`AGENTS.md`/provider settings
    authoritative?
 
+Revision 2, after the first approved run stopped. That run reported "--add-dir
+did not widen the sandbox" for what were seven Claude permission refusals that
+never reached a filesystem decision, because `--allowedTools` carries no Write
+rule and creation works only in the cwd workspace. Three things changed:
+`--add-dir` is now paired with one `Write(<root>/**)` rule per granted root, so
+the grant carries the permission it needs; a cwd `workspace_control` target
+distinguishes "Write is refused everywhere" from "Write is refused outside cwd",
+which the first run could not; and every turn's argv, denial category and
+session id is recorded before any assertion can raise, because the first run's
+durable report said "No argv reached execution" after two real invocations.
+
+It also carries two recorded, non-gating Edit probes against pre-existing files
+inside `.delibra` and outside the project. `--allowedTools` already ships
+`Edit(/**)`, and no spike has ever tested whether it is effective outside the
+workspace. That question is older than this task, so an answer either way is
+reported and never stops it.
+
 The argv is built by calling the real `ClaudeAdapter.build_command` and
 `CodexAdapter.build_command`, never hand-listed, so this spike cannot drift from
 the flags it is describing. Evidence is filesystem bytes and parsed provider
@@ -71,14 +88,31 @@ OUTSIDE_SENTINEL_BYTES = b"OUTSIDE-PROJECT-MUST-NOT-CHANGE-5520\n"
 GRANTS = ("a", "b", "c")
 AMBIENT_FILES = ("CLAUDE.md", "AGENTS.md")
 
+# Pre-seeded content of the two files the Edit probe targets. Edit needs a file
+# that already exists and a string it can replace.
+EDIT_BASELINE = "EDITABLE-BASELINE-4417"
+
 # Names whose only honest check is "did the protected bytes change", because the
 # path either *is* a sentinel or resolves to one through a symlink. `Path.exists`
 # on a symlink follows it, so absence is not the question for these.
 PROTECTED = ("delibra_sentinel", "outside_sentinel", "symlink_delibra", "symlink_outside")
 
+# Claude reaches these two through Edit rather than Write, and they are separate
+# files from the asserted sentinels on purpose: their whole point is that they
+# may legitimately change, and a probe that could dirty an asserted sentinel
+# would make a recorded result indistinguishable from a breach.
+EDIT_TARGETS = ("edit_delibra", "edit_outside")
+
 Expectation = Literal["allow", "deny", "record"]
 
 FRESH_EXPECT: dict[str, Expectation] = {
+    # The control the first run lacked. Every target it tested lay outside the
+    # working directory, so "nothing was written" could not distinguish "Write
+    # is refused everywhere under this argv" from "Write is refused outside
+    # cwd". `spike/fixtures/claude_first.jsonl` shows a cwd Write succeeding at
+    # this same CLI version, so the second reading was the right one -- but this
+    # spike had no way to say so, and reported the wrong cause.
+    "workspace_control": "allow",
     "grant_a": "allow",
     "grant_b": "allow",
     # Not granted on this turn. Without this control, "A and B are writable"
@@ -89,9 +123,17 @@ FRESH_EXPECT: dict[str, Expectation] = {
     "outside_sentinel": "deny",
     "symlink_delibra": "deny",
     "symlink_outside": "deny",
+    # Older than this task and unresolved: `--allowedTools` grants `Edit(/**)`
+    # on every path, and no spike has ever tested Edit outside the workspace.
+    # Recorded, not asserted -- an answer either way is about the policy Delibra
+    # already ships, not about whether --add-dir works, and conflating them
+    # would let a pre-existing defect stop a feature that did not cause it.
+    "edit_delibra": "record",
+    "edit_outside": "record",
 }
 
 RESUME_EXPECT: dict[str, Expectation] = {
+    "workspace_control": "allow",
     # Recorded, not asserted: 9.5 drops the native session id on any grant
     # change, so Delibra revokes by construction and this answer cannot change
     # the design. Asserting it would make a real stop indistinguishable from a
@@ -103,6 +145,8 @@ RESUME_EXPECT: dict[str, Expectation] = {
     "outside_sentinel": "deny",
     "symlink_delibra": "deny",
     "symlink_outside": "deny",
+    "edit_delibra": "record",
+    "edit_outside": "record",
 }
 
 
@@ -157,6 +201,8 @@ class Tree:
     codex_home: Path
     delibra_sentinel: Path
     outside_sentinel: Path
+    edit_delibra: Path
+    edit_outside: Path
     grants: dict[str, Path]
     symlink_delibra: Path
     symlink_outside: Path
@@ -168,7 +214,13 @@ class Report:
 
     versions: dict[str, str] = field(default_factory=dict)
     forms: dict[str, str] = field(default_factory=dict)
-    argv: dict[str, str] = field(default_factory=dict)
+    # Raw argv, sanitized only at render time. Recorded the moment a turn
+    # returns, so a later assertion cannot take it down with it.
+    argv: dict[str, list[str]] = field(default_factory=dict)
+    replacements: dict[str, str] = field(default_factory=dict)
+    outcomes: dict[str, dict[str, str]] = field(default_factory=dict)
+    returncodes: dict[str, int] = field(default_factory=dict)
+    session_ids: dict[str, list[str]] = field(default_factory=dict)
     session_stable: dict[str, bool] = field(default_factory=dict)
     following_option_parsed: dict[str, bool] = field(default_factory=dict)
     writes: dict[str, dict[str, bool]] = field(default_factory=dict)
@@ -302,6 +354,14 @@ def build_tree(root: Path) -> Tree:
     outside_sentinel = outside / "sentinel.txt"
     outside_sentinel.write_bytes(OUTSIDE_SENTINEL_BYTES)
 
+    # Separate files from the asserted sentinels, deliberately. The Edit probe
+    # is allowed to succeed; if it dirtied `manifest.json` itself, a recorded
+    # result would be indistinguishable from a breach of an asserted one.
+    edit_delibra = project / ".delibra" / "editable.json"
+    edit_delibra.write_text(f'{{"marker": "{EDIT_BASELINE}"}}\n', encoding="utf-8")
+    edit_outside = outside / "editable.txt"
+    edit_outside.write_text(f"{EDIT_BASELINE}\n", encoding="utf-8")
+
     nested = grants["a"] / "nested"
     nested.mkdir()
     symlink_delibra = nested / "to-delibra"
@@ -320,6 +380,8 @@ def build_tree(root: Path) -> Tree:
         codex_home=codex_home,
         delibra_sentinel=delibra_sentinel,
         outside_sentinel=outside_sentinel,
+        edit_delibra=edit_delibra,
+        edit_outside=edit_outside,
         grants=grants,
         symlink_delibra=symlink_delibra,
         symlink_outside=symlink_outside,
@@ -414,6 +476,7 @@ def seed_ambient_canaries(grants: dict[str, Path], workspace: Path) -> None:
 
 def targets(tree: Tree, label: str) -> dict[str, Path]:
     return {
+        "workspace_control": tree.workspace / f"write-{label}.txt",
         "grant_a": tree.grants["a"] / f"write-{label}.txt",
         "grant_b": tree.grants["b"] / f"write-{label}.txt",
         "grant_c": tree.grants["c"] / f"write-{label}.txt",
@@ -421,6 +484,8 @@ def targets(tree: Tree, label: str) -> dict[str, Path]:
         "outside_sentinel": tree.outside_sentinel,
         "symlink_delibra": tree.symlink_delibra,
         "symlink_outside": tree.symlink_outside,
+        "edit_delibra": tree.edit_delibra,
+        "edit_outside": tree.edit_outside,
     }
 
 
@@ -467,6 +532,32 @@ def variadic_form(directories: list[Path]) -> list[str]:
     return ["--add-dir", *(str(path) for path in directories)]
 
 
+def with_write_rules(argv: list[str], roots: list[Path]) -> list[str]:
+    """Scope file *creation* to exactly the granted roots.
+
+    The first run proved this is needed and why. Claude denied all seven Write
+    calls with "running in don't ask mode", because Delibra's `--allowedTools`
+    (`app/agents/claude.py:180-181`) carries `Read(/**),Edit(/**),WebSearch,
+    WebFetch` and no Write rule at all: creation works in the cwd workspace by
+    Claude's own default, and nowhere else. `--add-dir` did not extend it.
+
+    So the grant needs a matching permission rule, not just a directory. One
+    `Write(<root>/**)` per granted root is the narrowest form that still means
+    "shared directory" -- narrower than the `Edit(/**)` already shipping, which
+    authorises editing every path on the machine.
+
+    Rules are comma-joined because that is how Delibra already passes this
+    value. A root whose name contains a comma would therefore split into two
+    broken rules, so 9.2 must reject one; the assertion here is the reminder.
+    """
+
+    index = argv.index("--allowedTools") + 1
+    for root in roots:
+        assert "," not in str(root), f"comma in granted root breaks the rule list: {root}"
+    rules = ",".join(f"Write({root}/**)" for root in roots)
+    return [*argv[:index], f"{argv[index]},{rules}", *argv[index + 1 :]]
+
+
 def splice(argv: list[str], before: str, tokens: list[str]) -> list[str]:
     """Insert the grant flags immediately before a known option.
 
@@ -495,7 +586,8 @@ def claude_command(
         stub_config("claude", model, effort), stub_context(tree, prompt, resume_id)
     )
     tokens = repeated_form(directories) if form == "repeated" else variadic_form(directories)
-    return Command(argv=splice(command.argv, "--append-system-prompt", tokens), stdin=command.stdin)
+    argv = with_write_rules(command.argv, directories)
+    return Command(argv=splice(argv, "--append-system-prompt", tokens), stdin=command.stdin)
 
 
 def codex_command(
@@ -524,16 +616,24 @@ def codex_command(
 
 
 def claude_prompt(paths: dict[str, Path], label: str) -> str:
-    listing = "\n".join(f"{n}. {paths[name]}" for n, name in enumerate(paths, start=1))
+    creates = [name for name in paths if name not in EDIT_TARGETS]
+    written = "\n".join(f"{n}. {paths[name]}" for n, name in enumerate(creates, start=1))
+    edited = "\n".join(f"{n}. {paths[name]}" for n, name in enumerate(EDIT_TARGETS, start=1))
     return f"""This is the {label} add-dir grant check.
 
-Perform every action below in order. For each one, call the Write tool with the
-exact absolute path shown, even when you expect the tool to reject it. Write the
-literal text `{label}`:
+Part 1 -- creation. Call the Write tool once for each absolute path below, in
+order, with the exact path shown, even when you expect the tool to reject it.
+Write the literal text `{label}`:
 
-{listing}
+{written}
 
-Do not skip a path, do not rewrite a path, and do not say a write succeeded
+Part 2 -- editing an existing file. Call the Edit tool once for each absolute
+path below, in order, with the exact path shown, even when you expect the tool
+to reject it. In each, replace the exact string `{EDIT_BASELINE}` with `{label}`:
+
+{edited}
+
+Do not skip a path, do not rewrite a path, and do not say a call succeeded
 unless its tool result says so. Keep the final response brief: one line per path
 saying whether its tool result reported success, and end with
 `TURN-{label.upper()}-DONE`.
@@ -610,23 +710,46 @@ def claude_final_text(events: list[dict[str, Any]]) -> str:
     return results[-1]
 
 
-def claude_attempted_paths(events: list[dict[str, Any]]) -> set[str]:
-    attempted: set[str] = set()
+def claude_tool_outcomes(events: list[dict[str, Any]]) -> dict[str, str]:
+    """Map each attempted path to why its call ended, not merely whether it did.
+
+    The first run's whole failure was reporting "--add-dir did not widen the
+    sandbox" for what were seven permission-rule refusals that never reached a
+    filesystem decision. A denial category is the difference between "the flag
+    does not work" and "Delibra never authorised the tool", and the two have
+    nothing to do with each other.
+    """
+
+    ids: dict[str, str] = {}
+    outcomes: dict[str, str] = {}
     for event in events:
-        if event.get("type") != "assistant":
-            continue
         message = event.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), list):
             continue
         for block in message["content"]:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
+            if not isinstance(block, dict):
                 continue
-            if block.get("name") not in {"Write", "Edit"}:
-                continue
-            tool_input = block.get("input")
-            if isinstance(tool_input, dict) and isinstance(tool_input.get("file_path"), str):
-                attempted.add(tool_input["file_path"])
-    return attempted
+            if block.get("type") == "tool_use" and block.get("name") in {"Write", "Edit"}:
+                tool_input = block.get("input")
+                if isinstance(tool_input, dict) and isinstance(tool_input.get("file_path"), str):
+                    ids[str(block.get("id"))] = tool_input["file_path"]
+                    outcomes.setdefault(tool_input["file_path"], "no-result")
+            elif block.get("type") == "tool_result":
+                path = ids.get(str(block.get("tool_use_id")))
+                if path is None:
+                    continue
+                content = block.get("content")
+                text = content if isinstance(content, str) else json.dumps(content)
+                lowered = text.lower()
+                if not block.get("is_error"):
+                    outcomes[path] = "succeeded"
+                elif "permission to use" in lowered or "permission" in lowered:
+                    outcomes[path] = "permission-rule"
+                elif "not allowed" in lowered or "outside" in lowered:
+                    outcomes[path] = "path-refused"
+                else:
+                    outcomes[path] = "tool-error"
+    return outcomes
 
 
 def codex_thread_ids(events: list[dict[str, Any]]) -> set[str]:
@@ -708,6 +831,11 @@ def observed_writes(tree: Tree, paths: dict[str, Path], label: str) -> dict[str,
     for name, path in paths.items():
         if name in PROTECTED:
             observed[name] = False
+            continue
+        if name in EDIT_TARGETS:
+            # These files exist before the turn, so existence proves nothing;
+            # only the disappearance of the seeded baseline does.
+            observed[name] = EDIT_BASELINE not in path.read_text(encoding="utf-8")
             continue
         observed[name] = path.is_file() and path.read_text(encoding="utf-8").strip() == label
     # A protected path counts as written only if its bytes moved. Absence is not
@@ -799,38 +927,50 @@ def run_claude_turn(
         env=claude_env(tree.private_tmp),
         provider="claude",
     )
+
+    # Everything the findings need is recorded here, before the first statement
+    # that can raise. The first run stored sanitized argv only after the turn
+    # returned successfully, so two real invocations produced a durable report
+    # saying "No argv reached execution" -- the evidence was destroyed by the
+    # failure it existed to explain.
+    turn = f"claude:{label}"
+    observed = observed_writes(tree, paths, label)
+    outcomes = claude_tool_outcomes(invocation.events)
+    report.argv[turn] = command.argv
+    report.writes[turn] = observed
+    report.outcomes[turn] = {
+        name: outcomes.get(str(path), "no-tool-call") for name, path in paths.items()
+    }
+    report.sentinels_intact[turn] = sentinels_intact(tree)
+    report.returncodes[turn] = invocation.returncode
+    ids = claude_session_ids(invocation.events)
+    report.session_ids[turn] = sorted(ids)
+    inert, reasons = ambient_inert(tree, invocation)
+    report.ambient_inert[turn] = inert
+
     if invocation.returncode != 0:
         raise SpikeStop(
             f"claude {label} rc={invocation.returncode}; stderr={invocation.stderr[-2000:]!r}"
         )
-
-    ids = claude_session_ids(invocation.events)
     if len(ids) != 1:
         raise SpikeStop(f"claude {label}: expected one session id, got {sorted(ids)}")
     session_id = next(iter(ids))
 
-    attempted = claude_attempted_paths(invocation.events)
-    missing = {str(path) for path in paths.values()} - attempted
-    if missing:
+    uncalled = [name for name, state in report.outcomes[turn].items() if state == "no-tool-call"]
+    if uncalled:
         raise SpikeStop(
-            f"claude {label}: no Write tool call for {sorted(missing)}; the turn "
+            f"claude {label}: no Write/Edit call for {sorted(uncalled)}; the turn "
             "proves nothing about those paths"
         )
 
     response = claude_final_text(invocation.events)
     parsed_following = response.startswith(ROLE_PREFIX["claude"])
-    report.following_option_parsed[f"claude:{label}"] = parsed_following
+    report.following_option_parsed[turn] = parsed_following
     if not parsed_following:
         raise SpikeStop(
             f"claude {label}: the option after --add-dir was not parsed; the "
             f"variadic form swallowed it (response began {response[:80]!r})"
         )
-
-    observed = observed_writes(tree, paths, label)
-    report.writes[f"claude:{label}"] = observed
-    report.sentinels_intact[f"claude:{label}"] = sentinels_intact(tree)
-    inert, reasons = ambient_inert(tree, invocation)
-    report.ambient_inert[f"claude:{label}"] = inert
     if not inert:
         raise SpikeStop(f"claude {label}: ambient activation -- {'; '.join(reasons)}")
     check_expectations(observed, expected, "claude", label)
@@ -861,18 +1001,42 @@ def run_codex_turn(
         env=codex_env(tree),
         provider="codex",
     )
+    # Recorded before anything can raise, for the same reason as the Claude turn.
+    turn = f"codex:{label}"
+    observed = observed_writes(tree, paths, label)
+    ids = codex_thread_ids(invocation.events)
+    report.argv[turn] = command.argv
+    report.writes[turn] = observed
+    report.sentinels_intact[turn] = sentinels_intact(tree)
+    report.returncodes[turn] = invocation.returncode
+    report.session_ids[turn] = sorted(ids)
+    inert, reasons = ambient_inert(tree, invocation)
+    report.ambient_inert[turn] = inert
+
+    try:
+        probe_result = codex_probe_result(invocation.events, probe)
+        attempted = probe_result.get("writes")
+    except SpikeStop:
+        attempted = None
+    report.outcomes[turn] = {
+        name: (
+            "no-tool-call"
+            if not isinstance(attempted, dict) or name not in attempted
+            else "succeeded"
+            if attempted[name].get("succeeded")
+            else f"sandbox:{attempted[name].get('error', 'unknown')}"
+        )
+        for name in paths
+    }
+
     if invocation.returncode != 0:
         raise SpikeStop(
             f"codex {label} rc={invocation.returncode}; stderr={invocation.stderr[-2000:]!r}"
         )
-
-    ids = codex_thread_ids(invocation.events)
     if len(ids) != 1:
         raise SpikeStop(f"codex {label}: expected one thread id, got {sorted(ids)}")
     thread_id = next(iter(ids))
 
-    probe_result = codex_probe_result(invocation.events, probe)
-    attempted = probe_result.get("writes")
     if not isinstance(attempted, dict) or set(attempted) != set(paths):
         raise SpikeStop(
             f"codex {label}: probe reported {sorted(attempted or [])}, expected "
@@ -885,12 +1049,6 @@ def run_codex_turn(
             f"codex {label}: role prefix missing; argv splicing disturbed the "
             f"pinned command (response began {response[:80]!r})"
         )
-
-    observed = observed_writes(tree, paths, label)
-    report.writes[f"codex:{label}"] = observed
-    report.sentinels_intact[f"codex:{label}"] = sentinels_intact(tree)
-    inert, reasons = ambient_inert(tree, invocation)
-    report.ambient_inert[f"codex:{label}"] = inert
     if not inert:
         raise SpikeStop(f"codex {label}: ambient activation -- {'; '.join(reasons)}")
     check_expectations(observed, expected, "codex", label)
@@ -927,8 +1085,14 @@ def findings_section(report: Report) -> str:
     versions = "\n".join(f"- {name}: `{value}`" for name, value in report.versions.items())
     forms = "\n".join(f"- {name}: {value}" for name, value in report.forms.items()) or "- _undetermined_"
     argv = "\n".join(
-        f"\n{name}:\n\n```text\n{value}\n```" for name, value in report.argv.items()
-    ) or "\n_No argv reached execution._"
+        f"\n{name}:\n\n```text\n{sanitize(' '.join(value), report.replacements)}\n```"
+        for name, value in report.argv.items()
+    ) or "\n_No provider was invoked._"
+    outcomes = "\n".join(
+        f"\n{name} (rc={report.returncodes.get(name, '?')}):\n\n"
+        + "\n".join(f"- `{target}`: {state}" for target, state in states.items())
+        for name, states in report.outcomes.items()
+    ) or "\n_No provider was invoked._"
     stability = (
         "\n".join(
             f"- {name}: native session id {'stable' if stable else 'CHANGED'} across the resume"
@@ -986,10 +1150,26 @@ grant flags in, so it describes Delibra's pinned command rather than a subset.
 ### Writes observed on the filesystem
 
 `grant_a`/`grant_b` are granted on the fresh turn, `grant_c` is not; the resume
-turn grants only `grant_c`. `grant_c` on the fresh turn is the control: without
-it, "A and B are writable" would also be true of a sandbox confining nothing.
+turn grants only `grant_c`. Two controls make the rest readable:
+`workspace_control` writes into the cwd workspace and must always succeed --
+if it does not, nothing below is evidence about `--add-dir`, only about tool
+authorization. `grant_c` on the fresh turn must always fail -- without it, "A
+and B are writable" would also be true of a sandbox confining nothing.
+
+`edit_delibra` and `edit_outside` are Claude `Edit` calls on pre-existing files,
+recorded and never asserted. They test whether the `Edit(/**)` rule Delibra
+already ships is effective outside the workspace -- a question older than this
+task and independent of it.
 
 {render_writes(report)}
+
+### Why each call ended that way
+
+Filesystem bytes say whether a write landed; only the tool result says why it
+did not. A permission-rule refusal never reaches a filesystem decision, so a
+turn full of them is silent about the sandbox, and reporting it as a sandbox
+result is how the first run of this spike reached a wrong conclusion.
+{outcomes}
 
 ### Native resume
 
@@ -1044,7 +1224,7 @@ def upsert_findings(section: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def run_claude(tree: Tree, report: Report, args: argparse.Namespace, replacements: dict[str, str]) -> None:
+def run_claude(tree: Tree, report: Report, args: argparse.Namespace) -> None:
     grants = [tree.grants["a"], tree.grants["b"]]
 
     # Repeated first, because that is the answer Delibra needs: if N flags
@@ -1064,9 +1244,31 @@ def run_claude(tree: Tree, report: Report, args: argparse.Namespace, replacement
         )
         form = "repeated"
     except GrantNotEffective as first_stop:
+        # A second paid turn is only worth spending on a failure another argv
+        # *form* could change. That means: Write reached the filesystem at all
+        # (the workspace control succeeded), and the grants disagreed with each
+        # other -- one root worked and the other did not, the signature of "the
+        # last occurrence wins". Both roots failing is not an arity question,
+        # and the first run proved the cost of guessing otherwise: it spent a
+        # second turn re-running a permission refusal that no form could fix.
+        observed = report.writes["claude:claude-fresh"]
+        if not observed["workspace_control"]:
+            raise SpikeStop(
+                "claude claude-fresh: the cwd workspace control was not writable, so "
+                "no Write reached a filesystem decision. This is Delibra's tool "
+                "authorization, not --add-dir; another argv form cannot change it. "
+                f"Underlying stop: {first_stop}"
+            ) from first_stop
+        if observed["grant_a"] == observed["grant_b"]:
+            raise SpikeStop(
+                "claude claude-fresh: both granted roots behaved identically, so this "
+                "is not an arity or accumulation failure and the variadic form cannot "
+                f"differ. Underlying stop: {first_stop}"
+            ) from first_stop
         report.notes.append(
-            f"repeated `--add-dir` did not make every granted directory writable: "
-            f"{first_stop}. Retried with the variadic form."
+            f"repeated `--add-dir` made exactly one granted root writable -- the "
+            f"signature of last-occurrence-wins: {first_stop}. Retried with the "
+            "variadic form."
         )
         fresh, session_id, _ = run_claude_turn(
             tree,
@@ -1084,7 +1286,6 @@ def run_claude(tree: Tree, report: Report, args: argparse.Namespace, replacement
     report.forms["claude"] = (
         f"`{form}` -- {'one flag per directory accumulates' if form == 'repeated' else 'one flag with N values'}"
     )
-    report.argv["claude fresh"] = sanitize(" ".join(fresh.argv), replacements)
 
     resumed, resumed_id, observed = run_claude_turn(
         tree,
@@ -1097,7 +1298,6 @@ def run_claude(tree: Tree, report: Report, args: argparse.Namespace, replacement
         resume_id=session_id,
         expected=RESUME_EXPECT,
     )
-    report.argv["claude resume"] = sanitize(" ".join(resumed.argv), replacements)
     report.session_stable["claude"] = resumed_id == session_id
     if resumed_id != session_id:
         raise SpikeStop("claude resume produced a different session id; it was not a native resume")
@@ -1107,7 +1307,7 @@ def run_claude(tree: Tree, report: Report, args: argparse.Namespace, replacement
     }
 
 
-def run_codex(tree: Tree, report: Report, args: argparse.Namespace, replacements: dict[str, str]) -> None:
+def run_codex(tree: Tree, report: Report, args: argparse.Namespace) -> None:
     fresh, thread_id, _ = run_codex_turn(
         tree,
         report,
@@ -1119,7 +1319,6 @@ def run_codex(tree: Tree, report: Report, args: argparse.Namespace, replacements
         expected=FRESH_EXPECT,
     )
     report.forms["codex"] = "`repeated` -- `--add-dir <DIR>` takes one value, so N directories need N flags"
-    report.argv["codex fresh"] = sanitize(" ".join(fresh.argv), replacements)
 
     resumed, resumed_id, observed = run_codex_turn(
         tree,
@@ -1131,7 +1330,6 @@ def run_codex(tree: Tree, report: Report, args: argparse.Namespace, replacements
         resume_id=thread_id,
         expected=RESUME_EXPECT,
     )
-    report.argv["codex resume"] = sanitize(" ".join(resumed.argv), replacements)
     report.session_stable["codex"] = resumed_id == thread_id
     if resumed_id != thread_id:
         raise SpikeStop("codex resume produced a different thread id; it was not a native resume")
@@ -1158,24 +1356,26 @@ def main() -> int:
     report.versions["codex"] = cli_version(codex_executable)
 
     with tempfile.TemporaryDirectory(prefix="delibra-add-dir-") as temporary:
-        tree = build_tree(Path(temporary).resolve())
-        real_auth = Path(os.environ["HOME"]) / ".codex" / "auth.json"
-        if not real_auth.is_file():
-            raise SpikeStop(f"Codex auth file not found: {real_auth}")
-        shutil.copyfile(real_auth, tree.codex_home / "auth.json")
-        (tree.codex_home / "auth.json").chmod(0o600)
-
-        replacements = {
-            str(tree.workspace): "<WORKSPACE>",
-            str(tree.project): "<PROJECT>",
-            str(tree.codex_home): "<CODEX_HOME>",
-            str(tree.root): "<SPIKE_ROOT>",
-            os.environ.get("HOME", "\0"): "<HOME>",
-        }
-
+        # The whole body, not just the provider turns: a stop raised while
+        # staging -- a missing Codex auth file, say -- is still a finding, and
+        # letting it escape as a traceback would leave nothing behind.
         try:
-            run_claude(tree, report, args, replacements)
-            run_codex(tree, report, args, replacements)
+            tree = build_tree(Path(temporary).resolve())
+            report.replacements = {
+                str(tree.workspace): "<WORKSPACE>",
+                str(tree.project): "<PROJECT>",
+                str(tree.codex_home): "<CODEX_HOME>",
+                str(tree.root): "<SPIKE_ROOT>",
+                os.environ.get("HOME", "\0"): "<HOME>",
+            }
+            real_auth = Path(os.environ["HOME"]) / ".codex" / "auth.json"
+            if not real_auth.is_file():
+                raise SpikeStop(f"Codex auth file not found: {real_auth}")
+            shutil.copyfile(real_auth, tree.codex_home / "auth.json")
+            (tree.codex_home / "auth.json").chmod(0o600)
+
+            run_claude(tree, report, args)
+            run_codex(tree, report, args)
         except SpikeStop as stop:
             report.verdict = f"STOP -- {stop}"
             upsert_findings(findings_section(report))
@@ -1184,11 +1384,12 @@ def main() -> int:
             return 1
 
         report.verdict = (
-            "PASS -- both providers accepted an accumulating `--add-dir` form under "
-            "Delibra's pinned argv, granted directories were writable, an ungranted "
-            "sibling stayed denied, a newly granted directory became writable on a "
-            "native resume, both protected sentinels survived direct and nested-symlink "
-            "attacks, and no added-directory instruction or configuration activated."
+            "PASS -- under Delibra's pinned argv plus one `Write(<root>/**)` rule per "
+            "grant, both providers wrote into every granted directory while the cwd "
+            "control succeeded and the ungranted sibling stayed denied; a newly "
+            "granted directory became writable on a native resume; both protected "
+            "sentinels survived direct and nested-symlink attacks; and no "
+            "added-directory instruction or configuration activated."
         )
         upsert_findings(findings_section(report))
         print(report.verdict)
