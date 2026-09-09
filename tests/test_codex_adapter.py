@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,17 @@ def config() -> SessionConfig:
         created_at="2026-07-17T00:00:00Z",
         rounds=[],
     )
+
+
+def developer_instructions(command) -> str:
+    values = [
+        command.argv[index + 1]
+        for index, token in enumerate(command.argv[:-1])
+        if token == "--config"
+        and command.argv[index + 1].startswith("developer_instructions=")
+    ]
+    assert len(values) == 1
+    return tomllib.loads(values[0])["developer_instructions"]
 
 
 def parse_fixture(name: str) -> tuple[CodexAdapter, list]:
@@ -161,6 +173,8 @@ def test_build_command_first_turn_matches_proven_spike_and_prepends_role() -> No
         "sandbox_workspace_write.network_access=false",
         "--config",
         'shell_environment_policy.inherit="all"',
+        "--config",
+        'developer_instructions="Begin with ROLE-CODEX-OK."',
         "--disable",
         "hooks",
         "--disable",
@@ -181,13 +195,10 @@ def test_build_command_first_turn_matches_proven_spike_and_prepends_role() -> No
         "--strict-config",
         "-",
     ]
-    assert command.stdin.startswith(
-        "<role_instructions>Begin with ROLE-CODEX-OK.</role_instructions>\n\n"
-    )
-    assert command.stdin.endswith("Investigate this.")
+    assert command.stdin == "Investigate this."
 
 
-def test_build_command_native_resume_retains_policy_without_repeating_role() -> None:
+def test_build_command_native_resume_retains_policy() -> None:
     command = CodexAdapter(executable="codex").build_command(
         config(), context("Continue.", resume_id="thread-id")
     )
@@ -208,6 +219,42 @@ def test_build_command_native_resume_retains_policy_without_repeating_role() -> 
     assert "--search" in command.argv[:exec_index]
 
 
+@pytest.mark.parametrize(
+    "strategy,resume_id",
+    [("native", None), ("native", "thread-id"), ("stateless", None)],
+)
+def test_every_codex_strategy_carries_developer_role_once(
+    strategy: str,
+    resume_id: str | None,
+) -> None:
+    """The role is developer-authority argv, not a user-message duplicate.
+
+    This deliberately overturns the old
+    ``..._without_repeating_role`` contract. spike/FINDINGS.md:98 measured the
+    role block *persisting* across a native resume on Codex 0.144.5, so the
+    role was never lost -- this is about authority and recency, not repair.
+    """
+
+    adapter = CodexAdapter(executable="codex")
+    command = adapter.build_command(
+        config(),
+        context("Go.", strategy=strategy, resume_id=resume_id),
+    )
+
+    assert developer_instructions(command) == "Begin with ROLE-CODEX-OK."
+    assert "ROLE-CODEX-OK" not in command.stdin
+    assert "<role_instructions>" not in command.stdin
+
+
+def test_codex_role_override_is_toml_safe_and_one_argv_element() -> None:
+    session = config()
+    session.role_instructions = 'Quote "one", newline\nbackslash\\, DEL \x7f and ü.'
+
+    command = CodexAdapter(executable="codex").build_command(session, context("Go."))
+
+    assert developer_instructions(command) == session.role_instructions
+
+
 def test_build_command_stateless_reapplies_role_history_and_source() -> None:
     run_context = context("Continue with evidence.", strategy="stateless")
     run_context = RunContext(
@@ -222,7 +269,8 @@ def test_build_command_stateless_reapplies_role_history_and_source() -> None:
         workspace=run_context.workspace,
     )
     command = CodexAdapter(executable="codex").build_command(config(), run_context)
-    assert "<role_instructions>Begin with ROLE-CODEX-OK.</role_instructions>" in command.stdin
+    assert developer_instructions(command) == "Begin with ROLE-CODEX-OK."
+    assert "<role_instructions>" not in command.stdin
     assert "round-01.prompt.md" in command.stdin
     assert "round-01.md" in command.stdin
     assert "inputs/round-03/source.md" in command.stdin
