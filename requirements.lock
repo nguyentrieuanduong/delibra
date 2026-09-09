@@ -4,6 +4,7 @@ anyio==4.14.2
 certifi==2026.6.17
 click==8.4.2
 fastapi==0.139.2
+greenlet==3.5.5
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
@@ -16,9 +17,11 @@ MarkupSafe==3.0.3
 mdit-py-plugins==0.6.1
 mdurl==0.1.2
 packaging==26.2
+playwright==1.62.0
 pluggy==1.6.0
 pydantic==2.13.4
 pydantic_core==2.46.4
+pyee==13.0.1
 Pygments==2.20.0
 pytest==9.1.1
 pytest-asyncio==1.4.0
