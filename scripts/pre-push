@@ -1,0 +1,52 @@
+#!/bin/sh
+# Optional local check. Install per clone:
+#   ln -s ../../scripts/pre-push .git/hooks/pre-push
+# This is a convenience only -- it is not a branch gate, because a clone
+# that never installs it can still push a red suite. Only required CI can
+# enforce that, and this repository has none.
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-push: node is missing; the JS contract tests would silently skip" >&2
+  exit 1
+fi
+
+# Refuse rather than skip. A check that quietly drops the browser tests
+# reports green while the coverage it exists to protect is not running --
+# and those are the only tests exercising real htmx swaps at all.
+if ! envs/bin/python -c "import playwright" >/dev/null 2>&1; then
+  echo "pre-push: playwright missing. Run: envs/bin/pip install -r requirements.lock" >&2
+  exit 1
+fi
+# Launch and close a browser. `playwright install --dry-run` only prints
+# planned download locations and exits 0 whether or not Chromium is
+# present, so it cannot answer this question. Launching also catches a
+# downloaded browser whose shared libraries are missing -- a different
+# fault with a different fix, so the two are reported separately and the
+# launch error is never swallowed. Reinstalling the browser does not
+# install a missing libnss3.
+if envs/bin/python <<'PY'
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    if not Path(p.chromium.executable_path).exists():
+        raise SystemExit(2)
+    p.chromium.launch().close()
+PY
+then
+  :
+else
+  status=$?
+  if [ "$status" -eq 2 ]; then
+    echo "pre-push: chromium is not installed. Run: envs/bin/playwright install chromium" >&2
+  else
+    echo "pre-push: chromium is installed but would not launch; the error above is Playwright's." >&2
+    echo "pre-push: if it names missing shared libraries, install Playwright's host dependencies." >&2
+  fi
+  exit 1
+fi
+
+exec envs/bin/python -m pytest -q

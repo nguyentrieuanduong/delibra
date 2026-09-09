@@ -520,12 +520,31 @@ Names/models are capped at 200 characters, role instructions at 20,000, prompts 
 
 ## Verification
 
-Run the suite with:
+Run the suite with `envs/bin/python -m pytest -q`.
+
+Pytest invokes the JavaScript contract files through
+`tests/test_routes_chat.py`. Those tests skip when Node is absent; the
+optional pre-push check below refuses that reduced suite. To run the
+JavaScript contracts directly, use `node --test tests/js/*.js`.
+
+The browser tests drive real Chromium against a live server. Install it
+once with `envs/bin/playwright install chromium`. To skip them — for
+example on a machine without a browser — use
+`envs/bin/python -m pytest -q -m "not browser"`, knowing that this drops
+the only coverage of htmx actually applying the fragments the server sends.
+
+An optional local pre-push check runs the full suite:
 
 ```sh
-envs/bin/python -m pytest -q
-node --test tests/js/*.js
+ln -s ../../scripts/pre-push .git/hooks/pre-push
 ```
+
+It refuses to run rather than skipping the browser tests, so it tells you
+to install Chromium instead of reporting a hollow green.
+
+It is a convenience, not a branch gate: a clone that has not installed it
+can still push a red suite. Enforcing that needs CI, which this repository
+does not yet have.
 
 The complete MVP acceptance record, including separate Claude and Codex parity
 evidence, the M4 chat/config gate, M5 workspace/file/focus evidence, and the remaining
