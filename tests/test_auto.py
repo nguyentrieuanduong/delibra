@@ -234,6 +234,10 @@ def test_validate_turn_timeout_seconds_rejects_non_integers(value: object) -> No
         validate_turn_timeout_seconds(value, maximum=14_400)
 
 
+def test_auto_context_policy_defaults_to_off() -> None:
+    assert AutoContextPolicy().mode == "off"
+
+
 def _resume_record(
     *,
     status: str,

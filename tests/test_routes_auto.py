@@ -1743,8 +1743,8 @@ def test_auto_run_total_renders_on_both_status_paths(
 def test_auto_setup_offers_context_management_with_its_documented_defaults(
     tmp_path: Path,
 ) -> None:
-    # Compact every 3 cycles, summarized by the next speaker, is the default for
-    # new runs; the prompt-size unit is named for what it measures.
+    # Off is the default mode. Interval, unit, summarizer, and threshold defaults
+    # remain available when an operator opts into context management.
     app, _, project, _store, sessions, _ = auto_route_app(tmp_path)
     prefix = f"/projects/{quote(project.name, safe='')}"
 
@@ -1753,7 +1753,10 @@ def test_auto_setup_offers_context_management_with_its_documented_defaults(
         page = client.get(f"{prefix}/chat?auto_setup=true")
 
     for text in (fragment.text, page.text):
-        assert 'value="compact" checked' in text
+        compact_tag = named_input(text, "context_mode", "compact")
+        off_tag = named_input(text, "context_mode", "off")
+        assert "checked" not in compact_tag
+        assert "checked" in off_tag
         assert re.search(
             r'<input[^>]*name="context_interval"[^>]*min="1"[^>]*max="20"'
             r'[^>]*value="3"',
