@@ -8,8 +8,10 @@ POSTs that end in a full render, are out of scope. This boundary is
 deliberate -- a partial matrix that says so is useful; one that claims to
 be complete is not.
 
-The writable-roots forms are ordinary POSTs answered with a full render, so
-they add no row to this live-refresh matrix.
+The project writable-roots form is an ordinary POST followed by a full-render
+redirect. Agent create/edit writable-root fields reuse the existing htmx
+`#agent-sidebar` swap. They add no row because this matrix is organized by
+refreshed fragment and neither path introduces a new fragment.
 
 Delibra pushes HTML, not state. Every row is a server-side change an
 operator can see, the fragments it must refresh, and the test proving the
