@@ -51,6 +51,18 @@ PROMPT_PATTERN = re.compile(r"^round-(\d{2,})\.prompt\.md$")
 PARTIAL_PATTERN = re.compile(r"^round-(\d{2,})\.partial\.md$")
 SHARED_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 RESERVED_SHARED_ROOTS = frozenset({".delibra", ".git", ".hg", ".svn"})
+# One argv element carries every Claude permission rule, comma-joined, and the
+# rules use gitignore-style patterns. A comma splits one rule into two, and
+# `*?[]!#\` change what a rule matches. Claude also accepts spaces as separators,
+# so control characters and non-space Unicode whitespace are not safe literals.
+# Normal ASCII spaces remain supported by the documented
+# Edit(./Finance (2024)/**) example. Parentheses are safe, but a directory named
+# `src[1]` is not worth an encoder that must stay correct against two
+# independently versioned CLI grammars. The same applies when an unsafe
+# character occurs above the registered project directory, because the provider
+# receives the resolved absolute path. Reject by name instead.
+UNSAFE_WRITABLE_ROOT_CHARACTERS = frozenset(",*?[]!#\\")
+MAX_WRITABLE_ROOTS = 16
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 AUTO_STATUSES = frozenset(
     {
@@ -314,6 +326,75 @@ def shared_markdown_path_parts(value: str) -> tuple[str, ...]:
     if suffix not in SHARED_MARKDOWN_SUFFIXES:
         raise ProjectFileSecurityError("shared file must be Markdown")
     return parts
+
+
+def first_unsafe_writable_root_character(value: str) -> str | None:
+    return next(
+        (
+            character
+            for character in value
+            if character in UNSAFE_WRITABLE_ROOT_CHARACTERS
+            or ord(character) < 32
+            or ord(character) == 127
+            or (character != " " and character.isspace())
+        ),
+        None,
+    )
+
+
+def writable_root_parts(value: str) -> tuple[str, ...]:
+    parts = project_path_parts(value)
+    if not parts:
+        raise ProjectFileSecurityError("writable root must name a project subdirectory")
+    if value != value.strip() or "\r" in value or "\n" in value:
+        raise ProjectFileSecurityError("writable root contains unsafe whitespace")
+    if parts[0].casefold() in RESERVED_SHARED_ROOTS:
+        raise ProjectFileSecurityError("writable root names reserved project metadata")
+    for part in parts:
+        unsafe = first_unsafe_writable_root_character(part)
+        if unsafe is not None:
+            raise ProjectFileSecurityError(
+                f"writable root part {part!r} contains unsafe character {unsafe!r}"
+            )
+    return parts
+
+
+def resolve_project_subdirectory(root: Path, relative_path: str) -> Path:
+    parts = writable_root_parts(relative_path)
+    canonical = "/".join(parts)
+    try:
+        with _open_project_directory(root, parts):
+            pass
+    except StorageError as exc:
+        raise StorageError(f"writable root {canonical!r} is unavailable: {exc}") from exc
+    resolved = root.joinpath(*parts)
+    unsafe = first_unsafe_writable_root_character(str(resolved))
+    if unsafe is not None:
+        raise StorageError(
+            f"writable root {canonical!r} has unsafe resolved character {unsafe!r}"
+        )
+    return resolved
+
+
+def normalize_writable_roots(values: object) -> list[str]:
+    if not isinstance(values, list) or any(
+        type(value) is not str for value in values
+    ):
+        raise StorageError("writable roots must be a list of strings")
+    canonical_parts = sorted(
+        {writable_root_parts(value) for value in values},
+        key=lambda parts: "/".join(parts),
+    )
+    kept: list[tuple[str, ...]] = []
+    for parts in canonical_parts:
+        if any(parts[: len(ancestor)] == ancestor for ancestor in kept):
+            continue
+        kept.append(parts)
+    if len(kept) > MAX_WRITABLE_ROOTS:
+        raise StorageError(
+            f"writable roots must contain at most {MAX_WRITABLE_ROOTS} entries"
+        )
+    return ["/".join(parts) for parts in kept]
 
 
 def _project_directory_flags() -> int:
