@@ -50,6 +50,7 @@ from app.storage import (
     StorageError,
     utc_now,
     validate_id,
+    validate_turn_timeout_seconds,
 )
 
 if TYPE_CHECKING:
@@ -209,16 +210,6 @@ def compaction_boundary_due(
         pending > 0
         and rendered_bytes * 100 >= policy.threshold_percent * prompt_limit
     )
-
-
-def validate_turn_timeout_seconds(value: object, *, maximum: int) -> int:
-    """Bound an Auto per-turn budget in seconds, never in rounded minutes."""
-
-    if type(value) is not int or not 1 <= value <= maximum:
-        raise StorageError(
-            f"Auto turn time limit must be from 1 through {maximum} seconds"
-        )
-    return value
 
 
 @dataclass(frozen=True)

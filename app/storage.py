@@ -177,6 +177,27 @@ class ProjectFileDisplayError(StorageError):
     """A safe project-browser path cannot currently be displayed."""
 
 
+def validate_turn_timeout_seconds(
+    value: object,
+    *,
+    maximum: int | None = None,
+    label: str = "Auto turn time limit",
+) -> int:
+    """Bound an Auto per-turn budget or project default in seconds, never in rounded minutes."""
+
+    valid = type(value) is int and value >= 1
+    if maximum is not None:
+        valid = valid and value <= maximum
+    if not valid:
+        requirement = (
+            "a positive integer"
+            if maximum is None
+            else f"from 1 through {maximum} seconds"
+        )
+        raise StorageError(f"{label} must be {requirement}")
+    return value
+
+
 @dataclass(frozen=True)
 class ProjectFileEntry:
     name: str
@@ -1543,6 +1564,14 @@ class ProjectStore:
                 validate_pass_prompt_template(manifest["pass_prompt_template"])
             except PassPromptTemplateError as exc:
                 raise OwnershipError("project Pass prompt template is invalid") from exc
+        if "turn_timeout_seconds" in manifest:
+            try:
+                validate_turn_timeout_seconds(
+                    manifest["turn_timeout_seconds"],
+                    label="Project turn time limit",
+                )
+            except StorageError as exc:
+                raise OwnershipError("project turn time limit is invalid") from exc
         try:
             manifest["writable_roots"] = normalize_writable_roots(
                 manifest.get("writable_roots", [])
@@ -1564,6 +1593,46 @@ class ProjectStore:
             "pass_prompt_template",
             BUILT_IN_PASS_PROMPT_TEMPLATE,
         )
+
+    def configured_turn_timeout_seconds(self) -> int | None:
+        return self._load_manifest().get("turn_timeout_seconds")
+
+    def effective_turn_timeout_seconds(
+        self,
+        default: int,
+        *,
+        maximum: int,
+    ) -> int:
+        configured = self.configured_turn_timeout_seconds()
+        if configured is None:
+            return validate_turn_timeout_seconds(
+                default,
+                maximum=maximum,
+                label="Project turn time limit",
+            )
+        # Reads clamp. Lowering DELIBRA_MAX_RUN_TIMEOUT below a saved project
+        # value must not 422 the settings page, the composer, and Auto setup at
+        # once; the stored value stays put so raising the cap restores it.
+        return min(
+            validate_turn_timeout_seconds(
+                configured,
+                label="Project turn time limit",
+            ),
+            maximum,
+        )
+
+    def set_turn_timeout_seconds(self, value: object, *, maximum: int) -> int:
+        candidate = validate_turn_timeout_seconds(
+            value,
+            maximum=maximum,
+            label="Project turn time limit",
+        )
+        manifest = self._load_manifest()
+        if manifest.get("turn_timeout_seconds") == candidate:
+            return candidate
+        manifest["turn_timeout_seconds"] = candidate
+        atomic_write_json(self.manifest_path, manifest)
+        return candidate
 
     def effective_writable_roots(self) -> list[str]:
         return normalize_writable_roots(
