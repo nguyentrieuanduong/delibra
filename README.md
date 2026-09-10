@@ -105,6 +105,26 @@ non-directory files under the sessions root are ignored.
 The existing project manifest stores `shared_markdown_path` when shared context is
 selected and `active_auto_run_id` while Auto owns the project reservation.
 
+Project settings may grant default writable roots to every agent, and agent
+settings may add roots for that agent. A writable root is always stored relative
+to the registered project directory. The effective grant is the normalized union
+of the project and agent lists, with at most 16 roots after redundant descendants
+are removed.
+
+Only existing, symlink-free directories may be saved. The project root itself and
+the metadata roots `.delibra`, `.git`, `.hg`, and `.svn` are never grantable. The
+characters `,*?[]!#\` anywhere in the resulting absolute path, including an
+ancestor above the registered project directory, are rejected because that path
+cannot be expressed safely in a provider permission rule. Control characters and
+non-space whitespace are rejected for the same reason; ordinary spaces and Unicode
+directory names remain supported. Every run revalidates every effective root and
+names a stale directory in the error instead of silently dropping the grant.
+
+Writable roots deliberately extend an agent's provider working directories beyond
+its private session workspace. If two agents receive the same directory, they can
+overwrite each other's edits: Delibra provides no locking or warning for shared
+writable roots.
+
 Completed output files are the source of truth. A pass-to round stages a no-follow,
 same-descriptor copy at `workspace/inputs/round-NN/source.md`, records its SHA-256,
 and leaves the source round immutable. Every app-owned path recorded inside a
@@ -422,8 +442,9 @@ finished process.
 
 Delibra provides write isolation, not read confidentiality:
 
-- Agent cwd and writable scope are the session `workspace/`; private temp is
-  `workspace/.tmp/`.
+- Agent cwd is the session `workspace/`, with private temp at `workspace/.tmp/`.
+  Write access starts there and may include the explicitly granted writable
+  project directories described above.
 - Claude receives only Read/Write/Edit and native web tools under the verified safe
   command. Codex runs in `workspace-write`, with shell network disabled and native
   web search enabled.
