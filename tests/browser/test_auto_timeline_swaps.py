@@ -129,6 +129,59 @@ def test_agent_completion_refresh_preserves_the_reading_position(
 
 
 @pytest.mark.browser
+def test_project_turn_timeout_flows_through_settings_auto_and_manual(
+    live_server: LiveServer,
+    page: Any,
+    tmp_path: Path,
+) -> None:
+    app = live_server(["sleep"], tmp_path)
+    base = app["base_url"]
+    first = app["session_ids"][0]
+
+    page.goto(f"{base}/projects/Verify/settings")
+    field = page.locator(
+        "form[action$='/turn-timeout'] input[name=turn_timeout_seconds]"
+    )
+    expect(field).to_have_value("120")
+    field.fill("90")
+    page.click("form[action$='/turn-timeout'] button[type=submit]")
+    expect(field).to_have_value("90")
+    expect(
+        page.locator("form[action$='/turn-timeout'] .hint")
+    ).to_contain_text("Saved project default")
+
+    page.goto(f"{base}/projects/Verify/chat?auto_setup=1")
+    expect(page.locator(AUTO_DIALOG)).to_be_visible(timeout=10_000)
+    expect(
+        page.locator(f"{AUTO_DIALOG} input[name=context_mode][value=off]")
+    ).to_be_checked()
+    expect(
+        page.locator(f"{AUTO_DIALOG} input[name=context_mode][value=compact]")
+    ).not_to_be_checked()
+    expect(
+        page.locator(f"{AUTO_DIALOG} input[name=turn_timeout_seconds]")
+    ).to_have_value("90")
+
+    page.goto(f"{base}/projects/Verify/chat?agent={first}")
+    page.fill("#chat-composer [name=prompt]", "project timeout")
+    page.click("#chat-composer button[type=submit]")
+    live = page.locator(f"section.live-round#round-{first}-1")
+    expect(live).to_be_visible(timeout=30_000)
+    # _timeout_controls.html:12 renders `Budget {{ timeout.effective_seconds }}s`
+    # into the live round through the timeout-host hx-get (_live.html:18-24).
+    expect(live.locator("[data-timeout-controls]")).to_contain_text(
+        "Budget 90s",
+        timeout=30_000,
+    )
+    live.locator("button[hx-post$='/cancel']").click()
+    expect(page.locator(f"#agent-status-{first}")).to_have_attribute(
+        "data-agent-status",
+        "idle",
+        timeout=30_000,
+    )
+
+
+@pytest.mark.browser
 def test_the_auto_status_swap_does_not_close_its_event_source(
     live_server: LiveServer,
     page: Any,

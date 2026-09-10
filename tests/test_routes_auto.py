@@ -440,6 +440,44 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     assert "?topic=" not in chat.text
 
 
+def test_project_turn_timeout_prefills_new_auto_runs(tmp_path: Path) -> None:
+    app, settings, project, store, _sessions, _factory = auto_route_app(tmp_path)
+    store.set_turn_timeout_seconds(7, maximum=settings.max_run_timeout)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        fragment = client.get(f"{prefix}/auto/setup")
+        page = client.get(f"{prefix}/chat?auto_setup=true")
+
+    for contents in (fragment.text, page.text):
+        timeout_tag = named_input(contents, "turn_timeout_seconds")
+        assert 'min="1"' in timeout_tag
+        assert 'max="14400"' in timeout_tag
+        assert 'value="7"' in timeout_tag
+
+
+def test_an_explicit_auto_turn_timeout_outranks_the_project_default(
+    tmp_path: Path,
+) -> None:
+    app, settings, project, store, sessions, _factory = auto_route_app(
+        tmp_path,
+        outputs=["CONVERGED", "CONVERGED"],
+    )
+    store.set_turn_timeout_seconds(7, maximum=settings.max_run_timeout)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(
+            client,
+            quote(project.name, safe=""),
+            [session.id for session in sessions],
+            turn_timeout_seconds=3,
+        )
+        assert started.status_code == 202
+        record = wait_for_auto(store, terminal=True)
+
+    assert record.future_turn_timeout_seconds == 3
+
+
 def test_chat_auto_setup_deep_link_reuses_fragment_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

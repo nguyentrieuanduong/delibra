@@ -772,7 +772,10 @@ class RunManager:
         initial_timeout = (
             auto_request.initial_timeout_seconds
             if auto_request is not None
-            else self.settings.run_timeout
+            else store.effective_turn_timeout_seconds(
+                self.settings.run_timeout,
+                maximum=self.settings.max_run_timeout,
+            )
         )
         timeout = TimeoutRecord(
             initial_seconds=initial_timeout,

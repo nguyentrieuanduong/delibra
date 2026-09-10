@@ -202,6 +202,28 @@ async def save_writable_roots(
     )
 
 
+@router.post("/projects/{project_id}/turn-timeout")
+async def save_turn_timeout(
+    request: Request,
+    project_id: str,
+    turn_timeout_seconds: int = Form(...),
+):
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    async with request.app.state.locks.registry_project_sessions(
+        resolved_project_id
+    ):
+        project = request.app.state.registry.get(resolved_project_id)
+        ProjectStore(project).set_turn_timeout_seconds(
+            turn_timeout_seconds,
+            maximum=request.app.state.settings.max_run_timeout,
+        )
+    return RedirectResponse(
+        project_url(project.name, "/settings"),
+        status_code=303,
+    )
+
+
 @router.post("/projects/{project_id}/pass-prompt/reset")
 async def reset_pass_prompt(request: Request, project_id: str):
     project = request_project(request, project_id)

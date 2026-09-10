@@ -231,6 +231,11 @@ def create_app(
             for session_id, messages in migration_issue_lists.items()
         }
         auto_migration_issues = store.auto_migration_status().issues
+        configured_turn_timeout = store.configured_turn_timeout_seconds()
+        effective_turn_timeout = store.effective_turn_timeout_seconds(
+            request.app.state.settings.run_timeout,
+            maximum=request.app.state.settings.max_run_timeout,
+        )
         return templates.TemplateResponse(
             request=request,
             name="project.html",
@@ -250,6 +255,12 @@ def create_app(
                 "auto_migration_issues": auto_migration_issues,
                 "pass_prompt_template": store.effective_pass_prompt_template(),
                 "writable_roots": store.effective_writable_roots(),
+                "turn_timeout_seconds": effective_turn_timeout,
+                "configured_turn_timeout_seconds": configured_turn_timeout,
+                "turn_timeout_inherited": configured_turn_timeout is None,
+                "max_turn_timeout_seconds": (
+                    request.app.state.settings.max_run_timeout
+                ),
             },
         )
 

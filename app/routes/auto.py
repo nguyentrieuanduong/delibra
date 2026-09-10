@@ -454,7 +454,10 @@ def projected_auto_setup_context(
         "sessions": ordered_sessions,
         "topic": topic or "",
         "topic_source": "durable" if topic is not None else "composer",
-        "turn_timeout_seconds": settings.run_timeout,
+        "turn_timeout_seconds": store.effective_turn_timeout_seconds(
+            settings.run_timeout,
+            maximum=settings.max_run_timeout,
+        ),
         "max_turn_timeout_seconds": settings.max_run_timeout,
         "context_interval": AutoContextPolicy.interval,
         "context_threshold_percent": settings.auto_context_trigger_percent,

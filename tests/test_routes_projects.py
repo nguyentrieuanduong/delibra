@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 from urllib.parse import quote
@@ -48,6 +49,90 @@ def project_app(tmp_path: Path):
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
     ), settings
+
+
+def timeout_input(contents: str) -> str:
+    for match in re.finditer(r"<input\b[^>]*>", contents):
+        if 'name="turn_timeout_seconds"' in match.group(0):
+            return match.group(0)
+    raise AssertionError("turn_timeout_seconds input not found")
+
+
+def test_project_turn_timeout_setting_renders_and_saves(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "project-timeout"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Timeout", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        inherited = client.get(f"{prefix}/settings")
+        saved = client.post(
+            f"{prefix}/turn-timeout",
+            data={"turn_timeout_seconds": "7"},
+            follow_redirects=False,
+        )
+        explicit = client.get(f"{prefix}/settings")
+
+    assert 'value="2"' in timeout_input(inherited.text)
+    assert "Inherited application default" in inherited.text
+    assert saved.status_code == 303
+    assert ProjectStore(project).configured_turn_timeout_seconds() == 7
+    assert 'value="7"' in timeout_input(explicit.text)
+    assert "Saved project default" in explicit.text
+
+    with TestClient(app, base_url="http://localhost") as client:
+        for invalid_data in (
+            {"turn_timeout_seconds": "0"},
+            {"turn_timeout_seconds": str(settings.max_run_timeout + 1)},
+            {"turn_timeout_seconds": "seven"},
+            {},
+        ):
+            response = client.post(
+                f"{prefix}/turn-timeout",
+                data=invalid_data,
+            )
+            assert response.status_code == 422
+
+    assert ProjectStore(project).configured_turn_timeout_seconds() == 7
+
+
+def test_settings_page_discloses_a_saved_timeout_above_the_lowered_cap(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    project_dir = tmp_path / "project-lowered-cap"
+    project_dir.mkdir()
+    settings = Settings(
+        home=home,
+        run_timeout=900,
+        max_run_timeout=1_800,
+    )
+    project = RegistryStore(home).register("Lowered Cap", project_dir)
+    store = ProjectStore(project)
+    store.set_turn_timeout_seconds(3_600, maximum=14_400)
+    app = create_app(
+        settings_override=settings,
+        provider_commands={
+            "claude": "/missing/claude",
+            "codex": "/missing/codex",
+        },
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(
+            f"/projects/{quote(project.name, safe='')}/settings"
+        )
+
+    assert response.status_code == 200
+    field = timeout_input(response.text)
+    assert 'max="1800"' in field
+    assert 'value="1800"' in field
+    assert "Saved project default: 3600 seconds" in response.text
+    assert (
+        "current application cap limits new turns to 1800 seconds"
+        in response.text
+    )
 
 
 def project_with_corrupt_active_auto(
