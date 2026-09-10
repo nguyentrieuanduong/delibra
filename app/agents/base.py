@@ -51,6 +51,7 @@ class RunContext:
     staged_source: Path | None
     workspace: Path = Path(".")
     staged_shared_context: Path | None = None
+    writable_roots: tuple[Path, ...] = ()
 
 
 def shared_context_section(context: RunContext) -> str:

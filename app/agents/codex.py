@@ -132,6 +132,8 @@ class CodexAdapter:
             "--disable",
             "multi_agent",
         ]
+        for root in sorted(context.writable_roots, key=lambda path: path.as_posix()):
+            global_options.extend(["--add-dir", root.as_posix()])
         common_exec = [
             "--json",
             "--skip-git-repo-check",
