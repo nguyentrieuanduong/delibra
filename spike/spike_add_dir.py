@@ -1065,12 +1065,13 @@ def run_claude_turn(
         )
 
     response = claude_final_text(invocation.events)
-    parsed_following = response.startswith(ROLE_PREFIX["claude"])
+    parsed_following = following_option_parsed(form, response)
     report.following_option_parsed[turn] = parsed_following
     if not parsed_following:
         raise SpikeStop(
-            f"claude {label}: the option after --add-dir was not parsed; the "
-            f"variadic form swallowed it (response began {response[:80]!r})"
+            f"claude {label}: the variadic form swallowed the option after "
+            f"--add-dir; the role text never reached the model "
+            f"(response began {response[:80]!r})"
         )
     if not inert:
         raise SpikeStop(f"claude {label}: ambient activation -- {'; '.join(reasons)}")
@@ -1159,6 +1160,29 @@ def run_codex_turn(
 # --------------------------------------------------------------------------
 # Findings
 # --------------------------------------------------------------------------
+
+
+def following_option_parsed(form: str, response: str) -> bool:
+    """Did the option after `--add-dir` survive, judged only where it can fail?
+
+    The spike splices the grant flags immediately before
+    `--append-system-prompt`, so a swallowed option means the role never reached
+    the model. Two corrections, both earned by run 4 stopping here falsely:
+
+    With the `repeated` form the question does not arise -- `--add-dir` takes
+    exactly one value, so the next token is always parsed as an option. Run 4
+    stopped on a `repeated` turn whose argv demonstrably carried
+    `--append-system-prompt` intact and whose `grant_c` write succeeded, which
+    it could not have without both the flag and its rule being honoured.
+
+    Even for `variadic`, "did the model *begin* with the prefix" is instruction
+    compliance, not argv parsing. Swallowing removes the system prompt outright,
+    so the honest signal is the role text being absent altogether.
+    """
+
+    if form != "variadic":
+        return True
+    return ROLE_PREFIX["claude"] in response
 
 
 def failure_detail(invocation: Invocation) -> str:
@@ -1488,6 +1512,14 @@ def main() -> int:
     # `codex debug models` before a run rather than assuming this is current.
     parser.add_argument("--codex-model", default="gpt-5.5")
     parser.add_argument("--codex-effort", default="low", choices=CodexAdapter.EFFORT_LEVELS)
+    # Claude passed identically on runs 3 and 4 while Codex has never reached a
+    # turn, blocked both times by a Claude-side harness defect. This lets the
+    # remaining unknown be probed without re-spending on a settled provider.
+    parser.add_argument(
+        "--skip-claude",
+        action="store_true",
+        help="Do not run Claude; its result is already recorded in git history.",
+    )
     args = parser.parse_args()
 
     report = Report()
@@ -1515,7 +1547,8 @@ def main() -> int:
             shutil.copyfile(real_auth, tree.codex_home / "auth.json")
             (tree.codex_home / "auth.json").chmod(0o600)
 
-            run_claude(tree, report, args)
+            if not args.skip_claude:
+                run_claude(tree, report, args)
             run_codex(tree, report, args)
         except SpikeStop as stop:
             report.verdict = f"STOP -- {stop}"
@@ -1524,9 +1557,11 @@ def main() -> int:
             print(f"Finding recorded in {FINDINGS}", file=sys.stderr)
             return 1
 
+        covered = "codex only" if args.skip_claude else "both providers"
         report.verdict = (
-            "PASS -- under Delibra's pinned argv plus one `Edit(//<root>/**)` rule per "
-            "grant, both providers wrote into every granted directory while the cwd "
+            f"PASS ({covered}) -- under Delibra's pinned argv plus one "
+            "`Edit(//<root>/**)` rule per "
+            f"grant, {covered} wrote into every granted directory while the cwd "
             "control succeeded and the ungranted sibling stayed denied; a newly "
             "granted directory became writable on a native resume; both protected "
             "sentinels survived direct and nested-symlink attacks; and no "
