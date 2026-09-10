@@ -1051,7 +1051,7 @@ def run_claude_turn(
 
     if invocation.returncode != 0:
         raise SpikeStop(
-            f"claude {label} rc={invocation.returncode}; stderr={invocation.stderr[-2000:]!r}"
+            f"claude {label} rc={invocation.returncode}; {failure_detail(invocation)}"
         )
     if len(ids) != 1:
         raise SpikeStop(f"claude {label}: expected one session id, got {sorted(ids)}")
@@ -1132,7 +1132,7 @@ def run_codex_turn(
 
     if invocation.returncode != 0:
         raise SpikeStop(
-            f"codex {label} rc={invocation.returncode}; stderr={invocation.stderr[-2000:]!r}"
+            f"codex {label} rc={invocation.returncode}; {failure_detail(invocation)}"
         )
     if len(ids) != 1:
         raise SpikeStop(f"codex {label}: expected one thread id, got {sorted(ids)}")
@@ -1159,6 +1159,30 @@ def run_codex_turn(
 # --------------------------------------------------------------------------
 # Findings
 # --------------------------------------------------------------------------
+
+
+def failure_detail(invocation: Invocation) -> str:
+    """Why a turn failed, in whichever stream the provider chose to say it.
+
+    Codex reports fatal errors as stdout events and leaves stderr empty, so a
+    stop message built from stderr alone is blank exactly when it matters. Three
+    runs of this spike have now produced a durable report missing its own
+    diagnosis; this is the reporting half of that fix.
+    """
+
+    messages: list[str] = []
+    for event in invocation.events:
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "error":
+            messages.append(str(item.get("message", "")))
+        error = event.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            messages.append(str(error["message"]))
+        elif event.get("type") == "error" and event.get("message"):
+            messages.append(str(event["message"]))
+    if invocation.stderr.strip():
+        messages.append(f"stderr={invocation.stderr[-2000:]!r}")
+    return "; ".join(dict.fromkeys(m for m in messages if m)) or "no error detail in stream or stderr"
 
 
 def sanitize(text: str, replacements: dict[str, str]) -> str:
@@ -1299,6 +1323,13 @@ event stream or stderr and no leak file anywhere in the tree.
 {ambient}
 
 ### Sanitized argv
+
+`<PROJECT>`, `<WORKSPACE>` and `<CODEX_HOME>` each stand for an **absolute path,
+including its leading slash**. So a permission rule printed below as
+`Edit(/<PROJECT>/grant-a/**)` is the *double*-slash absolute form
+`Edit(//var/.../grant-a/**)`, not the single-slash form that anchors at the
+working directory and silently matched nothing in the first two runs. Read the
+placeholder before concluding this grammar regressed.
 {argv}
 
 ### Notes
@@ -1452,7 +1483,10 @@ def main() -> int:
     parser.add_argument(
         "--claude-effort", default="low", choices=ClaudeAdapter.EFFORT_LEVELS
     )
-    parser.add_argument("--codex-model", default="gpt-5.4")
+    # gpt-5.4 was valid when the M4/M5 gates ran against codex 0.144.5 and has
+    # since left the catalog; the API now rejects it with a 400. Verify against
+    # `codex debug models` before a run rather than assuming this is current.
+    parser.add_argument("--codex-model", default="gpt-5.5")
     parser.add_argument("--codex-effort", default="low", choices=CodexAdapter.EFFORT_LEVELS)
     args = parser.parse_args()
 

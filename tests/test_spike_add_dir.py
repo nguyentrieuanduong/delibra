@@ -21,9 +21,11 @@ from spike.spike_add_dir import (
     build_tree,
     check_expectations,
     claude_tool_outcomes,
+    failure_detail,
     findings_section,
     observed_writes,
     repeated_form,
+    sanitize,
     should_retry_claude_variadic,
     splice,
     upsert_findings,
@@ -218,6 +220,58 @@ def test_findings_section_renders_every_heading_without_leaking_a_raw_key() -> N
     ):
         assert heading in rendered
     assert "<PROJECT>" not in rendered or str(Path.home()) not in rendered
+
+
+def test_failure_detail_reads_the_event_stream_not_only_stderr() -> None:
+    """Codex reports fatal errors as stdout events and leaves stderr empty.
+
+    The third run stopped with `rc=1; stderr=''` while the actual cause -- a
+    model the API rejected with a 400 -- sat in the event stream. Three runs
+    have now produced a durable report that omitted its own diagnosis.
+    """
+
+    events = [
+        {"type": "thread.started", "thread_id": "t"},
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "error",
+                "message": "Model metadata for `gpt-5.4` not found.",
+            },
+        },
+        {
+            "type": "turn.failed",
+            "error": {"message": "The 'gpt-5.4' model is not supported"},
+        },
+    ]
+
+    detail = failure_detail(Invocation([], 1, 0.0, events, ""))
+
+    assert "gpt-5.4" in detail
+    assert "not supported" in detail
+
+
+def test_failure_detail_falls_back_to_stderr_when_the_stream_is_silent() -> None:
+    detail = failure_detail(Invocation([], 1, 0.0, [], "boom on stderr"))
+
+    assert "boom on stderr" in detail
+
+
+def test_the_report_explains_that_a_placeholder_absorbs_one_slash() -> None:
+    """`<PROJECT>` stands for a path that already starts with a slash.
+
+    So `Edit(//abs/p/**)` renders as `Edit(/<PROJECT>/**)` and reads exactly
+    like the single-slash defect this spike exists to have fixed. The rendering
+    is faithful and must not be doctored; the report has to say so, or the next
+    reader "corrects" a correct rule back into a broken one.
+    """
+
+    rendered = sanitize("Edit(//abs/p/grant-a/**)", {"/abs/p": "<PROJECT>"})
+    assert rendered == "Edit(/<PROJECT>/grant-a/**)"
+
+    explanation = findings_section(Report())
+    assert "including its leading slash" in explanation
+    assert "not the single-slash form" in explanation
 
 
 def test_findings_upsert_replaces_one_marked_block(
