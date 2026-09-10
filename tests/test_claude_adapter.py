@@ -183,6 +183,35 @@ def test_build_command_first_and_native_resume_match_proven_spike() -> None:
     assert resumed.stdin == "Continue."
 
 
+@pytest.mark.parametrize("resume_id", [None, "native-session-id"])
+def test_claude_writable_roots_use_repeated_flags_and_exact_edit_rules(
+    resume_id: str | None,
+) -> None:
+    command = ClaudeAdapter(executable="claude").build_command(
+        config(),
+        RunContext(
+            user_prompt="Investigate.",
+            resume_id=resume_id,
+            resume_strategy="native",
+            staged_history=[],
+            staged_source=None,
+            writable_roots=(Path("/project/zeta"), Path("/project/alpha")),
+        ),
+    )
+
+    assert [
+        command.argv[index + 1]
+        for index, value in enumerate(command.argv[:-1])
+        if value == "--add-dir"
+    ] == ["/project/alpha", "/project/zeta"]
+    allowed = command.argv[command.argv.index("--allowedTools") + 1]
+    assert allowed == (
+        "Read(/**),Edit(/**),WebSearch,WebFetch,"
+        "Edit(//project/alpha/**),Edit(//project/zeta/**)"
+    )
+    assert allowed.count("Edit(//project/") == 2
+
+
 def test_build_command_stateless_reapplies_role_and_lists_staged_history() -> None:
     command = ClaudeAdapter(executable="claude").build_command(
         config(),

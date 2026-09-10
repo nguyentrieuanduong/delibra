@@ -528,6 +528,8 @@ class RunManager:
         ):
             raise SessionBusy("session already has a running agent")
 
+        writable_roots = store.resolve_session_writable_roots(session_id)
+
         if auto_request is None and config.agent == "codex":
             # One quota check per manual prompt, on the provider about to be
             # spent. Awaited, not scheduled: this is the moment a stale figure
@@ -755,6 +757,7 @@ class RunManager:
             staged_source=staged_source,
             workspace=workspace,
             staged_shared_context=staged_shared_context,
+            writable_roots=writable_roots,
         )
         try:
             adapter = self.adapter_factory(config)

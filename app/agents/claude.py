@@ -160,6 +160,17 @@ class ClaudeAdapter:
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
         if config.effort not in self.EFFORT_LEVELS:
             raise ValueError(f"unsupported Claude effort: {config.effort}")
+        writable_roots = tuple(
+            sorted(context.writable_roots, key=lambda path: path.as_posix())
+        )
+        add_directories = [
+            token
+            for root in writable_roots
+            for token in ("--add-dir", root.as_posix())
+        ]
+        allowed_tools = "Read(/**),Edit(/**),WebSearch,WebFetch" + "".join(
+            f",Edit(/{root.as_posix()}/**)" for root in writable_roots
+        )
         argv = [
             self.executable,
             "-p",
@@ -171,6 +182,7 @@ class ClaudeAdapter:
             config.model,
             "--effort",
             config.effort,
+            *add_directories,
             "--append-system-prompt",
             config.role_instructions,
             "--permission-mode",
@@ -178,7 +190,7 @@ class ClaudeAdapter:
             "--tools",
             "Read,Write,Edit,WebSearch,WebFetch",
             "--allowedTools",
-            "Read(/**),Edit(/**),WebSearch,WebFetch",
+            allowed_tools,
             "--safe-mode",
             "--setting-sources",
             "",

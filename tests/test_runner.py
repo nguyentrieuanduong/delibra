@@ -584,6 +584,75 @@ async def test_missing_selected_context_creates_no_round_or_input(
     assert not (rounds / "round-01.partial.md").exists()
 
 
+@pytest.mark.parametrize("stale_kind", ["deleted", "symlink"])
+@pytest.mark.asyncio
+async def test_stale_writable_root_fails_before_quota_adapter_or_round(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stale_kind: str,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        agent="codex",
+    )
+    writable = store.project_path / "shared"
+    writable.mkdir()
+    config = store.load_session(session_id)
+    config.writable_roots = store.validate_session_writable_roots(["shared"])
+    store.save_session(config)
+    writable.rmdir()
+    if stale_kind == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        writable.symlink_to(outside, target_is_directory=True)
+
+    calls: list[str] = []
+
+    async def quota_refresh() -> None:
+        calls.append("quota")
+
+    def allocate_round(_store: ProjectStore, _session_id: str) -> int:
+        calls.append("round")
+        return 1
+
+    def adapter_factory(_config: SessionConfig) -> FakeAdapter:
+        calls.append("adapter")
+        return FakeAdapter("success")
+
+    monkeypatch.setattr(manager, "refresh_codex_quota", quota_refresh)
+    monkeypatch.setattr(ProjectStore, "allocate_round", allocate_round)
+    monkeypatch.setattr(manager, "adapter_factory", adapter_factory)
+
+    with pytest.raises(StorageError, match="shared"):
+        await manager.start(project_id, session_id, "Question")
+
+    assert calls == []
+    assert store.load_session(session_id).rounds == []
+
+
+@pytest.mark.asyncio
+async def test_writable_roots_are_resolved_into_run_context(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+    )
+    for name in ("alpha", "zeta"):
+        (store.project_path / name).mkdir()
+    config = store.load_session(session_id)
+    config.writable_roots = store.validate_session_writable_roots(
+        ["zeta", "alpha"]
+    )
+    store.save_session(config)
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert contexts[0].writable_roots == (
+        store.project_path / "alpha",
+        store.project_path / "zeta",
+    )
+
+
 @pytest.mark.asyncio
 async def test_retry_appends_stateless_round_and_clears_ambiguous_native_state(
     tmp_path: Path,

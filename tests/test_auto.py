@@ -2617,7 +2617,7 @@ async def test_auto_manager_artifact_failure_is_terminal_without_provider_call(
 ) -> None:
     manager, factory, project_id, session_ids, store = auto_manager_fixture(
         tmp_path,
-        [PlannedOutput("unused")],
+        [PlannedOutput("unused"), PlannedOutput("unused")],
     )
     created = await manager.create(
         project_id,
@@ -2633,6 +2633,35 @@ async def test_auto_manager_artifact_failure_is_terminal_without_provider_call(
     assert terminal.status == "error"
     assert factory.created == 0
     assert store.active_auto_run_id() is None
+
+
+@pytest.mark.asyncio
+async def test_deleted_writable_root_makes_auto_terminal_without_provider_call(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("unused")],
+    )
+    writable = store.project_path / "shared"
+    writable.mkdir()
+    config = store.load_session(session_ids[0])
+    config.writable_roots = store.validate_session_writable_roots(["shared"])
+    store.save_session(config)
+    writable.rmdir()
+
+    created = await manager.create(
+        project_id,
+        topic="Stale writable root",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "error"
+    assert "shared" in (terminal.terminal_reason or "")
+    assert factory.created == 0
 
 
 @pytest.mark.asyncio

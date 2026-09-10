@@ -54,6 +54,7 @@ def context(
     resume_id: str | None = None,
     strategy: str = "native",
     staged_shared_context: Path | None = None,
+    writable_roots: tuple[Path, ...] = (),
 ) -> RunContext:
     return RunContext(
         user_prompt=prompt,
@@ -63,6 +64,7 @@ def context(
         staged_source=None,
         workspace=Path("/session/workspace"),
         staged_shared_context=staged_shared_context,
+        writable_roots=writable_roots,
     )
 
 
@@ -217,6 +219,28 @@ def test_build_command_native_resume_retains_policy() -> None:
     assert command.stdin == "Continue."
     assert "--sandbox" in command.argv[:exec_index]
     assert "--search" in command.argv[:exec_index]
+
+
+@pytest.mark.parametrize("resume_id", [None, "thread-id"])
+def test_codex_writable_roots_use_repeated_global_flags(
+    resume_id: str | None,
+) -> None:
+    command = CodexAdapter(executable="codex").build_command(
+        config(),
+        context(
+            "Investigate.",
+            resume_id=resume_id,
+            writable_roots=(Path("/project/zeta"), Path("/project/alpha")),
+        ),
+    )
+    exec_index = command.argv.index("exec")
+
+    assert [
+        command.argv[index + 1]
+        for index, value in enumerate(command.argv[:exec_index])
+        if value == "--add-dir"
+    ] == ["/project/alpha", "/project/zeta"]
+    assert "--add-dir" not in command.argv[exec_index:]
 
 
 @pytest.mark.parametrize(
