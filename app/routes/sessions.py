@@ -18,7 +18,7 @@ from app.storage import (
     ConflictError,
     NotFoundError,
     ProjectStore,
-    normalize_writable_roots,
+    merge_writable_roots,
     utc_now,
     validate_id,
 )
@@ -167,8 +167,9 @@ async def edit_session(
         config = store.load_session(session_id)
         if config.status == "running":
             raise ConflictError("cannot edit a running session")
+        project_writable_roots = store.effective_writable_roots()
         old_effective_writable_roots = (
-            store.session_writable_roots(session_id)
+            merge_writable_roots(project_writable_roots, config.writable_roots)
             if writable_roots is not None
             else None
         )
@@ -222,9 +223,7 @@ async def edit_session(
             )
             config.agent, config.model, config.effort, config.role_instructions = updated
         new_effective_writable_roots = (
-            normalize_writable_roots(
-                [*store.effective_writable_roots(), *config.writable_roots]
-            )
+            merge_writable_roots(project_writable_roots, config.writable_roots)
             if old_effective_writable_roots is not None
             else None
         )

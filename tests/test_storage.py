@@ -39,6 +39,7 @@ from app.storage import (
     atomic_write_json,
     atomic_write_json_recovery_pair,
     load_json_recover,
+    merge_writable_roots,
     normalize_agent_name,
     normalize_project_name,
     normalize_writable_roots,
@@ -752,6 +753,13 @@ def test_normalize_writable_roots_deduplicates_and_drops_descendants(
     expected: list[str],
 ) -> None:
     assert normalize_writable_roots(values) == expected
+
+
+def test_merge_writable_roots_normalizes_the_effective_union() -> None:
+    assert merge_writable_roots(
+        ["src", "shared/api"],
+        ["src/generated", "tests", "shared"],
+    ) == ["shared", "src", "tests"]
 
 
 def test_normalize_writable_roots_rejects_more_than_sixteen_roots() -> None:

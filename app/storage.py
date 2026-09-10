@@ -418,6 +418,13 @@ def normalize_writable_roots(values: object) -> list[str]:
     return ["/".join(parts) for parts in kept]
 
 
+def merge_writable_roots(
+    defaults: Iterable[str],
+    additions: Iterable[str],
+) -> list[str]:
+    return normalize_writable_roots([*defaults, *additions])
+
+
 def _project_directory_flags() -> int:
     required = ("O_DIRECTORY", "O_NOFOLLOW")
     if any(not hasattr(os, name) for name in required):
@@ -1650,8 +1657,8 @@ class ProjectStore:
         affected: list[SessionConfig] = []
         for entry in entries.values():
             additions = normalize_writable_roots(entry.config.writable_roots)
-            old_effective = normalize_writable_roots([*current, *additions])
-            new_effective = normalize_writable_roots([*candidate, *additions])
+            old_effective = merge_writable_roots(current, additions)
+            new_effective = merge_writable_roots(candidate, additions)
             if old_effective != new_effective:
                 affected.append(replace(entry.config, cli_session_id=None))
         if candidate == current:
@@ -1665,13 +1672,14 @@ class ProjectStore:
 
     def session_writable_roots(self, session_id: str) -> list[str]:
         config = self.load_session(session_id)
-        return normalize_writable_roots(
-            [*self.effective_writable_roots(), *config.writable_roots]
+        return merge_writable_roots(
+            self.effective_writable_roots(),
+            config.writable_roots,
         )
 
     def validate_session_writable_roots(self, values: object) -> list[str]:
         candidate = normalize_writable_roots(values)
-        normalize_writable_roots([*self.effective_writable_roots(), *candidate])
+        merge_writable_roots(self.effective_writable_roots(), candidate)
         for relative_path in candidate:
             resolve_project_subdirectory(self.project_path, relative_path)
         return candidate
