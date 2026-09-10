@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 import stat
 import unicodedata
@@ -39,8 +40,11 @@ from app.storage import (
     load_json_recover,
     normalize_agent_name,
     normalize_project_name,
+    normalize_writable_roots,
+    resolve_project_subdirectory,
     safe_copy_file,
     sanitize_name,
+    writable_root_parts,
 )
 
 
@@ -607,6 +611,94 @@ def test_shared_markdown_save_rejects_symlinked_parent(tmp_path: Path) -> None:
         )
 
     assert (outside / "brief.md").read_text(encoding="utf-8") == "outside"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        ".",
+        ".DELIBRA/cache",
+        ".Git/objects",
+        "/absolute",
+        "../outside",
+        "src/../outside",
+        "src\x00other",
+        "src\rother",
+        "src\nother",
+        "src\tother",
+        "src\x7fother",
+        "src\u00a0other",
+        " src",
+        "src ",
+    ],
+)
+def test_writable_root_parts_rejects_unsafe_paths(value: str) -> None:
+    with pytest.raises(StorageError):
+        writable_root_parts(value)
+
+
+@pytest.mark.parametrize("character", [",", "*", "?", "[", "]", "!", "#", "\\"])
+def test_writable_root_parts_names_unsafe_rule_characters(character: str) -> None:
+    with pytest.raises(StorageError, match=rf"{re.escape(character)}"):
+        writable_root_parts(f"src{character}name")
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["intermediate-symlink", "leaf-symlink", "file", "missing"],
+)
+def test_resolve_writable_root_rejects_unavailable_directory(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    relative = "src/api"
+
+    if kind == "intermediate-symlink":
+        (project / "src").symlink_to(outside, target_is_directory=True)
+    else:
+        (project / "src").mkdir()
+        if kind == "leaf-symlink":
+            (project / relative).symlink_to(outside, target_is_directory=True)
+        elif kind == "file":
+            (project / relative).write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(StorageError, match=relative):
+        resolve_project_subdirectory(project, relative)
+
+
+def test_resolve_writable_root_rejects_unsafe_registered_project_ancestor(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "parent,unsafe" / "project"
+    (project / "src").mkdir(parents=True)
+
+    with pytest.raises(StorageError, match="src"):
+        resolve_project_subdirectory(project, "src")
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [
+        (["src", "src/api", "src"], ["src"]),
+        (["src/api", "src"], ["src"]),
+        (["src", "src2"], ["src", "src2"]),
+    ],
+)
+def test_normalize_writable_roots_deduplicates_and_drops_descendants(
+    values: list[str],
+    expected: list[str],
+) -> None:
+    assert normalize_writable_roots(values) == expected
+
+
+def test_normalize_writable_roots_rejects_more_than_sixteen_roots() -> None:
+    with pytest.raises(StorageError, match="16"):
+        normalize_writable_roots([f"root-{index:02d}" for index in range(17)])
 
 
 def test_project_store_round_trip_allocation_exact_scans_and_orphans(tmp_path: Path) -> None:
