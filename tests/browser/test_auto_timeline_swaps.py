@@ -85,6 +85,50 @@ def test_a_started_round_installs_its_live_section_without_a_reload(
 
 
 @pytest.mark.browser
+def test_agent_completion_refresh_preserves_the_reading_position(
+    live_server: LiveServer,
+    page: Any,
+    tmp_path: Path,
+) -> None:
+    """Replacing #chat-timeline must not reset its independent scrollport.
+
+    Auto completion refreshes the entire timeline with outerHTML. The tall
+    message makes an in-progress reading position observable, while the
+    second sleeping round proves the completion/status swaps have landed.
+    """
+
+    app = live_server(["success", "sleep"], tmp_path, delay=3.0)
+    alpha, beta = app["session_ids"]
+    _start_auto(page, app["base_url"], [alpha, beta], "Stable viewport")
+    page.add_style_tag(
+        content=".chat-timeline > .round, .chat-timeline > .live-round "
+        "{ min-height: 1800px; }"
+    )
+    expect(page.locator(f"section.live-round#round-{alpha}-1")).to_be_visible(
+        timeout=30_000
+    )
+
+    observed_scroll_top = page.locator("#chat-timeline").evaluate(
+        """timeline => {
+          window.timelineBeforeCompletion = timeline;
+          timeline.scrollTop = 700;
+          return timeline.scrollTop;
+        }"""
+    )
+    assert observed_scroll_top == 700
+
+    expect(page.locator(f"section.live-round#round-{beta}-1")).to_be_visible(
+        timeout=30_000
+    )
+    assert page.locator("#chat-timeline").evaluate(
+        "timeline => timeline !== window.timelineBeforeCompletion"
+    )
+    assert page.locator("#chat-timeline").evaluate(
+        "timeline => timeline.scrollTop"
+    ) == pytest.approx(observed_scroll_top, abs=1)
+
+
+@pytest.mark.browser
 def test_the_auto_status_swap_does_not_close_its_event_source(
     live_server: LiveServer,
     page: Any,

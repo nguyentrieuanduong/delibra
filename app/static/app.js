@@ -117,13 +117,59 @@ function resetFileReader(reader) {
 }
 
 function conversationTimelineForSwap(detailTarget, swappedElement) {
-  if (detailTarget.classList.contains("chat-timeline")) {
+  if (
+    swappedElement &&
+    swappedElement.classList &&
+    swappedElement.classList.contains("chat-timeline")
+  ) {
+    return swappedElement;
+  }
+  if (
+    detailTarget.classList &&
+    detailTarget.classList.contains("chat-timeline")
+  ) {
     return detailTarget;
   }
   if (!swappedElement || typeof swappedElement.closest !== "function") {
     return null;
   }
   return swappedElement.closest(".chat-timeline");
+}
+
+function captureConversationScroll(timeline) {
+  const timelineTop = timeline.getBoundingClientRect().top;
+  const messages = Array.from(
+    timeline.querySelectorAll(".round, .live-round")
+  );
+  const anchor = messages.find(function (message) {
+    return message.getBoundingClientRect().bottom > timelineTop;
+  });
+  return {
+    scrollTop: timeline.scrollTop,
+    anchorId: anchor && anchor.id ? anchor.id : null,
+    anchorOffset: anchor
+      ? anchor.getBoundingClientRect().top - timelineTop
+      : null,
+  };
+}
+
+function restoreConversationScroll(timeline, snapshot) {
+  if (!snapshot) {
+    return false;
+  }
+  const documentRoot = timeline.ownerDocument;
+  const anchor =
+    snapshot.anchorId && documentRoot
+      ? documentRoot.getElementById(snapshot.anchorId)
+      : null;
+  if (anchor && timeline.contains(anchor)) {
+    const timelineTop = timeline.getBoundingClientRect().top;
+    const anchorOffset = anchor.getBoundingClientRect().top - timelineTop;
+    timeline.scrollTop += anchorOffset - snapshot.anchorOffset;
+    return true;
+  }
+  timeline.scrollTop = snapshot.scrollTop;
+  return false;
 }
 
 function syncConversationDisclosure(timeline) {
@@ -329,6 +375,7 @@ function initializeDynamicPresentation(root) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     chatErrorMessage,
+    captureConversationScroll,
     closeAutoSetup,
     closeFocusDialog,
     conversationTimelineForSwap,
@@ -341,6 +388,7 @@ if (typeof module !== "undefined" && module.exports) {
     removeConversationEmptyState,
     resetFileReader,
     renderChatError,
+    restoreConversationScroll,
     setTimeoutFormPending,
     shouldClearChatError,
     syncConversationDisclosure,
@@ -351,6 +399,8 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 if (typeof document !== "undefined") {
+  const conversationScrollSnapshots = new WeakMap();
+
   initializeDynamicPresentation(document);
 
   document.querySelectorAll("[data-session-config-form]").forEach(function (form) {
@@ -413,8 +463,22 @@ if (typeof document !== "undefined") {
     }
   });
 
+  document.addEventListener("htmx:beforeSwap", function (event) {
+    const detail = event.detail;
+    const target = detail && detail.target;
+    const xhr = detail && detail.xhr;
+    if (!target || !xhr) {
+      return;
+    }
+    const timeline = conversationTimelineForSwap(target, target);
+    if (timeline) {
+      conversationScrollSnapshots.set(xhr, captureConversationScroll(timeline));
+    }
+  });
+
   document.addEventListener("htmx:afterSwap", function (event) {
-    const target = event.detail && event.detail.target;
+    const detail = event.detail;
+    const target = detail && detail.target;
     if (!target) {
       return;
     }
@@ -423,6 +487,13 @@ if (typeof document !== "undefined") {
     if (timeline) {
       removeConversationEmptyState(timeline);
       syncConversationDisclosure(timeline);
+      const snapshot = detail.xhr
+        ? conversationScrollSnapshots.get(detail.xhr)
+        : null;
+      restoreConversationScroll(timeline, snapshot);
+      if (detail.xhr) {
+        conversationScrollSnapshots.delete(detail.xhr);
+      }
     }
     if (focusAutoHistoryView(target)) {
       return;
