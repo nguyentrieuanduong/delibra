@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  captureConversationScroll,
   chatErrorMessage,
   closeFocusDialog,
   conversationTimelineForSwap,
@@ -13,6 +14,7 @@ const {
   removeConversationEmptyState,
   resetFileReader,
   renderChatError,
+  restoreConversationScroll,
   shouldClearChatError,
   syncConversationDisclosure,
 } = require("../../app/static/app.js");
@@ -195,6 +197,19 @@ test("outerHTML swaps use the newly inserted event target", () => {
   );
 });
 
+test("outerHTML timeline swaps prefer the replacement event target", () => {
+  const replacedTimeline = {
+    classList: { contains() { return true; } },
+  };
+  const replacementTimeline = {
+    classList: { contains() { return true; } },
+  };
+  assert.equal(
+    conversationTimelineForSwap(replacedTimeline, replacementTimeline),
+    replacementTimeline
+  );
+});
+
 test("unrelated swaps resolve no conversation timeline", () => {
   const target = {
     classList: { contains() { return false; } },
@@ -203,6 +218,61 @@ test("unrelated swaps resolve no conversation timeline", () => {
     closest() { return null; },
   };
   assert.equal(conversationTimelineForSwap(target, swapped), null);
+});
+
+test("conversation scroll restores the same message at the same offset", () => {
+  const above = {
+    id: "round-above",
+    getBoundingClientRect() { return { top: -40, bottom: 90 }; },
+  };
+  const anchor = {
+    id: "round-anchor",
+    getBoundingClientRect() { return { top: 80, bottom: 220 }; },
+  };
+  const original = {
+    scrollTop: 275,
+    getBoundingClientRect() { return { top: 100 }; },
+    querySelectorAll() { return [above, anchor]; },
+  };
+  const snapshot = captureConversationScroll(original);
+  assert.deepEqual(snapshot, {
+    scrollTop: 275,
+    anchorId: "round-anchor",
+    anchorOffset: -20,
+  });
+
+  const replacementAnchor = {
+    getBoundingClientRect() { return { top: 160 }; },
+  };
+  const replacement = {
+    scrollTop: 0,
+    ownerDocument: {
+      getElementById(id) {
+        assert.equal(id, "round-anchor");
+        return replacementAnchor;
+      },
+    },
+    contains(node) { return node === replacementAnchor; },
+    getBoundingClientRect() { return { top: 100 }; },
+  };
+  assert.equal(restoreConversationScroll(replacement, snapshot), true);
+  assert.equal(replacement.scrollTop, 80);
+});
+
+test("conversation scroll falls back to its numeric position", () => {
+  const timeline = {
+    scrollTop: 0,
+    ownerDocument: { getElementById() { return null; } },
+  };
+  assert.equal(
+    restoreConversationScroll(timeline, {
+      scrollTop: 420,
+      anchorId: "missing",
+      anchorOffset: 0,
+    }),
+    false
+  );
+  assert.equal(timeline.scrollTop, 420);
 });
 
 function recordedMessage(open) {
