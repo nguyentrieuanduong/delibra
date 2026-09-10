@@ -8,6 +8,9 @@ POSTs that end in a full render, are out of scope. This boundary is
 deliberate -- a partial matrix that says so is useful; one that claims to
 be complete is not.
 
+The writable-roots forms are ordinary POSTs answered with a full render, so
+they add no row to this live-refresh matrix.
+
 Delibra pushes HTML, not state. Every row is a server-side change an
 operator can see, the fragments it must refresh, and the test proving the
 browser applies them.
