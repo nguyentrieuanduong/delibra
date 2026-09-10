@@ -55,6 +55,34 @@
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Save writable roots</button>
     </form>
   </section>
+  <section aria-labelledby="turn-timeout-heading">
+    <h2 id="turn-timeout-heading">Default message turn time limit</h2>
+    <form method="post" action="{{ project_url(project.name, '/turn-timeout') }}">
+      <label>Seconds
+        <input
+          name="turn_timeout_seconds"
+          type="number"
+          min="1"
+          max="{{ max_turn_timeout_seconds }}"
+          value="{{ turn_timeout_seconds }}"
+          required
+        >
+      </label>
+      <p class="hint">
+        {% if turn_timeout_inherited %}
+          Inherited application default. Saving creates a project default.
+        {% elif configured_turn_timeout_seconds != turn_timeout_seconds %}
+          Saved project default: {{ configured_turn_timeout_seconds }} seconds.
+          The current application cap limits new turns to {{ turn_timeout_seconds }} seconds.
+          Saving replaces the saved value with the displayed value.
+        {% else %}
+          Saved project default.
+        {% endif %}
+        New manual messages and new Auto runs use this value. Active turns are unchanged.
+      </p>
+      <button type="submit">Save turn time limit</button>
+    </form>
+  </section>
   <h2>Sessions</h2>
   <details>
     <summary>Create session</summary>

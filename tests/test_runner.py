@@ -540,6 +540,30 @@ async def test_active_auto_reservation_blocks_public_cancel(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_manual_round_snapshots_the_project_turn_timeout(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        mode="sleep",
+        settings_transform=lambda value: replace(
+            value,
+            run_timeout=2,
+            max_run_timeout=30,
+        ),
+    )
+    store.set_turn_timeout_seconds(7, maximum=30)
+    key = await manager.start(project_id, session_id, "Question")
+    try:
+        assert manager.timeout_snapshot(key).initial_seconds == 7
+        store.set_turn_timeout_seconds(9, maximum=30)
+        assert manager.timeout_snapshot(key).initial_seconds == 7
+        assert manager.timeout_snapshot(key).effective_seconds == 7
+    finally:
+        await manager.cancel(key)
+
+
+@pytest.mark.asyncio
 async def test_run_stages_and_records_selected_shared_context(tmp_path: Path) -> None:
     contexts: list[RunContext] = []
     manager, project_id, session_id, store = setup_manager(

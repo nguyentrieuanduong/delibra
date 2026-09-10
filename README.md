@@ -425,10 +425,15 @@ after topic, preparations and framing) and a mandatory input already over the
 input limit. Quota during a compaction pauses the run to a resumable `stopped`
 like any other turn.
 
-The Auto setup box sets the starting per-turn budget in **seconds**, from 1 through
-`DELIBRA_MAX_RUN_TIMEOUT`, defaulting to `DELIBRA_RUN_TIMEOUT`. It applies to every
-preparation and discussion turn of that run and is stored exactly as submitted; it is
-never rounded through minutes. The global cap still applies.
+The Auto setup box sets the starting per-turn budget in **seconds**, from 1
+through `DELIBRA_MAX_RUN_TIMEOUT`, prefilled from the project's default message
+turn time limit. A project can save that default in project settings; without a
+saved value it inherits `DELIBRA_RUN_TIMEOUT`. The submitted Auto value applies
+to every preparation and discussion turn of that run and is stored exactly as
+submitted; it is never rounded through minutes. Newly started manual messages
+use the effective project default too. The global cap still applies and clamps
+a larger saved project value on read. Changing the project default never moves
+an active manual or Auto turn's deadline.
 
 Every live manual or Auto-owned round shows server-authoritative remaining time,
 deadline, effective budget, and hard cap. Add `+5`, `+15`, `+30`, or a custom whole
@@ -509,9 +514,11 @@ the MVP has no external watchdog. Graceful shutdown is the supported path.
 The main environment settings are:
 
 - `DELIBRA_HOME` (default `~/.delibra`)
-- `DELIBRA_RUN_TIMEOUT` (default 900 seconds)
+- `DELIBRA_RUN_TIMEOUT` (default 900 seconds; inherited by projects without a
+  saved default message-turn time limit)
 - `DELIBRA_MAX_RUN_TIMEOUT` (default 14,400 seconds / four hours; must be greater
-  than or equal to `DELIBRA_RUN_TIMEOUT`)
+  than or equal to `DELIBRA_RUN_TIMEOUT`; hard-caps new turns and clamps a larger
+  saved project default on read)
 - `DELIBRA_OUTPUT_LIMIT` (default 10 MiB)
 - `DELIBRA_REPLAY_LIMIT` (default 5 MiB)
 - `DELIBRA_STATELESS_HISTORY_LIMIT` (default 2 MiB)
