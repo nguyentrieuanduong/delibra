@@ -1036,3 +1036,209 @@ def test_same_path_rebind_rejects_without_clearing_native_resume(
     assert ProjectStore(project).load_session(session.id).cli_session_id == (
         "live-native"
     )
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["traversal", "delibra", "git", "missing", "symlink", "unsafe", "too-many"],
+)
+def test_project_writable_roots_reject_invalid_candidates_atomically(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "writable-project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Writable", project_path)
+    store = ProjectStore(project)
+    if case == "traversal":
+        submitted = "src/../outside"
+    elif case == "delibra":
+        submitted = ".DELIBRA"
+    elif case == "git":
+        submitted = ".Git"
+    elif case == "missing":
+        submitted = "missing"
+    elif case == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (project_path / "linked").symlink_to(outside, target_is_directory=True)
+        submitted = "linked"
+    elif case == "unsafe":
+        submitted = "src,unsafe"
+    else:
+        roots = [f"root-{index:02d}" for index in range(17)]
+        for root in roots:
+            (project_path / root).mkdir()
+        submitted = "\n".join(roots)
+    before = store.manifest_path.read_bytes()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/writable-roots",
+            data={"writable_roots": submitted},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 422
+    assert store.manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("candidate_kind", ["missing", "symlink"])
+def test_project_writable_root_candidate_hidden_by_agent_ancestor_is_rejected(
+    tmp_path: Path,
+    candidate_kind: str,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "writable-project"
+    (project_path / "src").mkdir(parents=True)
+    project = RegistryStore(settings.home).register("Writable", project_path)
+    store = ProjectStore(project)
+    config = SessionConfig(
+        id="a" * 32,
+        name="Agent",
+        agent="claude",
+        model="sonnet",
+        effort="low",
+        role_instructions="",
+        cli_session_id="native-id",
+        status="idle",
+        created_at="2026-09-10T00:00:00Z",
+        rounds=[],
+        writable_roots=["src"],
+    )
+    store.create_session(config)
+    candidate = "src/new"
+    if candidate_kind == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (project_path / candidate).symlink_to(outside, target_is_directory=True)
+    manifest_before = store.manifest_path.read_bytes()
+    config_path = store.session_dir(config.id) / "config.json"
+    config_before = config_path.read_bytes()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/writable-roots",
+            data={"writable_roots": candidate},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 422
+    assert store.manifest_path.read_bytes() == manifest_before
+    assert config_path.read_bytes() == config_before
+
+
+def test_project_writable_roots_union_cap_is_atomic_for_existing_agent(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "writable-project"
+    roots = [f"root-{index:02d}" for index in range(17)]
+    for root in roots:
+        (project_path / root).mkdir(parents=True)
+    project = RegistryStore(settings.home).register("Writable", project_path)
+    store = ProjectStore(project)
+    config = SessionConfig(
+        id="a" * 32,
+        name="Agent",
+        agent="claude",
+        model="sonnet",
+        effort="low",
+        role_instructions="",
+        cli_session_id="native-id",
+        status="idle",
+        created_at="2026-09-10T00:00:00Z",
+        rounds=[],
+        writable_roots=roots[:16],
+    )
+    store.create_session(config)
+    manifest_before = store.manifest_path.read_bytes()
+    config_path = store.session_dir(config.id) / "config.json"
+    config_before = config_path.read_bytes()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/writable-roots",
+            data={"writable_roots": roots[16]},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 422
+    assert store.manifest_path.read_bytes() == manifest_before
+    assert config_path.read_bytes() == config_before
+
+
+@pytest.mark.parametrize("manager_name", ["manager", "auto_manager"])
+def test_project_writable_roots_reject_in_memory_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_name: str,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "writable-project"
+    (project_path / "src").mkdir(parents=True)
+    project = RegistryStore(settings.home).register("Writable", project_path)
+    store = ProjectStore(project)
+    before = store.manifest_path.read_bytes()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        manager = getattr(app.state, manager_name)
+        monkeypatch.setattr(manager, "has_active_project", lambda _: True)
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/writable-roots",
+            data={"writable_roots": "src"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 409
+    assert store.manifest_path.read_bytes() == before
+
+
+def test_project_writable_roots_update_and_clear_around_stale_agent_addition(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "writable-project"
+    stale = project_path / "stale"
+    stale.mkdir(parents=True)
+    (project_path / "valid").mkdir()
+    project = RegistryStore(settings.home).register("Writable", project_path)
+    store = ProjectStore(project)
+    config = SessionConfig(
+        id="a" * 32,
+        name="Agent",
+        agent="claude",
+        model="sonnet",
+        effort="low",
+        role_instructions="",
+        cli_session_id=None,
+        status="idle",
+        created_at="2026-09-10T00:00:00Z",
+        rounds=[],
+        writable_roots=["stale"],
+    )
+    store.create_session(config)
+    stale.rmdir()
+    route = f"/projects/{quote(project.name, safe='')}/writable-roots"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        updated = client.post(
+            route,
+            data={"writable_roots": " valid \n\n"},
+            follow_redirects=False,
+        )
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        cleared = client.post(
+            route,
+            data={"writable_roots": ""},
+            follow_redirects=False,
+        )
+
+    assert updated.status_code == 303
+    assert 'id="project-writable-roots"' in page.text
+    assert ">valid</textarea>" in page.text
+    assert cleared.status_code == 303
+    assert store.effective_writable_roots() == []
+    with pytest.raises(StorageError, match="stale"):
+        store.resolve_session_writable_roots(config.id)

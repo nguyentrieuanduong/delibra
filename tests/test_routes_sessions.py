@@ -24,6 +24,7 @@ from app.storage import (
     RegistryStore,
     SessionMigrationIssue,
     SessionMigrationStatus,
+    StorageError,
     atomic_write_json,
 )
 
@@ -663,3 +664,314 @@ def test_project_settings_escapes_migration_issue_messages(
     assert response.status_code == 200
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
     assert "<script>alert(1)</script>" not in response.text
+
+
+@pytest.mark.parametrize("candidate_kind", ["missing", "symlink"])
+def test_session_writable_root_create_and_edit_reject_unavailable_candidates(
+    tmp_path: Path,
+    candidate_kind: str,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    candidate = "missing"
+    if candidate_kind == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (store.project_path / "linked").symlink_to(
+            outside,
+            target_is_directory=True,
+        )
+        candidate = "linked"
+
+    with client:
+        rejected_create = create_session(
+            client,
+            project.id,
+            writable_roots=candidate,
+        )
+        assert rejected_create.status_code == 422
+        assert store.list_sessions() == []
+
+        created = create_session(client, project.id)
+        session_id = created_session_id(created)
+        store = ProjectStore(project)
+        config_path = store.session_dir(session_id) / "config.json"
+        before = config_path.read_bytes()
+        rejected_edit = client.post(
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
+            data={"writable_roots": candidate},
+            follow_redirects=False,
+        )
+
+    assert rejected_edit.status_code == 422
+    assert config_path.read_bytes() == before
+
+
+def test_session_writable_root_create_rejects_seventeenth_effective_root(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    roots = [f"root-{index:02d}" for index in range(17)]
+    for root in roots:
+        (store.project_path / root).mkdir()
+    store.set_writable_roots(roots[:16])
+
+    with client:
+        response = create_session(
+            client,
+            project.id,
+            writable_roots=roots[16],
+        )
+
+    assert response.status_code == 422
+    assert store.list_sessions() == []
+
+
+def test_session_writable_roots_persist_clear_and_render_in_both_forms(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    for root in ("docs", "src"):
+        (store.project_path / root).mkdir()
+
+    with client:
+        created = create_session(
+            client,
+            project.id,
+            writable_roots=" src \n\n docs ",
+        )
+        session_id = created_session_id(created)
+        settings_page = client.get(
+            f"/projects/{quote(project.name, safe='')}/settings"
+        )
+        chat_page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        cleared = client.post(
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
+            data={"writable_roots": ""},
+            follow_redirects=False,
+        )
+
+    assert created.status_code == 303
+    assert store.load_session(session_id).writable_roots == []
+    assert "docs\nsrc</textarea>" in settings_page.text
+    assert "docs\nsrc</textarea>" in chat_page.text
+    assert cleared.status_code == 303
+
+
+def test_session_writable_root_edit_rejects_target_run_and_auto_but_not_other_run(
+    tmp_path: Path,
+    reserve_auto_run,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    (store.project_path / "src").mkdir()
+    with client:
+        target_id = created_session_id(
+            create_session(client, project.id, name="Target")
+        )
+        other_id = created_session_id(
+            create_session(client, project.id, name="Other")
+        )
+        route = (
+            f"/projects/{quote(project.name, safe='')}/sessions/{target_id}/edit"
+        )
+        target = store.load_session(target_id)
+        target.status = "running"
+        store.save_session(target)
+        running = client.post(
+            route,
+            data={"writable_roots": "src"},
+            follow_redirects=False,
+        )
+        target.status = "idle"
+        store.save_session(target)
+        other = store.load_session(other_id)
+        other.status = "running"
+        store.save_session(other)
+        unrelated = client.post(
+            route,
+            data={"writable_roots": "src"},
+            follow_redirects=False,
+        )
+        other.status = "idle"
+        store.save_session(other)
+        reserve_auto_run(store)
+        auto = client.post(
+            route,
+            data={"writable_roots": ""},
+            follow_redirects=False,
+        )
+
+    assert running.status_code == 409
+    assert unrelated.status_code == 303
+    assert auto.status_code == 409
+    assert store.load_session(target_id).writable_roots == ["src"]
+
+
+def test_deleted_project_writable_root_does_not_block_unrelated_agent_edit(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    shared = store.project_path / "shared"
+    shared.mkdir()
+    store.set_writable_roots(["shared"])
+    with client:
+        created = create_session(client, project.id)
+        session_id = created_session_id(created)
+        store = ProjectStore(project)
+        shared.rmdir()
+        edited = client.post(
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
+            data={"model": "opus", "effort": "medium"},
+            follow_redirects=False,
+        )
+        started = client.post(
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/run",
+            data={"prompt": "Question"},
+        )
+
+    assert edited.status_code == 303
+    assert store.load_session(session_id).writable_roots == []
+    assert started.status_code == 422
+    assert "shared" in started.json()["detail"]
+    assert store.load_session(session_id).rounds == []
+
+
+def test_agent_writable_root_effective_change_controls_native_invalidation(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    (store.project_path / "src" / "api").mkdir(parents=True)
+    (store.project_path / "tests").mkdir()
+    with client:
+        created = create_session(
+            client,
+            project.id,
+            writable_roots="src\ntests",
+        )
+        session_id = created_session_id(created)
+        config = store.load_session(session_id)
+        config.cli_session_id = "native-id"
+        store.save_session(config)
+        route = (
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit"
+        )
+        unchanged = client.post(
+            route,
+            data={"writable_roots": "tests\nsrc/api\nsrc"},
+            follow_redirects=False,
+        )
+        assert store.load_session(session_id).cli_session_id == "native-id"
+        changed = client.post(
+            route,
+            data={"writable_roots": "tests"},
+            follow_redirects=False,
+        )
+
+    assert unchanged.status_code == 303
+    assert changed.status_code == 303
+    persisted = store.load_session(session_id)
+    assert persisted.writable_roots == ["tests"]
+    assert persisted.cli_session_id is None
+    config_path = store.session_dir(session_id) / "config.json"
+    config_path.write_text("{", encoding="utf-8")
+    recovered = ProjectStore(project).load_session(session_id)
+    assert recovered.writable_roots == ["tests"]
+    assert recovered.cli_session_id is None
+
+
+def test_redundant_agent_writable_root_preserves_native_effective_session(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    (store.project_path / "src" / "api").mkdir(parents=True)
+    store.set_writable_roots(["src"])
+    with client:
+        created = create_session(client, project.id)
+        session_id = created_session_id(created)
+        store = ProjectStore(project)
+        config = store.load_session(session_id)
+        config.cli_session_id = "native-id"
+        store.save_session(config)
+        edited = client.post(
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit",
+            data={"writable_roots": "src/api"},
+            follow_redirects=False,
+        )
+
+    persisted = store.load_session(session_id)
+    assert edited.status_code == 303
+    assert persisted.writable_roots == ["src/api"]
+    assert persisted.cli_session_id == "native-id"
+
+
+def test_omitted_writable_roots_preserve_and_submitted_blank_clears(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    (store.project_path / "src").mkdir()
+    with client:
+        created = create_session(client, project.id, writable_roots="src")
+        session_id = created_session_id(created)
+        config = store.load_session(session_id)
+        config.cli_session_id = "native-id"
+        store.save_session(config)
+        route = (
+            f"/projects/{quote(project.name, safe='')}/sessions/{session_id}/edit"
+        )
+        omitted = client.post(
+            route,
+            data={"model": "opus", "effort": "medium"},
+            follow_redirects=False,
+        )
+        after_omitted = store.load_session(session_id)
+        blank = client.post(
+            route,
+            data={"writable_roots": ""},
+            follow_redirects=False,
+        )
+
+    assert omitted.status_code == 303
+    assert after_omitted.writable_roots == ["src"]
+    assert after_omitted.cli_session_id == "native-id"
+    assert blank.status_code == 303
+    cleared = store.load_session(session_id)
+    assert cleared.writable_roots == []
+    assert cleared.cli_session_id is None
+
+
+def test_project_writable_root_revocation_clears_only_changed_native_sessions(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    (store.project_path / "shared").mkdir()
+    store.set_writable_roots(["shared"])
+    with client:
+        first_id = created_session_id(
+            create_session(client, project.id, name="First")
+        )
+        second_id = created_session_id(
+            create_session(
+                client,
+                project.id,
+                name="Second",
+                writable_roots="shared",
+            )
+        )
+        store = ProjectStore(project)
+        for session_id in (first_id, second_id):
+            config = store.load_session(session_id)
+            config.cli_session_id = f"native-{session_id[0]}"
+            store.save_session(config)
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/writable-roots",
+            data={"writable_roots": ""},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert store.load_session(first_id).cli_session_id is None
+    assert store.load_session(second_id).cli_session_id == f"native-{second_id[0]}"
+    first_path = store.session_dir(first_id) / "config.json"
+    first_path.write_text("{", encoding="utf-8")
+    recovered = ProjectStore(project).load_session(first_id)
+    assert recovered.cli_session_id is None
+    assert recovered.writable_roots == []

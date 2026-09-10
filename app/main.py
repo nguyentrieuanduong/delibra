@@ -249,6 +249,7 @@ def create_app(
                 "migration_issues": migration_issues,
                 "auto_migration_issues": auto_migration_issues,
                 "pass_prompt_template": store.effective_pass_prompt_template(),
+                "writable_roots": store.effective_writable_roots(),
             },
         )
 

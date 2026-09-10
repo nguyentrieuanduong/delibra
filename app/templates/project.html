@@ -45,6 +45,16 @@
       <button type="submit">Reset to built-in default</button>
     </form>
   </section>
+  <section aria-labelledby="writable-roots-heading">
+    <h2 id="writable-roots-heading">Writable project directories</h2>
+    <p>One project-relative directory per line. These defaults apply to every agent.</p>
+    <form method="post" action="{{ project_url(project.name, '/writable-roots') }}">
+      <label>Project writable roots
+        <textarea id="project-writable-roots" name="writable_roots" maxlength="65536">{{ writable_roots|join('\n') }}</textarea>
+      </label>
+      <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Save writable roots</button>
+    </form>
+  </section>
   <h2>Sessions</h2>
   <details>
     <summary>Create session</summary>
@@ -69,6 +79,9 @@
       </label>
       <label>Role instructions
         <textarea name="role_instructions" maxlength="20000"></textarea>
+      </label>
+      <label>Additional writable roots
+        <textarea name="writable_roots" maxlength="65536"></textarea>
       </label>
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create session</button>
     </form>
@@ -107,6 +120,9 @@
               {% else %}
                 <p>Role instructions are fixed after the first round.</p>
               {% endif %}
+              <label>Additional writable roots
+                <textarea name="writable_roots" maxlength="65536">{{ session.writable_roots|join('\n') }}</textarea>
+              </label>
               <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
             </form>
           </details>

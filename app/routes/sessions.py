@@ -12,11 +12,13 @@ from app.agents.codex import CodexAdapter
 from app.models import SessionConfig
 from app.project_routing import request_project
 from app.routes.chat import sidebar_response
+from app.routes.projects import _writable_roots_field
 from app.security import validate_agent_name, validate_field
 from app.storage import (
     ConflictError,
     NotFoundError,
     ProjectStore,
+    normalize_writable_roots,
     utc_now,
     validate_id,
 )
@@ -74,6 +76,7 @@ async def create_session(
     model: str = Form(...),
     effort: str = Form(...),
     role_instructions: str = Form(""),
+    writable_roots: str = Form(""),
 ):
     name = validate_agent_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
@@ -89,6 +92,9 @@ async def create_session(
         project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
+        validated_writable_roots = store.validate_session_writable_roots(
+            _writable_roots_field(writable_roots)
+        )
         config = SessionConfig(
             id=session_id,
             name=name,
@@ -100,6 +106,7 @@ async def create_session(
             status="idle",
             created_at=utc_now(),
             rounds=[],
+            writable_roots=validated_writable_roots,
         )
         store.create_session(config)
     if request.headers.get("HX-Request") == "true":
@@ -131,10 +138,22 @@ async def edit_session(
     model: str | None = Form(None),
     effort: str | None = Form(None),
     role_instructions: str | None = Form(None),
+    writable_roots: str | None = Form(None),
     selected_agent: str | None = Query(None, alias="agent"),
 ):
+    if writable_roots is None:
+        submitted_form = await request.form()
+        if "writable_roots" in submitted_form:
+            submitted_writable_roots = submitted_form["writable_roots"]
+            if not isinstance(submitted_writable_roots, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Writable roots must be text",
+                )
+            writable_roots = submitted_writable_roots
     supplied_configuration = any(
-        value is not None for value in (agent, model, effort, role_instructions)
+        value is not None
+        for value in (agent, model, effort, role_instructions, writable_roots)
     )
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -148,6 +167,15 @@ async def edit_session(
         config = store.load_session(session_id)
         if config.status == "running":
             raise ConflictError("cannot edit a running session")
+        old_effective_writable_roots = (
+            store.session_writable_roots(session_id)
+            if writable_roots is not None
+            else None
+        )
+        if writable_roots is not None:
+            config.writable_roots = store.validate_session_writable_roots(
+                _writable_roots_field(writable_roots)
+            )
         if name is not None and validate_agent_name(name) != config.name:
             raise ConflictError("agent name is immutable")
         if config.rounds:
@@ -193,7 +221,20 @@ async def edit_session(
                 ),
             )
             config.agent, config.model, config.effort, config.role_instructions = updated
-        store.save_session(config)
+        new_effective_writable_roots = (
+            normalize_writable_roots(
+                [*store.effective_writable_roots(), *config.writable_roots]
+            )
+            if old_effective_writable_roots is not None
+            else None
+        )
+        writable_roots_changed = (
+            old_effective_writable_roots is not None
+            and old_effective_writable_roots != new_effective_writable_roots
+        )
+        if writable_roots_changed:
+            config.cli_session_id = None
+        store.save_session(config, replace_recovery=writable_roots_changed)
     if request.headers.get("HX-Request") == "true":
         return sidebar_response(
             request,

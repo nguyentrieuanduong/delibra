@@ -124,6 +124,9 @@
         {% else %}
           <p class="immutability-hint">Role instructions cannot change after the first round.</p>
         {% endif %}
+        <label>Additional writable roots
+          <textarea name="writable_roots" maxlength="65536">{{ agent.writable_roots|join('\n') }}</textarea>
+        </label>
         <button type="submit" data-disable-during-auto{% if agent.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
       </form>
     </details>
