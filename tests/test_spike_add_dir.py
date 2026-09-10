@@ -23,6 +23,7 @@ from spike.spike_add_dir import (
     claude_tool_outcomes,
     failure_detail,
     findings_section,
+    following_option_parsed,
     observed_writes,
     repeated_form,
     sanitize,
@@ -220,6 +221,30 @@ def test_findings_section_renders_every_heading_without_leaking_a_raw_key() -> N
     ):
         assert heading in rendered
     assert "<PROJECT>" not in rendered or str(Path.home()) not in rendered
+
+
+@pytest.mark.parametrize(
+    "form,response,expected",
+    [
+        # Repeated form: each --add-dir takes exactly one value, so the option
+        # after it cannot be swallowed. Run 4 stopped here anyway, because the
+        # model opened with "Part 1 -- Write:" instead of the prefix, while its
+        # argv carried --append-system-prompt intact and grant_c was written.
+        ("repeated", "Part 1 - Write:\n1. workspace/... - success", True),
+        ("repeated", "ROLE-ADDDIR-CLAUDE-OK done", True),
+        # Variadic form: the question is real. Swallowing removes the system
+        # prompt entirely, so total absence is the signal -- not whether the
+        # model chose to lead with it.
+        ("variadic", "Part 1 - Write:\n1. ROLE-ADDDIR-CLAUDE-OK later", True),
+        ("variadic", "Part 1 - Write: no role text anywhere", False),
+    ],
+)
+def test_following_option_check_only_applies_to_the_variadic_form(
+    form: str,
+    response: str,
+    expected: bool,
+) -> None:
+    assert following_option_parsed(form, response) is expected
 
 
 def test_failure_detail_reads_the_event_stream_not_only_stderr() -> None:
