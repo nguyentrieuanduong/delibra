@@ -294,7 +294,7 @@ class AutoContextPolicy:
     content the run has already retired.
     """
 
-    mode: str = "compact"
+    mode: str = "off"
     unit: str = "cycles"
     interval: int = 3
     threshold_percent: int = 70

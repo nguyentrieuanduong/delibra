@@ -385,11 +385,13 @@ and the resumption audit retains each grant after the active override is cleared
 
 An Auto run manages its own context, because it never uses a session's staged
 history: every Auto turn is stateless with the prompt Auto assembles. The setup
-box chooses a mode — **compact** (the default), **clear**, or **off** — a trigger
-unit, an interval, and a summarizer (the next agent to speak by default, or a
-named participant). New runs default to compacting every 3 cycles. The policy is
-carried unchanged across **Continue Auto**: editing it would change the meaning of
-material the run has already retired.
+box chooses a mode — **compact**, **clear**, or **off** — a trigger unit, an
+interval, and a summarizer (the next agent to speak by default, or a named
+participant). It defaults to **off**, so Auto sends everything unless the
+operator opts into compact or clear; the interval, unit, threshold, and
+summarizer defaults are unchanged. The policy is carried unchanged across
+**Continue Auto**: editing it would change the meaning of material the run has
+already retired.
 
 The trigger unit is cycles, turns, or the **Auto prompt byte budget** — a
 percentage of `DELIBRA_STATELESS_HISTORY_LIMIT` measured in rendered bytes, and
