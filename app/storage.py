@@ -1543,6 +1543,12 @@ class ProjectStore:
                 validate_pass_prompt_template(manifest["pass_prompt_template"])
             except PassPromptTemplateError as exc:
                 raise OwnershipError("project Pass prompt template is invalid") from exc
+        try:
+            manifest["writable_roots"] = normalize_writable_roots(
+                manifest.get("writable_roots", [])
+            )
+        except StorageError as exc:
+            raise OwnershipError("project writable roots are invalid") from exc
         return manifest
 
     def sync_manifest_name(self, name: str) -> None:
@@ -1557,6 +1563,54 @@ class ProjectStore:
         return self._load_manifest().get(
             "pass_prompt_template",
             BUILT_IN_PASS_PROMPT_TEMPLATE,
+        )
+
+    def effective_writable_roots(self) -> list[str]:
+        return normalize_writable_roots(
+            self._load_manifest().get("writable_roots", [])
+        )
+
+    def set_writable_roots(self, values: object) -> list[str]:
+        candidate = normalize_writable_roots(values)
+        for relative_path in candidate:
+            resolve_project_subdirectory(self.project_path, relative_path)
+
+        manifest = self._load_manifest()
+        current = normalize_writable_roots(manifest.get("writable_roots", []))
+        entries = self._scan_session_directories()
+        affected: list[SessionConfig] = []
+        for entry in entries.values():
+            additions = normalize_writable_roots(entry.config.writable_roots)
+            old_effective = normalize_writable_roots([*current, *additions])
+            new_effective = normalize_writable_roots([*candidate, *additions])
+            if old_effective != new_effective:
+                affected.append(replace(entry.config, cli_session_id=None))
+        if candidate == current:
+            return candidate
+
+        for config in affected:
+            self.save_session(config, replace_recovery=True)
+        manifest["writable_roots"] = candidate
+        atomic_write_json_recovery_pair(self.manifest_path, manifest)
+        return candidate
+
+    def session_writable_roots(self, session_id: str) -> list[str]:
+        config = self.load_session(session_id)
+        return normalize_writable_roots(
+            [*self.effective_writable_roots(), *config.writable_roots]
+        )
+
+    def validate_session_writable_roots(self, values: object) -> list[str]:
+        candidate = normalize_writable_roots(values)
+        normalize_writable_roots([*self.effective_writable_roots(), *candidate])
+        for relative_path in candidate:
+            resolve_project_subdirectory(self.project_path, relative_path)
+        return candidate
+
+    def resolve_session_writable_roots(self, session_id: str) -> tuple[Path, ...]:
+        return tuple(
+            resolve_project_subdirectory(self.project_path, relative_path)
+            for relative_path in self.session_writable_roots(session_id)
         )
 
     def set_pass_prompt_template(self, template: object) -> str:
@@ -2589,7 +2643,7 @@ class ProjectStore:
                 allow_missing_leaf=False,
             )
             data = load_json_recover(child / "config.json")
-            config = SessionConfig.from_dict(data)
+            config = self._session_config_from_dict(data)
             validate_id(config.id, "session id")
             if config.id in discovered:
                 raise OwnershipError("session UUID is stored more than once")
@@ -2612,6 +2666,15 @@ class ProjectStore:
             for session_id, entry in discovered.items()
         }
         return dict(discovered)
+
+    @staticmethod
+    def _session_config_from_dict(data: dict[str, Any]) -> SessionConfig:
+        try:
+            return SessionConfig.from_dict(data)
+        except TypeError as exc:
+            if "writable_roots" not in str(exc):
+                raise
+            raise OwnershipError("session writable roots are invalid") from exc
 
     def _session_location(self, session_id: str) -> _SessionLocation:
         session_id = validate_id(session_id, "session id")
@@ -2636,6 +2699,7 @@ class ProjectStore:
     def create_session(self, config: SessionConfig) -> SessionConfig:
         validate_id(config.id, "session id")
         config.name = normalize_agent_name(config.name)
+        config.writable_roots = normalize_writable_roots(config.writable_roots)
         entries = self._scan_session_directories()
         if config.id in entries:
             raise ConflictError(f"session already exists: {config.id}")
@@ -2678,7 +2742,7 @@ class ProjectStore:
             self.sessions_root,
             allow_missing_leaf=False,
         )
-        config = SessionConfig.from_dict(
+        config = self._session_config_from_dict(
             load_json_recover(location.path / "config.json")
         )
         if config.id != session_id:
@@ -2692,8 +2756,14 @@ class ProjectStore:
             )
         return config
 
-    def save_session(self, config: SessionConfig) -> None:
+    def save_session(
+        self,
+        config: SessionConfig,
+        *,
+        replace_recovery: bool = False,
+    ) -> None:
         validate_id(config.id, "session id")
+        config.writable_roots = normalize_writable_roots(config.writable_roots)
         location = self._session_location(config.id)
         if not location.legacy:
             try:
@@ -2710,7 +2780,8 @@ class ProjectStore:
             self.sessions_root,
             allow_missing_leaf=False,
         )
-        atomic_write_json(location.path / "config.json", config.to_dict())
+        writer = atomic_write_json_recovery_pair if replace_recovery else atomic_write_json
+        writer(location.path / "config.json", config.to_dict())
 
     def list_sessions(self) -> list[SessionConfig]:
         entries = self._scan_session_directories()

@@ -45,6 +45,20 @@ def _strict_str(data: dict[str, Any], key: str) -> str:
     return value
 
 
+def _strict_str_list(
+    data: dict[str, Any],
+    key: str,
+    *,
+    default: list[str] | None = None,
+) -> list[str]:
+    if key not in data:
+        return list(default or [])
+    value = data[key]
+    if not isinstance(value, list) or any(type(item) is not str for item in value):
+        raise TypeError(f"{key} must be a list of strings")
+    return list(value)
+
+
 @dataclass(frozen=True)
 class Project:
     id: str
@@ -1181,6 +1195,7 @@ class SessionConfig:
     status: str
     created_at: str
     rounds: list[RoundRecord] = field(default_factory=list)
+    writable_roots: list[str] = field(default_factory=list)
     # Latest wins, and invalidated to None wherever Delibra deliberately
     # discards the provider-side context this describes. Absent on legacy
     # records.
@@ -1210,6 +1225,7 @@ class SessionConfig:
             status=str(data["status"]),
             created_at=str(data["created_at"]),
             rounds=[RoundRecord.from_dict(item) for item in data.get("rounds", [])],
+            writable_roots=_strict_str_list(data, "writable_roots", default=[]),
             context_observation=(
                 ContextObservation.from_dict(data["context_observation"])
                 if data.get("context_observation") is not None

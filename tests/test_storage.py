@@ -37,6 +37,7 @@ from app.storage import (
     _agent_directory_name_matches,
     atomic_write_bytes,
     atomic_write_json,
+    atomic_write_json_recovery_pair,
     load_json_recover,
     normalize_agent_name,
     normalize_project_name,
@@ -699,6 +700,280 @@ def test_normalize_writable_roots_deduplicates_and_drops_descendants(
 def test_normalize_writable_roots_rejects_more_than_sixteen_roots() -> None:
     with pytest.raises(StorageError, match="16"):
         normalize_writable_roots([f"root-{index:02d}" for index in range(17)])
+
+
+def test_session_writable_roots_are_backward_compatible_strict_and_round_trip() -> None:
+    legacy_data = make_session().to_dict()
+    legacy_data.pop("writable_roots", None)
+    legacy = SessionConfig.from_dict(legacy_data)
+    assert legacy.writable_roots == []
+
+    legacy.writable_roots = ["src"]
+    assert SessionConfig.from_dict(legacy.to_dict()).writable_roots == ["src"]
+
+    for invalid in (None, "src", [1], ["src", None]):
+        invalid_data = legacy.to_dict()
+        invalid_data["writable_roots"] = invalid
+        with pytest.raises(TypeError, match="writable_roots"):
+            SessionConfig.from_dict(invalid_data)
+
+
+def test_project_store_rejects_corrupt_session_writable_roots(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    config = make_session()
+    store.create_session(config)
+    config_path = store.session_dir(config.id) / "config.json"
+    invalid = config.to_dict()
+    invalid["writable_roots"] = "src"
+    atomic_write_json(config_path, invalid)
+
+    with pytest.raises(OwnershipError, match="session writable roots"):
+        ProjectStore(project).load_session(config.id)
+
+
+def test_writable_root_union_deduplicates_across_project_and_session(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "src" / "api").mkdir(parents=True)
+    (project_dir / "tests").mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(["src"])
+    config = make_session()
+    config.writable_roots = ["src/api", "tests"]
+    store.create_session(config)
+
+    assert store.session_writable_roots(config.id) == ["src", "tests"]
+
+
+@pytest.mark.parametrize("invalid", [[".git"], "src"])
+def test_project_store_rejects_invalid_manifest_writable_roots(
+    tmp_path: Path,
+    invalid: object,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    manifest_path = project_dir / ".delibra" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["writable_roots"] = invalid
+    atomic_write_json(manifest_path, manifest)
+
+    with pytest.raises(OwnershipError, match="project writable roots"):
+        ProjectStore(project)
+
+
+@pytest.mark.parametrize("candidate_kind", ["missing", "symlink"])
+def test_invalid_writable_root_default_hidden_by_session_ancestor_is_rejected_atomically(
+    tmp_path: Path,
+    candidate_kind: str,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "src").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    config = make_session()
+    config.writable_roots = ["src"]
+    config.cli_session_id = "native-id"
+    store.create_session(config)
+    candidate = "src/new"
+    if candidate_kind == "symlink":
+        (project_dir / candidate).symlink_to(outside, target_is_directory=True)
+    manifest_before = store.manifest_path.read_bytes()
+    config_path = store.session_dir(config.id) / "config.json"
+    config_before = config_path.read_bytes()
+
+    with pytest.raises(StorageError, match=candidate):
+        store.set_writable_roots([candidate])
+
+    assert store.manifest_path.read_bytes() == manifest_before
+    assert config_path.read_bytes() == config_before
+
+
+def test_stale_session_writable_root_does_not_block_default_update_or_clear(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    stale = project_dir / "stale"
+    stale.mkdir(parents=True)
+    (project_dir / "valid").mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    config = make_session()
+    config.writable_roots = ["stale"]
+    store.create_session(config)
+    stale.rmdir()
+
+    assert store.set_writable_roots(["valid"]) == ["valid"]
+    assert store.set_writable_roots([]) == []
+    with pytest.raises(StorageError, match="stale"):
+        store.resolve_session_writable_roots(config.id)
+
+
+def test_resolve_session_writable_roots_returns_deterministic_absolute_paths(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    for name in ("alpha", "zeta"):
+        (project_dir / name).mkdir(parents=True)
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(["zeta"])
+    config = make_session()
+    config.writable_roots = ["alpha"]
+    store.create_session(config)
+
+    assert store.resolve_session_writable_roots(config.id) == (
+        project_dir / "alpha",
+        project_dir / "zeta",
+    )
+
+
+def test_validate_session_writable_roots_caps_the_effective_union(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    defaults = [f"root-{index:02d}" for index in range(16)]
+    for name in [*defaults, "extra"]:
+        (project_dir / name).mkdir(parents=True)
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(defaults)
+
+    with pytest.raises(StorageError, match="16"):
+        store.validate_session_writable_roots(["extra"])
+
+
+def test_create_and_save_session_normalize_writable_roots(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    config = make_session()
+    config.writable_roots = ["src/api", "src", "src"]
+
+    store.create_session(config)
+    assert store.load_session(config.id).writable_roots == ["src"]
+    config.writable_roots = ["tests/unit", "tests"]
+    store.save_session(config)
+    assert store.load_session(config.id).writable_roots == ["tests"]
+
+
+def test_per_agent_writable_root_revocation_replaces_recovery_pair(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "shared").mkdir(parents=True)
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    config = make_session()
+    config.writable_roots = ["shared"]
+    config.cli_session_id = "native-id"
+    store.create_session(config)
+    config.writable_roots = []
+    config.cli_session_id = None
+    store.save_session(config, replace_recovery=True)
+
+    config_path = store.session_dir(config.id) / "config.json"
+    config_path.write_text("{", encoding="utf-8")
+    recovered = ProjectStore(project).load_session(config.id)
+    assert recovered.writable_roots == []
+    assert recovered.cli_session_id is None
+
+
+def test_project_writable_root_revocation_replaces_every_recovery_pair(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "shared").mkdir(parents=True)
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(["shared"])
+    config = make_session()
+    config.cli_session_id = "native-id"
+    store.create_session(config)
+
+    store.set_writable_roots([])
+    store.manifest_path.write_text("{", encoding="utf-8")
+    recovered_store = ProjectStore(project)
+    recovered = recovered_store.load_session(config.id)
+    assert recovered_store.effective_writable_roots() == []
+    assert recovered.cli_session_id is None
+
+
+def test_failed_second_session_clear_keeps_old_writable_root_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "shared").mkdir(parents=True)
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(["shared"])
+    for session_id, name in (("a" * 32, "Alpha"), ("b" * 32, "Beta")):
+        config = session_config(session_id, name)
+        config.cli_session_id = f"native-{name}"
+        store.create_session(config)
+    real_writer = atomic_write_json_recovery_pair
+    config_writes = 0
+
+    def fail_second_config(path: Path, data: object) -> None:
+        nonlocal config_writes
+        if path.name == "config.json":
+            config_writes += 1
+            if config_writes == 2:
+                raise StorageError("injected second config failure")
+        real_writer(path, data)
+
+    monkeypatch.setattr("app.storage.atomic_write_json_recovery_pair", fail_second_config)
+
+    with pytest.raises(StorageError, match="injected second config failure"):
+        store.set_writable_roots([])
+
+    assert store.effective_writable_roots() == ["shared"]
+
+
+def test_writable_root_manifest_failure_keeps_defaults_and_clears_native_pairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "shared").mkdir(parents=True)
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(["shared"])
+    configs: list[SessionConfig] = []
+    for session_id, name in (("a" * 32, "Alpha"), ("b" * 32, "Beta")):
+        config = session_config(session_id, name)
+        config.cli_session_id = f"native-{name}"
+        store.create_session(config)
+        configs.append(config)
+    real_writer = atomic_write_json_recovery_pair
+
+    def fail_manifest(path: Path, data: object) -> None:
+        if path == store.manifest_path:
+            raise StorageError("injected manifest failure")
+        real_writer(path, data)
+
+    monkeypatch.setattr("app.storage.atomic_write_json_recovery_pair", fail_manifest)
+
+    with pytest.raises(StorageError, match="injected manifest failure"):
+        store.set_writable_roots([])
+
+    assert store.effective_writable_roots() == ["shared"]
+    for config in configs:
+        config_path = store.session_dir(config.id) / "config.json"
+        for candidate in (config_path, config_path.with_name("config.json.bak")):
+            persisted = json.loads(candidate.read_text(encoding="utf-8"))
+            assert persisted["cli_session_id"] is None
 
 
 def test_project_store_round_trip_allocation_exact_scans_and_orphans(tmp_path: Path) -> None:
