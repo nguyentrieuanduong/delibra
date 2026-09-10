@@ -210,6 +210,14 @@ def test_claude_writable_roots_use_repeated_flags_and_exact_edit_rules(
         "Edit(//project/alpha/**),Edit(//project/zeta/**)"
     )
     assert allowed.count("Edit(//project/") == 2
+    system_prompt_index = command.argv.index("--append-system-prompt")
+    add_dir_indexes = [
+        index
+        for index, value in enumerate(command.argv)
+        if value == "--add-dir"
+    ]
+    assert add_dir_indexes
+    assert all(index < system_prompt_index for index in add_dir_indexes)
 
 
 def test_build_command_stateless_reapplies_role_and_lists_staged_history() -> None:
