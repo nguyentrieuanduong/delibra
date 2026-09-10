@@ -241,6 +241,63 @@ def test_invalid_existing_manifest_is_rejected(tmp_path: Path) -> None:
         RegistryStore(tmp_path / "home").register("Bad", project_dir)
 
 
+def test_project_turn_timeout_inherits_round_trips_and_enforces_cap(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+
+    assert store.configured_turn_timeout_seconds() is None
+    assert store.effective_turn_timeout_seconds(900, maximum=14_400) == 900
+    assert store.set_turn_timeout_seconds(1_200, maximum=14_400) == 1_200
+    assert ProjectStore(project).configured_turn_timeout_seconds() == 1_200
+    assert (
+        ProjectStore(project).effective_turn_timeout_seconds(
+            900,
+            maximum=14_400,
+        )
+        == 1_200
+    )
+
+    for invalid in (True, 0, -1, 14_401, "1200", None):
+        with pytest.raises(StorageError, match="turn time limit"):
+            store.set_turn_timeout_seconds(invalid, maximum=14_400)
+
+
+def test_project_turn_timeout_reads_clamp_to_a_lowered_maximum(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_turn_timeout_seconds(3_600, maximum=14_400)
+
+    # The operator later lowers DELIBRA_MAX_RUN_TIMEOUT below the saved value.
+    assert store.configured_turn_timeout_seconds() == 3_600
+    assert store.effective_turn_timeout_seconds(900, maximum=1_800) == 1_800
+    assert ProjectStore(project).configured_turn_timeout_seconds() == 3_600
+
+
+@pytest.mark.parametrize("invalid", [True, 0, "900", None])
+def test_project_store_rejects_invalid_persisted_turn_timeout(
+    tmp_path: Path,
+    invalid: object,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["turn_timeout_seconds"] = invalid
+    atomic_write_json(store.manifest_path, manifest)
+
+    with pytest.raises(OwnershipError, match="turn time limit"):
+        ProjectStore(project)
+
+
 def test_round_record_shared_context_and_retry_fields_are_backward_compatible() -> None:
     legacy_data = {
         "n": 1,
