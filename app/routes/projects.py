@@ -17,6 +17,7 @@ from app.storage import (
     ProjectStore,
     StorageError,
     normalize_project_name,
+    normalize_writable_roots,
 )
 from app.urls import project_url
 
@@ -30,6 +31,18 @@ def _project_path(value: str) -> Path:
     if not candidate.is_absolute():
         raise HTTPException(status_code=422, detail="Project path must be absolute")
     return candidate
+
+
+def _writable_roots_field(value: str) -> list[str]:
+    validated = validate_field(
+        value,
+        "Writable roots",
+        maximum=65_536,
+        allow_empty=True,
+    )
+    return normalize_writable_roots(
+        [line.strip() for line in validated.splitlines() if line.strip()]
+    )
 
 
 def _reject_running_sessions(store: ProjectStore) -> None:
@@ -163,6 +176,26 @@ async def save_pass_prompt(
     async with request.app.state.locks.registry_project_sessions(resolved_project_id):
         project = request.app.state.registry.get(resolved_project_id)
         ProjectStore(project).set_pass_prompt_template(validated)
+    return RedirectResponse(
+        project_url(project.name, "/settings"),
+        status_code=303,
+    )
+
+
+@router.post("/projects/{project_id}/writable-roots")
+async def save_writable_roots(
+    request: Request,
+    project_id: str,
+    writable_roots: str = Form(""),
+):
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+        _reject_in_memory_work(request, resolved_project_id)
+        project = request.app.state.registry.get(resolved_project_id)
+        store = ProjectStore(project)
+        store.require_auto_inactive()
+        store.set_writable_roots(_writable_roots_field(writable_roots))
     return RedirectResponse(
         project_url(project.name, "/settings"),
         status_code=303,
