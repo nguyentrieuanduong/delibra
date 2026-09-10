@@ -834,6 +834,51 @@ def test_project_store_rejects_invalid_manifest_writable_roots(
         ProjectStore(project)
 
 
+@pytest.mark.parametrize(
+    "stored_roots",
+    [None, ["src/api", "src"]],
+)
+def test_unrelated_manifest_write_preserves_writable_roots_representation(
+    tmp_path: Path,
+    stored_roots: list[str] | None,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    if stored_roots is None:
+        manifest.pop("writable_roots", None)
+    else:
+        manifest["writable_roots"] = stored_roots
+    atomic_write_json(store.manifest_path, manifest)
+
+    ProjectStore(project).set_pass_prompt_template(BUILT_IN_PASS_PROMPT_TEMPLATE)
+
+    persisted = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    if stored_roots is None:
+        assert "writable_roots" not in persisted
+    else:
+        assert persisted["writable_roots"] == stored_roots
+
+
+def test_idempotent_project_writable_roots_save_does_not_scan_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / "shared").mkdir(parents=True)
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(["shared"])
+
+    def forbidden_scan() -> dict[str, object]:
+        raise AssertionError("idempotent save scanned sessions")
+
+    monkeypatch.setattr(store, "_scan_session_directories", forbidden_scan)
+    assert store.set_writable_roots(["shared", "shared"]) == ["shared"]
+
+
 @pytest.mark.parametrize("candidate_kind", ["missing", "symlink"])
 def test_invalid_writable_root_default_hidden_by_session_ancestor_is_rejected_atomically(
     tmp_path: Path,
