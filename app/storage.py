@@ -1580,9 +1580,7 @@ class ProjectStore:
             except StorageError as exc:
                 raise OwnershipError("project turn time limit is invalid") from exc
         try:
-            manifest["writable_roots"] = normalize_writable_roots(
-                manifest.get("writable_roots", [])
-            )
+            normalize_writable_roots(manifest.get("writable_roots", []))
         except StorageError as exc:
             raise OwnershipError("project writable roots are invalid") from exc
         return manifest
@@ -1653,6 +1651,9 @@ class ProjectStore:
 
         manifest = self._load_manifest()
         current = normalize_writable_roots(manifest.get("writable_roots", []))
+        if candidate == current:
+            return candidate
+
         entries = self._scan_session_directories()
         affected: list[SessionConfig] = []
         for entry in entries.values():
@@ -1661,8 +1662,6 @@ class ProjectStore:
             new_effective = merge_writable_roots(candidate, additions)
             if old_effective != new_effective:
                 affected.append(replace(entry.config, cli_session_id=None))
-        if candidate == current:
-            return candidate
 
         for config in affected:
             self.save_session(config, replace_recovery=True)
