@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
-from app.config import Settings, settings
+from app.config import Settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
 from app.project_routing import CanonicalProjectMiddleware, request_project
@@ -52,7 +52,10 @@ def create_app(
     provider_commands: dict[str, str] | None = None,
     adapter_factory_override: AdapterFactory | None = None,
 ) -> FastAPI:
-    app_settings = settings_override or settings
+    # Read when the app is built, never at import: a malformed operator config
+    # must fail the server that would have used it, not every import of this
+    # package.
+    app_settings = settings_override or Settings.from_env()
     commands = provider_commands or {"claude": "claude", "codex": "codex"}
 
     def built_in_adapter(config):
@@ -158,6 +161,8 @@ def create_app(
     app.add_middleware(
         LocalSecurityMiddleware,
         body_limit=app_settings.request_body_limit,
+        allowed_hosts=app_settings.allowed_hosts,
+        allowed_clients=app_settings.allowed_clients,
     )
     app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
     app.state.settings = app_settings

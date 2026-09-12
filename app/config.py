@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 
 
 MIB = 1024 * 1024
+CONFIG_FILENAME = "config.json"
 
 
 def _integer(
@@ -28,6 +30,68 @@ def _integer(
     return value
 
 
+def _config_file_list(home: Path, key: str) -> list[str]:
+    """Read one string list from ``<home>/config.json``, if that file exists.
+
+    Every failure raises rather than falling back to the restrictive default: an
+    access rule that silently ignores what an operator wrote is the one
+    misconfiguration that looks like it worked.
+    """
+
+    path = home / CONFIG_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path} is not readable JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    entries = data.get(key, [])
+    if not isinstance(entries, list) or any(
+        type(item) is not str for item in entries
+    ):
+        raise ValueError(f"{path} {key} must be a list of strings")
+    return entries
+
+
+def _access_list(home: Path, *, variable: str, key: str) -> list[str]:
+    raw = os.environ.get(variable)
+    if raw is None:
+        # A blank entry in a JSON list is garbage an operator typed, not a
+        # separator artifact, so only the split path drops empties.
+        return _config_file_list(home, key)
+    # The variable replaces the file rather than adding to it, so one command
+    # line fully describes what a given run will accept.
+    return [entry for entry in raw.split(",") if entry.strip()]
+
+
+def _allowed_hosts(home: Path) -> tuple[str, ...]:
+    from app.security import normalize_allowed_host
+
+    return tuple(
+        normalize_allowed_host(entry)
+        for entry in _access_list(
+            home,
+            variable="DELIBRA_ALLOWED_HOSTS",
+            key="allowed_hosts",
+        )
+    )
+
+
+def _allowed_clients(home: Path) -> tuple[str, ...]:
+    from app.security import normalize_allowed_client
+
+    return tuple(
+        normalize_allowed_client(entry)
+        for entry in _access_list(
+            home,
+            variable="DELIBRA_ALLOWED_CLIENTS",
+            key="allowed_clients",
+        )
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     home: Path
@@ -40,6 +104,13 @@ class Settings:
     stateless_history_limit: int = 2 * MIB
     stateless_round_limit: int = 20
     request_body_limit: int = 2 * MIB
+    # Host authorities and CIDR ranges accepted beyond loopback, which is always
+    # accepted. Empty keeps the server reachable only as localhost even when it
+    # binds 0.0.0.0.
+    allowed_hosts: tuple[str, ...] = ()
+    # Peer addresses and CIDR ranges permitted to connect at all. Empty means no
+    # peer restriction, which is what the bind address alone has always given.
+    allowed_clients: tuple[str, ...] = ()
     file_view_limit: int = 512 * 1024
     auto_resume_drain_seconds: int = 30
     auto_turn_retries: int = 2
@@ -76,6 +147,14 @@ class Settings:
     auto_context_trigger_percent: int = 70
 
     def __post_init__(self) -> None:
+        # Imported here and not at module scope: security pulls in storage and
+        # models, and config is the leaf every one of them may import.
+        from app.security import normalize_allowed_client, normalize_allowed_host
+
+        for entry in self.allowed_hosts:
+            normalize_allowed_host(entry)
+        for entry in self.allowed_clients:
+            normalize_allowed_client(entry)
         if self.max_run_timeout < self.run_timeout:
             raise ValueError(
                 "DELIBRA_MAX_RUN_TIMEOUT must be at least DELIBRA_RUN_TIMEOUT"
@@ -156,6 +235,8 @@ class Settings:
         ).expanduser()
         return cls(
             home=home,
+            allowed_hosts=_allowed_hosts(home),
+            allowed_clients=_allowed_clients(home),
             run_timeout=_integer("DELIBRA_RUN_TIMEOUT", 900),
             max_run_timeout=_integer("DELIBRA_MAX_RUN_TIMEOUT", 14_400),
             stdout_line_limit=_integer("DELIBRA_STDOUT_LINE_LIMIT", 12 * MIB),
@@ -290,6 +371,3 @@ class Settings:
                 maximum=95,
             ),
         )
-
-
-settings = Settings.from_env()

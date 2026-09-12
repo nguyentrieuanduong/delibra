@@ -1,3 +1,4 @@
+import json
 from hashlib import sha256
 from pathlib import Path
 
@@ -230,3 +231,127 @@ def test_auto_turn_retries_accepts_zero_to_disable_retry(
     monkeypatch.setenv("DELIBRA_AUTO_TURN_RETRIES", "0")
 
     assert Settings.from_env().auto_turn_retries == 0
+
+
+def test_allowed_hosts_default_to_loopback_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("DELIBRA_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("DELIBRA_HOME", str(tmp_path / "home"))
+
+    assert Settings.from_env().allowed_hosts == ()
+
+
+def test_allowed_hosts_come_from_the_config_file_and_the_env_var_wins(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.json").write_text(
+        json.dumps({"allowed_hosts": ["192.168.1.50:8000", " my-mac.local "]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DELIBRA_HOME", str(home))
+    monkeypatch.delenv("DELIBRA_ALLOWED_HOSTS", raising=False)
+
+    from_file = Settings.from_env()
+
+    monkeypatch.setenv("DELIBRA_ALLOWED_HOSTS", "10.0.0.9:8000, ,10.0.0.10")
+    from_env = Settings.from_env()
+
+    assert from_file.allowed_hosts == ("192.168.1.50:8000", "my-mac.local")
+    # The env var replaces the file rather than adding to it, so one command
+    # line fully describes what a given run will accept.
+    assert from_env.allowed_hosts == ("10.0.0.9:8000", "10.0.0.10")
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '{"allowed_hosts": "192.168.1.50"}',
+        '{"allowed_hosts": [8000]}',
+        '{"allowed_hosts": ["has space"]}',
+        '{"allowed_hosts": ["http://192.168.1.50:8000"]}',
+        "not json",
+    ],
+)
+def test_an_unusable_config_file_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    contents: str,
+) -> None:
+    # A security setting that silently falls back to its default is the one
+    # failure mode worth refusing to start over.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.json").write_text(contents, encoding="utf-8")
+    monkeypatch.setenv("DELIBRA_HOME", str(home))
+    monkeypatch.delenv("DELIBRA_ALLOWED_HOSTS", raising=False)
+
+    with pytest.raises(ValueError):
+        Settings.from_env()
+
+
+def test_allowed_clients_default_to_unrestricted_and_load_from_both_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("DELIBRA_HOME", str(home))
+    monkeypatch.delenv("DELIBRA_ALLOWED_CLIENTS", raising=False)
+
+    assert Settings.from_env().allowed_clients == ()
+
+    (home / "config.json").write_text(
+        json.dumps({"allowed_clients": ["192.168.1.0/24", "10.0.0.9"]}),
+        encoding="utf-8",
+    )
+    from_file = Settings.from_env()
+
+    monkeypatch.setenv("DELIBRA_ALLOWED_CLIENTS", "172.16.0.0/12")
+    from_env = Settings.from_env()
+
+    # A bare address is stored as the single-address network it denotes, so one
+    # comparison serves both spellings at request time.
+    assert from_file.allowed_clients == ("192.168.1.0/24", "10.0.0.9/32")
+    assert from_env.allowed_clients == ("172.16.0.0/12",)
+
+
+def test_a_cidr_allowed_host_is_normalized_and_host_bits_are_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("DELIBRA_HOME", str(home))
+    monkeypatch.delenv("DELIBRA_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("DELIBRA_ALLOWED_HOSTS", "192.168.1.50/24, fd00::/8")
+
+    # Writing the range as "my address slash prefix" is the common shorthand and
+    # says exactly one thing, so it is accepted rather than refused.
+    assert Settings.from_env().allowed_hosts == ("192.168.1.0/24", "fd00::/8")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["192.168.1.0/33", "not-an-address", "192.168.1.0/24:8000", ""],
+)
+def test_an_unusable_client_entry_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    value: str,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.json").write_text(
+        json.dumps({"allowed_clients": [value]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DELIBRA_HOME", str(home))
+    monkeypatch.delenv("DELIBRA_ALLOWED_CLIENTS", raising=False)
+
+    with pytest.raises(ValueError, match="allowed client"):
+        Settings.from_env()
