@@ -17,8 +17,20 @@ from app.security import validate_field
 from app.storage import LockCoordinator, ProjectStore, RegistryStore, StorageError
 
 
-def app_client(tmp_path, *, body_limit: int = 2 * 1024 * 1024) -> TestClient:
-    settings = replace(Settings(home=tmp_path / "home"), request_body_limit=body_limit)
+def app_client(
+    tmp_path,
+    *,
+    body_limit: int = 2 * 1024 * 1024,
+    allowed_hosts: tuple[str, ...] = (),
+    allowed_clients: tuple[str, ...] = (),
+    peer: tuple[str, int] | None = None,
+) -> TestClient:
+    settings = replace(
+        Settings(home=tmp_path / "home"),
+        request_body_limit=body_limit,
+        allowed_hosts=allowed_hosts,
+        allowed_clients=allowed_clients,
+    )
     app = create_app(
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
@@ -33,7 +45,9 @@ def app_client(tmp_path, *, body_limit: int = 2 * 1024 * 1024) -> TestClient:
     async def field(value: str = Form(...)):
         return {"value": validate_field(value, "value", maximum=5)}
 
-    return TestClient(app, base_url="http://localhost")
+    if peer is None:
+        return TestClient(app, base_url="http://localhost")
+    return TestClient(app, base_url="http://localhost", client=peer)
 
 
 def test_bad_host_is_rejected(tmp_path) -> None:
@@ -71,6 +85,191 @@ def test_cross_site_origin_post_rejected_but_absent_origin_allowed(tmp_path) -> 
     assert same_origin.status_code == 200
     assert allowed.status_code == 200
     assert allowed.json() == {"size": 2}
+
+
+def test_an_allowed_host_is_accepted_while_every_other_host_stays_rejected(
+    tmp_path,
+) -> None:
+    with app_client(tmp_path, allowed_hosts=("192.168.1.50:8000",)) as client:
+        allowed = client.get("/", headers={"host": "192.168.1.50:8000"})
+        # Same address, different port: the entry named a port, so it binds one.
+        other_port = client.get("/", headers={"host": "192.168.1.50:9000"})
+        # The rebinding case the allowlist exists to keep closed.
+        rebound = client.get("/", headers={"host": "evil.example"})
+        loopback = client.get("/", headers={"host": "127.0.0.1"})
+    assert allowed.status_code == 200
+    assert other_port.status_code == 403
+    assert rebound.status_code == 403
+    assert loopback.status_code == 200
+
+
+def test_a_portless_allowed_host_matches_any_port_and_ignores_case(tmp_path) -> None:
+    with app_client(tmp_path, allowed_hosts=("My-Mac.local",)) as client:
+        bare = client.get("/", headers={"host": "my-mac.local"})
+        with_port = client.get("/", headers={"host": "MY-MAC.LOCAL:8000"})
+        other_name = client.get("/", headers={"host": "other.local:8000"})
+    assert bare.status_code == 200
+    assert with_port.status_code == 200
+    assert other_name.status_code == 403
+
+
+def test_a_cidr_allowed_host_matches_any_address_in_range_on_any_port(
+    tmp_path,
+) -> None:
+    with app_client(tmp_path, allowed_hosts=("192.168.1.0/24",)) as client:
+        in_range = client.get("/", headers={"host": "192.168.1.50:8000"})
+        # A CIDR entry names no port, so it binds none.
+        other_port = client.get("/", headers={"host": "192.168.1.50:9999"})
+        out_of_range = client.get("/", headers={"host": "192.168.2.50:8000"})
+        # A name that merely resolves into the range is still not in the range:
+        # the check reads the Host header, which never resolves anything.
+        by_name = client.get("/", headers={"host": "my-mac.local:8000"})
+    assert in_range.status_code == 200
+    assert other_port.status_code == 200
+    assert out_of_range.status_code == 403
+    assert by_name.status_code == 403
+
+
+def test_an_ipv6_cidr_allowed_host_matches_its_bracketed_literal(tmp_path) -> None:
+    with app_client(tmp_path, allowed_hosts=("fd00::/8",)) as client:
+        in_range = client.get("/", headers={"host": "[fd00::5]:8000"})
+        out_of_range = client.get("/", headers={"host": "[fe80::5]:8000"})
+        # Mixed families must compare false rather than raise.
+        v4_host = client.get("/", headers={"host": "192.168.1.50:8000"})
+    assert in_range.status_code == 200
+    assert out_of_range.status_code == 403
+    assert v4_host.status_code == 403
+
+
+def test_an_unrestricted_client_list_accepts_every_peer(tmp_path) -> None:
+    # The default must stay what it was before peer filtering existed: the bind
+    # address is the access control, and this check is purely opt-in.
+    with app_client(tmp_path, peer=("203.0.113.7", 5000)) as client:
+        response = client.get("/", headers={"host": "127.0.0.1"})
+    assert response.status_code == 200
+
+
+def test_a_client_cidr_rejects_peers_outside_the_range(tmp_path) -> None:
+    inside = app_client(
+        tmp_path,
+        allowed_clients=("192.168.1.0/24",),
+        peer=("192.168.1.22", 5000),
+    )
+    outside = app_client(
+        tmp_path,
+        allowed_clients=("192.168.1.0/24",),
+        peer=("203.0.113.7", 5000),
+    )
+    with inside as client:
+        allowed = client.get("/", headers={"host": "127.0.0.1"})
+    with outside as client:
+        rejected = client.get("/", headers={"host": "127.0.0.1"})
+    assert allowed.status_code == 200
+    assert rejected.status_code == 403
+    assert rejected.text == "Forbidden Client"
+
+
+def test_a_client_restriction_also_covers_loopback_and_unknown_peers(
+    tmp_path,
+) -> None:
+    # Loopback is exempt from the *Host* check but never from the peer check:
+    # naming a client range means that range, or the setting says nothing.
+    loopback = app_client(
+        tmp_path,
+        allowed_clients=("192.168.1.0/24",),
+        peer=("127.0.0.1", 5000),
+    )
+    # A transport with no IP peer cannot be shown to be inside the range, so a
+    # configured restriction fails closed rather than waving it through.
+    unknown = app_client(tmp_path, allowed_clients=("192.168.1.0/24",))
+    with loopback as client:
+        rejected = client.get("/", headers={"host": "127.0.0.1"})
+    with unknown as client:
+        unnamed = client.get("/", headers={"host": "127.0.0.1"})
+    assert rejected.status_code == 403
+    assert unnamed.status_code == 403
+
+
+def test_a_bare_client_address_and_an_ipv4_mapped_peer_both_match(tmp_path) -> None:
+    bare = app_client(
+        tmp_path,
+        allowed_clients=("192.168.1.22",),
+        peer=("192.168.1.22", 5000),
+    )
+    # A dual-stack listener reports v4 peers in v4-mapped v6 form.
+    mapped = app_client(
+        tmp_path,
+        allowed_clients=("192.168.1.0/24",),
+        peer=("::ffff:192.168.1.22", 5000),
+    )
+    neighbour = app_client(
+        tmp_path,
+        allowed_clients=("192.168.1.22",),
+        peer=("192.168.1.23", 5000),
+    )
+    with bare as client:
+        exact = client.get("/", headers={"host": "127.0.0.1"})
+    with mapped as client:
+        v4_mapped = client.get("/", headers={"host": "127.0.0.1"})
+    with neighbour as client:
+        rejected = client.get("/", headers={"host": "127.0.0.1"})
+    assert exact.status_code == 200
+    assert v4_mapped.status_code == 200
+    assert rejected.status_code == 403
+
+
+def test_the_client_wildcard_accepts_every_peer(tmp_path) -> None:
+    with app_client(
+        tmp_path,
+        allowed_clients=("*",),
+        peer=("203.0.113.7", 5000),
+    ) as client:
+        response = client.get("/", headers={"host": "127.0.0.1"})
+    assert response.status_code == 200
+
+
+def test_the_peer_check_runs_before_the_host_check(tmp_path) -> None:
+    # An outside peer learns nothing about which Host values are configured.
+    with app_client(
+        tmp_path,
+        allowed_hosts=("192.168.1.50:8000",),
+        allowed_clients=("192.168.1.0/24",),
+        peer=("203.0.113.7", 5000),
+    ) as client:
+        response = client.get("/", headers={"host": "192.168.1.50:8000"})
+    assert response.status_code == 403
+    assert response.text == "Forbidden Client"
+
+
+def test_the_wildcard_entry_accepts_every_host(tmp_path) -> None:
+    with app_client(tmp_path, allowed_hosts=("*",)) as client:
+        anything = client.get("/", headers={"host": "anything.example:1234"})
+        # Still a syntactically valid authority: "*" widens policy, not parsing.
+        malformed = client.get("/", headers={"host": "[::1]attacker"})
+    assert anything.status_code == 200
+    assert malformed.status_code == 403
+
+
+def test_an_allowed_host_still_rejects_a_cross_site_post(tmp_path) -> None:
+    with app_client(tmp_path, allowed_hosts=("192.168.1.50:8000",)) as client:
+        rejected = client.post(
+            "/__test/echo",
+            content=b"ok",
+            headers={
+                "host": "192.168.1.50:8000",
+                "origin": "https://attacker.example",
+            },
+        )
+        same_origin = client.post(
+            "/__test/echo",
+            content=b"ok",
+            headers={
+                "host": "192.168.1.50:8000",
+                "origin": "http://192.168.1.50:8000",
+            },
+        )
+    assert rejected.status_code == 403
+    assert same_origin.status_code == 200
 
 
 def test_malformed_loopback_host_is_rejected(tmp_path) -> None:

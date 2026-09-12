@@ -45,6 +45,63 @@ Run exactly one local worker, without reload:
 envs/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
+### Reaching Delibra from another machine
+
+Delibra has **no authentication**. It registers directories and runs Claude Code
+and Codex CLI against them, so anyone who can reach the port gets code execution
+as you. Only do this on a network where that is acceptable — a private LAN or a
+Tailscale/WireGuard interface — and prefer an SSH tunnel
+(`ssh -L 8000:127.0.0.1:8000 you@this-machine`), which needs no configuration
+change at all.
+
+Three things must line up, and they answer different questions.
+
+| Setting | Question | Checked against |
+| --- | --- | --- |
+| bind address | where does the socket listen | the interface |
+| `allowed_clients` | who may connect at all | the peer's IP address |
+| `allowed_hosts` | which names may address it | the request's `Host` header |
+
+`allowed_clients` is the only one that is access control. `allowed_hosts` is
+anti-DNS-rebinding: it stops a page you visit from driving the server through
+your browser, and it cannot stop anyone from connecting, because a `Host` header
+is just text any client can send. Binding without `allowed_hosts` yields
+`403 Forbidden Host`.
+
+```sh
+# Prefer the specific interface over 0.0.0.0 when you have one.
+export DELIBRA_ALLOWED_CLIENTS=192.168.1.0/24
+export DELIBRA_ALLOWED_HOSTS=192.168.1.0/24
+envs/bin/python -m uvicorn app.main:app --host 192.168.1.50 --port 8000
+```
+
+Or persist it in `$DELIBRA_HOME/config.json` (default `~/.delibra/config.json`):
+
+```json
+{
+  "allowed_clients": ["192.168.1.0/24"],
+  "allowed_hosts": ["192.168.1.0/24", "my-mac.local"]
+}
+```
+
+Both accept CIDR ranges and bare addresses, and both take an env var
+(`DELIBRA_ALLOWED_CLIENTS`, `DELIBRA_ALLOWED_HOSTS`) that is a comma-separated
+list *replacing* the file when set, so one command line fully describes what a
+run accepts. An unreadable or malformed `config.json` refuses to start rather
+than silently falling back to the restrictive default.
+
+- `allowed_clients` — empty means no peer restriction, which is what the bind
+  address alone has always given. Naming any range restricts to exactly that:
+  loopback is **not** implicitly added, so include `127.0.0.1` if you also want
+  to use the server from this machine. `"*"` permits every peer. A peer whose
+  address cannot be read is rejected whenever a restriction is configured.
+- `allowed_hosts` — an entry with a port binds that port only
+  (`192.168.1.50:8000`); a bare hostname matches any port; a CIDR range matches
+  any address in range on any port, comparing the literal in the header and
+  resolving no names. Loopback is always accepted. `"*"` accepts every `Host`
+  value — the WAN/any-network setting, which gives up DNS-rebinding protection
+  entirely. Use a named entry or a range unless you genuinely cannot.
+
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
 Claude or Codex agent, and submit a prompt. The project chat keeps project context
 and agent cards in the wider left rail, with the selected agent's information
@@ -466,9 +523,13 @@ Delibra provides write isolation, not read confidentiality:
   an allowlisted environment, not arbitrary server secrets.
 - Agents may still read any path permitted to the operating-system user. Do not use
   Delibra as a confidentiality sandbox.
-- The HTTP server is localhost-only, rejects non-loopback Host values and cross-site
-  mutation Origins, and has no remote-user authentication. Do not bind it to LAN or
-  public interfaces in the MVP.
+- The HTTP server is loopback-only by default, rejects non-loopback Host values and
+  cross-site mutation Origins, optionally restricts peer addresses to configured CIDR
+  ranges, and **has no remote-user authentication of any kind**.
+  Anyone who can reach the port can register a directory and spend your provider
+  quota running agents that write to it, so exposing it is exposing code execution
+  as your user. See "Reaching Delibra from another machine" before binding it
+  anywhere but `127.0.0.1`.
 - Project-file browsing remains read-only except for explicit, digest-guarded
   saves to the currently selected `.md` or `.markdown` shared-context file.
   `.delibra/`, `.git/`, `.hg/`, and `.svn/` are never selectable or writable.
