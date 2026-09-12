@@ -868,6 +868,21 @@ def test_auto_store_rejects_digest_and_symlink_tampering(tmp_path: Path) -> None
         store.load_auto_artifact(record.id, record.topic, 100_000)
 
 
+def test_auto_record_round_trips_stop_after_turn_and_defaults_it_when_absent(
+    tmp_path: Path,
+) -> None:
+    record = auto_record_fixture(auto_project_store(tmp_path).project.id)
+    record.stop_after_turn = True
+
+    encoded = record.to_dict()
+    legacy = {key: value for key, value in encoded.items() if key != "stop_after_turn"}
+
+    assert encoded["stop_after_turn"] is True
+    assert models.AutoRunRecord.from_dict(encoded).stop_after_turn is True
+    # delibra-auto/1 records predate the flag and must load as "not stopping".
+    assert models.AutoRunRecord.from_dict(legacy).stop_after_turn is False
+
+
 def test_auto_record_decoder_rejects_generated_values_with_wrong_json_types(
     tmp_path: Path,
 ) -> None:
@@ -892,7 +907,9 @@ def test_auto_record_decoder_rejects_generated_values_with_wrong_json_types(
                 invalid_integers
             )
         elif kind == "boolean":
-            candidate["stop_requested"] = generator.choice(invalid_booleans)
+            candidate[
+                generator.choice(("stop_requested", "stop_after_turn"))
+            ] = generator.choice(invalid_booleans)
         else:
             candidate[generator.choice(string_fields)] = generator.choice(
                 invalid_strings

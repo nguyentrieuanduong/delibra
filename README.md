@@ -262,8 +262,14 @@ an extra turn.
 
 The Auto status panel survives reloads and shows progress, participant order,
 verdicts, future-turn timeout budget, terminal reason, and completed preparations.
-**Stop Auto** is the only cancellation control while Auto is active: it cancels the
-current provider when present and prevents a later turn. Manual Send, pass, retry,
+**Stop Auto** is the only cancellation control while Auto is active. It expands
+into two choices. **Stop now** cancels the current provider when present and
+prevents a later turn; the cancelled round keeps no output. **Stop after this
+turn** cancels nothing: the turn in flight finishes and is recorded, and the run
+ends before the next one starts, with terminal reason `stopped after the current
+turn by user`. While that graceful stop is pending the panel offers **Keep going**
+to withdraw it and **Stop now** to escalate; withdrawing after the run has already
+ended is a no-op that simply shows the stopped panel. Manual Send, pass, retry,
 cancel, agent identity changes, and project removal remain blocked until Auto is
 terminal; file viewing and shared-Markdown editing remain available. Edits do not
 change the immutable shared snapshot already captured for that Auto run.
@@ -281,7 +287,8 @@ when no recognized evidence exists at all does the result become `permanent`.
 A retryable turn is retried up to `DELIBRA_AUTO_TURN_RETRIES` times with bounded
 exponential backoff. Each attempt is a fresh round, so failed attempts stay
 visible in the session history, and Stop and shutdown are honoured between
-attempts. A quota failure never retries — it pauses the run to a resumable
+attempts. A pending **Stop after this turn** also ends the run there rather than
+starting another attempt. A quota failure never retries — it pauses the run to a resumable
 `stopped`, which **Continue Auto** recovers. Anything else ends the run as
 `error` with the cursor parked on the participant that failed.
 

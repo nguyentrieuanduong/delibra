@@ -1,0 +1,52 @@
+{% set stop_url = project_url(project.name, '/auto-runs/' ~ auto.number ~ '/stop') %}
+{% set after_turn_url = project_url(project.name, '/auto-runs/' ~ auto.number ~ '/stop-after-turn') %}
+{% if auto.stop_after_turn %}
+  <div class="auto-stop pending">
+    <p class="notice" role="status">Stopping when the current turn finishes.</p>
+    <form
+      method="post"
+      action="{{ after_turn_url }}/cancel"
+      hx-post="{{ after_turn_url }}/cancel"
+      hx-target="#auto-status"
+      hx-swap="outerHTML"
+    >
+      <button type="submit">Keep going</button>
+    </form>
+    <form
+      method="post"
+      action="{{ stop_url }}"
+      hx-post="{{ stop_url }}"
+      hx-target="#auto-status"
+      hx-swap="outerHTML"
+    >
+      <button type="submit">Stop now</button>
+    </form>
+  </div>
+{% else %}
+  {# Closing the disclosure is the Cancel, so no JS is needed to back out. #}
+  <details class="auto-stop">
+    <summary>Stop Auto</summary>
+    <p class="hint">
+      Stopping now cancels the turn in progress and discards its output.
+      Stopping after this turn keeps it and ends the run before the next one.
+    </p>
+    <form
+      method="post"
+      action="{{ after_turn_url }}"
+      hx-post="{{ after_turn_url }}"
+      hx-target="#auto-status"
+      hx-swap="outerHTML"
+    >
+      <button type="submit">Stop after this turn</button>
+    </form>
+    <form
+      method="post"
+      action="{{ stop_url }}"
+      hx-post="{{ stop_url }}"
+      hx-target="#auto-status"
+      hx-swap="outerHTML"
+    >
+      <button type="submit">Stop now</button>
+    </form>
+  </details>
+{% endif %}

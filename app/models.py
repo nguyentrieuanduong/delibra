@@ -1302,6 +1302,9 @@ class AutoRunRecord:
     started_at: str | None
     finished_at: str | None
     terminal_reason: str | None
+    # A graceful stop: unlike stop_requested it never cancels the live turn, so
+    # the turn already running is recorded before the next guard ends the run.
+    stop_after_turn: bool = False
     # Absent in delibra-auto/1 records, so both must default.
     resumptions: list[AutoResumption] = field(default_factory=list)
     quota_pause: AutoQuotaPause | None = None
@@ -1392,6 +1395,11 @@ class AutoRunRecord:
                 else None
             ),
             stop_requested=_strict_bool(data, "stop_requested"),
+            stop_after_turn=(
+                _strict_bool(data, "stop_after_turn")
+                if "stop_after_turn" in data
+                else False
+            ),
             created_at=_strict_str(data, "created_at"),
             started_at=(
                 str(data["started_at"]) if data.get("started_at") is not None else None
@@ -1481,6 +1489,7 @@ class AutoRunRecord:
                 self.active_timeout.to_dict() if self.active_timeout is not None else None
             ),
             "stop_requested": self.stop_requested,
+            "stop_after_turn": self.stop_after_turn,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,

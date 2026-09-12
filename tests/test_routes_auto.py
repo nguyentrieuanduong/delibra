@@ -1087,6 +1087,71 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
     assert factory.created == 1
 
 
+def test_stop_disclosure_offers_both_modes_and_the_pending_notice_is_withdrawable(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, factory = auto_route_app(tmp_path, sleep=True)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [session.id for session in sessions])
+        active = wait_for_auto(store, terminal=False)
+
+        idle = client.get(f"{prefix}/auto-runs/{active.number}")
+        pending = client.post(
+            f"{prefix}/auto-runs/{active.number}/stop-after-turn"
+        )
+        pending_record = store.load_auto_run(active.id)
+        withdrawn = client.post(
+            f"{prefix}/auto-runs/{active.number}/stop-after-turn/cancel"
+        )
+        withdrawn_record = store.load_auto_run(active.id)
+        client.post(f"{prefix}/auto-runs/{active.number}/stop")
+
+    assert idle.status_code == 200
+    assert "Stop Auto" in idle.text
+    assert ">Stop now</button>" in idle.text
+    assert ">Stop after this turn</button>" in idle.text
+    assert 'data-auto-stop-after-turn="false"' in idle.text
+
+    assert pending.status_code == 200
+    assert pending_record.stop_after_turn is True
+    assert pending_record.status == "discussing"
+    assert 'data-auto-stop-after-turn="true"' in pending.text
+    assert "Stopping when the current turn finishes." in pending.text
+    # Escalation and withdrawal are the only two moves left while pending.
+    assert ">Stop now</button>" in pending.text
+    assert ">Keep going</button>" in pending.text
+    assert ">Stop after this turn</button>" not in pending.text
+
+    assert withdrawn.status_code == 200
+    assert withdrawn_record.stop_after_turn is False
+    assert 'data-auto-stop-after-turn="false"' in withdrawn.text
+    assert ">Stop after this turn</button>" in withdrawn.text
+    assert factory.created == 1
+
+
+def test_withdrawing_a_stop_after_turn_on_a_finished_run_renders_the_stopped_panel(
+    tmp_path: Path,
+) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=["Alpha", "Beta"],
+    )
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [session.id for session in sessions])
+        active = wait_for_auto(store, terminal=False)
+        number = active.number
+        client.post(f"{prefix}/auto-runs/{number}/stop")
+        wait_for_auto(store, terminal=True)
+
+        late = client.post(f"{prefix}/auto-runs/{number}/stop-after-turn/cancel")
+
+    assert late.status_code == 200
+    assert "Stop Auto" not in late.text
+    assert "Continue Auto" in late.text
+
+
 def test_terminal_legacy_auto_status_redirects_and_escapes_preparations_streams_late(
     tmp_path: Path,
 ) -> None:

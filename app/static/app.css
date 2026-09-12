@@ -175,6 +175,11 @@ textarea { min-height: 7rem; }
 .auto-status h2, .auto-status h3, .auto-status p { margin: .25rem 0; }
 .auto-status pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .auto-terminal-reason { font-weight: 600; }
+.auto-stop { justify-self: end; text-align: right; }
+.auto-stop summary { cursor: pointer; }
+.auto-stop .hint { max-width: 20rem; }
+.auto-stop.pending { display: grid; gap: .35rem; justify-items: end; }
+.auto-stop.pending form { margin: 0; }
 .auto-preparation { border-style: dashed; }
 .auto-history-list { display: grid; gap: .35rem; list-style: none; padding: 0; }
 .auto-history-list button { display: grid; text-align: left; width: 100%; }

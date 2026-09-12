@@ -19,19 +19,12 @@
   class="auto-status {{ auto.status }}{% if auto.quota_pause %} quota-paused{% endif %}"
   data-auto-id="{{ auto.id }}"
   data-auto-active="{{ 'true' if auto_active else 'false' }}"
+  data-auto-stop-after-turn="{{ 'true' if auto.stop_after_turn else 'false' }}"
 >
   <div class="auto-status-heading">
     <h2><strong>Auto {{ auto.number }} · {{ auto.status }}</strong></h2>
     {% if auto_active %}
-      <form
-        method="post"
-        action="{{ project_url(project.name, '/auto-runs/' ~ auto.number ~ '/stop') }}"
-        hx-post="{{ project_url(project.name, '/auto-runs/' ~ auto.number ~ '/stop') }}"
-        hx-target="#auto-status"
-        hx-swap="outerHTML"
-      >
-        <button type="submit">Stop Auto</button>
-      </form>
+      {% include "_auto_stop_controls.html" %}
     {% elif auto_resumable|default(false) %}
       {% include "_auto_resume_form.html" %}
     {% endif %}

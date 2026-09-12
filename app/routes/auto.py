@@ -649,6 +649,44 @@ async def stop_auto(
 
 
 @router.post(
+    "/projects/{project_id}/auto-runs/{auto_id}/stop-after-turn",
+    response_class=HTMLResponse,
+)
+async def stop_auto_after_turn(
+    request: Request,
+    project_id: str,
+    auto_id: str,
+) -> HTMLResponse:
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    record = await request.app.state.auto_manager.request_stop_after_turn(
+        resolved_project_id,
+        record.id,
+    )
+    return _status_response(request, resolved_project_id, record)
+
+
+@router.post(
+    "/projects/{project_id}/auto-runs/{auto_id}/stop-after-turn/cancel",
+    response_class=HTMLResponse,
+)
+async def cancel_stop_auto_after_turn(
+    request: Request,
+    project_id: str,
+    auto_id: str,
+) -> HTMLResponse:
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    record = await request.app.state.auto_manager.withdraw_stop_after_turn(
+        resolved_project_id,
+        record.id,
+    )
+    return _status_response(request, resolved_project_id, record)
+
+
+@router.post(
     "/projects/{project_id}/auto-runs/{auto_id}/resume",
     response_class=HTMLResponse,
     status_code=202,
