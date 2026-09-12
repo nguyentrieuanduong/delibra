@@ -698,6 +698,7 @@ class AutoManager:
             record.finished_at = None
             record.terminal_reason = None
             record.stop_requested = False
+            record.stop_after_turn = False
             record.active_key = None
             record.active_timeout = None
             store.save_auto_run(record)
@@ -1020,6 +1021,17 @@ class AutoManager:
                 "stopped by user",
             )
             return True
+        # The graceful stop is honoured here and nowhere else: every step that
+        # would start new provider work passes through this guard, and no
+        # post-turn block does, so the turn already in flight is recorded first.
+        if current.stop_after_turn:
+            self._transition_terminal_locked(
+                store,
+                current,
+                "stopped",
+                "stopped after the current turn by user",
+            )
+            return True
         return False
 
     async def _run_preparation(self, record: AutoRunRecord) -> None:
@@ -1148,13 +1160,8 @@ class AutoManager:
         store = ProjectStore(project)
         async with self.locks.project_sessions(record.project_id, session_ids):
             current = store.load_auto_run(record.id)
-            if current.stop_requested:
-                self._transition_terminal_locked(
-                    store,
-                    current,
-                    "stopped",
-                    "stopped by user",
-                )
+            if self._halted_locked(store, current):
+                pass
             elif (
                 current.preparation_enabled
                 and len(current.preparations) != len(current.participants)
@@ -2302,6 +2309,67 @@ class AutoManager:
             if task is not None and task is not asyncio.current_task():
                 await asyncio.shield(task)
         return self.get(project_id, auto_id)
+
+    async def request_stop_after_turn(
+        self,
+        project_id: str,
+        auto_id: str,
+    ) -> AutoRunRecord:
+        """Park a graceful stop, leaving any live provider turn alone.
+
+        Unlike `stop`, this touches neither the runner nor the driver task: it
+        only raises the flag `_halted_locked` reads before the next step starts.
+        """
+
+        project = self.registry.get(project_id)
+        store = ProjectStore(project)
+        session_ids = [
+            participant.session_id
+            for participant in store.load_auto_run(auto_id).participants
+        ]
+        async with self.locks.project_sessions(project_id, session_ids):
+            record = store.require_auto_owner(auto_id)
+            if record.status not in ACTIVE_AUTO_STATUSES:
+                raise ConflictError("Auto run is not active")
+            if not record.stop_after_turn:
+                record.stop_after_turn = True
+                store.save_auto_run(record)
+        self._publish_status(record)
+        return record
+
+    async def withdraw_stop_after_turn(
+        self,
+        project_id: str,
+        auto_id: str,
+    ) -> AutoRunRecord:
+        """Take back a graceful stop that the guard has not consumed yet.
+
+        Losing that race is not an error: the run is simply already stopped, and
+        the caller renders the terminal panel with its Continue Auto form.
+        """
+
+        project = self.registry.get(project_id)
+        store = ProjectStore(project)
+        session_ids = [
+            participant.session_id
+            for participant in store.load_auto_run(auto_id).participants
+        ]
+        async with self.locks.project_sessions(project_id, session_ids):
+            record = store.load_auto_run(auto_id)
+            if (
+                record.status not in ACTIVE_AUTO_STATUSES
+                or store.active_auto_run_id() != record.id
+            ):
+                return record
+            # An immediate Stop has already killed the turn; pretending the run
+            # can keep going would contradict a cancellation in flight.
+            if record.stop_requested:
+                raise ConflictError("Auto run is already stopping")
+            if record.stop_after_turn:
+                record.stop_after_turn = False
+                store.save_auto_run(record)
+        self._publish_status(record)
+        return record
 
     def _publish_status(self, record: AutoRunRecord) -> AutoStatusEvent:
         key = (record.project_id, record.id)

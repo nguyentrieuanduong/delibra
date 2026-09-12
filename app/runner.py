@@ -328,7 +328,13 @@ class RunManager:
         expected_status = (
             "preparing" if request.phase == "preparation" else "discussing"
         )
-        if record.status != expected_status or record.stop_requested:
+        if (
+            record.status != expected_status
+            or record.stop_requested
+            # A parked graceful stop lets the live turn finish but must never
+            # let a new one start, whichever path reaches this validator.
+            or record.stop_after_turn
+        ):
             raise ConflictError("Auto run is not ready for this phase")
         if (
             record.active_key is not None

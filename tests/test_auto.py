@@ -3308,6 +3308,215 @@ async def test_auto_stop_claim_prevents_later_turn_during_timeout_race(
 
 
 @pytest.mark.asyncio
+async def test_stop_after_turn_keeps_the_in_flight_turn_then_stops(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", delay=0.2),
+            PlannedOutput("must not run"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Graceful stop topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+    key = await wait_for_active_auto_key(manager, project_id, created.id)
+
+    pending = await manager.request_stop_after_turn(project_id, created.id)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert pending.stop_after_turn is True
+    assert pending.status == "discussing"
+    assert pending.stop_requested is False
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "stopped after the current turn by user"
+    # The point of the graceful stop: the turn that was already running is kept.
+    assert len(terminal.discussion) == 1
+    assert store.load_session(key.session_id).rounds[-1].status == "complete"
+    assert factory.created == 1
+
+
+@pytest.mark.asyncio
+async def test_withdrawing_stop_after_turn_lets_auto_reach_its_own_terminal(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", delay=0.2),
+            PlannedOutput("Beta", "agree"),
+            PlannedOutput("Alpha again", "agree"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Withdrawn stop topic",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+
+    await manager.request_stop_after_turn(project_id, created.id)
+    withdrawn = await manager.withdraw_stop_after_turn(project_id, created.id)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert withdrawn.stop_after_turn is False
+    assert terminal.status == "converged"
+    assert factory.created > 1
+
+
+@pytest.mark.asyncio
+async def test_withdrawing_after_the_run_already_stopped_is_not_an_error(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha")],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Late withdrawal topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    await manager.request_stop_after_turn(project_id, created.id)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    late = await manager.withdraw_stop_after_turn(project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert late.status == "stopped"
+    assert late.terminal_reason == "stopped after the current turn by user"
+
+
+@pytest.mark.asyncio
+async def test_stop_now_escalates_a_pending_stop_after_turn(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("never completes", sleep=True),
+            PlannedOutput("must not run"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Escalation topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+    key = await wait_for_active_auto_key(manager, project_id, created.id)
+
+    await manager.request_stop_after_turn(project_id, created.id)
+    await manager.stop(project_id, created.id)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert terminal.stop_requested is True
+    assert terminal.terminal_reason == "stopped by user"
+    assert terminal.discussion == []
+    assert store.load_session(key.session_id).rounds[-1].status == "cancelled"
+    assert factory.created == 1
+
+
+@pytest.mark.asyncio
+async def test_withdrawing_is_refused_once_stop_now_has_been_claimed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("never completes", sleep=True),
+            PlannedOutput("must not run"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Refused withdrawal topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    # Hold Stop open between claiming the cancel and killing the provider: the
+    # only window where the run is still active and stop_requested is set.
+    claimed = asyncio.Event()
+    release = asyncio.Event()
+    original_finish = manager.runner.finish_auto_cancel
+
+    async def blocked_finish(key):
+        claimed.set()
+        await release.wait()
+        return await original_finish(key)
+
+    monkeypatch.setattr(manager.runner, "finish_auto_cancel", blocked_finish)
+    stopping = asyncio.create_task(manager.stop(project_id, created.id))
+    await asyncio.wait_for(claimed.wait(), timeout=5)
+
+    with pytest.raises(ConflictError, match="already stopping"):
+        await manager.withdraw_stop_after_turn(project_id, created.id)
+
+    release.set()
+    await stopping
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "stopped by user"
+
+
+@pytest.mark.asyncio
+async def test_resume_clears_a_consumed_stop_after_turn_request(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", "continue", delay=0.2),
+            PlannedOutput("Beta", "agree"),
+            PlannedOutput("Alpha again", "agree"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Resume after graceful stop",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    await manager.request_stop_after_turn(project_id, created.id)
+    stopped = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    resumed = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=1,
+        turn_timeout_seconds=120,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert stopped.stop_after_turn is True
+    assert resumed.stop_after_turn is False
+    # A stale flag would stop the resumed run at its very first guard.
+    assert terminal.status == "converged"
+    assert len(terminal.discussion) > len(stopped.discussion)
+
+
+@pytest.mark.asyncio
 async def test_auto_retries_a_transient_discussion_failure_then_succeeds(
     tmp_path: Path,
 ) -> None:
