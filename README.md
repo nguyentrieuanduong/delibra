@@ -91,16 +91,17 @@ run accepts. An unreadable or malformed `config.json` refuses to start rather
 than silently falling back to the restrictive default.
 
 - `allowed_clients` — empty means no peer restriction, which is what the bind
-  address alone has always given. Naming any range restricts to exactly that:
-  loopback is **not** implicitly added, so include `127.0.0.1` if you also want
-  to use the server from this machine. `"*"` permits every peer. A peer whose
-  address cannot be read is rejected whenever a restriction is configured.
+  address alone has always given. Naming any range restricts non-loopback peers
+  to that range; loopback is always accepted so the local machine remains
+  reachable. `"*"` permits every peer. A peer whose address cannot be read is
+  rejected whenever a restriction is configured.
 - `allowed_hosts` — an entry with a port binds that port only
   (`192.168.1.50:8000`); a bare hostname matches any port; a CIDR range matches
   any address in range on any port, comparing the literal in the header and
-  resolving no names. Loopback is always accepted. `"*"` accepts every `Host`
-  value — the WAN/any-network setting, which gives up DNS-rebinding protection
-  entirely. Use a named entry or a range unless you genuinely cannot.
+  resolving no names. `localhost`, every IPv4 address in `127.0.0.0/8`, and
+  IPv6 `::1` are always accepted. `"*"` accepts every `Host` value — the
+  WAN/any-network setting, which gives up DNS-rebinding protection entirely.
+  Use a named entry or a range unless you genuinely cannot.
 
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
 Claude or Codex agent, and submit a prompt. The project chat keeps project context

@@ -103,6 +103,22 @@ def test_an_allowed_host_is_accepted_while_every_other_host_stays_rejected(
     assert loopback.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost:8000",
+        "127.0.0.1:8000",
+        "127.42.19.7:9000",
+        "[::1]:8000",
+    ],
+)
+def test_every_loopback_host_is_always_accepted(tmp_path, host: str) -> None:
+    with app_client(tmp_path, allowed_hosts=("192.168.1.50",)) as client:
+        response = client.get("/", headers={"host": host})
+
+    assert response.status_code == 200
+
+
 def test_a_portless_allowed_host_matches_any_port_and_ignores_case(tmp_path) -> None:
     with app_client(tmp_path, allowed_hosts=("My-Mac.local",)) as client:
         bare = client.get("/", headers={"host": "my-mac.local"})
@@ -169,25 +185,37 @@ def test_a_client_cidr_rejects_peers_outside_the_range(tmp_path) -> None:
     assert rejected.text == "Forbidden Client"
 
 
-def test_a_client_restriction_also_covers_loopback_and_unknown_peers(
+@pytest.mark.parametrize(
+    "peer",
+    [
+        ("127.0.0.1", 5000),
+        ("127.42.19.7", 5000),
+        ("::1", 5000),
+        ("::ffff:127.0.0.1", 5000),
+    ],
+)
+def test_every_loopback_client_is_always_accepted(
     tmp_path,
+    peer: tuple[str, int],
 ) -> None:
-    # Loopback is exempt from the *Host* check but never from the peer check:
-    # naming a client range means that range, or the setting says nothing.
-    loopback = app_client(
+    with app_client(
         tmp_path,
         allowed_clients=("192.168.1.0/24",),
-        peer=("127.0.0.1", 5000),
-    )
-    # A transport with no IP peer cannot be shown to be inside the range, so a
-    # configured restriction fails closed rather than waving it through.
-    unknown = app_client(tmp_path, allowed_clients=("192.168.1.0/24",))
-    with loopback as client:
-        rejected = client.get("/", headers={"host": "127.0.0.1"})
-    with unknown as client:
-        unnamed = client.get("/", headers={"host": "127.0.0.1"})
-    assert rejected.status_code == 403
-    assert unnamed.status_code == 403
+        peer=peer,
+    ) as client:
+        response = client.get("/", headers={"host": "localhost"})
+
+    assert response.status_code == 200
+
+
+def test_a_client_restriction_still_rejects_an_unknown_peer(tmp_path) -> None:
+    client = app_client(tmp_path, allowed_clients=("192.168.1.0/24",))
+
+    with client:
+        response = client.get("/", headers={"host": "localhost"})
+
+    assert response.status_code == 403
+    assert response.text == "Forbidden Client"
 
 
 def test_a_bare_client_address_and_an_ipv4_mapped_peer_both_match(tmp_path) -> None:

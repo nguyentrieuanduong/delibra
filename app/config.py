@@ -104,12 +104,12 @@ class Settings:
     stateless_history_limit: int = 2 * MIB
     stateless_round_limit: int = 20
     request_body_limit: int = 2 * MIB
-    # Host authorities and CIDR ranges accepted beyond loopback, which is always
-    # accepted. Empty keeps the server reachable only as localhost even when it
-    # binds 0.0.0.0.
+    # Host authorities and CIDR ranges accepted beyond localhost and loopback
+    # addresses, which are always accepted. Empty accepts only those Host
+    # values even when the server binds 0.0.0.0; peer access is separate.
     allowed_hosts: tuple[str, ...] = ()
-    # Peer addresses and CIDR ranges permitted to connect at all. Empty means no
-    # peer restriction, which is what the bind address alone has always given.
+    # Non-loopback peer addresses and CIDR ranges permitted to connect. Loopback
+    # is always accepted. Empty leaves non-loopback access to the bind address.
     allowed_clients: tuple[str, ...] = ()
     file_view_limit: int = 512 * 1024
     auto_resume_drain_seconds: int = 30
