@@ -55,14 +55,9 @@ def _parse_authority(value: str) -> tuple[str, int | None] | None:
     return parsed.hostname.lower(), port
 
 
-LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+LOCALHOST = "localhost"
 # Widens which Host values are accepted; it never widens what parses as one.
 WILDCARD_HOST = "*"
-
-
-def _loopback_authority(value: str) -> bool:
-    parsed = _parse_authority(value)
-    return parsed is not None and parsed[0] in LOOPBACK_HOSTNAMES
 
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -94,6 +89,10 @@ def _address(value: str) -> Address | None:
     # A dual-stack listener reports IPv4 peers in v4-mapped form; compare them
     # as the IPv4 addresses an operator actually wrote down.
     return getattr(parsed, "ipv4_mapped", None) or parsed
+
+
+def _is_loopback(address: Address | None) -> bool:
+    return address is not None and address.is_loopback
 
 
 def _within(address: Address | None, networks: tuple[Network, ...]) -> bool:
@@ -232,19 +231,20 @@ class LocalSecurityMiddleware:
             return True
         client = scope.get("client")
         peer = client[0] if client else None
+        address = _address(peer) if peer else None
+        if _is_loopback(address):
+            return True
         # A transport with no IP peer cannot be shown to be inside the range, so
         # a configured restriction fails closed rather than waving it through.
-        return _within(
-            _address(peer) if peer else None,
-            self.allowed_client_networks,
-        )
+        return _within(address, self.allowed_client_networks)
 
     def _host_allowed(self, value: str) -> bool:
         parsed = _parse_authority(value)
         if parsed is None:
             return False
         hostname, port = parsed
-        if hostname in LOOPBACK_HOSTNAMES:
+        address = _address(hostname)
+        if hostname == LOCALHOST or _is_loopback(address):
             return True
         if self.allow_any_host:
             return True
@@ -256,7 +256,7 @@ class LocalSecurityMiddleware:
             return True
         # A range matches the literal a browser sent, never a name that would
         # resolve into it: this check reads the header and resolves nothing.
-        return _within(_address(hostname), self.allowed_host_networks)
+        return _within(address, self.allowed_host_networks)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
