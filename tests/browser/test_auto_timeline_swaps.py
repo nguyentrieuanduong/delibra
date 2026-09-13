@@ -384,7 +384,10 @@ def test_stopping_auto_refreshes_every_participant_card_without_a_reload(
     )
     expect(page.locator(f"{beta_preview}.running")).to_have_count(1)
 
-    page.click("#auto-status form[hx-post$='/stop'] button[type=submit]")
+    stop_controls = page.locator("#auto-status details.auto-stop")
+    stop_controls.locator("summary").click()
+    expect(stop_controls).to_have_attribute("open", "")
+    stop_controls.locator("form[hx-post$='/stop'] button[type=submit]").click()
 
     expect(page.locator("#auto-status")).to_have_attribute(
         "data-auto-active", "false", timeout=30_000
