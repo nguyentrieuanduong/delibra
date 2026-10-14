@@ -39,6 +39,8 @@ _TOOL_PROGRESS = {
     "WebSearch": "Searching the web",
     "WebFetch": "Fetching a web page",
     "Read": "Reading a file",
+    "Glob": "Finding files",
+    "Grep": "Searching files",
     "Write": "Updating workspace files",
     "Edit": "Updating workspace files",
 }
@@ -168,8 +170,18 @@ class ClaudeAdapter:
             for root in writable_roots
             for token in ("--add-dir", root.as_posix())
         ]
-        allowed_tools = "Read(/**),Edit(/**),WebSearch,WebFetch" + "".join(
-            f",Edit(/{root.as_posix()}/**)" for root in writable_roots
+        # A single leading `/` in a rule is relative to the cwd (the workspace),
+        # so reaching the project needs the absolute `//` form. Read rules also
+        # govern Glob and Grep.
+        project_read = (
+            f",Read(/{context.project_root.as_posix()}/**)"
+            if context.project_root is not None
+            else ""
+        )
+        allowed_tools = (
+            "Read(/**),Edit(/**),WebSearch,WebFetch"
+            + project_read
+            + "".join(f",Edit(/{root.as_posix()}/**)" for root in writable_roots)
         )
         argv = [
             self.executable,
@@ -188,7 +200,7 @@ class ClaudeAdapter:
             "--permission-mode",
             "dontAsk",
             "--tools",
-            "Read,Write,Edit,WebSearch,WebFetch",
+            "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch",
             "--allowedTools",
             allowed_tools,
             "--safe-mode",

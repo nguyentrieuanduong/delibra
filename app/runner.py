@@ -54,6 +54,7 @@ from app.storage import (
     atomic_write_json,
     atomic_write_text,
     ensure_owned_directory,
+    first_unsafe_writable_root_character,
     read_codex_rollout_state,
     read_latest_codex_rollout_state,
     safe_copy_file,
@@ -764,6 +765,12 @@ class RunManager:
             workspace=workspace,
             staged_shared_context=staged_shared_context,
             writable_roots=writable_roots,
+            project_root=(
+                store.project_path
+                if first_unsafe_writable_root_character(str(store.project_path))
+                is None
+                else None
+            ),
         )
         try:
             adapter = self.adapter_factory(config)

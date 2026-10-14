@@ -52,6 +52,9 @@ class RunContext:
     workspace: Path = Path(".")
     staged_shared_context: Path | None = None
     writable_roots: tuple[Path, ...] = ()
+    # Registered project directory, when it is safe to express in a provider
+    # permission rule. None keeps reads confined to the workspace.
+    project_root: Path | None = None
 
 
 def shared_context_section(context: RunContext) -> str:

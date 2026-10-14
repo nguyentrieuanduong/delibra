@@ -517,13 +517,17 @@ Delibra provides write isolation, not read confidentiality:
 - Agent cwd is the session `workspace/`, with private temp at `workspace/.tmp/`.
   Write access starts there and may include the explicitly granted writable
   project directories described above.
-- Claude receives only Read/Write/Edit and native web tools under the verified safe
-  command. Codex runs in `workspace-write`, with shell network disabled and native
-  web search enabled.
+- Claude receives only Read/Write/Edit/Glob/Grep and native web tools under the
+  verified safe command. Codex runs in `workspace-write`, with shell network disabled
+  and native web search enabled.
 - Codex provider state uses an app-owned `~/.delibra/codex-home`; subprocesses receive
   an allowlisted environment, not arbitrary server secrets.
-- Agents may still read any path permitted to the operating-system user. Do not use
-  Delibra as a confidentiality sandbox.
+- Claude may read and search the whole registered project directory, including
+  `.delibra` (other agents' workspaces and rounds) and `.git`, but nothing outside
+  it. If the resolved project path contains a character a permission rule cannot
+  express safely (see writable roots above), Claude's reads stay confined to its
+  workspace and writable roots. Codex may read any path permitted to the
+  operating-system user. Do not use Delibra as a confidentiality sandbox.
 - The HTTP server is loopback-only by default, rejects non-loopback Host values and
   cross-site mutation Origins, optionally restricts peer addresses to configured CIDR
   ranges, and **has no remote-user authentication of any kind**.
