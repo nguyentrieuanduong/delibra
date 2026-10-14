@@ -678,6 +678,36 @@ async def test_writable_roots_are_resolved_into_run_context(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_project_root_is_resolved_into_run_context(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+    )
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert contexts[0].project_root == store.project_path
+
+
+@pytest.mark.asyncio
+async def test_rule_unsafe_project_path_keeps_reads_in_the_workspace(
+    tmp_path: Path,
+) -> None:
+    unsafe_parent = tmp_path / "a,b"
+    unsafe_parent.mkdir()
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, _store = setup_manager(
+        unsafe_parent,
+        contexts=contexts,
+    )
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert contexts[0].project_root is None
+
+
+@pytest.mark.asyncio
 async def test_retry_appends_stateless_round_and_clears_ambiguous_native_state(
     tmp_path: Path,
 ) -> None:

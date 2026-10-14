@@ -154,7 +154,7 @@ def test_build_command_first_and_native_resume_match_proven_spike() -> None:
         "--permission-mode",
         "dontAsk",
         "--tools",
-        "Read,Write,Edit,WebSearch,WebFetch",
+        "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch",
         "--allowedTools",
         "Read(/**),Edit(/**),WebSearch,WebFetch",
         "--safe-mode",
@@ -218,6 +218,44 @@ def test_claude_writable_roots_use_repeated_flags_and_exact_edit_rules(
     ]
     assert add_dir_indexes
     assert all(index < system_prompt_index for index in add_dir_indexes)
+
+
+def test_claude_project_root_adds_absolute_read_rule_before_edit_rules() -> None:
+    command = ClaudeAdapter(executable="claude").build_command(
+        config(),
+        RunContext(
+            user_prompt="Investigate.",
+            resume_id=None,
+            resume_strategy="native",
+            staged_history=[],
+            staged_source=None,
+            project_root=Path("/project"),
+            writable_roots=(Path("/project/docs"),),
+        ),
+    )
+
+    allowed = command.argv[command.argv.index("--allowedTools") + 1]
+    assert allowed == (
+        "Read(/**),Edit(/**),WebSearch,WebFetch,"
+        "Read(//project/**),Edit(//project/docs/**)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool", "label"),
+    [("Glob", "Finding files"), ("Grep", "Searching files")],
+)
+def test_claude_discovery_tools_report_their_own_progress(tool: str, label: str) -> None:
+    line = json.dumps(
+        {
+            "type": "stream_event",
+            "event": {"content_block": {"type": "tool_use", "name": tool}},
+        }
+    )
+
+    events = ClaudeAdapter().parse_line(line)
+
+    assert [(event.kind, event.text) for event in events] == [("progress", label)]
 
 
 def test_build_command_stateless_reapplies_role_and_lists_staged_history() -> None:
