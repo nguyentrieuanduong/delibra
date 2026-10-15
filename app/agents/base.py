@@ -43,6 +43,17 @@ class AgentEvent:
 
 
 @dataclass(frozen=True)
+class CodingContext:
+    """Build-turn capabilities. Present only on Auto build turns."""
+
+    project_root: Path
+    temp_dir: Path
+    env_dir: Path
+    env_tool: Literal["conda", "venv", "existing"]
+    network_allowlist: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RunContext:
     user_prompt: str
     resume_id: str | None
@@ -55,6 +66,9 @@ class RunContext:
     # Registered project directory, when it is safe to express in a provider
     # permission rule. None keeps reads confined to the workspace.
     project_root: Path | None = None
+    # Set only on Auto build turns; None keeps chat and discussion argv
+    # byte-identical to before coding mode existed.
+    coding: CodingContext | None = None
 
 
 def shared_context_section(context: RunContext) -> str:

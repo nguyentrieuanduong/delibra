@@ -43,6 +43,7 @@ _TOOL_PROGRESS = {
     "Grep": "Searching files",
     "Write": "Updating workspace files",
     "Edit": "Updating workspace files",
+    "Bash": "Running a command",
 }
 
 
@@ -162,6 +163,11 @@ class ClaudeAdapter:
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
         if config.effort not in self.EFFORT_LEVELS:
             raise ValueError(f"unsupported Claude effort: {config.effort}")
+        if context.coding is not None:
+            return Command(
+                argv=self._build_turn_argv(config, context),
+                stdin=shared_context_section(context) + context.user_prompt,
+            )
         writable_roots = tuple(
             sorted(context.writable_roots, key=lambda path: path.as_posix())
         )
@@ -219,6 +225,76 @@ class ClaudeAdapter:
         if context.resume_strategy == "stateless":
             prompt = self._stateless_prompt(config, context)
         return Command(argv=argv, stdin=prompt)
+
+    def _build_turn_argv(self, config: SessionConfig, context: RunContext) -> list[str]:
+        coding = context.coding
+        assert coding is not None
+        root = coding.project_root.as_posix()
+        temp = coding.temp_dir.as_posix()
+        # The cwd is the project root on build turns, so `/` rules anchor
+        # there. Built-in file tools follow these rules; Bash follows the
+        # sandbox below, which the OS enforces for every child process.
+        settings = {
+            "sandbox": {
+                "enabled": True,
+                "failIfUnavailable": True,
+                "allowUnsandboxedCommands": False,
+                "autoAllowBashIfSandboxed": True,
+                "network": {
+                    "allowedDomains": list(coding.network_allowlist),
+                    "strictAllowlist": True,
+                },
+                "filesystem": {
+                    "denyRead": ["~/"],
+                    "allowRead": [root, temp],
+                    "denyWrite": [f"{root}/.delibra", f"{root}/.git"],
+                },
+                "credentials": {"envVars": [
+                    {"name": name, "mode": "deny"} for name in (
+                        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN",
+                        "GH_TOKEN", "NPM_TOKEN", "AWS_ACCESS_KEY_ID",
+                        "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                    )
+                ]},
+            }
+        }
+        argv = [
+            self.executable,
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model",
+            config.model,
+            "--effort",
+            config.effort,
+            "--add-dir",
+            temp,
+            "--append-system-prompt",
+            config.role_instructions,
+            "--permission-mode",
+            "dontAsk",
+            "--tools",
+            # Research tools stay by user decision (D, Research tools); they
+            # are in-process and not covered by the sandbox allowlist.
+            "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch",
+            "--allowedTools",
+            "Read(/**),Edit(/**),Bash,WebSearch,WebFetch",
+            "--disallowedTools",
+            "Edit(/.delibra/**),Edit(/.git/**)",
+            "--settings",
+            json.dumps(settings, separators=(",", ":")),
+            "--safe-mode",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--disable-slash-commands",
+            "--no-chrome",
+        ]
+        return argv
 
     @staticmethod
     def _stateless_prompt(config: SessionConfig, context: RunContext) -> str:

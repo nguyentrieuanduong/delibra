@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.base import RunContext
+from app.agents.base import CodingContext, RunContext
 from app.agents.claude import ClaudeAdapter
 from app.models import SessionConfig
 
@@ -554,3 +554,90 @@ def test_a_rate_limit_event_is_no_longer_an_unknown_event() -> None:
     line = json.dumps({"type": "rate_limit_event", "rate_limit_info": "wrong shape"})
 
     assert ClaudeAdapter().parse_line(line) == []
+
+
+def build_context(allowlist: tuple[str, ...] = ("pypi.org",)) -> RunContext:
+    return RunContext(
+        user_prompt="Build it.",
+        resume_id=None,
+        resume_strategy="native",
+        staged_history=[],
+        staged_source=None,
+        workspace=Path("/project/.delibra/sessions/Claude/workspace"),
+        project_root=Path("/project"),
+        coding=CodingContext(
+            project_root=Path("/project"),
+            temp_dir=Path("/home/.delibra/build-tmp/" + "a" * 32),
+            env_dir=Path("/project/envs"),
+            env_tool="venv",
+            network_allowlist=allowlist,
+        ),
+    )
+
+
+def test_build_turn_grants_sandboxed_bash_and_keeps_research_tools() -> None:
+    argv = ClaudeAdapter(executable="claude").build_command(config(), build_context()).argv
+    assert argv[argv.index("--tools") + 1] == "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
+    assert argv[argv.index("--allowedTools") + 1] == "Read(/**),Edit(/**),Bash,WebSearch,WebFetch"
+    # Edit rules cover every built-in file-editing tool; Claude Code has no
+    # Write(path) rule form, so none is emitted (spike_add_dir.py rev. 2).
+    assert argv[argv.index("--disallowedTools") + 1] == (
+        "Edit(/.delibra/**),Edit(/.git/**)"
+    )
+    assert argv[argv.index("--add-dir") + 1] == "/home/.delibra/build-tmp/" + "a" * 32
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert {entry["name"] for entry in settings["sandbox"]["credentials"]["envVars"]} == {
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+        "NPM_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    }
+    assert all(entry["mode"] == "deny" for entry in settings["sandbox"]["credentials"]["envVars"])
+    assert settings == {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "allowUnsandboxedCommands": False,
+            "autoAllowBashIfSandboxed": True,
+            "network": {"allowedDomains": ["pypi.org"], "strictAllowlist": True},
+            "filesystem": {
+                "denyRead": ["~/"],
+                "allowRead": ["/project", "/home/.delibra/build-tmp/" + "a" * 32],
+                "denyWrite": ["/project/.delibra", "/project/.git"],
+            },
+            "credentials": {"envVars": [
+                {"name": name, "mode": "deny"} for name in (
+                    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN",
+                    "GH_TOKEN", "NPM_TOKEN", "AWS_ACCESS_KEY_ID",
+                    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                )
+            ]},
+        }
+    }
+    assert "--safe-mode" in argv
+
+
+def test_build_turn_with_empty_allowlist_has_no_domains() -> None:
+    argv = ClaudeAdapter(executable="claude").build_command(
+        config(), build_context(allowlist=())
+    ).argv
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["sandbox"]["network"] == {
+        "allowedDomains": [],
+        "strictAllowlist": True,
+    }
+
+
+def test_chat_turn_argv_is_unchanged_by_coding_support() -> None:
+    argv = ClaudeAdapter(executable="claude").build_command(
+        config(),
+        RunContext(
+            user_prompt="Hi",
+            resume_id=None,
+            resume_strategy="native",
+            staged_history=[],
+            staged_source=None,
+        ),
+    ).argv
+    assert "Bash" not in argv[argv.index("--tools") + 1]
+    assert "--settings" not in argv
+    assert "--disallowedTools" not in argv
