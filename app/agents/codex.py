@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.agents.base import AgentEvent, Command, RunContext, shared_context_section
+from app.agents.base import (
+    AgentEvent,
+    CodingContext,
+    Command,
+    RunContext,
+    shared_context_section,
+)
 from app.agents.errors import (
     ProviderErrorInfo,
     classify_status_code,
@@ -79,6 +85,67 @@ def _developer_instructions_config(value: str) -> str:
     return f"developer_instructions={encoded}"
 
 
+BUILD_PROFILE = "delibra_build"
+# Enabled by default in codex-cli 0.162.1 (`codex features list`).
+# system_proxy_fallback could route command traffic around the domain proxy;
+# computer_use drives the desktop outside every sandbox with no approval.
+# Browser and search stay for research by user decision; plugins stay off
+# through the existing `--disable plugins`.
+BUILD_DISABLED_FEATURES = ("system_proxy_fallback", "computer_use")
+
+
+def _toml_string(value: str) -> str:
+    # Match the existing developer-instructions TOML escaping: JSON's C0
+    # escapes are compatible, but raw DEL must be escaped for TOML.
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def codex_build_overrides(coding: CodingContext) -> list[str]:
+    """`-c` overrides for a build turn's permission profile.
+
+    `--ignore-user-config` means no config.toml applies, so the whole profile
+    travels as inline tables. Profiles do not compose with `--sandbox` or
+    `sandbox_workspace_write.*`, which build turns therefore omit.
+    """
+
+    temp = _toml_string(coding.temp_dir.as_posix())
+    network = (
+        "network={enabled=true, domains={"
+        + ", ".join(f"{_toml_string(host)}=\"allow\"" for host in coding.network_allowlist)
+        + "}}"
+        if coding.network_allowlist
+        else "network={enabled=false}"
+    )
+    profile = (
+        f"permissions={{{BUILD_PROFILE}={{extends=\":workspace\", "
+        "filesystem={\":root\"=\"deny\", \":minimal\"=\"read\", "
+        f"{temp}=\"write\", "
+        "\":workspace_roots\"={\".\"=\"write\", \".delibra\"=\"read\", \".git\"=\"read\"}}, "
+        f"{network}}}}}"
+    )
+    overrides = [
+        f'default_permissions="{BUILD_PROFILE}"',
+        profile,
+        "shell_environment_policy={inherit=\"core\", set={"
+        + ", ".join(
+            f"{_toml_string(key)}={_toml_string(value)}"
+            for key, value in {
+                ("CONDA_PREFIX" if coding.env_tool == "conda" else "VIRTUAL_ENV"):
+                    coding.env_dir.as_posix(),
+                "TMPDIR": coding.temp_dir.as_posix(),
+                "PIP_CACHE_DIR": (coding.temp_dir / "pip-cache").as_posix(),
+            }.items()
+        )
+        + "}}",
+    ]
+    if coding.network_allowlist:
+        overrides.append(
+            "features.network_proxy={enabled=true, allow_local_binding=false, "
+            "allow_upstream_proxy=false}"
+        )
+    return overrides
+
+
 class CodexAdapter:
     EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"]
     RESUME_AFTER_CONFIG_CHANGE = True
@@ -92,6 +159,11 @@ class CodexAdapter:
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
         if config.effort not in self.EFFORT_LEVELS:
             raise ValueError(f"unsupported Codex effort: {config.effort}")
+        if context.coding is not None:
+            return Command(
+                argv=self._build_turn_argv(config, context.coding),
+                stdin=shared_context_section(context) + context.user_prompt,
+            )
         global_options = [
             self.executable,
             "--model",
@@ -158,6 +230,60 @@ class CodexAdapter:
             else shared_context_section(context) + context.user_prompt
         )
         return Command(argv=argv, stdin=prompt)
+
+    def _build_turn_argv(self, config: SessionConfig, coding: CodingContext) -> list[str]:
+        """Build-turn argv: a permission profile instead of the legacy sandbox.
+
+        Profiles do not compose with `--sandbox` or `sandbox_workspace_write.*`,
+        so neither appears here. Build turns are stateless Auto turns, so this
+        is always a fresh `exec`, never `exec resume`.
+        """
+
+        argv = [
+            self.executable,
+            "--model",
+            config.model,
+            "--ask-for-approval",
+            "never",
+            # Research stays available by user decision; hosted search runs
+            # outside the command proxy.
+            "--search",
+            "--cd",
+            str(coding.project_root),
+            "--config",
+            f'model_reasoning_effort="{config.effort}"',
+            "--config",
+            "project_root_markers=[]",
+            "--config",
+            "project_doc_max_bytes=0",
+            "--config",
+            _developer_instructions_config(config.role_instructions),
+        ]
+        for override in codex_build_overrides(coding):
+            argv.extend(["--config", override])
+        # The same features chat turns disable, plus the build-only ones.
+        for feature in (
+            "hooks",
+            "plugins",
+            "apps",
+            "memories",
+            "goals",
+            "multi_agent",
+            *BUILD_DISABLED_FEATURES,
+        ):
+            argv.extend(["--disable", feature])
+        argv.extend(
+            [
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--strict-config",
+                "-",
+            ]
+        )
+        return argv
 
     @staticmethod
     def _stateless_prompt(context: RunContext) -> str:

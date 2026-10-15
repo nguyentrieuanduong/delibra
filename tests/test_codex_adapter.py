@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import tomllib
 from pathlib import Path
 
 import pytest
 
-from app.agents.base import RunContext
-from app.agents.codex import CodexAdapter
+from app.agents.base import CodingContext, RunContext
+from app.agents.codex import BUILD_DISABLED_FEATURES, CodexAdapter, codex_build_overrides
 from app.models import SessionConfig
 
 
@@ -416,3 +417,73 @@ def test_codex_reports_no_usage_when_the_provider_reported_none() -> None:
     )
 
     assert billing == []
+
+
+def coding(allowlist: tuple[str, ...] = ("pypi.org",)) -> CodingContext:
+    return CodingContext(
+        project_root=Path("/project"),
+        temp_dir=Path("/home/.delibra/build-tmp/" + "b" * 32),
+        env_dir=Path("/project/envs"),
+        env_tool="venv",
+        network_allowlist=allowlist,
+    )
+
+
+def build_context(allowlist: tuple[str, ...] = ("pypi.org",)) -> RunContext:
+    return RunContext(
+        user_prompt="Build it.",
+        resume_id=None,
+        resume_strategy="native",
+        staged_history=[],
+        staged_source=None,
+        workspace=Path("/project/.delibra/sessions/Codex/workspace"),
+        coding=coding(allowlist),
+    )
+
+
+def test_build_turn_uses_profile_not_legacy_sandbox() -> None:
+    argv = CodexAdapter(executable="codex").build_command(config(), build_context()).argv
+    assert "--sandbox" not in argv
+    assert "--search" in argv  # research stays (D, Research tools)
+    assert "plugins" in {argv[i + 1] for i, item in enumerate(argv) if item == "--disable"}
+    assert not any("sandbox_workspace_write" in item for item in argv)
+    assert argv[argv.index("--cd") + 1] == "/project"
+    assert "--strict-config" in argv
+    disabled = {argv[index + 1] for index, item in enumerate(argv) if item == "--disable"}
+    assert set(BUILD_DISABLED_FEATURES) <= disabled
+    assert BUILD_DISABLED_FEATURES == ("system_proxy_fallback", "computer_use")
+    assert "browser_use" not in disabled
+    for override in codex_build_overrides(coding()):
+        assert override in argv
+
+
+def test_build_overrides_allow_only_listed_hosts_through_the_proxy() -> None:
+    overrides = codex_build_overrides(coding(("pypi.org", "github.com")))
+    assert 'default_permissions="delibra_build"' in overrides
+    assert not any(item.startswith("web_search") for item in overrides)
+    assert (
+        "features.network_proxy={enabled=true, allow_local_binding=false, "
+        "allow_upstream_proxy=false}"
+    ) in overrides
+    profile = next(item for item in overrides if item.startswith("permissions="))
+    assert 'network={enabled=true, domains={"pypi.org"="allow", "github.com"="allow"}}' in profile
+    assert '":root"="deny"' in profile
+    assert '".delibra"="read"' in profile
+    assert '".git"="read"' in profile
+    command_env = next(item for item in overrides if item.startswith("shell_environment_policy="))
+    assert '"PIP_CACHE_DIR"="/home/.delibra/build-tmp/' in command_env
+    assert '"VIRTUAL_ENV"="/project/envs"' in command_env
+
+
+def test_build_turn_never_resumes_even_with_a_resume_id() -> None:
+    resumable = replace(build_context(), resume_id="thread-1")
+    argv = CodexAdapter(executable="codex").build_command(config(), resumable).argv
+    assert "resume" not in argv
+    assert "thread-1" not in argv
+
+
+def test_empty_allowlist_disables_command_network() -> None:
+    overrides = codex_build_overrides(coding(()))
+    profile = next(item for item in overrides if item.startswith("permissions="))
+    assert "network={enabled=false}" in profile
+    assert not any(item.startswith("features.network_proxy") for item in overrides)
