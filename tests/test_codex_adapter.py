@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.base import CodingContext, RunContext
+from app.agents.base import CodingContext, RunContext, build_command_environment
 from app.agents.codex import BUILD_DISABLED_FEATURES, CodexAdapter, codex_build_overrides
 from app.models import SessionConfig
 
@@ -487,3 +487,24 @@ def test_empty_allowlist_disables_command_network() -> None:
     profile = next(item for item in overrides if item.startswith("permissions="))
     assert "network={enabled=false}" in profile
     assert not any(item.startswith("features.network_proxy") for item in overrides)
+
+
+def test_build_command_environment_fixes_git_and_pip_under_the_sandbox() -> None:
+    # S1 (2026-10-15): with HOME unreadable, git dies on ~/.gitconfig (EPERM)
+    # and pip's macOS trust-store lookup fails (OSStatus -26276); these keep
+    # both working without widening the sandbox.
+    environment = build_command_environment(coding())
+    assert environment == {
+        "VIRTUAL_ENV": "/project/envs",
+        "TMPDIR": "/home/.delibra/build-tmp/" + "b" * 32,
+        "PIP_CACHE_DIR": "/home/.delibra/build-tmp/" + "b" * 32 + "/pip-cache",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "XDG_CONFIG_HOME": "/home/.delibra/build-tmp/" + "b" * 32 + "/xdg",
+        "PIP_USE_DEPRECATED": "legacy-certs",
+    }
+    command_env = next(
+        item for item in codex_build_overrides(coding())
+        if item.startswith("shell_environment_policy=")
+    )
+    for key, value in environment.items():
+        assert f'"{key}"="{value}"' in command_env
