@@ -53,6 +53,27 @@ class CodingContext:
     network_allowlist: tuple[str, ...]
 
 
+def build_command_environment(coding: CodingContext) -> dict[str, str]:
+    """Variables every build-turn command gets, for both providers.
+
+    PATH is not here: the runner prepends ``envs/bin`` to the inherited one.
+    The git and pip entries come from spike S1: with HOME unreadable, git
+    aborts on ``~/.gitconfig`` (EPERM rather than EACCES) and pip's macOS
+    trust-store lookup fails, while pip's bundled CA list works.
+    """
+
+    temp = coding.temp_dir.as_posix()
+    prefix = "CONDA_PREFIX" if coding.env_tool == "conda" else "VIRTUAL_ENV"
+    return {
+        prefix: coding.env_dir.as_posix(),
+        "TMPDIR": temp,
+        "PIP_CACHE_DIR": f"{temp}/pip-cache",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "XDG_CONFIG_HOME": f"{temp}/xdg",
+        "PIP_USE_DEPRECATED": "legacy-certs",
+    }
+
+
 @dataclass(frozen=True)
 class RunContext:
     user_prompt: str

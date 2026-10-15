@@ -9,6 +9,7 @@ from app.agents.base import (
     AgentEvent,
     CodingContext,
     Command,
+    build_command_environment,
     RunContext,
     shared_context_section,
 )
@@ -129,12 +130,7 @@ def codex_build_overrides(coding: CodingContext) -> list[str]:
         "shell_environment_policy={inherit=\"core\", set={"
         + ", ".join(
             f"{_toml_string(key)}={_toml_string(value)}"
-            for key, value in {
-                ("CONDA_PREFIX" if coding.env_tool == "conda" else "VIRTUAL_ENV"):
-                    coding.env_dir.as_posix(),
-                "TMPDIR": coding.temp_dir.as_posix(),
-                "PIP_CACHE_DIR": (coding.temp_dir / "pip-cache").as_posix(),
-            }.items()
+            for key, value in build_command_environment(coding).items()
         )
         + "}}",
     ]
