@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import subprocess
 from pathlib import Path
 
 from app.coding import CodingEnvState
@@ -93,3 +94,28 @@ async def prepare_env(project_root: Path, *, environ: dict[str, str]) -> CodingE
         created_by_delibra=True,
         updated_at=utc_now(),
     )
+
+
+def developer_tools_dir(environ: dict[str, str]) -> Path | None:
+    """The active macOS developer directory, which /usr/bin/git shims into.
+
+    None when xcode-select is absent (not macOS) or names no directory.
+    """
+
+    selector = shutil.which("xcode-select", path=environ.get("PATH"))
+    if selector is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [selector, "-p"],
+            env=environ,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    path = Path(completed.stdout.strip())
+    if completed.returncode != 0 or not path.is_absolute() or not path.is_dir():
+        return None
+    return path

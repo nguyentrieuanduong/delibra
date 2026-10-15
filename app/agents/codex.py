@@ -120,7 +120,8 @@ def codex_build_overrides(coding: CodingContext) -> list[str]:
     profile = (
         f"permissions={{{BUILD_PROFILE}={{extends=\":workspace\", "
         "filesystem={\":root\"=\"deny\", \":minimal\"=\"read\", "
-        f"{temp}=\"write\", "
+        + "".join(f"{_toml_string(root.as_posix())}=\"read\", " for root in coding.read_roots)
+        + f"{temp}=\"write\", "
         "\":workspace_roots\"={\".\"=\"write\", \".delibra\"=\"read\", \".git\"=\"read\"}}, "
         f"{network}}}}}"
     )
