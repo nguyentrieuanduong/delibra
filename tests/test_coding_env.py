@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.coding_env import prepare_env
+from app.coding_env import developer_tools_dir, prepare_env
 
 
 def stub(bin_dir: Path, name: str, body: str) -> None:
@@ -160,3 +160,15 @@ async def test_nothing_found_is_error(tmp_path: Path, project: Path) -> None:
 
     assert state.status == "error"
     assert "neither conda nor python3" in (state.error or "")
+
+
+def test_developer_tools_dir_reports_an_existing_directory(tmp_path: Path) -> None:
+    tools = tmp_path / "CommandLineTools"
+    tools.mkdir()
+    stub(tmp_path / "bin", "xcode-select", f'echo "{tools}"\n')
+    assert developer_tools_dir(environ(tmp_path / "bin")) == tools
+
+
+def test_developer_tools_dir_is_none_without_xcode_select(tmp_path: Path) -> None:
+    (tmp_path / "bin").mkdir()
+    assert developer_tools_dir(environ(tmp_path / "bin")) is None

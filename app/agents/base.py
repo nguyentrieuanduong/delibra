@@ -51,6 +51,10 @@ class CodingContext:
     env_dir: Path
     env_tool: Literal["conda", "venv", "existing"]
     network_allowlist: tuple[str, ...]
+    # System directories commands must read, granted read-only. Codex denies
+    # `:root` reads, which hides the macOS developer tools that /usr/bin/git
+    # shims to; Claude's sandbox already reads outside HOME.
+    read_roots: tuple[Path, ...] = ()
 
 
 def build_command_environment(coding: CodingContext) -> dict[str, str]:

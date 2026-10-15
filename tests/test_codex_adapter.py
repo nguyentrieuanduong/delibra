@@ -508,3 +508,20 @@ def test_build_command_environment_fixes_git_and_pip_under_the_sandbox() -> None
     )
     for key, value in environment.items():
         assert f'"{key}"="{value}"' in command_env
+
+
+def test_build_profile_grants_read_only_system_roots() -> None:
+    # S2 (2026-10-15): /usr/bin/git is an xcrun shim; with `:root` denied it
+    # cannot find the developer tools unless their directory is readable.
+    tools = Path("/Library/Developer/CommandLineTools")
+    context = CodingContext(
+        project_root=Path("/project"),
+        temp_dir=Path("/home/.delibra/build-tmp/" + "b" * 32),
+        env_dir=Path("/project/envs"),
+        env_tool="venv",
+        network_allowlist=("pypi.org",),
+        read_roots=(tools,),
+    )
+    profile = next(item for item in codex_build_overrides(context) if item.startswith("permissions="))
+    assert '"/Library/Developer/CommandLineTools"="read"' in profile
+    assert '"/Library/Developer/CommandLineTools"="write"' not in profile
