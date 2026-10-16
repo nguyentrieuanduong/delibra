@@ -15,6 +15,8 @@ from typing import Callable
 import pytest
 
 from app.agents.base import AgentEvent, Command, RunContext
+from app.coding import CodingEnvState
+from app.coding_env import developer_tools_dir
 from app.config import Settings
 from app.models import (
     AutoArtifact,
@@ -2014,3 +2016,100 @@ async def test_an_auto_turn_still_seeds_codex_quota_from_its_own_rollout(
     assert record.status == "complete"
     assert store.load_session(session_id).cli_session_id is None
     assert manager.usage.report("codex", "five_hour").used_percent == 94.0
+
+
+def ready_build_project(store: ProjectStore) -> None:
+    store.set_coding_enabled(True)
+    store.set_network_allowlist(["pypi.org"])
+    store.set_coding_env(CodingEnvState(status="ready", tool="venv"))
+
+
+def record_spawns(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    spawned: list[dict] = []
+    original = asyncio.create_subprocess_exec
+
+    async def recording(*argv, **kwargs):
+        env = dict(kwargs.get("env") or {})
+        temp = Path(env["TMPDIR"])
+        spawned.append(
+            {
+                "cwd": Path(kwargs["cwd"]),
+                "env": env,
+                "tmp_entries": sorted(path.name for path in temp.iterdir()),
+                "tmp_mode": temp.stat().st_mode & 0o777,
+            }
+        )
+        return await original(*argv, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
+    return spawned
+
+
+async def run_auto_turn(manager, project_id, session_id, store, *, kind: str, build: bool):
+    record = create_runner_auto_record(store, session_id, status="discussing")
+    record.kind = kind
+    store.save_auto_run(record)
+    request = replace(auto_run_request(store, record, phase="discussion"), build=build)
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(project_id, session_id, request)
+    return await manager.wait(key)
+
+
+@pytest.mark.asyncio
+async def test_build_turn_runs_from_the_project_root_with_coding_context(tmp_path, monkeypatch) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    ready_build_project(store)
+    stale = manager.settings.build_tmp_root / session_id
+    stale.mkdir(parents=True)
+    (stale / "left-over").write_text("from a previous turn\n")
+    spawned = record_spawns(monkeypatch)
+
+    await run_auto_turn(manager, project_id, session_id, store, kind="build", build=True)
+
+    coding = contexts[0].coding
+    assert coding is not None
+    assert coding.project_root == store.project_path
+    assert coding.network_allowlist == ("pypi.org",)
+    assert coding.env_tool == "venv"
+    [spawn] = spawned
+    assert spawn["cwd"] == store.project_path
+    env = spawn["env"]
+    assert env["PATH"].startswith(f"{store.project_path / 'envs' / 'bin'}{os.pathsep}")
+    assert env["VIRTUAL_ENV"] == str(store.project_path / "envs")
+    assert "CONDA_PREFIX" not in env
+    assert env["TMPDIR"] == str(stale)
+    assert env["PIP_CACHE_DIR"] == str(stale / "pip-cache")
+    assert spawn["tmp_entries"] == []
+    assert spawn["tmp_mode"] == 0o700
+    # Amendment A1: git and pip must work with HOME unreadable.
+    assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+    assert env["XDG_CONFIG_HOME"] == str(stale / "xdg")
+    assert env["PIP_USE_DEPRECATED"] == "legacy-certs"
+    # Amendment A2: the macOS developer tools are readable for /usr/bin/git.
+    tools = developer_tools_dir({"PATH": os.environ.get("PATH", "")})
+    assert coding.read_roots == ((tools,) if tools is not None else ())
+
+
+@pytest.mark.asyncio
+async def test_discussion_auto_turn_is_unchanged(tmp_path, monkeypatch) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    ready_build_project(store)
+    spawned = record_spawns(monkeypatch)
+
+    await run_auto_turn(manager, project_id, session_id, store, kind="discussion", build=False)
+
+    assert contexts[0].coding is None
+    assert spawned[0]["cwd"] == store.workspace_dir(session_id)
+    assert spawned[0]["env"]["TMPDIR"] == str(store.workspace_dir(session_id) / ".tmp")
+    assert "VIRTUAL_ENV" not in spawned[0]["env"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kind", "build"), [("discussion", True), ("build", False)])
+async def test_build_flag_must_match_the_run_kind(tmp_path, kind, build) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    ready_build_project(store)
+    with pytest.raises(StorageError):
+        await run_auto_turn(manager, project_id, session_id, store, kind=kind, build=build)

@@ -175,6 +175,10 @@ class Settings:
         return self.home / "codex-home"
 
     @property
+    def build_tmp_root(self) -> Path:
+        return self.home / "build-tmp"
+
+    @property
     def effective_compact_output_limit(self) -> int:
         """The largest summary that can still be staged into every later turn.
 
