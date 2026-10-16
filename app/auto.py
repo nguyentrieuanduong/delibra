@@ -15,6 +15,7 @@ from typing import AsyncIterator, Literal, Sequence, TYPE_CHECKING
 import unicodedata
 from uuid import uuid4
 
+from app.build_git import commit_turn, git_preflight
 from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, render_handover
 from app.coding import GUIDANCE_MAX_BYTES, CodingPolicyError, build_capable, read_guidance
 from app.config import Settings
@@ -498,6 +499,8 @@ class AutoManager:
             validate_id(session_id, "Auto participant id")
 
         project = self.registry.get(project_id)
+        # Subprocesses run before any lock is held.
+        git_state = await git_preflight(ProjectStore(project).project_path) if kind == "build" else None
         discovered = ProjectStore(project).list_sessions()
         all_session_ids = [session.id for session in discovered]
         async with self.locks.registry_project_sessions(project_id, all_session_ids):
@@ -607,6 +610,7 @@ class AutoManager:
                 terminal_reason=None,
                 context_policy=context_policy,
                 kind=kind,
+                git=git_state,
                 guidance=(
                     AutoArtifact("guidance.md", sha256(guidance_bytes).hexdigest())
                     if guidance_bytes is not None
@@ -1946,6 +1950,11 @@ class AutoManager:
                     self.settings.captured_output_limit,
                 )
                 digest = sha256(output).hexdigest()
+                warning = (
+                    await self._commit_build_turn(store, current, participant, output)
+                    if current.kind == "build"
+                    else None
+                )
                 current.discussion.append(
                     AutoTurn(
                         phase="discussion",
@@ -1955,6 +1964,7 @@ class AutoManager:
                         position=current.next_participant,
                         output_sha256=digest,
                         verdict=result.auto.verdict or "continue",
+                        warning=warning,
                         timeout=deepcopy(result.timeout),
                     )
                 )
@@ -2594,6 +2604,27 @@ class AutoManager:
         after = self._handover_section(store, record)
         body = self._discussion_context(store, record, reserve=len(before) + len(after))
         return before + body + after
+
+    async def _commit_build_turn(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        participant: AutoParticipant,
+        output: bytes,
+    ) -> str | None:
+        """Commit a completed build turn; returns the turn's warning, if any."""
+
+        if record.git is None or not record.git.enabled:
+            return None
+        lines = [line for line in output.decode("utf-8", "replace").splitlines() if line.strip()]
+        record.git, warning = await commit_turn(
+            store.project_path,
+            record.git,
+            f"Auto build {record.number} · cycle {record.current_cycle} · {participant.name}",
+            "\n".join(lines[-3:]) or "(no output)",
+            f"Delibra-Auto-Run: {record.id}",
+        )
+        return warning
 
     async def _transition_terminal(
         self,

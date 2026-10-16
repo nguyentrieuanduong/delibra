@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 import pytest
@@ -4954,3 +4955,61 @@ async def test_discussion_context_has_no_guidance(tmp_path, monkeypatch) -> None
     await wait_for_auto_terminal(manager, project_id, created.id)
 
     assert all(b"## Guidance" not in call["material"] for call in factory.calls)
+
+
+@pytest.mark.asyncio
+async def test_each_completed_build_turn_that_changed_files_is_committed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A wrote one", "continue"), PlannedOutput("B wrote two", "agree")]
+    )
+    root = store.project_path
+    for args in (("init", "-q", "-b", "main"), ("config", "user.name", "T"),
+                 ("config", "user.email", "t@example.invalid")):
+        subprocess.run(["git", "-C", str(root), *args], check=True)
+    (root / "README.md").write_text("hi\n")
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "initial"], check=True)
+    enable_build(store, monkeypatch)
+    original = manager.runner.adapter_factory
+
+    def editing(config):
+        adapter = original(config)
+        (root / f"file{factory.created}.py").write_text("x\n")  # the "agent's" edit
+        return adapter
+
+    manager.runner.adapter_factory = editing
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    log = subprocess.run(
+        ["git", "-C", str(root), "log", "--format=%s"], check=True, capture_output=True, text=True
+    ).stdout.splitlines()
+    assert log == [
+        "Auto build 1 · cycle 1 · Agent 2",
+        "Auto build 1 · cycle 1 · Agent 1",
+        "initial",
+    ]
+    assert terminal.git is not None and terminal.git.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_a_dirty_tree_at_start_runs_without_commits(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    subprocess.run(["git", "-C", str(store.project_path), "init", "-q", "-b", "main"], check=True)
+    (store.project_path / "uncommitted.py").write_text("x\n")
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    # Let the run finish: a still-running Auto task outlives the test's loop
+    # and keeps the pytest process from exiting.
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert created.git is not None and created.git.enabled is False
+    assert created.git.reason
