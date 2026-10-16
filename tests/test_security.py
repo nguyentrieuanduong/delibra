@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import NoReturn
 
-from fastapi import Form, Request
+from fastapi import Form, HTTPException, Request
 from fastapi.testclient import TestClient
 import pytest
 
@@ -13,7 +13,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import SessionConfig
 from app.runner import RunManager
-from app.security import validate_field
+from app.security import is_loopback_client, require_loopback_client, validate_field
 from app.storage import LockCoordinator, ProjectStore, RegistryStore, StorageError
 
 
@@ -433,3 +433,21 @@ async def test_hostile_persisted_writable_roots_with_unsafe_ancestor_stop_before
         await manager.start(project.id, config.id, "Question")
 
     assert adapter_calls == 0
+
+
+def request_from(client: tuple[str, int] | None) -> Request:
+    return Request({"type": "http", "client": client, "headers": []})
+
+
+@pytest.mark.parametrize("peer", [("127.0.0.1", 1), ("::1", 1), ("::ffff:127.0.0.1", 1)])
+def test_loopback_peers_pass(peer) -> None:
+    assert is_loopback_client(request_from(peer)) is True
+    require_loopback_client(request_from(peer))
+
+
+@pytest.mark.parametrize("peer", [("192.168.1.20", 1), ("testclient", 1), None])
+def test_other_peers_are_refused(peer) -> None:
+    assert is_loopback_client(request_from(peer)) is False
+    with pytest.raises(HTTPException) as raised:
+        require_loopback_client(request_from(peer))
+    assert raised.value.status_code == 403

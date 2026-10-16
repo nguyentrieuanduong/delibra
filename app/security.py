@@ -7,7 +7,7 @@ import ipaddress
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.pass_prompts import (
     PASS_PROMPT_TEMPLATE_MAX_CHARS,
@@ -93,6 +93,26 @@ def _address(value: str) -> Address | None:
 
 def _is_loopback(address: Address | None) -> bool:
     return address is not None and address.is_loopback
+
+
+def is_loopback_client(request: Request) -> bool:
+    client = request.scope.get("client")
+    peer = client[0] if client else None
+    return _is_loopback(_address(peer) if peer else None)
+
+
+def require_loopback_client(request: Request) -> None:
+    """Gate actions that let agents run commands: this machine only.
+
+    Delibra has no user authentication, so a LAN peer that may start a build
+    run could execute code as the operator.
+    """
+
+    if not is_loopback_client(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Only this machine may enable coding or start build runs",
+        )
 
 
 def _within(address: Address | None, networks: tuple[Network, ...]) -> bool:
