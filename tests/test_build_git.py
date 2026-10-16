@@ -1,10 +1,11 @@
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from app.build_git import commit_turn, git_preflight
+from app.build_git import _git, commit_turn, git_preflight
 
 
 @pytest.fixture(autouse=True)
@@ -208,3 +209,74 @@ async def test_a_filter_added_mid_run_disables_commits_before_add(tmp_path) -> N
     assert new_state.enabled is False
     assert "filter" in (warning or "")
     assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_commit_that_overruns_its_budget_disables_commits(tmp_path, monkeypatch) -> None:
+    root = make_repo(tmp_path)
+    state = await git_preflight(root)
+    (root / "new.txt").write_text("x\n")
+
+    async def stalled(_root):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr("app.build_git._unsafe_filter_reason", stalled)
+    monkeypatch.setattr("app.build_git.COMMIT_TIMEOUT_SECONDS", 0.1)
+    new_state, warning = await commit_turn(root, state, "subject", "body", "trailer")
+
+    assert new_state.enabled is False
+    assert "did not finish within" in (warning or "")
+    assert len(history(root)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_git_command_does_not_outlive_its_task(tmp_path, monkeypatch) -> None:
+    spawned: list[asyncio.subprocess.Process] = []
+    original = asyncio.create_subprocess_exec
+
+    async def sleeping(*_argv, **kwargs):
+        process = await original("sleep", "30", **kwargs)
+        spawned.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", sleeping)
+    task = asyncio.create_task(_git(tmp_path, "status"))
+    while not spawned:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert spawned[0].returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_git_reaps_a_child_holding_its_output_pipe(
+    tmp_path, monkeypatch
+) -> None:
+    spawned: list[asyncio.subprocess.Process] = []
+    original = asyncio.create_subprocess_exec
+    marker = tmp_path / "child-spawned"
+
+    async def with_child(*_argv, **kwargs):
+        process = await original(
+            sys.executable,
+            "-c",
+            "import pathlib, subprocess, sys, time; "
+            "subprocess.Popen(['sleep', '2']); "
+            "pathlib.Path(sys.argv[1]).write_text('ready'); time.sleep(2)",
+            str(marker),
+            **kwargs,
+        )
+        spawned.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", with_child)
+    task = asyncio.create_task(_git(tmp_path, "status"))
+    async with asyncio.timeout(1):
+        while not marker.exists():
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    assert spawned[0].returncode is not None

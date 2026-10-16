@@ -597,6 +597,10 @@ Known limits:
 - Delibra re-probes each build agent's CLI version before admitting a run
   and before every build turn. A CLI replaced in the instant between that
   probe and the launch is not detected.
+- Delibra commits while it holds the agent's session lock, so a Stop that
+  arrives during a commit waits for its 60-second budget plus up to three
+  seconds of subprocess cleanup. A slower commit is abandoned and turns
+  commits off for the run.
 
 ## Isolation and security boundary
 
