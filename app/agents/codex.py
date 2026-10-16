@@ -34,14 +34,15 @@ def _tokens(container: Any, key: str) -> int | None:
 
 
 def _usage_events(usage: Any) -> list[AgentEvent]:
-    """Report what the turn cost and how full the window now is.
+    """Report what the turn cost and how full the window now is, from stdout.
 
-    `turn.completed.usage` is `last_token_usage` without its precomputed total:
-    across every Phase 0 turn, `input_tokens + output_tokens` equalled the
-    rollout's `last_token_usage.total_tokens` exactly, which is why the reading
-    can carry that proven source label while reading stdout. The denominator
-    (`info.model_context_window`) has no stdout equivalent and stays unknown
-    until the rollout is read.
+    On codex-cli 0.153.4, `turn.completed.usage` was `last_token_usage`
+    without its total. On 0.162.1 that holds only on a fresh thread: a
+    resumed turn reports the thread's running total. The runner therefore
+    replaces both readings with the rollout segment's figures after the
+    round (`CodexRolloutState.turn_usage`, `.last_tokens`); these stay as
+    the fallback. The denominator (`info.model_context_window`) has no
+    stdout equivalent and stays unknown until the rollout is read.
     """
 
     billing = TurnUsage(

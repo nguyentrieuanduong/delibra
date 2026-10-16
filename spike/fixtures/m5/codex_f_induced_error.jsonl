@@ -1,8 +1,8 @@
 {"thread_id": "<redacted>", "type": "thread.started"}
-{"item": {"id": "<redacted>", "message": "<redacted>", "type": "error"}, "type": "item.completed"}
+{"item": {"id": "<redacted>", "message": "Model metadata for `delibra-nonexistent-model-for-error-classification` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.", "type": "error"}, "type": "item.completed"}
 {"type": "turn.started"}
-{"message": "<redacted>", "type": "error"}
-{"error": {"message": "<redacted>"}, "type": "turn.failed"}
-{"collaboration_mode_kind": "default", "model_context_window": 258400, "started_at": 1788745981, "turn_id": "<redacted>", "type": "task_started"}
-{"completed_at_ms": 1788745983839, "item": {"content": [{"text": "<redacted>", "text_elements": [], "type": "text"}], "id": "<redacted>", "type": "UserMessage"}, "started_at_ms": 1788745983839, "thread_id": "<redacted>", "turn_id": "<redacted>", "type": "item_completed"}
-{"completed_at": 1788745987, "duration_ms": 5288, "error": {"codex_error_info": "other", "message": "<redacted>"}, "last_agent_message": null, "started_at": 1788745981, "turn_id": "<redacted>", "type": "task_complete"}
+{"message": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'delibra-nonexistent-model-for-error-classification' model is not supported when using Codex with a ChatGPT account.\"}}", "type": "error"}
+{"error": {"message": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'delibra-nonexistent-model-for-error-classification' model is not supported when using Codex with a ChatGPT account.\"}}"}, "type": "turn.failed"}
+{"collaboration_mode_kind": "default", "model_context_window": 258400, "root_turn_id": "<redacted>", "started_at": 1792159293, "turn_attribution": {"initiating_agent_path": null, "parent_turn_id": null, "root_turn_id": "<redacted>", "turn_id": "<redacted>", "turn_trigger": "exec"}, "turn_id": "<redacted>", "type": "task_started"}
+{"completed_at_ms": 1792159296465, "item": {"content": [{"text": "<redacted>", "text_elements": [], "type": "text"}], "id": "<redacted>", "type": "UserMessage"}, "started_at_ms": 1792159296465, "thread_id": "<redacted>", "turn_id": "<redacted>", "type": "item_completed"}
+{"completed_at": 1792159297, "duration_ms": 4791, "error": {"codex_error_info": "other", "message": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'delibra-nonexistent-model-for-error-classification' model is not supported when using Codex with a ChatGPT account.\"}}"}, "last_agent_message": null, "root_turn_id": "<redacted>", "started_at": 1792159293, "turn_id": "<redacted>", "type": "task_complete"}

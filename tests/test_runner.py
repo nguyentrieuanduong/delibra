@@ -50,6 +50,7 @@ from app.storage import (
     RegistryStore,
     StorageError,
     atomic_write_text,
+    read_codex_rollout_state,
 )
 
 
@@ -1688,6 +1689,135 @@ async def test_codex_occupancy_takes_its_denominator_from_the_rollout(
     assert observation is not None
     assert observation.used_tokens == 14
     assert observation.context_window == 258_400
+
+
+@pytest.mark.asyncio
+async def test_codex_round_is_billed_and_sized_from_its_rollout_segment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # codex-cli 0.162.1 reports a resumed thread's running total on stdout;
+    # the rollout segment is this round.
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        mode="usage-no-window",
+        agent="codex",
+    )
+    manager.settings.codex_home.mkdir(mode=0o700, parents=True)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    round_usage = TurnUsage(
+        input_tokens=32777, output_tokens=5, cache_read_tokens=32640,
+        cache_creation_tokens=0, reasoning_tokens=0,
+    )
+    monkeypatch.setattr(
+        "app.runner.read_codex_rollout_state",
+        lambda *_args, **_kwargs: CodexRolloutState(
+            [], context_window=258_400, turn_usage=round_usage, last_tokens=32782
+        ),
+    )
+
+    record = await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert record.usage == round_usage
+    observation = store.load_session(session_id).context_observation
+    assert (observation.used_tokens, observation.context_window) == (32782, 258_400)
+    assert observation.numerator_source == "codex_last_token_usage"
+
+
+def _resume_codex(store, session_id) -> None:
+    config = store.load_session(session_id)
+    config.cli_session_id = "01a14504-9ec0-7fd1-acd3-9e847791b3f9"
+    store.save_session(config)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_codex_round_without_its_segment_start_has_unknown_billing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path, mode="usage-no-window", agent="codex",
+    )
+    manager.settings.codex_home.mkdir(mode=0o700, parents=True)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    _resume_codex(store, session_id)
+    monkeypatch.setattr(
+        "app.runner.read_codex_rollout_state",
+        lambda *_args, **_kwargs: CodexRolloutState([], turn_usage=None, last_tokens=32782),
+    )
+
+    record = await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    # Stdout reported 11 + 3 here; on a resumed 0.162.1 turn that is the
+    # thread's running total, so it must not be stored as this round's bill.
+    assert record.usage is None
+    assert store.load_session(session_id).context_observation.used_tokens == 32782
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_codex_round_without_rollout_figures_keeps_no_stdout_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path, mode="usage-no-window", agent="codex",
+    )
+    manager.settings.codex_home.mkdir(mode=0o700, parents=True)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    _resume_codex(store, session_id)
+    monkeypatch.setattr(
+        "app.runner.read_codex_rollout_state",
+        lambda *_args, **_kwargs: CodexRolloutState([]),
+    )
+
+    record = await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert record.usage is None
+    assert store.load_session(session_id).context_observation is None
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_codex_round_never_takes_the_previous_turns_segment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path, mode="usage-no-window", agent="codex",
+    )
+    home = manager.settings.codex_home
+    home.mkdir(mode=0o700, parents=True)
+    (home / "auth.json").write_text("{}", encoding="utf-8")
+    _resume_codex(store, session_id)
+    thread = "01a14504-9ec0-7fd1-acd3-9e847791b3f9"
+    day = home / "sessions" / "2026" / "10" / "16"
+    day.mkdir(parents=True)
+    counts = {"input_tokens": 32777, "cached_input_tokens": 32640, "output_tokens": 5,
+              "reasoning_output_tokens": 0, "cache_write_input_tokens": 0, "total_tokens": 32782}
+    # The previous run's turn, written long before this round started; this
+    # run's process (the fake CLI) writes no rollout at all.
+    (day / f"rollout-2026-10-16T10-00-00-{thread}.jsonl").write_text(
+        "".join(
+            json.dumps({"timestamp": "2026-10-16T10:00:00.000Z", "type": "event_msg", "payload": payload}) + "\n"
+            for payload in (
+                {"type": "task_started", "turn_id": "previous"},
+                {"type": "token_count", "info": {"last_token_usage": counts, "total_token_usage": counts}, "rate_limits": None},
+            )
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+
+    def reader(codex_home, _thread_id, **kwargs):
+        calls.append(kwargs)
+        return read_codex_rollout_state(codex_home, thread, **kwargs)
+
+    monkeypatch.setattr("app.runner.read_codex_rollout_state", reader)
+
+    record = await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert calls and calls[0]["turn_since"] is not None
+    assert record.usage is None
+    assert store.load_session(session_id).context_observation is None
 
 
 @pytest.mark.asyncio

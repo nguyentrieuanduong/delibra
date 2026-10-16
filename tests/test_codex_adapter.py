@@ -326,14 +326,15 @@ def usage_events(name: str) -> tuple[list, list]:
 
 
 def test_codex_bills_a_round_from_turn_completed() -> None:
-    billing, _ = usage_events("codex_c_small_resume.jsonl")
+    billing, _ = usage_events("codex_d_small_fresh.jsonl")
 
     assert len(billing) == 1
     usage = billing[0].usage
-    # Measured, spike/fixtures/m5/codex_c_small_resume.jsonl.
-    assert usage.input_tokens == 32018
+    # Measured, spike/fixtures/m5/codex_d_small_fresh.jsonl (0.162.1). A fresh
+    # thread: there, stdout's turn.completed is still exactly one round.
+    assert usage.input_tokens == 12260
     assert usage.output_tokens == 5
-    assert usage.cache_read_tokens == 31872
+    assert usage.cache_read_tokens == 10496
     assert usage.cache_creation_tokens == 0
     assert usage.reasoning_tokens == 0
     assert usage.total_cost_usd is None
@@ -343,17 +344,12 @@ def test_codex_bills_a_round_from_turn_completed() -> None:
     "name",
     [
         "codex_a_small_fresh.jsonl",
-        "codex_b_large_resume.jsonl",
-        "codex_c_small_resume.jsonl",
         "codex_d_small_fresh.jsonl",
         "codex_e_model_change.jsonl",
     ],
 )
-def test_codex_stdout_occupancy_equals_the_rollout_last_token_usage(name: str) -> None:
-    """`last_token_usage` is the field Phase 0 proved, and it lives only in the
-    rollout. This asserts the stdout sum Delibra reads is the same number, so
-    the `codex_last_token_usage` label stays honest before Phase 5b's rollout
-    reader exists."""
+def test_codex_stdout_occupancy_equals_last_token_usage_on_a_fresh_thread(name: str) -> None:
+    """On a fresh thread, the stdout sum Delibra reads equals the rollout's proven `last_token_usage`."""
 
     _, occupancy = usage_events(name)
     rollout_total = None
@@ -365,6 +361,23 @@ def test_codex_stdout_occupancy_equals_the_rollout_last_token_usage(name: str) -
     assert rollout_total is not None
     assert occupancy[0].context.used_tokens == rollout_total
     assert occupancy[0].context.numerator_source == "codex_last_token_usage"
+
+
+@pytest.mark.parametrize("name", ["codex_b_large_resume.jsonl", "codex_c_small_resume.jsonl"])
+def test_codex_stdout_reports_the_thread_total_on_a_resumed_turn(name: str) -> None:
+    """codex-cli 0.162.1: a resumed turn's stdout is `total_token_usage`, which
+    is why the runner bills and sizes Codex rounds from the rollout segment
+    (tests/test_codex_rollout.py)."""
+
+    _, occupancy = usage_events(name)
+    thread_total = None
+    for line in (FIXTURES / "m5" / name).read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        if payload.get("type") == "token_count":
+            thread_total = payload["info"]["total_token_usage"]["total_tokens"]
+
+    assert thread_total is not None
+    assert occupancy[0].context.used_tokens == thread_total
 
 
 def test_codex_denominator_is_unknown_until_the_rollout_is_read() -> None:

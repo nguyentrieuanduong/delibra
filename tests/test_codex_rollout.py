@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from app.models import TurnUsage
 from app.storage import read_codex_rollout_state, read_latest_codex_rollout_state
 
 
@@ -53,6 +54,40 @@ def rollout(home: Path, *lines: str, thread: str = THREAD, day: str = "07") -> P
     path = directory / f"rollout-2026-09-{day}T10-02-47-{thread}.jsonl"
     path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
     return path
+
+
+FIXTURES = Path(__file__).parent.parent / "spike" / "fixtures"
+
+
+def event(payload: dict) -> str:
+    return json.dumps({"timestamp": "2026-10-16T14:00:00Z", "type": "event_msg", "payload": payload})
+
+
+def usage(input_tokens: int, cached: int, output: int) -> dict:
+    return {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached,
+        "output_tokens": output,
+        "reasoning_output_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "total_tokens": input_tokens + output,
+    }
+
+
+def counted(last: dict, total: dict) -> str:
+    return event({"type": "token_count", "info": {"last_token_usage": last, "total_token_usage": total}, "rate_limits": None})
+
+
+STARTED = event({"type": "task_started", "turn_id": "t"})
+
+
+ROUND_START = datetime(2026, 10, 16, 13, 59, tzinfo=timezone.utc)
+
+
+def state(home: Path, read_limit: int = 1 << 20, since: datetime = ROUND_START):
+    return read_codex_rollout_state(
+        home, THREAD, scan_limit=200, read_limit=read_limit, turn_since=since
+    )
 
 
 def read(home: Path, *, thread: str = THREAD, scan_limit: int = 200, read_limit: int = 4096):
@@ -202,3 +237,90 @@ def test_an_unusable_context_window_stays_unknown(tmp_path: Path, window) -> Non
     )
 
     assert state.context_window is None
+
+
+def test_a_resumed_turn_is_billed_from_its_own_rollout_segment(tmp_path: Path) -> None:
+    # The measured A -> B -> C sequence from spike/fixtures/m5/codex_*.jsonl.
+    rollout(
+        tmp_path,
+        STARTED, counted(usage(12260, 0, 5), usage(12260, 0, 5)),
+        STARTED, counted(usage(32759, 12032, 5), usage(45019, 12032, 10)),
+        STARTED, counted(usage(32777, 32640, 5), usage(77796, 44672, 15)),
+    )
+
+    read = state(tmp_path)
+
+    assert read.turn_usage == TurnUsage(
+        input_tokens=32777, output_tokens=5, cache_read_tokens=32640,
+        cache_creation_tokens=0, reasoning_tokens=0,
+    )
+    assert read.last_tokens == 32782
+
+
+def test_a_repeated_token_count_is_billed_once(tmp_path: Path) -> None:
+    first = counted(usage(100, 0, 10), usage(1100, 0, 60))
+    rollout(
+        tmp_path,
+        STARTED, first, first,
+        counted(usage(200, 100, 20), usage(1300, 100, 80)),
+    )
+
+    read = state(tmp_path)
+
+    assert (read.turn_usage.input_tokens, read.turn_usage.output_tokens) == (300, 30)
+    assert read.last_tokens == 220
+
+
+def test_billing_is_unknown_when_the_turn_start_is_outside_the_tail(tmp_path: Path) -> None:
+    rollout(tmp_path, counted(usage(32777, 32640, 5), usage(77796, 44672, 15)))
+
+    read = state(tmp_path)
+
+    assert read.turn_usage is None
+    assert read.last_tokens == 32782
+
+
+def test_a_turn_without_token_counts_never_borrows_the_previous_turn(tmp_path: Path) -> None:
+    rollout(tmp_path, STARTED, counted(usage(12260, 0, 5), usage(12260, 0, 5)), STARTED)
+
+    read = state(tmp_path)
+
+    assert (read.turn_usage, read.last_tokens) == (None, None)
+
+
+def test_a_run_that_wrote_no_segment_never_takes_the_previous_one(tmp_path: Path) -> None:
+    # Codex review (High): a resumed process that exits before task_started.
+    rollout(tmp_path, STARTED, counted(usage(32777, 32640, 5), usage(77796, 44672, 15)))
+
+    read = state(tmp_path, since=datetime(2026, 10, 16, 14, 0, 1, tzinfo=timezone.utc))
+
+    assert (read.turn_usage, read.last_tokens) == (None, None)
+
+
+def test_a_record_without_a_timestamp_proves_nothing(tmp_path: Path) -> None:
+    bare = json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
+    rollout(tmp_path, bare, counted(usage(100, 0, 10), usage(100, 0, 10)))
+
+    read = state(tmp_path)
+
+    assert read.turn_usage is None
+    assert read.last_tokens == 110
+
+
+def test_the_measured_resumed_turn_is_billed_as_one_round(tmp_path: Path) -> None:
+    # Real 0.162.1 output: the fixture flattens rollout records, so re-wrap them.
+    lines = []
+    for line in (FIXTURES / "m5" / "codex_c_small_resume.jsonl").read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        if payload.get("type") in {"task_started", "token_count", "task_complete"}:
+            lines.append(event(payload))
+            if payload["type"] == "token_count":
+                last = payload["info"]["last_token_usage"]
+    rollout(tmp_path, *lines)
+
+    read = state(tmp_path)
+
+    assert read.turn_usage.input_tokens == last["input_tokens"]
+    assert read.turn_usage.cache_read_tokens == last["cached_input_tokens"]
+    assert read.turn_usage.output_tokens == last["output_tokens"]
+    assert read.last_tokens == last["total_tokens"]
