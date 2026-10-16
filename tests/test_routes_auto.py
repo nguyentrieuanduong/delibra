@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
+from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
 from app.config import Settings
 from app.main import create_app
 from app.models import (
@@ -2042,3 +2043,81 @@ def test_a_terminal_auto_run_refreshes_participant_cards_out_of_band(
     assert 'data-auto-active="false"' in fragment.text
     # The full page render must not carry OOB attributes.
     assert "hx-swap-oob" not in page.text
+
+
+LOCAL = ("127.0.0.1", 5000)
+LAN = ("192.168.1.20", 5000)
+
+
+def build_ready(store: ProjectStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    store.set_coding_enabled(True)
+    store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
+    # app.state.health is filled by a background probe; pin the versions.
+    monkeypatch.setattr("app.routes.auto._provider_versions", lambda request: {"fake": "1"})
+
+
+def build_form(session_ids: list[str], *, kind: str = "build") -> dict:
+    return {
+        "topic": "Build it",
+        "participant_id": session_ids,
+        "agreement_policy": "first_agree",
+        "max_cycles": "1",
+        "turn_timeout_seconds": "2",
+        "kind": kind,
+    }
+
+
+def test_build_start_is_loopback_only(tmp_path: Path, monkeypatch) -> None:
+    app, _settings, project, store, sessions, _factory = auto_route_app(tmp_path, outputs=["One", "Two"])
+    build_ready(store, monkeypatch)
+    ids = [session.id for session in sessions]
+    # One client per peer, sequentially: each `with` owns the app's lifespan and
+    # event loop. A second client used inside another's block would run its
+    # requests on a short-lived loop that strands the Auto task and its locks.
+    with TestClient(app, base_url="http://localhost", client=LAN) as lan:
+        refused = lan.post(f"/projects/{project.id}/auto-runs", data=build_form(ids))
+        assert refused.status_code == 403
+        assert store.list_auto_runs() == []
+        discussion = lan.post(f"/projects/{project.id}/auto-runs", data=build_form(ids, kind="discussion"))
+        assert discussion.status_code == 202
+        wait_for_auto(store, terminal=True)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
+        started = local.post(f"/projects/{project.id}/auto-runs", data=build_form(ids))
+        assert started.status_code == 202
+        record = wait_for_auto(store, terminal=True)
+
+    assert record.kind == "build"
+
+
+def test_build_resume_is_loopback_only(tmp_path: Path, monkeypatch) -> None:
+    app, _settings, project, store, sessions, _factory = auto_route_app(tmp_path, outputs=["One", "Two"])
+    build_ready(store, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
+        assert local.post(
+            f"/projects/{project.id}/auto-runs", data=build_form([s.id for s in sessions])
+        ).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+    with TestClient(app, base_url="http://localhost", client=LAN) as lan:
+        resumed = lan.post(
+            f"/projects/{project.id}/auto-runs/{record.number}/resume",
+            data={"additional_cycles": "1", "turn_timeout_seconds": "2"},
+        )
+
+    assert record.status == "limit_reached"
+    assert resumed.status_code == 403
+
+
+def test_build_choice_only_for_a_local_client_with_a_ready_project(tmp_path: Path, monkeypatch) -> None:
+    app, _settings, project, store, _sessions, _factory = auto_route_app(tmp_path)
+    url = f"/projects/{project.id}/auto/setup"
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
+        before = local.get(url).text
+        build_ready(store, monkeypatch)
+        ready_local = local.get(url).text
+    with TestClient(app, base_url="http://localhost", client=LAN) as lan:
+        ready_lan = lan.get(url).text
+
+    assert 'name="kind" value="build"' not in before
+    assert 'name="kind" value="build"' in ready_local
+    assert 'name="kind" value="build"' not in ready_lan

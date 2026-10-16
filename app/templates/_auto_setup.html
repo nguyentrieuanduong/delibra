@@ -29,6 +29,19 @@
         <p>No agents are available.</p>
       {% endfor %}
     </fieldset>
+    {% if build_available %}
+      <fieldset>
+        <legend>Kind</legend>
+        <label class="auto-choice"><input type="radio" name="kind" value="discussion" checked> Discussion</label>
+        <label class="auto-choice"><input type="radio" name="kind" value="build"> Build: agents edit and run code in this project</label>
+        <p class="hint">
+          Build turns get a sandboxed shell and allowlisted command network; research
+          tools are not limited. Preparation is skipped. When the Git tree is clean,
+          Delibra commits after each completed turn, and edits you make in the project
+          during the run are committed with the agents' changes.
+        </p>
+      </fieldset>
+    {% endif %}
     <label class="auto-choice">
       <input type="checkbox" name="prepare_first" value="true">
       Prepare agents independently first
