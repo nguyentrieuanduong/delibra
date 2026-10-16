@@ -19,9 +19,13 @@ DEFAULT_NETWORK_ALLOWLIST = (
 MAX_ALLOWLIST_HOSTS = 64
 ENV_STATUSES = frozenset({"absent", "creating", "ready", "error"})
 ENV_TOOLS = frozenset({"conda", "venv", "existing"})
-# Exact CLI versions that passed spikes S1 (claude) and S2 (codex). Empty
-# until the spikes pass: an unverified provider never runs a build turn.
-BUILD_VERIFIED_VERSIONS: dict[str, str] = {}
+# Exact CLI versions that passed spikes S1 (claude) and S2 (codex), as
+# app/health.py reports them (spike/FINDINGS.md, 2026-10-16). Any other
+# version is refused until the spikes are re-run against it.
+BUILD_VERIFIED_VERSIONS: dict[str, str] = {
+    "claude": "2.1.296 (Claude Code)",
+    "codex": "codex-cli 0.162.1",
+}
 _LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
 
 
