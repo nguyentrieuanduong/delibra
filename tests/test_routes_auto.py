@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2286,3 +2287,34 @@ def test_setup_dialog_previews_why_commits_would_be_off(tmp_path: Path, monkeypa
     for html in (dialog, page):
         assert "Commits would be off: project is not a git repository" in html
     assert "Commits would be" not in remote
+
+
+def test_build_stop_works_from_a_lan_client(tmp_path: Path, monkeypatch) -> None:
+    app, _settings, project, store, sessions, _factory = auto_route_app(
+        tmp_path, outputs=["One", "Two"], sleep=True
+    )
+    build_ready(store, monkeypatch)
+    ids = [session.id for session in sessions]
+    with TestClient(app, base_url="http://localhost", client=LAN) as lan:
+        # Starting needs loopback (tested above), so start through the
+        # manager; the stop request is this test's only LAN action.
+        record = lan.portal.call(
+            functools.partial(
+                app.state.auto_manager.create,
+                project.id,
+                topic="Build it",
+                participant_ids=ids,
+                agreement_policy="first_agree",
+                max_cycles=1,
+                preparation_enabled=False,
+                kind="build",
+            )
+        )
+        stopped = lan.post(
+            f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}/stop"
+        )
+        terminal = wait_for_auto(store, terminal=True)
+
+    assert stopped.status_code == 200
+    assert terminal.kind == "build"
+    assert terminal.status == "stopped"
