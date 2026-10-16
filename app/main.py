@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
+from app.build_git import default_git_exclude
 from app.coding import CodingEnvState, build_capable
 from app.config import Settings
 from app.health import checking_health, probe_all
@@ -263,6 +264,7 @@ def create_app(
         }
         auto_migration_issues = store.auto_migration_status().issues
         configured_turn_timeout = store.configured_turn_timeout_seconds()
+        coding = store.coding_policy()
         effective_turn_timeout = store.effective_turn_timeout_seconds(
             request.app.state.settings.run_timeout,
             maximum=request.app.state.settings.max_run_timeout,
@@ -286,7 +288,10 @@ def create_app(
                 "auto_migration_issues": auto_migration_issues,
                 "pass_prompt_template": store.effective_pass_prompt_template(),
                 "writable_roots": store.effective_writable_roots(),
-                "coding": store.coding_policy(),
+                "coding": coding,
+                "git_exclude_lines": (
+                    coding.git_exclude if coding.git_exclude is not None else default_git_exclude()
+                ),
                 "coding_local": is_loopback_client(request),
                 "turn_timeout_seconds": effective_turn_timeout,
                 "configured_turn_timeout_seconds": configured_turn_timeout,

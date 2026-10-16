@@ -71,7 +71,13 @@
         firewall: research tools (web search, web fetch, browser) are not limited,
         and environment creation uses this machine's network.
       </p>
-      <p class="hint">In a Git repository, enabling coding writes Delibra's default ignore list (<code>/.delibra/</code>, <code>/envs/</code>, and common build, cache, editor and OS files such as <code>lib/</code>, <code>build/</code>, <code>dist</code>, <code>__pycache__/</code>) to <code>.git/info/exclude</code>: local to this clone, never committed. Build turns never commit ignored files.</p>
+      <details class="coding-git-exclude">
+        <summary>Git ignore list for build commits ({{ 'custom' if coding.git_exclude is not none else "Delibra's default" }})</summary>
+        <textarea name="git_exclude" rows="12" maxlength="65536">{{ git_exclude_lines|join('\n') }}</textarea>
+        <p class="hint">In a Git repository, saving with coding on writes <code>/.delibra/</code>, <code>/envs/</code> and this list to <code>.git/info/exclude</code> between Delibra's markers: local to this clone, never committed. Patterns apply at any depth unless they start with <code>/</code>. Build turns never commit ignored files, and <code>git status</code> hides them in this clone.</p>
+        <button type="submit" name="git_exclude_preset" value="default" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Use Delibra's default ignore list</button>
+      </details>
+
       {% for warning in coding.network_warnings %}<p class="warning">{{ warning }}</p>{% endfor %}
       {% if coding.network_warnings %}
         <p class="hint">Allowed by your choice: build agents may connect there. Claude's sandbox permits private addresses for listed hosts; Codex's refuses them.</p>

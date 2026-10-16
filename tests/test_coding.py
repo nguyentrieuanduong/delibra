@@ -8,6 +8,7 @@ from app.coding import (
     CodingPolicy,
     CodingPolicyError,
     build_capable,
+    normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
     private_resolution_warnings,
@@ -150,3 +151,29 @@ def test_code_craft_suggestions_skip_approval_gated_skills() -> None:
         "test-driven-development", "coding-standards", "security-baseline",
         "systematic-debugging", "verification-before-completion",
     }
+
+
+def test_git_exclude_defaults_to_delibras_list_and_round_trips() -> None:
+    assert CodingPolicy().git_exclude is None
+    assert CodingPolicy.from_manifest({"coding": {"enabled": True}}).git_exclude is None
+    policy = CodingPolicy(git_exclude=["build/", "!keep/", ""])
+    assert CodingPolicy.from_manifest({"coding": policy.to_dict()}).git_exclude == ["build/", "!keep/", ""]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["build/", [1], ["a\x00b"], ["a\rb"], ["# >>> Delibra coding mode"], ["# <<< Delibra coding mode"]],
+)
+def test_invalid_git_exclude_is_rejected(bad) -> None:
+    with pytest.raises(CodingPolicyError):
+        normalize_git_exclude(bad)
+    with pytest.raises(CodingPolicyError):
+        CodingPolicy.from_manifest({"coding": {"git_exclude": bad}})
+
+
+def test_git_exclude_is_bounded() -> None:
+    assert normalize_git_exclude(["\tindented", "x"]) == ["\tindented", "x"]
+    with pytest.raises(CodingPolicyError):
+        normalize_git_exclude(["x"] * 2_001)
+    with pytest.raises(CodingPolicyError):
+        normalize_git_exclude(["x" * 70_000])

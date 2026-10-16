@@ -15,11 +15,12 @@ from app.coding import (
     CodingEnvState,
     CodingPolicy,
     CodingPolicyError,
+    normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
     private_resolution_warnings,
 )
-from app.build_git import ensure_local_excludes
+from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.project_routing import request_project
 from app.security import (
@@ -275,6 +276,8 @@ async def save_coding(
     network_allowlist: str = Form(""),
     guidance_files: str = Form(""),
     guidance_preset: str = Form(""),
+    git_exclude: str | None = Form(None),
+    git_exclude_preset: str = Form(""),
 ):
     require_loopback_client(request)
     project = request_project(request, project_id)
@@ -311,6 +314,15 @@ async def save_coding(
         else:
             guidance = guidance_files.splitlines() if guidance_files.strip() else []
         current = store.coding_policy()
+        if git_exclude_preset == "default":
+            exclude = None
+        elif git_exclude is None:
+            exclude = current.git_exclude  # older forms: keep what is saved
+        else:
+            lines = git_exclude.splitlines()
+            # Unchanged from the default: keep following Delibra's list.
+            exclude = None if lines == default_git_exclude() else lines
+
         # Validate every field before writing: a rejected form must not
         # change command network access.
         try:
@@ -320,6 +332,7 @@ async def save_coding(
                 env=current.env,
                 network_warnings=warnings,
                 guidance_files=normalize_guidance_paths(guidance),
+                git_exclude=None if exclude is None else normalize_git_exclude(exclude),
             )
         except CodingPolicyError as exc:
             raise StorageError(str(exc)) from exc
@@ -332,7 +345,7 @@ async def save_coding(
             _start_env_creation(request.app, resolved_project_id, token)
     if enabled:
         try:
-            await ensure_local_excludes(ProjectStore(project).project_path)
+            await ensure_local_excludes(ProjectStore(project).project_path, updated.git_exclude)
         except OSError:
             LOGGER.warning(
                 "Could not update .git/info/exclude for project %s",

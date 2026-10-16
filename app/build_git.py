@@ -8,6 +8,7 @@ refuses to commit once HEAD moves under it.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 import os
 from pathlib import Path
 import signal
@@ -115,6 +116,12 @@ _BLOCK_START = "# >>> Delibra coding mode: default ignores, local to this clone 
 _BLOCK_END = "# <<< Delibra coding mode"
 
 
+def default_git_exclude() -> list[str]:
+    """Delibra's default ignore list, one pattern (or comment) per line."""
+
+    return DEFAULT_EXCLUDE_TEMPLATE.read_text(encoding="utf-8").splitlines()
+
+
 def _scoped(pattern: str, prefix: str) -> str:
     """Confine one template pattern to the project at `prefix` ("" at the repo root)."""
 
@@ -131,7 +138,9 @@ def _scoped(pattern: str, prefix: str) -> str:
     return ("!" if negated else "") + scoped
 
 
-async def ensure_local_excludes(root: Path) -> list[str]:
+async def ensure_local_excludes(
+    root: Path, patterns: Sequence[str] | None = None
+) -> list[str]:
     """Write Delibra's managed ignore block into this clone's `.git/info/exclude`.
 
     Never `.gitignore`: editing a tracked file would dirty the tree and turn
@@ -139,7 +148,8 @@ async def ensure_local_excludes(root: Path) -> list[str]:
     to the project root, then the default ignore template, confined to the
     project. It replaces the previous block, so template changes reach
     existing projects; lines outside it are the user's. Returns the block's
-    patterns; none when the project is not in a Git repository.
+    patterns; none when the project is not in a Git repository. `patterns`
+    is the project's own list; None means Delibra's default.
     """
 
     code, top = await _git(root, "rev-parse", "--show-toplevel")
@@ -157,7 +167,7 @@ async def ensure_local_excludes(root: Path) -> list[str]:
     prefix = "" if relative == "." else f"{relative}/"
     if any(character in prefix for character in "*?[]\\!#"):
         return []  # would be read as a pattern, not a path
-    template = DEFAULT_EXCLUDE_TEMPLATE.read_text(encoding="utf-8").splitlines()
+    template = list(patterns) if patterns is not None else default_git_exclude()
     body = [f"/{prefix}{name}" for name in LOCAL_EXCLUDES] + [
         _scoped(line.rstrip(), prefix) for line in template
     ]
