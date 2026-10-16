@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
-from app.coding import CodingEnvState
+from app.coding import DEFAULT_NETWORK_ALLOWLIST, CodingEnvState
 from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
@@ -1543,3 +1543,6 @@ def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 422
     assert ProjectStore(project).coding_policy().guidance_files == []
+    policy = ProjectStore(project).coding_policy()
+    assert policy.network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
+    assert policy.enabled is False

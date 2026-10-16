@@ -1689,6 +1689,15 @@ class ProjectStore:
         atomic_write_json_recovery_pair(self.manifest_path, manifest)
         return policy
 
+    def replace_coding_policy(self, policy: CodingPolicy) -> CodingPolicy:
+        """Persist a whole policy in one manifest write, after validating it."""
+
+        try:
+            CodingPolicy.from_manifest({"coding": policy.to_dict()})
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
+        return self._save_coding(policy)
+
     def set_coding_enabled(self, enabled: bool) -> CodingPolicy:
         if type(enabled) is not bool:
             raise StorageError("coding enabled flag is invalid")
