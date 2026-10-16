@@ -2283,3 +2283,47 @@ async def test_developer_tools_dir_is_cached_between_build_turns(tmp_path, monke
     assert await manager.developer_tools() is None
     assert await manager.developer_tools() is None
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_rollout_read_never_strands_the_round(tmp_path, monkeypatch) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="usage-no-window", agent="codex")
+    manager.settings.codex_home.mkdir(mode=0o700, parents=True)
+    (manager.settings.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    _resume_codex(store, session_id)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("rollout unreadable")
+
+    monkeypatch.setattr("app.runner.read_codex_rollout_state", broken)
+
+    record = await asyncio.wait_for(
+        manager.wait(await manager.start(project_id, session_id, "Question")), 10
+    )
+
+    assert record.status == "complete"
+    assert record.usage is None
+    assert "Codex usage could not be read from its rollout" in record.warnings
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_finalization_failure_ends_the_round(tmp_path, monkeypatch) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+
+    def broken(**_kwargs):
+        raise RuntimeError("finalization broke")
+
+    monkeypatch.setattr("app.runner.CompletedRun", broken)
+    key = await manager.start(project_id, session_id, "Question")
+
+    try:
+        record = await asyncio.wait_for(manager.wait(key), 10)
+    except RuntimeError as exc:
+        assert "finalization broke" in str(exc)
+    else:  # the wait started after the round left the active set
+        assert record.status == "error"
+    assert manager.active_key(project_id, session_id) is None
+    saved = store.load_session(session_id)
+    assert saved.status == "error"
+    assert saved.rounds[-1].status == "error"
+    assert "finalization broke" in (saved.rounds[-1].error or "")

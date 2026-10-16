@@ -928,7 +928,7 @@ class RunManager:
                 f"failed to spawn agent: {exc}",
             )
             active.errors.append(message)
-            await self._finalize_locked(active, None)
+            await self._finalize_safely_locked(active, None)
             return key
 
         active.task = asyncio.create_task(
@@ -1770,7 +1770,30 @@ class RunManager:
             active.key.project_id,
             [active.key.session_id],
         ):
+            await self._finalize_safely_locked(active, returncode)
+
+    async def _finalize_safely_locked(self, active: ActiveRun, returncode: int | None) -> None:
+        """Finalize, and if that fails unexpectedly, still end the round.
+
+        A raise inside finalization would otherwise leave the round active
+        forever: `wait` never returns and the session stays busy.
+        """
+
+        try:
             await self._finalize_locked(active, returncode)
+        except Exception as exc:
+            LOGGER.exception("Finalizing %s failed", active.key)
+            active.record.status = "error"
+            active.record.error = f"failed to finalize round: {exc}"
+            active.record.error_category = "permanent"
+            active.config.status = "error"
+            try:
+                active.store.save_session(active.config)
+            except Exception:
+                LOGGER.exception("Could not record the failed round %s", active.key)
+            self._active.pop(active.key, None)
+            if not active.completion.done():
+                active.completion.set_exception(exc)
 
     async def _finalize_locked(
         self,
@@ -1847,9 +1870,18 @@ class RunManager:
             if status == "error"
             else None
         )
+        try:
+            self._seed_codex_rollout_state(active)
+        except Exception:
+            # Usage is advisory: a failed read must never strand the round.
+            LOGGER.exception("Could not read the Codex rollout for %s", active.key)
+            active.warnings.append("Codex usage could not be read from its rollout")
+            if active.resumed:
+                active.usage = None
+                active.context_reading = None
+
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
-        self._seed_codex_rollout_state(active)
         record.usage = active.usage
         if active.context_reading is not None:
             # Only the runner knows which round the reading belongs to. A turn
