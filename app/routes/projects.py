@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 from pathlib import Path
+import shutil
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
+from app.coding import (
+    CodingEnvState,
+    CodingPolicyError,
+    normalize_network_allowlist,
+    private_resolution_warnings,
+)
+from app.coding_env import ENV_DIRNAME, prepare_env
 from app.project_routing import request_project
 from app.security import (
+    require_loopback_client,
     validate_field,
     validate_pass_prompt_template_field,
 )
@@ -18,6 +30,7 @@ from app.storage import (
     StorageError,
     normalize_project_name,
     normalize_writable_roots,
+    utc_now,
 )
 from app.urls import project_url
 
@@ -56,6 +69,60 @@ def _reject_in_memory_work(request: Request, project_id: str) -> None:
         raise ConflictError("project has active agent work")
     if request.app.state.auto_manager.has_active_project(project_id):
         raise ConflictError("project has active Auto work")
+
+
+LOGGER = logging.getLogger(__name__)
+SERVER_ENV_KEYS = ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "CONDA_EXE")
+
+
+def _server_environment() -> dict[str, str]:
+    return {key: os.environ[key] for key in SERVER_ENV_KEYS if key in os.environ}
+
+
+def _start_env_creation(app, project_id: str, token: str) -> None:
+    tasks = app.state.coding_env_tasks
+    task = asyncio.create_task(
+        _create_env(app, project_id, token), name=f"delibra-coding-env-{project_id}"
+    )
+    tasks[project_id] = task
+
+    def forget(done: asyncio.Task) -> None:
+        if tasks.get(project_id) is done:
+            tasks.pop(project_id, None)
+
+    task.add_done_callback(forget)
+
+
+async def _save_env_result(app, project_id: str, token: str, result: CodingEnvState) -> None:
+    # `token` is the `updated_at` of the "creating" state this task owns: a
+    # late task must never overwrite a newer attempt.
+    async with app.state.locks.registry_project_sessions(project_id):
+        store = ProjectStore(app.state.registry.get(project_id))
+        current = store.coding_policy().env
+        if current.status == "creating" and current.updated_at == token:
+            store.set_coding_env(result)
+
+
+async def _create_env(app, project_id: str, token: str) -> None:
+    store = ProjectStore(app.state.registry.get(project_id))
+    try:
+        result = await prepare_env(store.project_path, environ=_server_environment())
+    except asyncio.CancelledError:
+        await _save_env_result(
+            app, project_id, token,
+            CodingEnvState(
+                status="error",
+                error="Environment creation was cancelled; retry to continue",
+                updated_at=utc_now(),
+            ),
+        )
+        raise
+    except Exception as exc:  # recorded for the user; never leave "creating"
+        LOGGER.exception("Coding environment creation failed for project %s", project_id)
+        result = CodingEnvState(
+            status="error", error=f"Environment creation failed: {exc}", updated_at=utc_now()
+        )
+    await _save_env_result(app, project_id, token, result)
 
 
 @router.post("/projects")
@@ -200,6 +267,74 @@ async def save_writable_roots(
         project_url(project.name, "/settings"),
         status_code=303,
     )
+
+
+@router.post("/projects/{project_id}/coding")
+async def save_coding(
+    request: Request,
+    project_id: str,
+    enabled: bool = Form(False),
+    network_allowlist: str = Form(""),
+):
+    require_loopback_client(request)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    lines = network_allowlist.splitlines() if network_allowlist.strip() else []
+    try:
+        hosts = normalize_network_allowlist(lines)
+    except CodingPolicyError as exc:
+        raise StorageError(str(exc)) from exc
+    # DNS before the lock, with a budget: a slow resolver must not hold
+    # the project's sessions. Timing out only replaces the warning.
+    try:
+        warnings = await asyncio.wait_for(
+            asyncio.to_thread(private_resolution_warnings, hosts), timeout=5
+        )
+    except TimeoutError:
+        warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
+    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+        _reject_in_memory_work(request, resolved_project_id)
+        project = request.app.state.registry.get(resolved_project_id)
+        store = ProjectStore(project)
+        store.require_auto_inactive()
+        store.set_network_allowlist(hosts, warnings=warnings)
+        policy = store.set_coding_enabled(enabled)
+        if enabled and policy.env.status == "absent":
+            token = utc_now()
+            store.set_coding_env(CodingEnvState(status="creating", updated_at=token))
+            _start_env_creation(request.app, resolved_project_id, token)
+    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+
+
+@router.post("/projects/{project_id}/coding/env/retry")
+async def retry_coding_env(request: Request, project_id: str):
+    require_loopback_client(request)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+        _reject_in_memory_work(request, resolved_project_id)
+        project = request.app.state.registry.get(resolved_project_id)
+        store = ProjectStore(project)
+        store.require_auto_inactive()
+        policy = store.coding_policy()
+        if not policy.enabled:
+            raise StorageError("Coding is not enabled for this project")
+        if policy.env.status != "error":
+            raise ConflictError("Coding environment is not in an error state")
+        envs = store.project_path / ENV_DIRNAME
+        partial = (envs.exists() or envs.is_symlink()) and not (envs / "bin" / "python").exists()
+        if partial:
+            if not policy.env.created_by_delibra:
+                raise StorageError(f"{envs} was not created by Delibra; fix or remove it yourself")
+            if envs.is_symlink() or not envs.is_dir() or (envs / "bin").is_symlink():
+                raise StorageError(f"{envs} is not a plain directory; Delibra will not delete it")
+            # The only deletion in coding mode (D§1): a partial env this
+            # attempt's predecessor created. rmtree never follows links.
+            shutil.rmtree(envs)
+        token = utc_now()
+        store.set_coding_env(CodingEnvState(status="creating", updated_at=token))
+        _start_env_creation(request.app, resolved_project_id, token)
+    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
 
 @router.post("/projects/{project_id}/turn-timeout")

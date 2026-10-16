@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
+from app.coding import CodingEnvState
 from app.config import Settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
@@ -26,7 +27,7 @@ from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
 from app.routes.usage import router as usage_router
 from app.runner import AdapterFactory, RunManager
-from app.security import LocalSecurityMiddleware
+from app.security import LocalSecurityMiddleware, is_loopback_client
 from app.storage import (
     ConflictError,
     LockCoordinator,
@@ -36,6 +37,7 @@ from app.storage import (
     ProjectStore,
     RegistryStore,
     StorageError,
+    utc_now,
 )
 from app.urls import project_url
 from app.usage import UsageMonitor
@@ -44,6 +46,22 @@ from app.views import project_card
 
 LOGGER = logging.getLogger(__name__)
 APP_ROOT = Path(__file__).resolve().parent
+
+
+def _recover_interrupted_env(store: ProjectStore) -> None:
+    """A "creating" state at startup means the server died mid-creation."""
+
+    if store.coding_policy().env.status == "creating":
+        store.set_coding_env(
+            CodingEnvState(
+                status="error",
+                error="Environment creation was interrupted; retry to continue",
+                # Whether a leftover ./envs is Delibra's is unknowable now,
+                # so Retry must never delete it.
+                created_by_delibra=False,
+                updated_at=utc_now(),
+            )
+        )
 
 
 def create_app(
@@ -123,6 +141,7 @@ def create_app(
                 )
             try:
                 store = ProjectStore(project)
+                _recover_interrupted_env(store)
                 migration = store.migrate_session_directories()
                 if migration.issues:
                     LOGGER.warning(
@@ -153,6 +172,10 @@ def create_app(
                 pass
             except TimeoutError:
                 LOGGER.error("CLI health probe did not stop within the shutdown bound")
+            env_tasks = list(app.state.coding_env_tasks.values())
+            for task in env_tasks:
+                task.cancel()
+            await asyncio.gather(*env_tasks, return_exceptions=True)
             await auto_manager.shutdown()
             await manager.shutdown()
 
@@ -173,6 +196,7 @@ def create_app(
     app.state.usage_monitor = None
     app.state.templates = templates
     app.state.health = []
+    app.state.coding_env_tasks = {}
     app.include_router(projects_router)
     app.include_router(auto_router)
     app.include_router(chat_router)
@@ -260,6 +284,8 @@ def create_app(
                 "auto_migration_issues": auto_migration_issues,
                 "pass_prompt_template": store.effective_pass_prompt_template(),
                 "writable_roots": store.effective_writable_roots(),
+                "coding": store.coding_policy(),
+                "coding_local": is_loopback_client(request),
                 "turn_timeout_seconds": effective_turn_timeout,
                 "configured_turn_timeout_seconds": configured_turn_timeout,
                 "turn_timeout_inherited": configured_turn_timeout is None,
