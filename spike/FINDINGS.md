@@ -349,3 +349,169 @@ codex:codex-resume:
 
 - _none_
 <!-- ADD-DIR-SPIKE:END -->
+
+<!-- BUILD-SANDBOX-SPIKE-CLAUDE:START -->
+## Build sandbox spike: claude
+
+- Version: `2.1.296 (Claude Code)`
+- Verdict: **PASS**
+
+| Probe | Result |
+|---|---|
+| write_project | PASS |
+| write_outside | PASS |
+| write_dot_git | PASS |
+| write_dot_delibra | PASS |
+| write_symlink_escape | PASS |
+| read_sentinel | PASS |
+| read_symlink_escape | PASS |
+| read_codex_auth | PASS |
+| read_delibra_codex_auth | PASS |
+| read_claude_config | PASS |
+| git_status | PASS |
+| env_python | PASS |
+| net_allowed | PASS |
+| net_unlisted | PASS |
+| net_subprocess | PASS |
+| net_upstream_proxy | PASS |
+| net_loopback | PASS |
+| net_lan_ip | PASS |
+| net_lan_name | RECORDED (rc=22; non-gating for Claude per D§1) |
+| empty_net_index | PASS |
+| empty_net_unlisted | PASS |
+| research_tool_loopback | PASS |
+| tool_read_sentinel | PASS |
+| tool_write_dot_git | PASS |
+| tool_edit_dot_delibra | PASS |
+| tool_write_outside | PASS |
+
+Argv (sanitized):
+
+```text
+/opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --add-dir '<TMP>/build-tmp' --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),Bash,WebSearch,WebFetch' --disallowedTools 'Edit(/.delibra/**),Edit(/.git/**)' --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":["pypi.org","files.pythonhosted.org","192-168-1-1.nip.io"],"strictAllowlist":true},"filesystem":{"denyRead":["~/"],"allowRead":["<TMP>/project","<TMP>/build-tmp"],"denyWrite":["<TMP>/project/.delibra","<TMP>/project/.git"]},"credentials":{"envVars":[{"name":"ANTHROPIC_API_KEY","mode":"deny"},{"name":"OPENAI_API_KEY","mode":"deny"},{"name":"GITHUB_TOKEN","mode":"deny"},{"name":"GH_TOKEN","mode":"deny"},{"name":"NPM_TOKEN","mode":"deny"},{"name":"AWS_ACCESS_KEY_ID","mode":"deny"},{"name":"AWS_SECRET_ACCESS_KEY","mode":"deny"},{"name":"AWS_SESSION_TOKEN","mode":"deny"}]}}}' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+/opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --add-dir '<TMP>/build-tmp' --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),Bash,WebSearch,WebFetch' --disallowedTools 'Edit(/.delibra/**),Edit(/.git/**)' --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":[],"strictAllowlist":true},"filesystem":{"denyRead":["~/"],"allowRead":["<TMP>/project","<TMP>/build-tmp"],"denyWrite":["<TMP>/project/.delibra","<TMP>/project/.git"]},"credentials":{"envVars":[{"name":"ANTHROPIC_API_KEY","mode":"deny"},{"name":"OPENAI_API_KEY","mode":"deny"},{"name":"GITHUB_TOKEN","mode":"deny"},{"name":"GH_TOKEN","mode":"deny"},{"name":"NPM_TOKEN","mode":"deny"},{"name":"AWS_ACCESS_KEY_ID","mode":"deny"},{"name":"AWS_SECRET_ACCESS_KEY","mode":"deny"},{"name":"AWS_SESSION_TOKEN","mode":"deny"}]}}}' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+/opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --add-dir '<TMP>/build-tmp' --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),Bash,WebSearch,WebFetch' --disallowedTools 'Edit(/.delibra/**),Edit(/.git/**)' --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":["pypi.org","files.pythonhosted.org","192-168-1-1.nip.io"],"strictAllowlist":true},"filesystem":{"denyRead":["~/"],"allowRead":["<TMP>/project","<TMP>/build-tmp"],"denyWrite":["<TMP>/project/.delibra","<TMP>/project/.git"]},"credentials":{"envVars":[{"name":"ANTHROPIC_API_KEY","mode":"deny"},{"name":"OPENAI_API_KEY","mode":"deny"},{"name":"GITHUB_TOKEN","mode":"deny"},{"name":"GH_TOKEN","mode":"deny"},{"name":"NPM_TOKEN","mode":"deny"},{"name":"AWS_ACCESS_KEY_ID","mode":"deny"},{"name":"AWS_SECRET_ACCESS_KEY","mode":"deny"},{"name":"AWS_SESSION_TOKEN","mode":"deny"}]}}}' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+/opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --add-dir '<TMP>/build-tmp' --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),Bash,WebSearch,WebFetch' --disallowedTools 'Edit(/.delibra/**),Edit(/.git/**)' --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":["pypi.org","files.pythonhosted.org","192-168-1-1.nip.io"],"strictAllowlist":true},"filesystem":{"denyRead":["~/"],"allowRead":["<TMP>/project","<TMP>/build-tmp"],"denyWrite":["<TMP>/project/.delibra","<TMP>/project/.git"]},"credentials":{"envVars":[{"name":"ANTHROPIC_API_KEY","mode":"deny"},{"name":"OPENAI_API_KEY","mode":"deny"},{"name":"GITHUB_TOKEN","mode":"deny"},{"name":"GH_TOKEN","mode":"deny"},{"name":"NPM_TOKEN","mode":"deny"},{"name":"AWS_ACCESS_KEY_ID","mode":"deny"},{"name":"AWS_SECRET_ACCESS_KEY","mode":"deny"},{"name":"AWS_SESSION_TOKEN","mode":"deny"}]}}}' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+```
+<!-- BUILD-SANDBOX-SPIKE-CLAUDE:END -->
+
+<!-- BUILD-SANDBOX-SPIKE-CODEX:START -->
+## Build sandbox spike: codex
+
+- Version: `codex-cli 0.162.1`
+- Verdict: **INCONCLUSIVE**
+
+| Probe | Result |
+|---|---|
+| write_project | INCONCLUSIVE (probe script did not finish) |
+| write_outside | INCONCLUSIVE (probe script did not finish) |
+| write_dot_git | INCONCLUSIVE (probe script did not finish) |
+| write_dot_delibra | INCONCLUSIVE (probe script did not finish) |
+| write_symlink_escape | INCONCLUSIVE (probe script did not finish) |
+| read_sentinel | INCONCLUSIVE (probe script did not finish) |
+| read_symlink_escape | INCONCLUSIVE (probe script did not finish) |
+| read_codex_auth | INCONCLUSIVE (probe script did not finish) |
+| read_delibra_codex_auth | INCONCLUSIVE (probe script did not finish) |
+| read_claude_config | INCONCLUSIVE (probe script did not finish) |
+| git_status | INCONCLUSIVE (probe script did not finish) |
+| env_python | INCONCLUSIVE (probe script did not finish) |
+| net_allowed | INCONCLUSIVE (probe script did not finish) |
+| net_unlisted | INCONCLUSIVE (probe script did not finish) |
+| net_subprocess | INCONCLUSIVE (probe script did not finish) |
+| net_upstream_proxy | INCONCLUSIVE (probe script did not finish) |
+| net_loopback | INCONCLUSIVE (probe script did not finish) |
+| net_lan_ip | INCONCLUSIVE (probe script did not finish) |
+| net_lan_name | INCONCLUSIVE (probe script did not finish) |
+| empty_net_index | PASS |
+| empty_net_unlisted | PASS |
+| research_tool_loopback | INCONCLUSIVE (browser calls to both loopback URLs not observed; see 4.5) |
+| strict_config_rejects_unknown_key | PASS |
+
+Argv (sanitized):
+
+```text
+/opt/homebrew/bin/codex --model gpt-6-sol --ask-for-approval never --search --cd '<TMP>/project' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --config 'default_permissions="delibra_build"' --config 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "<TMP>/build-tmp"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=true, domains={"pypi.org"="allow", "files.pythonhosted.org"="allow", "192-168-1-1.nip.io"="allow"}}}}' --config 'shell_environment_policy={inherit="core", set={"CONDA_PREFIX"="<TMP>/project/envs", "TMPDIR"="<TMP>/build-tmp", "PIP_CACHE_DIR"="<TMP>/build-tmp/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="<TMP>/build-tmp/xdg", "PIP_USE_DEPRECATED"="legacy-certs"}}' --config 'features.network_proxy={enabled=true, allow_local_binding=false, allow_upstream_proxy=false}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+/opt/homebrew/bin/codex --model gpt-6-sol --ask-for-approval never --search --cd '<TMP>/project' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --config 'default_permissions="delibra_build"' --config 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "<TMP>/build-tmp"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=false}}}' --config 'shell_environment_policy={inherit="core", set={"CONDA_PREFIX"="<TMP>/project/envs", "TMPDIR"="<TMP>/build-tmp", "PIP_CACHE_DIR"="<TMP>/build-tmp/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="<TMP>/build-tmp/xdg", "PIP_USE_DEPRECATED"="legacy-certs"}}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+/opt/homebrew/bin/codex --model gpt-6-sol --ask-for-approval never --search --cd '<TMP>/project' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --config 'default_permissions="delibra_build"' --config 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "<TMP>/build-tmp"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=true, domains={"pypi.org"="allow", "files.pythonhosted.org"="allow", "192-168-1-1.nip.io"="allow"}}}}' --config 'shell_environment_policy={inherit="core", set={"CONDA_PREFIX"="<TMP>/project/envs", "TMPDIR"="<TMP>/build-tmp", "PIP_CACHE_DIR"="<TMP>/build-tmp/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="<TMP>/build-tmp/xdg", "PIP_USE_DEPRECATED"="legacy-certs"}}' --config 'features.network_proxy={enabled=true, allow_local_binding=false, allow_upstream_proxy=false}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+```
+<!-- BUILD-SANDBOX-SPIKE-CODEX:END -->
+
+<!-- BUILD-SANDBOX-SPIKE-CODEX-REPLAY:START -->
+## Build sandbox spike: codex-replay
+
+- Version: `codex-cli 0.162.1`
+- Verdict: **PASS**
+
+| Probe | Result |
+|---|---|
+| write_project | PASS |
+| write_outside | PASS |
+| write_dot_git | PASS |
+| write_dot_delibra | PASS |
+| write_symlink_escape | PASS |
+| read_sentinel | PASS |
+| read_symlink_escape | PASS |
+| read_codex_auth | PASS |
+| read_delibra_codex_auth | PASS |
+| read_claude_config | PASS |
+| git_status | PASS |
+| env_python | PASS |
+| net_allowed | PASS |
+| net_unlisted | PASS |
+| net_subprocess | PASS |
+| net_upstream_proxy | PASS |
+| net_loopback | PASS |
+| net_lan_ip | PASS |
+| net_lan_name | PASS |
+| codex_sandbox_exit | PASS (rc=0 in 1.6s) |
+| lan_target | RECORDED (this machine's own address 172.20.10.8:63193) |
+
+Argv (sanitized):
+
+```text
+codex -c 'default_permissions="delibra_build"' -c 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "/Users/apollo/.delibra-build-spike-x7ludvbv/build-tmp"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=true, domains={"pypi.org"="allow", "files.pythonhosted.org"="allow", "172-20-10-8.nip.io"="allow"}}}}' -c 'shell_environment_policy={inherit="core", set={"CONDA_PREFIX"="/Users/apollo/.delibra-build-spike-x7ludvbv/project/envs", "TMPDIR"="/Users/apollo/.delibra-build-spike-x7ludvbv/build-tmp", "PIP_CACHE_DIR"="/Users/apollo/.delibra-build-spike-x7ludvbv/build-tmp/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="/Users/apollo/.delibra-build-spike-x7ludvbv/build-tmp/xdg", "PIP_USE_DEPRECATED"="legacy-certs"}}' -c 'features.network_proxy={enabled=true, allow_local_binding=false, allow_upstream_proxy=false}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable browser_annotation_api --disable in_app_browser sandbox -P delibra_build -C /Users/apollo/.delibra-build-spike-x7ludvbv/project -- sh spike-probes.sh
+```
+<!-- BUILD-SANDBOX-SPIKE-CODEX-REPLAY:END -->
+
+<!-- BUILD-SANDBOX-SPIKE-DECISIONS:START -->
+## Build sandbox spike: verdicts and decisions (2026-10-16)
+
+- **S1, Claude Code 2.1.296: PASS** (the `claude` section above, from the
+  second run).
+  - The first run failed `git_status` (exit 128,
+    `unable to access '~/.gitconfig': Operation not permitted`) and
+    `net_allowed` (pip `SSLCertVerificationError('OSStatus -26276')`, from the
+    macOS trust-store lookup).
+  - Both were fixed by `build_command_environment`: `GIT_CONFIG_GLOBAL=/dev/null`,
+    `XDG_CONFIG_HOME=<tmp>/xdg`, `PIP_USE_DEPRECATED=legacy-certs`.
+  - `net_lan_name` (a public name resolving to the router) was refused:
+    `rc=22`, a proxy error.
+- **S2, codex-cli 0.162.1: PASS on the model-free replay** (the
+  `codex-replay` section), which the user accepted as the shell evidence.
+  - Under `codex exec`, a command that touches a blocked domain is killed
+    (`ProcessFailed: Network access to "example.com" was blocked`). The exec
+    probe script therefore stops at the first denied host, which is why the
+    `codex` section shows INCONCLUSIVE.
+  - That exec turn did confirm that the domain allowlist is enforced.
+  - The replay uses the same overrides, disabled features, and
+    `-P delibra_build` profile. The Codex proxy refuses loopback and private
+    destinations with HTTP 403 (`"reason":"not_allowed_local"`).
+  - The LAN probe targeted this machine's own private address
+    (`--lan-self`); its listener received zero requests.
+  - Git needed read-only access to `xcode-select -p`'s directory
+    (`CodingContext.read_roots`).
+- **Research tools.**
+  - Claude: `WebFetch` to both loopback URLs was attempted and refused; the
+    listener got 0 hits.
+  - Codex under exec has no local browser tool: it opened the URLs through
+    hosted `web_search` `open_page` ("Unable to resolve"), and the listener got
+    0 hits.
+  - **User decision:** Codex browser features are disabled in build turns,
+    while hosted search stays on.
+- **Known limits, for the README:**
+  - Tools that verify TLS through the macOS trust store, rather than a CA
+    file, may fail inside Claude build turns.
+  - In Codex build turns, a command touching an unlisted host is killed
+    outright.
+  - `xcrun_db` cache-write warnings from `/usr/bin/git` are harmless.
+<!-- BUILD-SANDBOX-SPIKE-DECISIONS:END -->
