@@ -28,7 +28,7 @@ async def test_version_drift_is_reported(tmp_path: Path) -> None:
     health = await probe_provider("codex", str(executable), "provider-version-1")
     assert health.available is True
     assert health.version == "provider-version-2"
-    assert "differs" in (health.warning or "")
+    assert "usage reporting was verified on provider-version-1" in (health.warning or "")
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
-from app.coding import CodingEnvState
+from app.coding import CodingEnvState, build_capable
 from app.config import Settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
@@ -88,6 +88,7 @@ def create_app(
     templates = Jinja2Templates(directory=APP_ROOT / "templates")
     templates.env.filters["md"] = render_markdown
     templates.env.globals["project_url"] = project_url
+    templates.env.globals["build_capable"] = build_capable
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

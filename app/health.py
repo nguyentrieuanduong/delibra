@@ -127,7 +127,7 @@ async def probe_provider(
     warning = None
     if expected_version not in version:
         warning = (
-            f"{name.title()} CLI version {version} differs from verified "
+            f"{name.title()} CLI {version}: usage reporting was verified on "
             f"{expected_version}"
         )
     return ProviderHealth(name, executable, True, version, warning)
