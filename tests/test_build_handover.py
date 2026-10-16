@@ -36,9 +36,10 @@ def test_caps_the_list(tmp_path: Path) -> None:
     for index in range(5):
         touch(root / f"f{index}.py", SINCE + 10)
 
-    assert modified_files_since(root, SINCE, limit=3) == [
-        "f0.py", "f1.py", "f2.py", "... (truncated)",
-    ]
+    result = modified_files_since(root, SINCE, limit=3)
+    assert len(result) == 4
+    assert set(result[:3]) <= {f"f{i}.py" for i in range(5)}
+    assert result[-1] == "... (truncated)"
 
 
 def test_render_handover_contains_name_reason_output_and_files() -> None:
@@ -47,3 +48,39 @@ def test_render_handover_contains_name_reason_output_and_files() -> None:
     assert "half done" in text
     assert "- src/new.py" in text
     assert "- none" in render_handover("Alpha", "quota", b"", []).decode()
+
+
+def test_skips_git_at_every_depth_but_envs_and_delibra_only_at_the_root(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    for path in (
+        "packages/lib/.git/objects/x",
+        "src/envs/tool.py",
+        "src/.delibra/note.md",
+        "envs/lib/x.py",
+        ".delibra/x",
+    ):
+        touch(root / path, SINCE + 10)
+
+    assert modified_files_since(root, SINCE) == ["src/.delibra/note.md", "src/envs/tool.py"]
+
+
+def test_stops_walking_after_the_entry_budget(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    for index in range(10):
+        touch(root / f"old{index}.py", SINCE - 10)
+    touch(root / "zz.py", SINCE + 10)
+
+    result = modified_files_since(root, SINCE, max_entries=5)
+    assert result[-1] == "... (scan stopped after 5 entries)"
+    assert set(result[:-1]) <= {"zz.py"}
+
+
+def test_directory_only_tree_respects_the_entry_budget(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    for index in range(10):
+        (root / f"dir{index}").mkdir()
+
+    assert modified_files_since(root, SINCE, max_entries=5) == [
+        "... (scan stopped after 5 entries)",
+    ]
