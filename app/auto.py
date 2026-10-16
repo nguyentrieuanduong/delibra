@@ -19,6 +19,7 @@ from app.build_git import commit_turn, git_preflight
 from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, render_handover
 from app.coding import GUIDANCE_MAX_BYTES, CodingPolicyError, build_capable, read_guidance
 from app.config import Settings
+from app.health import probe_build_version
 from app.agents.errors import is_retryable
 from app.models import (
     AUTO_KINDS,
@@ -447,11 +448,13 @@ class AutoManager:
         locks: LockCoordinator,
         settings: Settings,
         runner: RunManager,
+        provider_commands: dict[str, str] | None = None,
     ) -> None:
         self.registry = registry
         self.locks = locks
         self.settings = settings
         self.runner = runner
+        self.provider_commands = dict(provider_commands or {})
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._events: dict[tuple[str, str], _AutoEventState] = {}
         self._quiescing = False
@@ -468,7 +471,6 @@ class AutoManager:
         turn_timeout_seconds: int | None = None,
         context_policy: AutoContextPolicy | None = None,
         kind: str = "discussion",
-        provider_versions: dict[str, str | None] | None = None,
     ) -> AutoRunRecord:
         if self._quiescing:
             raise ConflictError("Auto manager is shutting down")
@@ -502,6 +504,13 @@ class AutoManager:
         # Subprocesses run before any lock is held.
         git_state = await git_preflight(ProjectStore(project).project_path) if kind == "build" else None
         discovered = ProjectStore(project).list_sessions()
+        build_versions = (
+            await self._build_versions(
+                [session.agent for session in discovered if session.id in requested_ids]
+            )
+            if kind == "build"
+            else {}
+        )
         all_session_ids = [session.id for session in discovered]
         async with self.locks.registry_project_sessions(project_id, all_session_ids):
             project = self.registry.get(project_id)
@@ -524,15 +533,14 @@ class AutoManager:
             store.require_auto_inactive()
             if kind not in AUTO_KINDS:
                 raise StorageError("Auto kind is invalid")
+            guidance_bytes = None
             if kind == "build":
                 self._require_build_ready(
                     store,
                     [(by_id[item].name, by_id[item].agent) for item in requested_ids],
-                    provider_versions,
+                    build_versions,
                 )
                 preparation_enabled = False
-            guidance_bytes = None
-            if kind == "build":
                 guidance_files = store.coding_policy().guidance_files
                 if guidance_files:
                     # Under the lock: a concurrent settings save cannot change
@@ -641,11 +649,40 @@ class AutoManager:
         self._tasks[(project_id, auto_id)] = task
         return record
 
+    async def _build_version(self, agent: str) -> str | None:
+        """A fresh probe of the CLI a build turn launches; None if it failed.
+
+        Never the startup health cache: Claude Code updates itself in the
+        background, so a long-running server could otherwise launch a
+        version spikes S1/S2 never verified.
+        """
+
+        executable = self.provider_commands.get(agent)
+        if executable is None:
+            return None
+        return await probe_build_version(agent, executable)
+
+    async def _build_versions(self, agents: Sequence[str]) -> dict[str, str | None]:
+        unique = sorted(set(agents))
+        found = await asyncio.gather(*(self._build_version(agent) for agent in unique))
+        return dict(zip(unique, found))
+
+    async def _build_turn_refusal(self, record: AutoRunRecord) -> str | None:
+        participant = record.participants[record.next_participant]
+        version = await self._build_version(participant.agent)
+        if build_capable(participant.agent, version):
+            return None
+        found = f"CLI {version}" if version is not None else "a failed CLI version probe"
+        return (
+            f"{participant.name} ({participant.agent}): {found} is not verified "
+            "for build runs; re-run the spikes before continuing"
+        )
+
     @staticmethod
     def _require_build_ready(
         store: ProjectStore,
         participants: Sequence[tuple[str, str]],
-        provider_versions: dict[str, str | None] | None,
+        versions: dict[str, str | None],
     ) -> None:
         """Refuse a build run unless every agent's sandbox was spike-verified.
 
@@ -659,13 +696,12 @@ class AutoManager:
             raise StorageError("Coding environment is not ready")
         if first_unsafe_writable_root_character(str(store.project_path)) is not None:
             raise StorageError("project path cannot be expressed in a sandbox rule")
-        versions = provider_versions or {}
         for name, agent in participants:
             version = versions.get(agent)
             if version is None:
                 raise StorageError(
-                    f"{name} ({agent}): CLI version is still being checked or "
-                    "unavailable; retry in a few seconds"
+                    f"{name} ({agent}): CLI version probe failed; check that "
+                    "the CLI runs, then retry"
                 )
             if not build_capable(agent, version):
                 raise StorageError(
@@ -679,7 +715,6 @@ class AutoManager:
         *,
         max_cycles: int,
         turn_timeout_seconds: int,
-        provider_versions: dict[str, str | None] | None = None,
     ) -> AutoRunRecord:
         """Return a terminal Auto run to its parked cursor and drive it again."""
 
@@ -711,6 +746,14 @@ class AutoManager:
                 # record; resume validates that record below.
                 pass
 
+        pending = self.get(project_id, auto_id)
+        build_versions = (
+            await self._build_versions(
+                [participant.agent for participant in pending.participants]
+            )
+            if pending.kind == "build"
+            else {}
+        )
         project = self.registry.get(project_id)
         discovered = ProjectStore(project).list_sessions()
         all_session_ids = [session.id for session in discovered]
@@ -772,7 +815,7 @@ class AutoManager:
                 self._require_build_ready(
                     store,
                     [(participant.name, by_id[participant.session_id].agent) for participant in record.participants],
-                    provider_versions,
+                    build_versions,
                 )
 
             # Re-verify every artifact the next turn will read. _discussion_context
@@ -1839,6 +1882,13 @@ class AutoManager:
 
         project = self.registry.get(record.project_id)
         store = ProjectStore(project)
+        if record.kind == "build":
+            refusal = await self._build_turn_refusal(record)
+            if refusal is not None:
+                await self._transition_terminal(
+                    record.project_id, record.id, "error", refusal
+                )
+                return "done"
         if record.kind == "build":
             # Build turns add guidance/handover sections, so a frozen
             # compaction rendering made without them is never reused.

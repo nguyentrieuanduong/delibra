@@ -4544,6 +4544,16 @@ def enable_build(store: ProjectStore, monkeypatch: pytest.MonkeyPatch) -> None:
     store.set_coding_enabled(True)
     store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
     monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
+    monkeypatch.setattr(AutoManager, "_build_version", fake_build_version(lambda agent: "1"))
+
+
+def fake_build_version(answer):
+    """Stand-in for AutoManager._build_version: no CLI is ever launched."""
+
+    async def probe(self, agent: str) -> str | None:
+        return answer(agent)
+
+    return probe
 
 
 async def start_build(
@@ -4553,7 +4563,6 @@ async def start_build(
     *,
     policy: str = "first_agree",
     max_cycles: int = 2,
-    provider_versions: dict[str, str | None] | None = None,
     preparation_enabled: bool = False,
 ):
     return await manager.create(
@@ -4564,7 +4573,6 @@ async def start_build(
         max_cycles=max_cycles,
         preparation_enabled=preparation_enabled,
         kind="build",
-        provider_versions={"fake": "1"} if provider_versions is None else provider_versions,
     )
 
 
@@ -4602,13 +4610,52 @@ async def test_build_rejects_an_unverified_provider(tmp_path, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_build_explains_a_cli_version_still_being_checked(tmp_path, monkeypatch) -> None:
+async def test_build_refuses_when_the_version_probe_fails(tmp_path, monkeypatch) -> None:
     manager, _factory, project_id, session_ids, store = auto_manager_fixture(
         tmp_path, [PlannedOutput("unused")]
     )
     enable_build(store, monkeypatch)
-    with pytest.raises(StorageError, match="CLI version is still being checked"):
-        await start_build(manager, project_id, session_ids, provider_versions={})
+    monkeypatch.setattr(AutoManager, "_build_version", fake_build_version(lambda agent: None))
+    with pytest.raises(StorageError, match="CLI version probe failed"):
+        await start_build(manager, project_id, session_ids)
+
+
+@pytest.mark.asyncio
+async def test_a_cli_changed_mid_run_stops_the_build_before_its_next_turn(
+    tmp_path, monkeypatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A builds", "continue"), PlannedOutput("must not run")]
+    )
+    enable_build(store, monkeypatch)
+    answers = iter(["1", "1", "2"])  # create, turn 1, turn 2
+    monkeypatch.setattr(
+        AutoManager, "_build_version", fake_build_version(lambda agent: next(answers, "2"))
+    )
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "error"
+    assert "Agent 2 (fake): CLI 2 is not verified for build runs" in terminal.terminal_reason
+    assert factory.created == 1
+
+
+@pytest.mark.asyncio
+async def test_build_resume_reprobes_the_cli(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue")]
+    )
+    enable_build(store, monkeypatch)
+    created = await start_build(manager, project_id, session_ids, max_cycles=1)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    monkeypatch.setattr(AutoManager, "_build_version", fake_build_version(lambda agent: "2"))
+    with pytest.raises(StorageError, match=r"is not verified for build runs \(CLI 2\)"):
+        await manager.resume(
+            project_id, created.id, max_cycles=2,
+            turn_timeout_seconds=manager.settings.run_timeout,
+        )
 
 
 @pytest.mark.asyncio
@@ -4752,7 +4799,6 @@ async def test_all_unavailable_pauses_resumably(tmp_path, monkeypatch) -> None:
         created.id,
         max_cycles=2,
         turn_timeout_seconds=manager.settings.run_timeout,
-        provider_versions={"fake": "1"},
     )
     terminal = await wait_for_auto_terminal(manager, project_id, created.id)
 

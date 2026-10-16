@@ -133,6 +133,18 @@ async def probe_provider(
     return ProviderHealth(name, executable, True, version, warning)
 
 
+async def probe_build_version(name: str, executable: str) -> str | None:
+    """The exact version string for build admission; None unless the probe succeeded.
+
+    Shares probe_provider's parsing so the string compared with
+    BUILD_VERIFIED_VERSIONS is the one the health banner shows. No usage
+    expectation applies here, hence the empty expected version.
+    """
+
+    health = await probe_provider(name, executable, expected_version="")
+    return health.version if health.available else None
+
+
 async def probe_all(commands: dict[str, str]) -> list[ProviderHealth]:
     # The newest version each provider has been verified against. A mismatch
     # stays a warning: rate-limit and usage fields are feature-detected, never

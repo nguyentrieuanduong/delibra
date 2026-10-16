@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings
-from app.health import probe_provider
+from app.health import probe_build_version, probe_provider
 from app.main import create_app
 
 
@@ -79,3 +79,16 @@ async def test_hung_health_probe_never_blocks_startup_and_is_reaped_on_shutdown(
         for context in unhandled
         if "never retrieved" in str(context.get("message", "")).lower()
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("exit_code", "expected"), [(0, "codex-cli 0.162.1"), (1, None)])
+async def test_build_version_requires_a_successful_probe(
+    tmp_path: Path, exit_code: int, expected: str | None
+) -> None:
+    executable = tmp_path / "provider"
+    executable.write_text(
+        f"#!/bin/sh\necho codex-cli 0.162.1\nexit {exit_code}\n", encoding="utf-8"
+    )
+    executable.chmod(0o700)
+    assert await probe_build_version("codex", str(executable)) == expected

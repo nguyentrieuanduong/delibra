@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
+from app.auto import AutoManager
 from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
 from app.models import AutoBuildGit, AutoHandover
 from app.config import Settings
@@ -2057,12 +2058,15 @@ LOCAL = ("127.0.0.1", 5000)
 LAN = ("192.168.1.20", 5000)
 
 
+async def _verified_fake_version(self, agent: str) -> str | None:
+    return "1"
+
+
 def build_ready(store: ProjectStore, monkeypatch: pytest.MonkeyPatch) -> None:
     store.set_coding_enabled(True)
     store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
     monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
-    # app.state.health is filled by a background probe; pin the versions.
-    monkeypatch.setattr("app.routes.auto._provider_versions", lambda request: {"fake": "1"})
+    monkeypatch.setattr(AutoManager, "_build_version", _verified_fake_version)
 
 
 def build_form(session_ids: list[str], *, kind: str = "build") -> dict:
@@ -2202,7 +2206,7 @@ def test_build_acceptance_enable_handover_commit_and_lan_guard(tmp_path: Path, m
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setattr("app.routes.projects.private_resolution_warnings", lambda hosts: [])
     monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
-    monkeypatch.setattr("app.routes.auto._provider_versions", lambda request: {"fake": "1"})
+    monkeypatch.setattr(AutoManager, "_build_version", _verified_fake_version)
     app, _settings, project, store, sessions, _factory = auto_route_app(
         tmp_path, outputs=["QUOTA", "WRITE Built it.\nConverged"]
     )
@@ -2257,3 +2261,13 @@ def test_build_acceptance_enable_handover_commit_and_lan_guard(tmp_path: Path, m
         check=True, capture_output=True, text=True,
     ).stdout.split()
     assert committed == ["built.txt"]
+
+
+def test_app_gives_the_auto_manager_the_cli_commands(tmp_path: Path) -> None:
+    commands = {"claude": "/opt/x/claude", "codex": "/opt/x/codex"}
+    app = create_app(
+        settings_override=Settings(home=tmp_path / "home"),
+        provider_commands=commands,
+    )
+    with TestClient(app, base_url="http://localhost"):
+        assert app.state.auto_manager.provider_commands == commands
