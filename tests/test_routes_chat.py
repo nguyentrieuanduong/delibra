@@ -720,6 +720,29 @@ def test_chat_topic_header_omits_provider_app_versions(
     assert ".topic-health" not in stylesheet.text
 
 
+
+@pytest.mark.parametrize("available", [True, False])
+def test_footer_marks_only_an_available_build_verified_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, available: bool
+) -> None:
+    provider_health = [
+        ProviderHealth("claude", "claude", available, "2.1.296 (Claude Code)", None),
+    ]
+
+    async def deterministic_probe_all(_commands: dict[str, str]) -> list[ProviderHealth]:
+        return provider_health
+
+    monkeypatch.setattr("app.main.probe_all", deterministic_probe_all)
+    alpha = session("a" * 32, "Alpha", agent="claude")
+    app, project, _ = setup_project(tmp_path, [alpha])
+    with TestClient(app, base_url="http://localhost") as client:
+        app.state.health = provider_health
+        response = client.get(f"/projects/{project.name}/chat")
+
+    footer = response.text.split("<footer>", 1)[1].split("</footer>", 1)[0]
+    marker = "· verified for build runs"
+    assert (marker in footer) is available
+
 def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> None:
     alpha = session("a" * 32, "Alpha", agent="claude")
     beta = session("b" * 32, "Beta", agent="codex")
