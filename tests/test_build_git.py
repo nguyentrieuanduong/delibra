@@ -306,28 +306,70 @@ async def test_commit_turn_works_when_gitignore_already_ignores_the_excluded_dir
     assert git(root, "status", "--porcelain") == ""
 
 
+BLOCK_START = "# >>> Delibra coding mode"
+
+
 @pytest.mark.asyncio
-async def test_local_excludes_ignore_delibra_dirs_only_at_the_project_root(tmp_path) -> None:
+async def test_local_excludes_add_the_default_ignore_list_once(tmp_path) -> None:
     root = make_repo(tmp_path)
-    for path in (".delibra/run.json", "envs/bin/python", "src/envs/tool.py"):
+    for path in (".delibra/run.json", "envs/bin/python", "__pycache__/m.cpython-312.pyc",
+                 "node_modules/a/index.js", ".DS_Store", ".vscode/extensions.json",
+                 ".vscode/settings.json", "src/app.py"):
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text("x\n")
 
-    assert await ensure_local_excludes(root) == ["/.delibra/", "/envs/"]
-    assert await ensure_local_excludes(root) == []
+    first = await ensure_local_excludes(root)
+    second = await ensure_local_excludes(root)
+
     exclude = (root / ".git" / "info" / "exclude").read_text()
-    assert exclude.count("/.delibra/\n") == 1
-    assert exclude.count("/envs/\n") == 1
-    assert git(root, "status", "--porcelain", "--untracked-files=all") == "?? src/envs/tool.py"
+    assert exclude.count(BLOCK_START) == 1
+    assert first == second and "/.delibra/" in first and "__pycache__/" in first
+    assert sorted(git(root, "status", "--porcelain", "--untracked-files=all").splitlines()) == [
+        "?? .vscode/extensions.json", "?? src/app.py",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_local_excludes_are_anchored_to_a_project_below_the_repo_root(tmp_path) -> None:
+async def test_local_excludes_replace_only_their_own_block(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.write_text(
+        "mine-before\n# >>> Delibra coding mode\nstale-pattern\n# <<< Delibra coding mode\nmine-after\n"
+    )
+
+    await ensure_local_excludes(root)
+
+    text = exclude.read_text()
+    assert text.startswith("mine-before\n# >>> Delibra coding mode:")
+    assert text.endswith("# <<< Delibra coding mode\nmine-after\n")
+    assert "stale-pattern" not in text and "__pycache__/" in text
+
+
+@pytest.mark.asyncio
+async def test_local_excludes_are_confined_to_a_project_below_the_repo_root(tmp_path) -> None:
     repo = make_repo(tmp_path)
     root = repo / "apps" / "site"
-    root.mkdir(parents=True)
+    for path in ("apps/site/__pycache__/m.pyc", "apps/site/src/__pycache__/n.pyc",
+                 "apps/site/.vscode/extensions.json", "apps/other/__pycache__/o.pyc"):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("x\n")
 
-    assert await ensure_local_excludes(root) == ["/apps/site/.delibra/", "/apps/site/envs/"]
+    lines = await ensure_local_excludes(root)
+
+    assert "/apps/site/.delibra/" in lines
+    assert "/apps/site/**/__pycache__/" in lines
+    assert "!/apps/site/.vscode/extensions.json" in lines
+    assert sorted(git(repo, "status", "--porcelain", "--untracked-files=all").splitlines()) == [
+        "?? apps/other/__pycache__/o.pyc", "?? apps/site/.vscode/extensions.json",
+    ]
+
+
+def test_the_default_ignore_list_is_delibras_own_copy() -> None:
+    from app.build_git import DEFAULT_EXCLUDE_TEMPLATE
+    assert DEFAULT_EXCLUDE_TEMPLATE.name == "build_git_exclude.txt"
+    assert DEFAULT_EXCLUDE_TEMPLATE.parent.name == "app"
+    assert "__pycache__/" in DEFAULT_EXCLUDE_TEMPLATE.read_text(encoding="utf-8").splitlines()
+
 
 
 @pytest.mark.asyncio

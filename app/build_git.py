@@ -108,15 +108,38 @@ async def git_preflight(root: Path) -> AutoBuildGit:
 
 
 LOCAL_EXCLUDES = (".delibra/", "envs/")
+# Delibra's own copy of the user's default ignore template (taken from the
+# repository's .gitignore at f9c1946). Never read a project's .gitignore.
+DEFAULT_EXCLUDE_TEMPLATE = Path(__file__).with_name("build_git_exclude.txt")
+_BLOCK_START = "# >>> Delibra coding mode: default ignores, local to this clone (managed)"
+_BLOCK_END = "# <<< Delibra coding mode"
+
+
+def _scoped(pattern: str, prefix: str) -> str:
+    """Confine one template pattern to the project at `prefix` ("" at the repo root)."""
+
+    if not prefix or not pattern.strip() or pattern.startswith("#"):
+        return pattern
+    negated = pattern.startswith("!")
+    body = pattern[1:] if negated else pattern
+    if body.startswith("/"):
+        scoped = f"/{prefix}{body[1:]}"
+    elif body.startswith("**/") or "/" in body.rstrip("/"):
+        scoped = f"/{prefix}{body}"
+    else:
+        scoped = f"/{prefix}**/{body}"
+    return ("!" if negated else "") + scoped
 
 
 async def ensure_local_excludes(root: Path) -> list[str]:
-    """Ignore Delibra's own directories in this clone only.
+    """Write Delibra's managed ignore block into this clone's `.git/info/exclude`.
 
-    Writes `.git/info/exclude`, never `.gitignore`: editing a tracked file
-    would dirty the tree and turn build commits off. Anchored to the project
-    root, because a nested `envs` or `.delibra` is the user's code. Returns
-    the lines added; none when the project is not in a Git repository.
+    Never `.gitignore`: editing a tracked file would dirty the tree and turn
+    build commits off. The block holds Delibra's own directories, anchored
+    to the project root, then the default ignore template, confined to the
+    project. It replaces the previous block, so template changes reach
+    existing projects; lines outside it are the user's. Returns the block's
+    patterns; none when the project is not in a Git repository.
     """
 
     code, top = await _git(root, "rev-parse", "--show-toplevel")
@@ -134,20 +157,23 @@ async def ensure_local_excludes(root: Path) -> list[str]:
     prefix = "" if relative == "." else f"{relative}/"
     if any(character in prefix for character in "*?[]\\!#"):
         return []  # would be read as a pattern, not a path
-    wanted = [f"/{prefix}{name}" for name in LOCAL_EXCLUDES]
+    template = DEFAULT_EXCLUDE_TEMPLATE.read_text(encoding="utf-8").splitlines()
+    body = [f"/{prefix}{name}" for name in LOCAL_EXCLUDES] + [
+        _scoped(line.rstrip(), prefix) for line in template
+    ]
+    block = [_BLOCK_START, *body, _BLOCK_END]
     path = Path(exclude)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    missing = [line for line in wanted if line not in text.splitlines()]
-    if missing:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        separator = "" if not text or text.endswith("\n") else "\n"
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                separator
-                + "# Delibra coding mode (local to this clone)\n"
-                + "".join(f"{line}\n" for line in missing)
-            )
-    return missing
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    starts = [i for i, line in enumerate(lines) if line.startswith("# >>> Delibra coding mode")]
+    ends = [i for i, line in enumerate(lines) if line == _BLOCK_END]
+    if starts and ends and ends[0] > starts[0]:
+        lines[starts[0] : ends[0] + 1] = block
+    else:
+        lines.extend(block)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return [line for line in body if line.strip() and not line.startswith("#")]
+
 
 
 async def commit_turn(

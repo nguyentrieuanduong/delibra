@@ -607,9 +607,16 @@ Known limits:
   arrives during a commit waits for its 60-second budget plus up to three
   seconds of subprocess cleanup. A slower commit is abandoned and turns
   commits off for the run.
-- Enabling coding in a Git repository adds `/.delibra/` and `/envs/` to
-  `.git/info/exclude` (local to the clone, never committed). Delibra never
-  edits `.gitignore`; add the same lines there to share them.
+- Enabling coding in a Git repository writes Delibra's default ignore list to
+  `.git/info/exclude` (local to the clone, never committed): `/.delibra/`,
+  `/envs/`, then the patterns in `app/build_git_exclude.txt` (common build,
+  cache, editor and OS files). The list lives between `# >>> Delibra coding mode`
+  and `# <<< Delibra coding mode` markers and is rewritten on every Coding save;
+  lines outside the markers are left alone. For a project below the repository
+  root, the patterns are confined to the project. Ignored files are never
+  committed by build turns, and `git status` hides them in that clone too; this
+  includes directories such as `lib/`, `build/`, `dist`, `out` and `tmp/` at any
+  depth. Delibra never edits `.gitignore`.
 
 ## Isolation and security boundary
 
