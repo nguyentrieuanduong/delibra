@@ -15,6 +15,7 @@ from typing import AsyncIterator, Literal, Sequence, TYPE_CHECKING
 import unicodedata
 from uuid import uuid4
 
+from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, render_handover
 from app.coding import build_capable
 from app.config import Settings
 from app.agents.errors import is_retryable
@@ -48,6 +49,7 @@ from app.storage import (
     AutoMigrationStatus,
     ConflictError,
     LockCoordinator,
+    NotFoundError,
     OwnershipError,
     ProjectStore,
     RegistryStore,
@@ -1814,11 +1816,16 @@ class AutoManager:
 
         project = self.registry.get(record.project_id)
         store = ProjectStore(project)
-        context = (
-            frozen_context
-            if frozen_context is not None
-            else self._discussion_context(store, record)
-        )
+        if record.kind == "build":
+            # Build turns add guidance/handover sections, so a frozen
+            # compaction rendering made without them is never reused.
+            context = self._build_turn_context(store, record)
+        else:
+            context = (
+                frozen_context
+                if frozen_context is not None
+                else self._discussion_context(store, record)
+            )
         context_source, context_digest = store.write_auto_context(record.id, context)
         participant = record.participants[record.next_participant]
         key = None
@@ -1942,7 +1949,12 @@ class AutoManager:
         self,
         store: ProjectStore,
         record: AutoRunRecord,
+        *,
+        reserve: int = 0,
     ) -> bytes:
+        limit = self.settings.stateless_history_limit - reserve
+        if limit <= 0:
+            raise StorageError("build context sections leave no room for the discussion")
         material = self._context_material(store, record)
         topic = material.topic
         preparations = material.preparations
@@ -1957,7 +1969,7 @@ class AutoManager:
             discussion_entries=[],
             summary=summary,
         )
-        if len(mandatory) > self.settings.stateless_history_limit:
+        if len(mandatory) > limit:
             raise StorageError("mandatory Auto discussion material exceeds context limit")
         pool: list[tuple[str, ContextEntry]] = [
             *(('baseline', entry) for entry in baseline_entries),
@@ -1978,7 +1990,7 @@ class AutoManager:
                 discussion_entries=candidate_discussion,
                 summary=summary,
             )
-            if len(rendered) <= self.settings.stateless_history_limit:
+            if len(rendered) <= limit:
                 selected.append((kind, entry))
             elif entry is newest_discussion:
                 raise StorageError("newest Auto discussion entry exceeds context limit")
@@ -2403,6 +2415,8 @@ class AutoManager:
     ) -> None:
         failed = record.participants[record.next_participant]
         failed_cycle = record.current_cycle
+        started_epoch = self._failed_round_epoch(store, failed.session_id, round_n)
+        discussion_len = len(record.discussion)
         record.unavailable.append(
             AutoUnavailable(failed.session_id, reason, round_n, utc_now())
         )
@@ -2411,7 +2425,10 @@ class AutoManager:
         available = self._available_positions(record)
         if not available:
             record.handovers.append(
-                AutoHandover(failed.session_id, None, reason, failed_cycle, round_n)
+                AutoHandover(
+                        failed.session_id, None, reason, failed_cycle, round_n,
+                        started_epoch=started_epoch, discussion_len=discussion_len,
+                    )
             )
             reasons = ", ".join(sorted({item.reason for item in record.unavailable}))
             # Cursor stays on the failed participant: the resume cursor for
@@ -2436,7 +2453,10 @@ class AutoManager:
             self._end_build_cycle_locked(store, record, available)
             if record.status not in ACTIVE_AUTO_STATUSES:
                 record.handovers.append(
-                    AutoHandover(failed.session_id, None, reason, failed_cycle, round_n)
+                    AutoHandover(
+                        failed.session_id, None, reason, failed_cycle, round_n,
+                        started_epoch=started_epoch, discussion_len=discussion_len,
+                    )
                 )
                 store.save_auto_run(record)
                 return
@@ -2448,6 +2468,8 @@ class AutoManager:
                 reason,
                 failed_cycle,
                 round_n,
+                started_epoch=started_epoch,
+                discussion_len=discussion_len,
             )
         )
         record.next_participant = target
@@ -2494,6 +2516,58 @@ class AutoManager:
             record.current_cycle += 1
             record.next_participant = available[0]
             store.save_auto_run(record)
+
+    @staticmethod
+    def _failed_round_epoch(store: ProjectStore, session_id: str, round_n: int | None) -> float | None:
+        if round_n is None:
+            return None  # pre-turn handover: no turn ran
+        for item in store.load_session(session_id).rounds:
+            if item.n == round_n:
+                return datetime.fromisoformat(item.started_at.replace("Z", "+00:00")).timestamp()
+        # Never substitute "now": that would hide edits made during the turn.
+        raise StorageError("failed build round is missing from its session")
+
+    def _handover_section(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
+        if not record.handovers:
+            return b""
+        latest = record.handovers[-1]
+        target = record.participants[record.next_participant].session_id
+        # Only the turn that inherits the step. Once anyone has spoken
+        # since the handover, it is history the transcript already holds.
+        if latest.to_session_id != target or len(record.discussion) != latest.discussion_len:
+            return b""
+        names = {participant.session_id: participant.name for participant in record.participants}
+        partial = b""
+        if latest.round_n is not None:
+            try:
+                partial = store.load_round_artifact(
+                    latest.from_session_id, latest.round_n, "output",
+                    self.settings.captured_output_limit,
+                )
+            except NotFoundError:
+                partial = b""
+        files = (
+            modified_files_since(store.project_path, latest.started_epoch)
+            if latest.started_epoch is not None
+            else []
+        )
+        return _untrusted_section(
+            "Handover",
+            render_handover(
+                names.get(latest.from_session_id, "The previous agent"),
+                latest.reason,
+                partial[-HANDOVER_PARTIAL_LIMIT:],
+                files,
+            ),
+        )
+
+    def _build_turn_context(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
+        """Build-only wrapper; the discussion renderer itself is untouched."""
+
+        before = b""  # Task 18 puts the guidance section here.
+        after = self._handover_section(store, record)
+        body = self._discussion_context(store, record, reserve=len(before) + len(after))
+        return before + body + after
 
     async def _transition_terminal(
         self,

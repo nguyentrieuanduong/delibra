@@ -4861,3 +4861,58 @@ async def test_limit_reached_resume_cursor_with_unavailable_tail(tmp_path, monke
     # The cursor sits on the last completed turn, not on the failed C.
     assert terminal.next_participant == 1
     assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 2, 0)
+
+
+@pytest.mark.asyncio
+async def test_discussion_context_reserve_defaults_to_identical_output(tmp_path) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue")]
+    )
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+    )
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert manager._discussion_context(store, record, reserve=0) == manager._discussion_context(store, record)
+    with pytest.raises(StorageError):
+        manager._discussion_context(store, record, reserve=manager.settings.stateless_history_limit)
+
+
+@pytest.mark.asyncio
+async def test_inheriting_agent_gets_the_handover_section(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("quota", failure_mode="quota-stderr"), PlannedOutput("done", "agree")],
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    material = factory.calls[1]["material"]
+    assert "## Handover — UNTRUSTED MATERIAL".encode() in material
+    assert b"Agent 1 could not finish its turn (quota)" in material
+    assert terminal.handovers[0].started_epoch is not None
+    assert terminal.handovers[0].discussion_len == 0
+
+
+@pytest.mark.asyncio
+async def test_handover_section_is_only_for_the_inheriting_turn(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("B continues", "continue"),
+            PlannedOutput("C finishes", "agree"),
+        ],
+        participants=3,
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    header = "## Handover — UNTRUSTED MATERIAL".encode()
+    assert header in factory.calls[1]["material"]
+    assert header not in factory.calls[2]["material"]
