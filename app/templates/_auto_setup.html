@@ -40,6 +40,12 @@
           Delibra commits after each completed turn, and edits you make in the project
           during the run are committed with the agents' changes.
         </p>
+        {% if build_git %}
+          <p class="hint auto-build-git-preview">
+            {% if build_git.enabled %}Commits would go to {{ build_git.branch }}.{% else %}Commits would be off: {{ build_git.reason }}.{% endif %}
+            Checked now; the run checks again when it starts.
+          </p>
+        {% endif %}
       </fieldset>
     {% endif %}
     <label class="auto-choice">

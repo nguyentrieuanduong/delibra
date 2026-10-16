@@ -18,6 +18,7 @@ from app.auto import (
     TERMINAL_AUTO_STATUSES,
     reconstruct_resume_cursor,
 )
+from app.build_git import git_preflight
 from app.models import (
     AutoContextPolicy,
     AutoRunRecord,
@@ -484,12 +485,30 @@ def auto_setup_context(request: Request, project_id: str) -> dict:
     )
 
 
+async def with_build_git_preview(context: dict, store: ProjectStore) -> dict:
+    """D§5: the setup form shows why commits would be off.
+
+    Only with the Build choice, and only when the dialog renders, never on
+    status refreshes. A preview: the run records its own preflight when it
+    starts, and the status box shows that one.
+    """
+
+    context["build_git"] = (
+        await git_preflight(store.project_path) if context["build_available"] else None
+    )
+    return context
+
+
 @router.get("/projects/{project_id}/auto/setup", response_class=HTMLResponse)
 async def auto_setup(request: Request, project_id: str) -> HTMLResponse:
+    project = request_project(request, project_id)
+    context = await with_build_git_preview(
+        auto_setup_context(request, project_id), ProjectStore(project)
+    )
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="_auto_setup.html",
-        context=auto_setup_context(request, project_id),
+        context=context,
     )
 
 
