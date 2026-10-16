@@ -5132,3 +5132,32 @@ async def test_empty_final_cycle_ends_limit_reached_and_stays_resumable(
     assert [(turn.cycle, turn.position) for turn in terminal.discussion] == [
         (1, 0), (1, 1), (3, 0),
     ]
+
+
+@pytest.mark.asyncio
+async def test_first_build_tools_probe_runs_before_the_session_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Done", "agree"), PlannedOutput("Agreed", "agree")]
+    )
+    enable_build(store, monkeypatch)
+    original = manager.runner.developer_tools
+    checked = False
+
+    async def checking_probe() -> Path | None:
+        nonlocal checked
+        if not checked:
+            checked = True
+            async with asyncio.timeout(0.5):
+                async with manager.locks.registry_project_sessions(
+                    project_id, [session_ids[0]]
+                ):
+                    pass
+        return await original()
+
+    monkeypatch.setattr(manager.runner, "developer_tools", checking_probe)
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status == "converged"
+    assert checked

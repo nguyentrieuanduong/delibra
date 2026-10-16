@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import sys
 import time
 from typing import Callable
@@ -2113,3 +2114,42 @@ async def test_build_flag_must_match_the_run_kind(tmp_path, kind, build) -> None
     ready_build_project(store)
     with pytest.raises(StorageError):
         await run_auto_turn(manager, project_id, session_id, store, kind=kind, build=build)
+
+
+@pytest.mark.asyncio
+async def test_build_turn_discards_the_previous_temp_dir_off_the_event_loop(
+    tmp_path, monkeypatch
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=[])
+    ready_build_project(store)
+    stale = manager.settings.build_tmp_root / session_id
+    stale.mkdir(parents=True)
+    (stale / "left-over").write_text("from a previous turn\n")
+    removed: list[Path] = []
+    original = shutil.rmtree
+
+    def recording(path, *args, **kwargs):
+        removed.append(Path(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr("app.runner.shutil.rmtree", recording)
+    await run_auto_turn(manager, project_id, session_id, store, kind="build", build=True)
+    await asyncio.gather(*manager._discard_tasks)
+
+    assert any(path.name.startswith(".discard-") for path in removed)
+    assert not any(
+        path.name.startswith(".discard-") for path in manager.settings.build_tmp_root.iterdir()
+    )
+
+
+@pytest.mark.asyncio
+async def test_developer_tools_dir_is_cached_between_build_turns(tmp_path, monkeypatch) -> None:
+    manager, _project_id, _session_id, _store = setup_manager(tmp_path, contexts=[])
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.runner.developer_tools_dir", lambda environ: calls.append(environ) or None
+    )
+
+    assert await manager.developer_tools() is None
+    assert await manager.developer_tools() is None
+    assert len(calls) == 1
