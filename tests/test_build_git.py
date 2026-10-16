@@ -58,6 +58,8 @@ async def test_preflight_on_a_clean_repo(tmp_path) -> None:
         (lambda root: (root / "dirty.py").write_text("x"), "working tree has uncommitted changes"),
         (lambda root: git(root, "checkout", "-q", "--detach"), "HEAD is detached"),
         (lambda root: (root / ".git" / "MERGE_HEAD").write_text("0" * 40 + "\n"), "merge, rebase"),
+        (lambda root: (root / ".git" / "REVERT_HEAD").write_text("0" * 40 + "\n"), "revert"),
+        (lambda root: (root / ".git" / "sequencer").mkdir(), "revert"),
         (lambda root: git(root, "config", "--unset", "user.email"), "git user.email is not configured"),
         (
             lambda root: ((root / ".delibra").mkdir(), (root / ".delibra" / "x").write_text("x"),

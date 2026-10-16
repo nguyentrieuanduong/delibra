@@ -172,3 +172,10 @@ def test_developer_tools_dir_reports_an_existing_directory(tmp_path: Path) -> No
 def test_developer_tools_dir_is_none_without_xcode_select(tmp_path: Path) -> None:
     (tmp_path / "bin").mkdir()
     assert developer_tools_dir(environ(tmp_path / "bin")) is None
+
+
+def test_error_tail_is_bounded_in_bytes() -> None:
+    from app.coding_env import STDERR_TAIL_BYTES, _error
+
+    state = _error("é" * STDERR_TAIL_BYTES, created=False)
+    assert len((state.error or "").encode("utf-8")) <= STDERR_TAIL_BYTES

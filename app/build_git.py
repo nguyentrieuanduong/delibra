@@ -82,9 +82,14 @@ async def git_preflight(root: Path) -> AutoBuildGit:
     if code != 0:
         return _off("HEAD is detached")
     code, git_dir = await _git(root, "rev-parse", "--absolute-git-dir")
-    busy = ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply")
+    if code != 0:
+        return _off("could not locate the Git directory")
+    busy = (
+        "MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+        "BISECT_LOG", "rebase-merge", "rebase-apply", "sequencer",
+    )
     if any((Path(git_dir) / name).exists() for name in busy):
-        return _off("a merge, rebase, cherry-pick or bisect is in progress")
+        return _off("a merge, rebase, cherry-pick, revert or bisect is in progress")
     code, status = await _git(root, "status", "--porcelain", *PATHSPEC)
     if code != 0 or status:
         return _off("working tree has uncommitted changes")

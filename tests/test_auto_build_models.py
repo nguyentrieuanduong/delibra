@@ -75,3 +75,13 @@ def test_pre_turn_handover_has_no_round_or_target() -> None:
 def test_unknown_kind_is_rejected() -> None:
     with pytest.raises(ValueError):
         AutoRunRecord.from_dict(dict(BASE, kind="other"))
+
+
+@pytest.mark.parametrize("value", ["1.5", True])
+def test_handover_epoch_must_be_a_number(value) -> None:
+    data = {
+        "from_session_id": "a" * 32, "to_session_id": None, "reason": "quota",
+        "cycle": 1, "round_n": None, "started_epoch": value,
+    }
+    with pytest.raises(TypeError):
+        AutoHandover.from_dict(data)

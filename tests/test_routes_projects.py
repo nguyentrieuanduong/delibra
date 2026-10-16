@@ -1546,3 +1546,10 @@ def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
     policy = ProjectStore(project).coding_policy()
     assert policy.network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
     assert policy.enabled is False
+
+
+def test_code_craft_preset_button_follows_the_auto_disable(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings").text
+    assert 'name="guidance_preset" value="code-craft" data-disable-during-auto' in page

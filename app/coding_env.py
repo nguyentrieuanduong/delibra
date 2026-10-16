@@ -49,7 +49,7 @@ async def _python_version(python: Path, environ: dict[str, str]) -> str | None:
 def _error(message: str, *, created: bool) -> CodingEnvState:
     return CodingEnvState(
         status="error",
-        error=message[-STDERR_TAIL_BYTES:],
+        error=message.encode("utf-8")[-STDERR_TAIL_BYTES:].decode("utf-8", "ignore"),
         created_by_delibra=created,
         updated_at=utc_now(),
     )
