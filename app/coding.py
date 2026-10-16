@@ -80,6 +80,35 @@ def normalize_guidance_paths(values: object) -> list[str]:
     return paths
 
 
+GIT_EXCLUDE_MAX_LINES = 2_000
+GIT_EXCLUDE_MAX_BYTES = 65_536
+# Delibra's managed-block markers in .git/info/exclude (app/build_git.py).
+GIT_EXCLUDE_RESERVED = ("# >>> Delibra coding mode", "# <<< Delibra coding mode")
+
+
+def normalize_git_exclude(values: object) -> list[str]:
+    """A project's own ignore list for `.git/info/exclude`, kept verbatim.
+
+    Git reads one pattern per line, so any text but a control character is
+    a valid line. Delibra's block markers are refused: they delimit the
+    block these lines are written into.
+    """
+
+    if not isinstance(values, list) or any(type(item) is not str for item in values):
+        raise CodingPolicyError("git ignore list must be a list of lines")
+    if len(values) > GIT_EXCLUDE_MAX_LINES:
+        raise CodingPolicyError(f"git ignore list must have at most {GIT_EXCLUDE_MAX_LINES} lines")
+    if sum(len(line.encode("utf-8")) + 1 for line in values) > GIT_EXCLUDE_MAX_BYTES:
+        raise CodingPolicyError(f"git ignore list must be at most {GIT_EXCLUDE_MAX_BYTES} bytes")
+    for line in values:
+        if any((ord(character) < 32 and character != "\t") or ord(character) == 127 for character in line):
+            raise CodingPolicyError(f"git ignore line {line!r} contains a control character")
+        if line.startswith(GIT_EXCLUDE_RESERVED):
+            raise CodingPolicyError(f"git ignore line {line!r} is reserved for Delibra")
+    return list(values)
+
+
+
 def read_guidance(paths: list[str]) -> bytes:
     """Read a bounded snapshot from regular files at run creation."""
 
@@ -224,6 +253,8 @@ class CodingPolicy:
     env: CodingEnvState = field(default_factory=CodingEnvState)
     network_warnings: list[str] = field(default_factory=list)
     guidance_files: list[str] = field(default_factory=list)
+    # None follows Delibra's default list (app/build_git_exclude.txt).
+    git_exclude: list[str] | None = None
 
     @classmethod
     def from_manifest(cls, manifest: dict[str, Any]) -> "CodingPolicy":
@@ -252,6 +283,11 @@ class CodingPolicy:
             env=CodingEnvState.from_dict(data.get("env", {})),
             network_warnings=list(warnings),
             guidance_files=list(guidance),
+            git_exclude=(
+                None
+                if data.get("git_exclude") is None
+                else normalize_git_exclude(data["git_exclude"])
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -261,6 +297,7 @@ class CodingPolicy:
             "env": self.env.to_dict(),
             "network_warnings": list(self.network_warnings),
             "guidance_files": list(self.guidance_files),
+            "git_exclude": None if self.git_exclude is None else list(self.git_exclude),
         }
 
 

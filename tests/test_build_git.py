@@ -379,3 +379,13 @@ async def test_local_excludes_skip_a_project_outside_git(tmp_path) -> None:
 
     assert await ensure_local_excludes(root) == []
     assert not (root / ".git").exists()
+
+
+@pytest.mark.asyncio
+async def test_local_excludes_write_a_projects_own_list(tmp_path) -> None:
+    root = make_repo(tmp_path)
+
+    lines = await ensure_local_excludes(root, ["only-this/", "*.tmp"])
+
+    assert lines == ["/.delibra/", "/envs/", "only-this/", "*.tmp"]
+    assert "__pycache__/" not in (root / ".git" / "info" / "exclude").read_text()

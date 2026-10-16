@@ -1607,3 +1607,55 @@ def test_enabling_coding_in_a_git_project_adds_local_excludes(tmp_path, monkeypa
     assert "/.delibra/\n" in text and "/envs/\n" in text
     assert not (project_dir / ".gitignore").exists()
     assert ".git/info/exclude" in page
+
+
+def test_git_ignore_list_is_configurable_per_project(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
+    exclude = project_dir / ".git" / "info" / "exclude"
+    form = {"enabled": "true", "network_allowlist": "pypi.org"}
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/coding", data={**form, "git_exclude": "custom-out/\r\n*.tmp\r\n"}, follow_redirects=False)
+        custom, custom_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
+        client.post(f"{prefix}/coding", data=form, follow_redirects=False)
+        kept = ProjectStore(project).coding_policy().git_exclude
+        page = client.get(f"{prefix}/settings").text
+        client.post(f"{prefix}/coding", data={**form, "git_exclude_preset": "default"}, follow_redirects=False)
+        reset, default_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
+
+    assert custom == kept == ["custom-out/", "*.tmp"]
+    assert "/envs/\n" in custom_text and "custom-out/\n" in custom_text
+    assert "__pycache__/" not in custom_text
+    assert "custom-out/\n*.tmp</textarea>" in page and "(custom)" in page
+    assert reset is None
+    assert "__pycache__/" in default_text and "custom-out/" not in default_text
+
+
+def test_submitting_the_default_ignore_list_keeps_following_it(tmp_path, monkeypatch) -> None:
+    from app.build_git import default_git_exclude
+
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "git_exclude": "\r\n".join(default_git_exclude())},
+            follow_redirects=False,
+        )
+        page = client.get(f"{prefix}/settings").text
+
+    assert ProjectStore(project).coding_policy().git_exclude is None
+    assert "(Delibra&#39;s default)" in page
+
+
+def test_an_invalid_git_ignore_list_changes_nothing(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "example.org", "git_exclude": "ok/\n# >>> Delibra coding mode"},
+        )
+
+    assert response.status_code == 422
+    policy = ProjectStore(project).coding_policy()
+    assert policy.git_exclude is None
+    assert policy.network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
