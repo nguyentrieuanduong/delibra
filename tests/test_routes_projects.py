@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import time
 from urllib.parse import quote
 
 import httpx
@@ -13,11 +14,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
+from app.coding import CodingEnvState
 from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
 from app.storage import (
+    ConflictError,
     LockCoordinator,
     NotFoundError,
     ProjectStore,
@@ -1327,3 +1330,168 @@ def test_project_writable_roots_update_and_clear_around_stale_agent_addition(
     assert store.effective_writable_roots() == []
     with pytest.raises(StorageError, match="stale"):
         store.resolve_session_writable_roots(config.id)
+
+
+LOCAL = ("127.0.0.1", 5000)
+LAN = ("192.168.1.20", 5000)
+VENV_STUB = (
+    "#!/bin/sh\n"
+    'mkdir -p "$3/bin"\n'
+    "printf '#!/bin/sh\\necho Python 3.12.4\\n' > \"$3/bin/python\"\n"
+    'chmod +x "$3/bin/python"\n'
+)
+
+
+def coding_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "coded"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Coded", project_dir)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python3").write_text(VENV_STUB)
+    (bin_dir / "python3").chmod(0o755)
+    # The stub must win, and no real conda/python3.12 may be found.
+    monkeypatch.setenv("PATH", f"{bin_dir}:/bin:/usr/bin")
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    # Never resolve real DNS in tests.
+    monkeypatch.setattr("app.routes.projects.private_resolution_warnings", lambda hosts: [])
+    return app, project, project_dir, f"/projects/{quote(project.name, safe='')}"
+
+
+def wait_env(project, status: str, timeout: float = 5.0) -> CodingEnvState:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = ProjectStore(project).coding_policy().env
+        if state.status == status:
+            return state
+        time.sleep(0.05)
+    raise AssertionError(f"coding env never reached {status}")
+
+
+def test_enabling_coding_creates_env_and_persists_allowlist(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            f"{prefix}/coding",
+            data={"enabled": "true", "network_allowlist": "pypi.org\nfiles.pythonhosted.org"},
+            follow_redirects=False,
+        )
+        state = wait_env(project, "ready")
+        page = client.get(f"{prefix}/settings")
+
+    assert saved.status_code == 303
+    policy = ProjectStore(project).coding_policy()
+    assert policy.enabled is True
+    assert policy.network_allowlist == ["pypi.org", "files.pythonhosted.org"]
+    assert (state.tool, state.python, state.created_by_delibra) == ("venv", "3.12.4", True)
+    assert 'id="coding-heading"' in page.text
+    assert "Environment: ready · venv · Python 3.12.4" in page.text
+
+
+@pytest.mark.parametrize("allowlist", ["https://pypi.org", "pypi.org\n\nfiles.pythonhosted.org"])
+def test_invalid_allowlist_is_rejected_and_nothing_is_stored(tmp_path, monkeypatch, allowlist) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": allowlist})
+
+    assert response.status_code == 422
+    assert ProjectStore(project).coding_policy().enabled is False
+
+
+def test_lan_client_cannot_change_coding(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        saved = client.post(f"{prefix}/coding", data={"enabled": "true"})
+        retry = client.post(f"{prefix}/coding/env/retry")
+        page = client.get(f"{prefix}/settings")
+
+    assert saved.status_code == 403
+    assert retry.status_code == 403
+    assert ProjectStore(project).coding_policy().enabled is False
+    assert "Only this machine can change coding settings" in page.text
+
+
+def test_coding_save_requires_inactive_auto(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+
+    def active(_self) -> None:
+        raise ConflictError("an Auto run is active")
+
+    monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding", data={"enabled": "true"})
+
+    assert response.status_code == 409
+
+
+def test_private_resolution_warning_is_stored_and_shown(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    warning = "intranet.example.com resolves to a private address (10.1.2.3)"
+    monkeypatch.setattr(
+        "app.routes.projects.private_resolution_warnings", lambda hosts: [warning]
+    )
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "intranet.example.com"},
+            follow_redirects=False,
+        )
+        page = client.get(f"{prefix}/settings")
+
+    assert saved.status_code == 303
+    assert ProjectStore(project).coding_policy().network_warnings == [warning]
+    assert warning in page.text
+
+
+def test_startup_turns_interrupted_creation_into_retryable_error(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    store.set_coding_enabled(True)
+    store.set_coding_env(CodingEnvState(status="creating", updated_at="2026-10-15T00:00:00Z"))
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings")
+
+    state = ProjectStore(project).coding_policy().env
+    assert state.status == "error"
+    assert "interrupted" in (state.error or "")
+    # Ownership of a leftover ./envs is unknowable after a crash.
+    assert state.created_by_delibra is False
+    assert "Retry environment" in page.text
+
+
+def test_retry_removes_only_a_partial_env_delibra_created(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    store.set_coding_enabled(True)
+    (project_dir / "envs").mkdir()
+    (project_dir / "envs" / "partial").write_text("half-built\n")
+    store.set_coding_env(
+        CodingEnvState(status="error", error="boom", created_by_delibra=True, updated_at="t0")
+    )
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        retry = client.post(f"{prefix}/coding/env/retry", follow_redirects=False)
+        state = wait_env(project, "ready")
+
+    assert retry.status_code == 303
+    assert state.tool == "venv"
+    assert not (project_dir / "envs" / "partial").exists()
+
+
+def test_retry_never_deletes_an_env_delibra_did_not_create(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    store.set_coding_enabled(True)
+    (project_dir / "envs").mkdir()
+    (project_dir / "envs" / "mine").write_text("user data\n")
+    store.set_coding_env(
+        CodingEnvState(status="error", error="boom", created_by_delibra=False, updated_at="t0")
+    )
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        retry = client.post(f"{prefix}/coding/env/retry")
+
+    assert retry.status_code == 422
+    assert (project_dir / "envs" / "mine").read_text() == "user data\n"

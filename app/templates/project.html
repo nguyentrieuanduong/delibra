@@ -55,6 +55,39 @@
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Save writable roots</button>
     </form>
   </section>
+  <section aria-labelledby="coding-heading">
+    <h2 id="coding-heading">Coding</h2>
+    {% if not coding_local %}<p class="hint">Only this machine can change coding settings.</p>{% endif %}
+    <form method="post" action="{{ project_url(project.name, '/coding') }}">
+      <label class="auto-choice">
+        <input type="checkbox" name="enabled" value="true"{% if coding.enabled %} checked{% endif %}>
+        Enable coding (Auto build runs)
+      </label>
+      <label>Build-agent command network access
+        <textarea name="network_allowlist" maxlength="65536">{{ coding.network_allowlist|join('\n') }}</textarea>
+      </label>
+      <p class="hint">
+        One host per line; empty means no network for agent commands. Not a global
+        firewall: research tools (web search, web fetch, browser) are not limited,
+        and environment creation uses this machine's network.
+      </p>
+      {% for warning in coding.network_warnings %}<p class="warning">{{ warning }}</p>{% endfor %}
+      {% if coding.network_warnings %}
+        <p class="hint">Allowed by your choice: build agents may connect there. Claude's sandbox permits private addresses for listed hosts; Codex's refuses them.</p>
+      {% endif %}
+      <button type="submit" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save coding settings</button>
+    </form>
+    <p class="coding-env-status">Environment: {{ coding.env.status }}{% if coding.env.tool %} · {{ coding.env.tool }}{% endif %}{% if coding.env.python %} · Python {{ coding.env.python }}{% endif %}</p>
+    {% if coding.env.python and not coding.env.python.startswith('3.12') %}
+      <p class="warning">The environment's Python is {{ coding.env.python }}, not 3.12.</p>
+    {% endif %}
+    {% if coding.env.status == 'error' %}
+      <pre class="coding-env-error">{{ coding.env.error }}</pre>
+      <form method="post" action="{{ project_url(project.name, '/coding/env/retry') }}">
+        <button type="submit"{% if not coding_local %} disabled{% endif %}>Retry environment</button>
+      </form>
+    {% endif %}
+  </section>
   <section aria-labelledby="turn-timeout-heading">
     <h2 id="turn-timeout-heading">Default message turn time limit</h2>
     <form method="post" action="{{ project_url(project.name, '/turn-timeout') }}">
