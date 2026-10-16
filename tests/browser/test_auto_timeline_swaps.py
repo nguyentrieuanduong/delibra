@@ -11,11 +11,13 @@ assertion is trusted.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
 from playwright.sync_api import expect
 
+from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
 from tests.browser.conftest import FAKE_CLI, LiveServer
 
 AUTO_DIALOG = "[data-auto-setup-dialog]"
@@ -400,3 +402,39 @@ def test_stopping_auto_refreshes_every_participant_card_without_a_reload(
         expect(
             page.locator(f"#agent-preview-{session_id} p.agent-preview.running")
         ).to_have_count(0)
+
+
+@pytest.mark.browser
+def test_build_handover_updates_status_box_live(
+    live_server: LiveServer,
+    page: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "claude", "spike-verified")
+    monkeypatch.setattr(
+        "app.routes.auto._provider_versions", lambda request: {"claude": "spike-verified"}
+    )
+    app = live_server(["quota-stderr", "success"], tmp_path)
+    store = app["store"]
+    store.set_coding_enabled(True)
+    store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
+
+    page.goto(f"{app['base_url']}/projects/Verify/chat?auto_setup=1")
+    expect(page.locator(AUTO_DIALOG)).to_be_visible(timeout=10_000)
+    page.fill(f"{AUTO_DIALOG} [name=topic]", "Build handover")
+    for session_id in app["session_ids"]:
+        page.check(f"{AUTO_DIALOG} input[name=participant_id][value='{session_id}']")
+    page.check(f"{AUTO_DIALOG} input[name=kind][value=build]")
+    page.fill(f"{AUTO_DIALOG} [name=max_cycles]", "1")
+    navigations: list[str] = []
+    page.on("framenavigated", lambda frame: navigations.append(frame.url))
+    page.click(f"{AUTO_DIALOG} form button[type=submit]")
+
+    status = page.locator("#auto-status")
+    expect(status.locator(".auto-handover")).to_contain_text(
+        "Alpha · handed over to Beta (quota)", timeout=30_000
+    )
+    expect(status).to_have_class(re.compile(r"\blimit_reached\b"), timeout=30_000)
+    expect(status.locator(".auto-build-git")).to_contain_text("Commits off")
+    assert navigations == []
