@@ -299,6 +299,15 @@ async def save_coding(
         store.require_auto_inactive()
         if guidance_preset == "code-craft":
             guidance = [path for path in CODE_CRAFT_SUGGESTED_GUIDANCE if Path(path).is_file()]
+            if not guidance:
+                # Refuse instead of saving an empty list: that would clear the
+                # configured guidance while looking like a success.
+                raise StorageError(
+                    "None of the code-craft skill files exist (looked for "
+                    f"{CODE_CRAFT_SUGGESTED_GUIDANCE[0]} and "
+                    f"{len(CODE_CRAFT_SUGGESTED_GUIDANCE) - 1} more); "
+                    "guidance was not changed"
+                )
         else:
             guidance = guidance_files.splitlines() if guidance_files.strip() else []
         current = store.coding_policy()

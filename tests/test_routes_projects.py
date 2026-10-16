@@ -1534,6 +1534,38 @@ def test_code_craft_preset_keeps_only_existing_files(tmp_path, monkeypatch) -> N
     assert ProjectStore(project).coding_policy().guidance_files == [str(present)]
 
 
+def test_code_craft_preset_without_files_is_refused_and_keeps_guidance(
+    tmp_path, monkeypatch
+) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    guide = tmp_path / "guide.md"
+    guide.write_text("# Guide\n")
+    absent = tmp_path / "absent.md"
+    monkeypatch.setattr(
+        "app.routes.projects.CODE_CRAFT_SUGGESTED_GUIDANCE",
+        (str(absent), str(tmp_path / "also-absent.md")),
+    )
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_files": str(guide)},
+            follow_redirects=False,
+        )
+        response = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "example.org", "guidance_preset": "code-craft"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        f"None of the code-craft skill files exist (looked for {absent} and 1 more); "
+        "guidance was not changed"
+    )
+    policy = ProjectStore(project).coding_policy()
+    assert policy.guidance_files == [str(guide)]
+    assert policy.network_allowlist == ["pypi.org"]
+
+
 def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
