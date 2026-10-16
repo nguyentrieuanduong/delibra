@@ -84,9 +84,15 @@ def test_policy_keeps_network_warnings() -> None:
     assert CodingPolicy.from_manifest({"coding": policy.to_dict()}) == policy
 
 
-def test_no_provider_is_build_capable_until_verified() -> None:
-    assert build_capable("claude", "2.1.296 (Claude Code)") is False
-    assert build_capable("codex", "codex-cli 0.162.1") is False
+def test_only_the_spike_verified_cli_versions_are_build_capable() -> None:
+    # S1/S2 on 2026-10-16 (spike/FINDINGS.md); strings as app/health.py reports them.
+    assert build_capable("claude", "2.1.296 (Claude Code)") is True
+    assert build_capable("codex", "codex-cli 0.162.1") is True
+    assert build_capable("claude", "2.1.1") is False
+    assert build_capable("claude", "2.1.297 (Claude Code)") is False
+    assert build_capable("codex", "codex-cli 0.162.2") is False
+    assert build_capable("claude", None) is False
+    assert build_capable("fake", "1") is False
 
 
 def test_version_match_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
