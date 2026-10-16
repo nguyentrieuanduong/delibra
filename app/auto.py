@@ -1897,6 +1897,9 @@ class AutoManager:
                     record.project_id, record.id, "error", refusal
                 )
                 return "done"
+            # Prime the cache outside the session lock; the call inside
+            # _build_coding_context then reads it.
+            await self.runner.developer_tools()
         if record.kind == "build":
             # Build turns add guidance/handover sections, so a frozen
             # compaction rendering made without them is never reused.

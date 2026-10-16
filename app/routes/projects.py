@@ -353,7 +353,7 @@ async def retry_coding_env(request: Request, project_id: str):
                 raise StorageError(f"{envs} is not a plain directory; Delibra will not delete it")
             # The only deletion in coding mode (D§1): a partial env this
             # attempt's predecessor created. rmtree never follows links.
-            shutil.rmtree(envs)
+            await asyncio.to_thread(shutil.rmtree, envs)
         token = utc_now()
         store.set_coding_env(CodingEnvState(status="creating", updated_at=token))
         _start_env_creation(request.app, resolved_project_id, token)

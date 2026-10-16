@@ -17,7 +17,9 @@ import re
 import shlex
 import shutil
 import signal
+import time
 from typing import Callable, Protocol
+from uuid import uuid4
 
 from app.agents.base import (
     AgentAdapter,
@@ -77,6 +79,7 @@ def _utc_now() -> datetime:
 
 
 LOGGER = logging.getLogger(__name__)
+DEVELOPER_TOOLS_TTL_SECONDS = 300.0
 STATELESS_CONTINUATION_WARNING = (
     "Native context was reset or unavailable; bounded staged history supplied "
     "a stateless continuation."
@@ -222,6 +225,8 @@ class RunManager:
         self._codex_quota_task: asyncio.Task[None] | None = None
         self._active: dict[RunKey, ActiveRun] = {}
         self._completed: dict[RunKey, CompletedRun] = {}
+        self._discard_tasks: set[asyncio.Task[None]] = set()
+        self._developer_tools_cache: tuple[Path | None, float] | None = None
 
     def has_active_project(self, project_id: str) -> bool:
         validate_id(project_id, "project id")
@@ -770,7 +775,7 @@ class RunManager:
             raise
         coding_context = None
         if auto_request is not None and auto_request.build:
-            coding_context = self._build_coding_context(store, session_id)
+            coding_context = await self._build_coding_context(store, session_id)
         context = RunContext(
             user_prompt=execution_prompt,
             resume_id=resume_id,
@@ -1213,8 +1218,13 @@ class RunManager:
         config.cli_session_id = None
         config.context_observation = None
 
-    def _build_coding_context(self, store: ProjectStore, session_id: str) -> CodingContext:
-        """Recreate the turn's private temp dir and describe its capabilities."""
+    async def _build_coding_context(self, store: ProjectStore, session_id: str) -> CodingContext:
+        """Recreate the turn's private temp dir and describe its capabilities.
+
+        Runs under the session lock. The old temp dir is renamed aside and
+        deleted off the event loop; AutoManager primes the developer-tools
+        cache before acquiring this lock.
+        """
 
         policy = store.coding_policy()
         root = self.settings.build_tmp_root
@@ -1225,9 +1235,11 @@ class RunManager:
         if temp_dir.is_symlink():
             temp_dir.unlink()
         elif temp_dir.exists():
-            shutil.rmtree(temp_dir)
+            discarded = root / f".discard-{uuid4().hex}"
+            os.replace(temp_dir, discarded)
+            self._discard_tree(discarded)
         temp_dir.mkdir(mode=0o700)
-        tools = developer_tools_dir({"PATH": os.environ.get("PATH", "")})
+        tools = await self.developer_tools()
         return CodingContext(
             project_root=store.project_path,
             temp_dir=temp_dir,
@@ -1237,6 +1249,28 @@ class RunManager:
             # Amendment A2: /usr/bin/git shims into the developer tools.
             read_roots=(tools,) if tools is not None else (),
         )
+
+    def _discard_tree(self, path: Path) -> None:
+        task = asyncio.create_task(asyncio.to_thread(shutil.rmtree, path, ignore_errors=True))
+        self._discard_tasks.add(task)
+        task.add_done_callback(self._discard_tasks.discard)
+
+    async def developer_tools(self) -> Path | None:
+        """`xcode-select -p`, re-read at most every 5 minutes.
+
+        Cached because it runs once per build turn; re-read because
+        `xcode-select -s` can change it while the server runs.
+        """
+
+        now = time.monotonic()
+        cached = self._developer_tools_cache
+        if cached is not None and now - cached[1] < DEVELOPER_TOOLS_TTL_SECONDS:
+            return cached[0]
+        tools = await asyncio.to_thread(
+            developer_tools_dir, {"PATH": os.environ.get("PATH", "")}
+        )
+        self._developer_tools_cache = (tools, now)
+        return tools
 
     def _subprocess_environment(
         self,
@@ -2139,3 +2173,4 @@ class RunManager:
                 *(asyncio.shield(run.completion) for run in active),
                 return_exceptions=True,
             )
+        await asyncio.gather(*self._discard_tasks, return_exceptions=True)
