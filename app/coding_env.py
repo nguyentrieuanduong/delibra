@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,10 +14,21 @@ from app.storage import utc_now
 
 ENV_DIRNAME = "envs"
 CREATE_TIMEOUT_SECONDS = 900
+PROBE_TIMEOUT_SECONDS = 10
 STDERR_TAIL_BYTES = 4_000
+SERVER_ENV_KEYS = ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "CONDA_EXE")
+_PYTHON_VERSION = re.compile(r"Python (\d+\.\d+\.\d+\S*)")
 
 
-async def _run(argv: list[str], environ: dict[str, str]) -> tuple[int, str, str]:
+def server_environment() -> dict[str, str]:
+    """The server's own variables that env creation and env probes run with."""
+
+    return {key: os.environ[key] for key in SERVER_ENV_KEYS if key in os.environ}
+
+
+async def _run(
+    argv: list[str], environ: dict[str, str], timeout: float = CREATE_TIMEOUT_SECONDS
+) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
         *argv,
         env=environ,
@@ -24,7 +37,7 @@ async def _run(argv: list[str], environ: dict[str, str]) -> tuple[int, str, str]
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        out, err = await asyncio.wait_for(process.communicate(), CREATE_TIMEOUT_SECONDS)
+        out, err = await asyncio.wait_for(process.communicate(), timeout)
     except asyncio.CancelledError:
         process.kill()
         await process.communicate()
@@ -40,10 +53,14 @@ async def _run(argv: list[str], environ: dict[str, str]) -> tuple[int, str, str]
     )
 
 
-async def _python_version(python: Path, environ: dict[str, str]) -> str | None:
-    code, out, err = await _run([str(python), "--version"], environ)
-    text = (out or err).strip()
-    return text.removeprefix("Python ").strip() if code == 0 and text else None
+async def _python_version(
+    python: Path, environ: dict[str, str], timeout: float = CREATE_TIMEOUT_SECONDS
+) -> str | None:
+    """`python --version`'s version number; None unless it ran and printed one."""
+
+    code, out, err = await _run([str(python), "--version"], environ, timeout)
+    match = _PYTHON_VERSION.fullmatch((out or err).strip())
+    return match.group(1) if code == 0 and match else None
 
 
 def _error(message: str, *, created: bool) -> CodingEnvState:
@@ -61,10 +78,16 @@ async def prepare_env(project_root: Path, *, environ: dict[str, str]) -> CodingE
     if target.is_symlink() or (target / "bin").is_symlink():
         return _error("coding environment symlinks are not allowed", created=False)
     if python.exists():
+        version = await _python_version(python, environ)
+        if version is None:
+            return _error(
+                f"{python} does not answer --version; Delibra will not modify it",
+                created=False,
+            )
         return CodingEnvState(
             status="ready",
             tool="existing",
-            python=await _python_version(python, environ),
+            python=version,
             updated_at=utc_now(),
         )
     if target.exists():
@@ -87,13 +110,30 @@ async def prepare_env(project_root: Path, *, environ: dict[str, str]) -> CodingE
     created = target.exists()
     if code != 0 or not python.exists():
         return _error(err or f"{tool} exited with status {code}", created=created)
+    version = await _python_version(python, environ)
+    if version is None:
+        return _error(f"{tool} created {python}, but it does not answer --version", created=True)
     return CodingEnvState(
         status="ready",
         tool=tool,
-        python=await _python_version(python, environ),
+        python=version,
         created_by_delibra=True,
         updated_at=utc_now(),
     )
+
+
+async def probe_env_python(project_root: Path, *, environ: dict[str, str]) -> str | None:
+    """Re-read ./envs/bin/python's version when a build run starts; None if it fails.
+
+    A saved "ready" only records what setup saw: a venv whose base Python
+    was removed, or an env edited by hand, can stop working later.
+    """
+
+    target = project_root / ENV_DIRNAME
+    python = target / "bin" / "python"
+    if target.is_symlink() or (target / "bin").is_symlink() or not python.exists():
+        return None
+    return await _python_version(python, environ, PROBE_TIMEOUT_SECONDS)
 
 
 def developer_tools_dir(environ: dict[str, str]) -> Path | None:
