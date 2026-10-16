@@ -305,10 +305,10 @@ def test_claude_bills_a_round_from_the_result_line() -> None:
     # Measured, spike/fixtures/m5/claude_c_small_resume.jsonl.
     assert usage.input_tokens == 2
     assert usage.output_tokens == 4
-    assert usage.cache_read_tokens == 42951
-    assert usage.cache_creation_tokens == 17
-    assert usage.total_cost_usd == pytest.approx(0.0130533)
-    assert usage.max_output_tokens == 64000
+    assert usage.cache_read_tokens == 40601
+    assert usage.cache_creation_tokens == 67
+    assert usage.total_cost_usd == pytest.approx(0.1689722)
+    assert usage.max_output_tokens == 128000
 
 
 def test_claude_occupancy_sums_the_three_counters_of_the_final_assistant() -> None:
@@ -316,29 +316,29 @@ def test_claude_occupancy_sums_the_three_counters_of_the_final_assistant() -> No
 
     assert len(occupancy) == 1
     reading = occupancy[0].context
-    # 2 + 42951 + 17: no single Claude counter traces a conversation, because a
+    # 2 + 40601 + 67: no single Claude counter traces a conversation, because a
     # resumed turn reads back as cache_read what the previous turn wrote as
     # cache_creation.
-    assert reading.used_tokens == 42970
+    assert reading.used_tokens == 40670
     assert reading.context_window == 1_000_000
-    assert reading.resolved_model == "claude-sonnet-5"
+    assert reading.resolved_model == "claude-sonnet-5-5"
     assert reading.numerator_source == "claude_final_assistant"
 
 
 @pytest.mark.parametrize(
     "name,expected",
     [
-        ("claude_a_small_fresh.jsonl", 8118),
-        ("claude_b_large_resume.jsonl", 42952),
-        ("claude_c_small_resume.jsonl", 42970),
-        ("claude_d_small_fresh.jsonl", 8118),
+        ("claude_a_small_fresh.jsonl", 5770),
+        ("claude_b_large_resume.jsonl", 40628),
+        ("claude_c_small_resume.jsonl", 40670),
+        ("claude_d_small_fresh.jsonl", 5770),
     ],
 )
-def test_claude_occupancy_traces_the_phase_0_experiment(
+def test_claude_occupancy_traces_the_m5_experiment(
     name: str,
     expected: int,
 ) -> None:
-    """The measured curve: +18 at C against a 34,834-token jump at B, and an
+    """The measured curve: +42 at C against a 34,858-token jump at B, and an
     exact return to A's value on a fresh session at D."""
 
     _, occupancy = usage_events(name)
@@ -346,14 +346,30 @@ def test_claude_occupancy_traces_the_phase_0_experiment(
     assert occupancy[0].context.used_tokens == expected
 
 
-def test_claude_context_window_is_keyed_by_the_model_the_turn_resolved() -> None:
-    """The experiment interleaves a model change, so a run can carry two
-    modelUsage entries; picking the wrong one is a 5x error in the denominator."""
+STALE_MODEL_USAGE = {"claude-sonnet-5-5": {"contextWindow": 200_000}}
 
-    _, occupancy = usage_events("claude_e_model_change.jsonl")
 
-    assert occupancy[0].context.resolved_model == "claude-haiku-4-5-20251001"
-    assert occupancy[0].context.context_window == 200_000
+@pytest.mark.parametrize(
+    "inject",
+    [
+        lambda payload: payload.update(
+            {"modelUsage": {**STALE_MODEL_USAGE, **payload["modelUsage"]}}
+        ),
+        lambda payload: payload.update(
+            {"modelUsage": {**payload["modelUsage"], **STALE_MODEL_USAGE}}
+        ),
+    ],
+)
+def test_claude_context_window_is_keyed_by_the_model_the_turn_resolved(inject) -> None:
+    """A run can carry two modelUsage entries; picking the wrong one is a 5x
+    error in the denominator. Claude Code 2.1.296 reports only the new
+    model's entry after a model change, so the stale one is injected, before
+    and after it, so neither positional choice can pass."""
+
+    _, occupancy = mutate_result("claude_e_model_change.jsonl", inject)
+
+    assert occupancy[0].context.resolved_model == "claude-haiku-5-5"
+    assert occupancy[0].context.context_window == 1_000_000
 
 
 def test_claude_occupancy_is_unknown_when_the_assistant_model_is_unrecognized() -> None:
@@ -401,9 +417,9 @@ def test_claude_billing_degrades_to_unknown_rather_than_failing(mutate) -> None:
     "mutate",
     [
         lambda payload: payload.pop("modelUsage"),
-        lambda payload: payload.update({"modelUsage": {"claude-sonnet-5": "wide"}}),
+        lambda payload: payload.update({"modelUsage": {"claude-sonnet-5-5": "wide"}}),
         lambda payload: payload.update(
-            {"modelUsage": {"claude-sonnet-5": {"contextWindow": 0}}}
+            {"modelUsage": {"claude-sonnet-5-5": {"contextWindow": 0}}}
         ),
     ],
 )
@@ -411,7 +427,7 @@ def test_claude_never_guesses_a_denominator(mutate) -> None:
     _, occupancy = mutate_result("claude_c_small_resume.jsonl", mutate)
 
     assert occupancy[0].context.context_window is None
-    assert occupancy[0].context.used_tokens == 42970
+    assert occupancy[0].context.used_tokens == 40670
 
 
 def rate_limit_events(name: str) -> list:
@@ -437,7 +453,7 @@ def test_claude_reports_the_window_its_rate_limit_event_names() -> None:
     assert reading.window == "five_hour"
     assert reading.status == "healthy"
     # Measured: resetsAt is epoch seconds, spike/fixtures/m5/claude_a_small_fresh.jsonl.
-    assert reading.resets_at == datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc)
+    assert reading.resets_at == datetime(2026, 10, 16, 18, 10, tzinfo=timezone.utc)
     assert reading.source == "claude_rate_limit_event"
 
 

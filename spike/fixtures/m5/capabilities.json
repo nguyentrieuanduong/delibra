@@ -9,7 +9,7 @@
         "unit": "tokens"
       },
       "context_window": {
-        "evidence": "modelUsage[claude-haiku-4-5-20251001, claude-sonnet-5].contextWindow",
+        "evidence": "modelUsage[claude-haiku-5-5, claude-sonnet-5-5].contextWindow",
         "proven": true,
         "unit": "tokens"
       },
@@ -60,62 +60,82 @@
       ],
       "modelUsage": [
         {
-          "claude-sonnet-5": {
-            "cacheCreationInputTokens": 1322,
-            "cacheReadInputTokens": 6794,
+          "claude-sonnet-5-5": {
+            "cacheCreationInputTokens": 5768,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-sonnet-5-5",
             "contextWindow": 1000000,
-            "costUSD": 0.0100362,
+            "costBasis": "list",
+            "costUSD": 0.023115999999999998,
             "inputTokens": 2,
-            "maxOutputTokens": 64000,
+            "maxOutputTokens": 128000,
             "outputTokens": 4,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
             "webSearchRequests": 0
           }
         },
         {
-          "claude-haiku-4-5-20251001": {
-            "cacheCreationInputTokens": 1443,
-            "cacheReadInputTokens": 4892,
-            "contextWindow": 200000,
-            "costUSD": 0.0036702,
-            "inputTokens": 10,
-            "maxOutputTokens": 32000,
-            "outputTokens": 57,
-            "webSearchRequests": 0
-          }
-        },
-        {
-          "claude-sonnet-5": {
-            "cacheCreationInputTokens": 34835,
-            "cacheReadInputTokens": 8116,
+          "claude-haiku-5-5": {
+            "cacheCreationInputTokens": 6546,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-haiku-5-5",
             "contextWindow": 1000000,
-            "costUSD": 0.21150779999999997,
-            "inputTokens": 1,
-            "maxOutputTokens": 64000,
-            "outputTokens": 4,
-            "webSearchRequests": 0
-          }
-        },
-        {
-          "claude-sonnet-5": {
-            "cacheCreationInputTokens": 17,
-            "cacheReadInputTokens": 42951,
-            "contextWindow": 1000000,
-            "costUSD": 0.0130533,
+            "costBasis": "list",
+            "costUSD": 0.0013114,
             "inputTokens": 2,
-            "maxOutputTokens": 64000,
+            "maxOutputTokens": 128000,
             "outputTokens": 4,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
             "webSearchRequests": 0
           }
         },
         {
-          "claude-sonnet-5": {
+          "claude-sonnet-5-5": {
+            "cacheCreationInputTokens": 40993,
+            "cacheReadInputTokens": 5401,
+            "canonicalModel": "claude-sonnet-5-5",
+            "contextWindow": 1000000,
+            "costBasis": "list",
+            "costUSD": 0.1646001,
+            "inputTokens": 4,
+            "maxOutputTokens": 128000,
+            "outputTokens": 8,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        {
+          "claude-sonnet-5-5": {
+            "cacheCreationInputTokens": 41060,
+            "cacheReadInputTokens": 46002,
+            "canonicalModel": "claude-sonnet-5-5",
+            "contextWindow": 1000000,
+            "costBasis": "list",
+            "costUSD": 0.1689722,
+            "inputTokens": 6,
+            "maxOutputTokens": 128000,
+            "outputTokens": 12,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        {
+          "claude-sonnet-5-5": {
             "cacheCreationInputTokens": 0,
-            "cacheReadInputTokens": 8116,
+            "cacheReadInputTokens": 5768,
+            "canonicalModel": "claude-sonnet-5-5",
             "contextWindow": 1000000,
-            "costUSD": 0.0025008,
+            "costBasis": "list",
+            "costUSD": 0.0006208,
             "inputTokens": 2,
-            "maxOutputTokens": 64000,
+            "maxOutputTokens": 128000,
             "outputTokens": 4,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
             "webSearchRequests": 0
           }
         }
@@ -142,11 +162,11 @@
         "five_hour"
       ],
       "rate_limit_info.resetsAt": [
-        1788750000,
-        1788750000,
-        1788750000,
-        1788750000,
-        1788750000
+        1792174200,
+        1792174200,
+        1792174200,
+        1792174200,
+        1792174200
       ],
       "rate_limit_info.status": [
         "allowed",
@@ -177,46 +197,46 @@
         "completed"
       ],
       "total_cost_usd": [
-        0.0100362,
-        0.0036702,
-        0.21150779999999997,
-        0.0130533,
-        0.0025008
+        0.023115999999999998,
+        0.0013114,
+        0.1646001,
+        0.1689722,
+        0.0006208
       ],
       "usage.cache_creation_input_tokens": [
-        1322,
-        1443,
-        34835,
-        17,
+        5768,
+        6546,
+        35225,
+        67,
         0
       ],
       "usage.cache_read_input_tokens": [
-        6794,
-        4892,
-        8116,
-        42951,
-        8116
+        0,
+        0,
+        5401,
+        40601,
+        5768
       ],
       "usage.input_tokens": [
         2,
-        10,
-        1,
+        2,
+        2,
         2,
         2
       ],
       "usage.output_tokens": [
         4,
-        57,
+        4,
         4,
         4,
         4
       ],
       "usage.total_prompt_tokens (derived)": [
-        8118,
-        6345,
-        42952,
-        42970,
-        8118
+        5770,
+        6548,
+        40628,
+        40670,
+        5770
       ]
     },
     "occupancy_experiment": {
@@ -227,12 +247,12 @@
       "usage.total_prompt_tokens (derived)": "occupancy: held at C, reset to baseline at D"
     },
     "provenance": {
-      "captured_at": null,
-      "cli_version": "2.1.202",
+      "captured_at": "2026-10-16T13:56:48Z",
+      "cli_version": "2.1.296",
       "provider": "claude",
       "resolved_models": [
-        "claude-sonnet-5",
-        "claude-haiku-4-5-20251001"
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5"
       ]
     },
     "provider": "claude",
@@ -248,9 +268,7 @@
     "capabilities": {
       "context_occupancy": {
         "evidence": [
-          "usage.input_tokens",
-          "info.last_token_usage.total_tokens",
-          "info.total_token_usage.total_tokens"
+          "info.last_token_usage.total_tokens"
         ],
         "proven": true,
         "unit": "tokens"
@@ -298,11 +316,11 @@
     "failures": {},
     "observed": {
       "info.last_token_usage.total_tokens": [
-        11506,
-        10265,
-        32005,
-        32023,
-        11506
+        12265,
+        13030,
+        32764,
+        32782,
+        12265
       ],
       "info.model_context_window": [
         258400,
@@ -312,25 +330,25 @@
         258400
       ],
       "info.total_token_usage.total_tokens": [
-        11506,
-        10265,
-        32005,
-        32023,
-        11506
+        12265,
+        13030,
+        45029,
+        77811,
+        12265
       ],
       "rate_limits.primary.resets_at": [
-        1788756684,
-        1788756684,
-        1788756684,
-        1788756685,
-        1788756685
+        1792174059,
+        1792174059,
+        1792174059,
+        1792174059,
+        1792174059
       ],
       "rate_limits.primary.used_percent": [
-        7.0,
-        7.0,
-        7.0,
-        7.0,
-        7.0
+        17.0,
+        17.0,
+        17.0,
+        18.0,
+        18.0
       ],
       "rate_limits.primary.window_minutes": [
         300,
@@ -340,18 +358,18 @@
         300
       ],
       "rate_limits.secondary.resets_at": [
-        1789269494,
-        1789269494,
-        1789269494,
-        1789269494,
-        1789269494
+        1792683617,
+        1792683617,
+        1792683617,
+        1792683617,
+        1792683617
       ],
       "rate_limits.secondary.used_percent": [
-        16.0,
-        16.0,
-        16.0,
-        16.0,
-        16.0
+        9.0,
+        9.0,
+        9.0,
+        9.0,
+        9.0
       ],
       "rate_limits.secondary.window_minutes": [
         10080,
@@ -362,35 +380,35 @@
       ],
       "usage.cached_input_tokens": [
         0,
-        1408,
-        11264,
-        31872,
-        0
+        0,
+        12032,
+        44672,
+        10496
       ],
       "usage.input_tokens": [
-        11501,
-        10260,
-        32000,
-        32018,
-        11501
+        12260,
+        13025,
+        45019,
+        77796,
+        12260
       ],
       "usage.output_tokens": [
         5,
         5,
-        5,
-        5,
+        10,
+        15,
         5
       ]
     },
     "occupancy_experiment": {
       "info.last_token_usage.total_tokens": "occupancy: held at C, reset to baseline at D",
-      "info.total_token_usage.total_tokens": "occupancy: held at C, reset to baseline at D",
+      "info.total_token_usage.total_tokens": "cumulative: gained about another turn at C",
       "usage.cached_input_tokens": "cumulative: gained about another turn at C",
-      "usage.input_tokens": "occupancy: held at C, reset to baseline at D",
-      "usage.output_tokens": "inconclusive: did not rise at B"
+      "usage.input_tokens": "cumulative: gained about another turn at C",
+      "usage.output_tokens": "cumulative: gained about another turn at C"
     },
     "provenance": {
-      "captured_at": null,
+      "captured_at": "2026-10-16T14:01:38Z",
       "cli_version": null,
       "provider": "codex",
       "resolved_models": [

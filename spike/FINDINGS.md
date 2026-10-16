@@ -515,3 +515,35 @@ codex -c 'default_permissions="delibra_build"' -c 'permissions={delibra_build={e
     outright.
   - `xcrun_db` cache-write warnings from `/usr/bin/git` are harmless.
 <!-- BUILD-SANDBOX-SPIKE-DECISIONS:END -->
+
+## M5 usage gate re-run on Claude Code 2.1.296 and codex-cli 0.162.1 (2026-10-16)
+
+- Commands: `envs/bin/python -m spike.m5_usage_gate`, then
+  `envs/bin/python -m spike.m5_usage_gate --provider codex --codex-alternate-model gpt-6-sol`.
+  The first run's Codex half failed before publishing anything: the default
+  alternate model `gpt-5.5` is now rejected for ChatGPT accounts (HTTP 400).
+  `gpt-6-sol` is the account's current default in `~/.codex/config.toml`.
+- Result: every capability's `proven` flag and unit match the 2.1.202 / 0.153.4
+  run, for both providers. The fixtures under `spike/fixtures/m5/` were
+  re-recorded.
+- Evidence that changed without changing a verdict: Claude resolved
+  `claude-sonnet-5-5` and `claude-haiku-5-5`, and `modelUsage` gained
+  `canonicalModel`, `costBasis`, `provider` and `thinkingTokens`. The gate does
+  not record Codex's CLI version (`cli_version` is null, as before);
+  `codex --version` reported `codex-cli 0.162.1` at the time of the run.
+- **Codex regression the verdicts did not show:** on 0.162.1, a resumed turn's
+  `turn.completed.usage` is the thread's running total (`total_token_usage`),
+  not that turn (`last_token_usage`). Fixture C reads 77,811 tokens on stdout
+  against 32,782 in the rollout; fresh threads (A, D, E) still match. The
+  adapter cross-check test caught it. The fix (`675d399`) takes a round's
+  billing and occupancy from the rollout records written since the round
+  started. Measured on the 67 newest turns in Delibra's Codex home: the first
+  `token_count` of a turn always satisfies `total - last` = the previous
+  turn's total, and summing `last_token_usage` over-counts in 13 of 43 turns
+  (Codex repeats `token_count`), so billing uses the growth of the total.
+- `spike.m8_quota_compare` (read-only): Codex `account/rateLimits/read` answered
+  for Delibra's Codex home, with `rateLimitsByLimitId.codex.primary`
+  (300 minutes) and `.secondary` (10080 minutes) carrying `usedPercent`, the
+  fields `app/codex_quota.py` reads.
+- Consequence: `app/health.py` `USAGE_VERIFIED_VERSIONS` now names these
+  versions, so the footer no longer warns about usage verification.

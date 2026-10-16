@@ -145,15 +145,17 @@ async def probe_build_version(name: str, executable: str) -> str | None:
     return health.version if health.available else None
 
 
+# The CLI versions the M5 usage gate last passed on (spike/FINDINGS.md,
+# 2026-10-16). A mismatch stays a warning: rate-limit and usage fields are
+# feature-detected, never inferred from the version string.
+USAGE_VERIFIED_VERSIONS: dict[str, str] = {"claude": "2.1.296", "codex": "0.162.1"}
+
+
 async def probe_all(commands: dict[str, str]) -> list[ProviderHealth]:
-    # The newest version each provider has been verified against. A mismatch
-    # stays a warning: rate-limit and usage fields are feature-detected, never
-    # inferred from the version string.
-    expected = {"claude": "2.1.202", "codex": "0.153.4"}
     return list(
         await asyncio.gather(
             *(
-                probe_provider(name, executable, expected.get(name, "unknown"))
+                probe_provider(name, executable, USAGE_VERIFIED_VERSIONS.get(name, "unknown"))
                 for name, executable in commands.items()
             )
         )
