@@ -571,7 +571,7 @@ Commits are off, with the reason shown in the status box, when any of these hold
 
 - the tree or index is dirty;
 - HEAD is detached;
-- a merge or rebase is in progress;
+- a merge, rebase, cherry-pick, revert or bisect is in progress;
 - a Git clean/process filter (for example Git LFS) is configured;
 - no `user.name`/`user.email` is set;
 - the project is not the worktree root.

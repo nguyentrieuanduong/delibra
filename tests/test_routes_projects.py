@@ -1659,3 +1659,11 @@ def test_an_invalid_git_ignore_list_changes_nothing(tmp_path, monkeypatch) -> No
     policy = ProjectStore(project).coding_policy()
     assert policy.git_exclude is None
     assert policy.network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
+
+
+def test_coding_hint_does_not_claim_the_browser_is_unlimited(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings").text
+    assert "web fetch, browser) are not limited" not in page
+    assert "browser features are off in build turns" in page
