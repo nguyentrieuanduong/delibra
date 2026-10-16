@@ -1900,7 +1900,7 @@ class AutoManager:
         if record.kind == "build":
             # Build turns add guidance/handover sections, so a frozen
             # compaction rendering made without them is never reused.
-            context = self._build_turn_context(store, record)
+            context = await self._build_turn_context(store, record)
         else:
             context = (
                 frozen_context
@@ -2612,7 +2612,7 @@ class AutoManager:
         # Never substitute "now": that would hide edits made during the turn.
         raise StorageError("failed build round is missing from its session")
 
-    def _handover_section(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
+    async def _handover_section(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
         if not record.handovers:
             return b""
         latest = record.handovers[-1]
@@ -2632,7 +2632,7 @@ class AutoManager:
             except NotFoundError:
                 partial = b""
         files = (
-            modified_files_since(store.project_path, latest.started_epoch)
+            await asyncio.to_thread(modified_files_since, store.project_path, latest.started_epoch)
             if latest.started_epoch is not None
             else []
         )
@@ -2646,7 +2646,7 @@ class AutoManager:
             ),
         )
 
-    def _build_turn_context(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
+    async def _build_turn_context(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
         """Build-only wrapper; the discussion renderer itself is untouched."""
 
         before = (
@@ -2657,7 +2657,7 @@ class AutoManager:
             if record.guidance is not None
             else b""
         )
-        after = self._handover_section(store, record)
+        after = await self._handover_section(store, record)
         body = self._discussion_context(store, record, reserve=len(before) + len(after))
         return before + body + after
 
