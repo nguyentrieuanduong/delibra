@@ -522,7 +522,8 @@ Turning it on does three things:
   it. Otherwise it runs `conda create -y -p ./envs python=3.12`, or
   `python3 -m venv ./envs` when conda is absent. Creation runs on the server under
   this machine's network, not the agents' allowlist. A `./envs` that exists without
-  `bin/python` is reported as an error and never modified. **Retry environment**
+  `bin/python`, or whose `python --version` fails or prints no version, is
+  reported as an error and never modified. **Retry environment**
   removes only a partial `./envs` that Delibra itself created.
 - **Build-agent command network access.** This is one exact host per line, and an
   empty list means no network. The default is the PyPI and Anaconda package

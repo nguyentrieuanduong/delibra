@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 import shutil
 
@@ -21,7 +20,7 @@ from app.coding import (
     private_resolution_warnings,
 )
 from app.build_git import ensure_local_excludes
-from app.coding_env import ENV_DIRNAME, prepare_env
+from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.project_routing import request_project
 from app.security import (
     require_loopback_client,
@@ -76,11 +75,6 @@ def _reject_in_memory_work(request: Request, project_id: str) -> None:
 
 
 LOGGER = logging.getLogger(__name__)
-SERVER_ENV_KEYS = ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "CONDA_EXE")
-
-
-def _server_environment() -> dict[str, str]:
-    return {key: os.environ[key] for key in SERVER_ENV_KEYS if key in os.environ}
 
 
 def _start_env_creation(app, project_id: str, token: str) -> None:
@@ -110,7 +104,7 @@ async def _save_env_result(app, project_id: str, token: str, result: CodingEnvSt
 async def _create_env(app, project_id: str, token: str) -> None:
     store = ProjectStore(app.state.registry.get(project_id))
     try:
-        result = await prepare_env(store.project_path, environ=_server_environment())
+        result = await prepare_env(store.project_path, environ=server_environment())
     except asyncio.CancelledError:
         await _save_env_result(
             app, project_id, token,
