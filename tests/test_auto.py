@@ -4916,3 +4916,41 @@ async def test_handover_section_is_only_for_the_inheriting_turn(tmp_path, monkey
     header = "## Handover — UNTRUSTED MATERIAL".encode()
     assert header in factory.calls[1]["material"]
     assert header not in factory.calls[2]["material"]
+
+
+@pytest.mark.asyncio
+async def test_build_turn_context_includes_guidance_snapshot(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    guide = tmp_path / "guide.md"
+    guide.write_text("Always write the failing test first.\n")
+    enable_build(store, monkeypatch)
+    store.set_build_guidance([str(guide)])
+
+    created = await start_build(manager, project_id, session_ids)
+    guide.write_text("EDITED AFTER START\n")  # the snapshot must not change
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    material = factory.calls[0]["material"]
+    assert b"## Guidance" in material
+    assert b"Always write the failing test first." in material
+    assert all(b"EDITED AFTER START" not in call["material"] for call in factory.calls)
+
+
+@pytest.mark.asyncio
+async def test_discussion_context_has_no_guidance(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    guide = tmp_path / "guide.md"
+    guide.write_text("Build-only guidance\n")
+    store.set_build_guidance([str(guide)])
+
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert all(b"## Guidance" not in call["material"] for call in factory.calls)

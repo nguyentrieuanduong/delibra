@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import socket
+import stat
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 LOCAL_ONLY_SUFFIXES = (".local", ".lan", ".internal", ".home.arpa", ".localdomain")
@@ -31,6 +34,71 @@ _LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
 
 class CodingPolicyError(ValueError):
     pass
+
+
+GUIDANCE_MAX_FILES = 8
+GUIDANCE_MAX_BYTES = 65_536
+_CODE_CRAFT = "/Users/apollo/projects/code-craft/skills"
+# Implementation-oriented skills only: brainstorming, writing-plans and
+# executing-plans gate on user approval and would stall a build run.
+CODE_CRAFT_SUGGESTED_GUIDANCE = tuple(
+    f"{_CODE_CRAFT}/{name}/SKILL.md"
+    for name in (
+        "test-driven-development",
+        "coding-standards",
+        "security-baseline",
+        "systematic-debugging",
+        "verification-before-completion",
+    )
+)
+
+
+def normalize_guidance_paths(values: object) -> list[str]:
+    if not isinstance(values, list) or any(type(item) is not str for item in values):
+        raise CodingPolicyError("guidance files must be a list of paths")
+    paths: list[str] = []
+    total = 0
+    for raw in values:
+        value = raw.strip()
+        path = Path(value)
+        if not path.is_absolute() or path.suffix.lower() != ".md":
+            raise CodingPolicyError(f"{raw!r} must be an absolute path to a .md file")
+        try:
+            info = os.lstat(path)
+        except OSError as exc:
+            raise CodingPolicyError(f"{raw!r} does not exist") from exc
+        if not stat.S_ISREG(info.st_mode):
+            raise CodingPolicyError(f"{raw!r} must be a regular file, not a link")
+        if value in paths:
+            raise CodingPolicyError(f"{raw!r} is listed twice")
+        total += info.st_size
+        paths.append(value)
+    if len(paths) > GUIDANCE_MAX_FILES:
+        raise CodingPolicyError(f"at most {GUIDANCE_MAX_FILES} guidance files")
+    if total > GUIDANCE_MAX_BYTES:
+        raise CodingPolicyError(f"guidance files exceed {GUIDANCE_MAX_BYTES} bytes")
+    return paths
+
+
+def read_guidance(paths: list[str]) -> bytes:
+    """Read a bounded snapshot from regular files at run creation."""
+
+    normalize_guidance_paths(paths)
+    parts: list[bytes] = []
+    for path in paths:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise CodingPolicyError(f"{path!r} is not a regular file")
+                body = source.read(GUIDANCE_MAX_BYTES + 1)
+        except OSError as exc:
+            raise CodingPolicyError(f"{path!r} changed or is unavailable") from exc
+        parts.append(f"### {path}\n\n".encode() + body.rstrip() + b"\n")
+    snapshot = b"\n".join(parts)
+    if len(snapshot) > GUIDANCE_MAX_BYTES:
+        raise CodingPolicyError(f"guidance snapshot exceeds {GUIDANCE_MAX_BYTES} bytes")
+    return snapshot
 
 
 def normalize_network_allowlist(values: object) -> list[str]:
@@ -155,6 +223,7 @@ class CodingPolicy:
     )
     env: CodingEnvState = field(default_factory=CodingEnvState)
     network_warnings: list[str] = field(default_factory=list)
+    guidance_files: list[str] = field(default_factory=list)
 
     @classmethod
     def from_manifest(cls, manifest: dict[str, Any]) -> "CodingPolicy":
@@ -168,6 +237,13 @@ class CodingPolicy:
         warnings = data.get("network_warnings", [])
         if not isinstance(warnings, list) or any(type(item) is not str for item in warnings):
             raise CodingPolicyError("coding network warnings are invalid")
+        guidance = data.get("guidance_files", [])
+        # Shape only: a guidance file deleted later must not make the manifest
+        # unloadable; the snapshot taken at run creation re-validates.
+        if not isinstance(guidance, list) or any(
+            type(item) is not str or not Path(item).is_absolute() for item in guidance
+        ):
+            raise CodingPolicyError("coding guidance files are invalid")
         return cls(
             enabled=data.get("enabled", False),
             network_allowlist=normalize_network_allowlist(
@@ -175,6 +251,7 @@ class CodingPolicy:
             ),
             env=CodingEnvState.from_dict(data.get("env", {})),
             network_warnings=list(warnings),
+            guidance_files=list(guidance),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -183,6 +260,7 @@ class CodingPolicy:
             "network_allowlist": list(self.network_allowlist),
             "env": self.env.to_dict(),
             "network_warnings": list(self.network_warnings),
+            "guidance_files": list(self.guidance_files),
         }
 
 

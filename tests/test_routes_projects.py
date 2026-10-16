@@ -1495,3 +1495,51 @@ def test_retry_never_deletes_an_env_delibra_did_not_create(tmp_path, monkeypatch
 
     assert retry.status_code == 422
     assert (project_dir / "envs" / "mine").read_text() == "user data\n"
+
+
+def test_guidance_files_are_saved_from_the_textarea(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    guide = tmp_path / "guide.md"
+    guide.write_text("# Guide\n")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_files": str(guide)},
+            follow_redirects=False,
+        )
+        page = client.get(f"{prefix}/settings")
+
+    assert saved.status_code == 303
+    assert ProjectStore(project).coding_policy().guidance_files == [str(guide)]
+    assert str(guide) in page.text
+
+
+def test_code_craft_preset_keeps_only_existing_files(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    present = tmp_path / "present.md"
+    present.write_text("# Present\n")
+    monkeypatch.setattr(
+        "app.routes.projects.CODE_CRAFT_SUGGESTED_GUIDANCE",
+        (str(present), str(tmp_path / "absent.md")),
+    )
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_preset": "code-craft"},
+            follow_redirects=False,
+        )
+
+    assert saved.status_code == 303
+    assert ProjectStore(project).coding_policy().guidance_files == [str(present)]
+
+
+def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_files": "relative.md"},
+        )
+
+    assert response.status_code == 422
+    assert ProjectStore(project).coding_policy().guidance_files == []

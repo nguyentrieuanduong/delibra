@@ -75,7 +75,12 @@
       {% if coding.network_warnings %}
         <p class="hint">Allowed by your choice: build agents may connect there. Claude's sandbox permits private addresses for listed hosts; Codex's refuses them.</p>
       {% endif %}
+      <label>Build guidance files
+        <textarea name="guidance_files" maxlength="65536">{{ coding.guidance_files|join('\n') }}</textarea>
+      </label>
+      <p class="hint">Markdown files every build agent reads, snapshotted at run start. Nothing is executed. One absolute path per line.</p>
       <button type="submit" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save coding settings</button>
+      <button type="submit" name="guidance_preset" value="code-craft"{% if auto_active or not coding_local %} disabled{% endif %}>Use code-craft skills</button>
     </form>
     <p class="coding-env-status">Environment: {{ coding.env.status }}{% if coding.env.tool %} · {{ coding.env.tool }}{% endif %}{% if coding.env.python %} · Python {{ coding.env.python }}{% endif %}</p>
     {% if coding.env.python and not coding.env.python.startswith('3.12') %}

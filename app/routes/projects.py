@@ -12,6 +12,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app.coding import (
+    CODE_CRAFT_SUGGESTED_GUIDANCE,
     CodingEnvState,
     CodingPolicyError,
     normalize_network_allowlist,
@@ -275,6 +276,8 @@ async def save_coding(
     project_id: str,
     enabled: bool = Form(False),
     network_allowlist: str = Form(""),
+    guidance_files: str = Form(""),
+    guidance_preset: str = Form(""),
 ):
     require_loopback_client(request)
     project = request_project(request, project_id)
@@ -298,6 +301,11 @@ async def save_coding(
         store = ProjectStore(project)
         store.require_auto_inactive()
         store.set_network_allowlist(hosts, warnings=warnings)
+        if guidance_preset == "code-craft":
+            guidance = [path for path in CODE_CRAFT_SUGGESTED_GUIDANCE if Path(path).is_file()]
+        else:
+            guidance = guidance_files.splitlines() if guidance_files.strip() else []
+        store.set_build_guidance(guidance)
         policy = store.set_coding_enabled(enabled)
         if enabled and policy.env.status == "absent":
             token = utc_now()
