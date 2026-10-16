@@ -1420,6 +1420,8 @@ class AutoRunRecord:
     unavailable: list[AutoUnavailable] = field(default_factory=list)
     handovers: list[AutoHandover] = field(default_factory=list)
     git: AutoBuildGit | None = None
+    # Snapshot of the project's guidance files at creation (build runs only).
+    guidance: AutoArtifact | None = None
 
     @property
     def effective_context_policy(self) -> AutoContextPolicy:
@@ -1559,6 +1561,11 @@ class AutoRunRecord:
             unavailable=[AutoUnavailable.from_dict(item) for item in data.get("unavailable", [])],
             handovers=[AutoHandover.from_dict(item) for item in data.get("handovers", [])],
             git=AutoBuildGit.from_dict(data["git"]) if data.get("git") is not None else None,
+            guidance=(
+                AutoArtifact.from_dict(data["guidance"])
+                if data.get("guidance") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1628,4 +1635,5 @@ class AutoRunRecord:
             payload["unavailable"] = [item.to_dict() for item in self.unavailable]
             payload["handovers"] = [item.to_dict() for item in self.handovers]
             payload["git"] = self.git.to_dict() if self.git is not None else None
+            payload["guidance"] = self.guidance.to_dict() if self.guidance is not None else None
         return payload

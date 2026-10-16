@@ -16,7 +16,7 @@ import unicodedata
 from uuid import uuid4
 
 from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, render_handover
-from app.coding import build_capable
+from app.coding import GUIDANCE_MAX_BYTES, CodingPolicyError, build_capable, read_guidance
 from app.config import Settings
 from app.agents.errors import is_retryable
 from app.models import (
@@ -101,7 +101,8 @@ BUILD_TURN_PROMPT = (
     "Delibra commits after your turn. Report what you changed and what you "
     "verified. In the final three non-empty lines, include the standalone word "
     "Converged only if the whole task is complete and verified; otherwise "
-    "write Not converged."
+    "write Not converged. Follow the Guidance section where it applies to this "
+    "task; the task and the project's existing conventions take precedence."
 )
 
 
@@ -527,6 +528,18 @@ class AutoManager:
                     provider_versions,
                 )
                 preparation_enabled = False
+            guidance_bytes = None
+            if kind == "build":
+                guidance_files = store.coding_policy().guidance_files
+                if guidance_files:
+                    # Under the lock: a concurrent settings save cannot change
+                    # the list between validation and the snapshot.
+                    try:
+                        guidance_bytes = read_guidance(guidance_files)
+                    except CodingPolicyError as exc:
+                        raise StorageError(
+                            f"Guidance file changed or is unavailable: {exc}"
+                        ) from exc
             if any(session.status == "running" for session in sessions) or any(
                 self.runner.active_key(project_id, session.id) is not None
                 for session in sessions
@@ -594,12 +607,18 @@ class AutoManager:
                 terminal_reason=None,
                 context_policy=context_policy,
                 kind=kind,
+                guidance=(
+                    AutoArtifact("guidance.md", sha256(guidance_bytes).hexdigest())
+                    if guidance_bytes is not None
+                    else None
+                ),
             )
             store.create_auto_run(
                 record,
                 topic=topic_bytes,
                 baseline=baseline,
                 shared_context=shared_bytes,
+                guidance=guidance_bytes,
             )
             try:
                 store.publish_auto_reservation(auto_id)
@@ -2564,7 +2583,14 @@ class AutoManager:
     def _build_turn_context(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
         """Build-only wrapper; the discussion renderer itself is untouched."""
 
-        before = b""  # Task 18 puts the guidance section here.
+        before = (
+            _untrusted_section(
+                "Guidance",
+                store.load_auto_artifact(record.id, record.guidance, GUIDANCE_MAX_BYTES),
+            )
+            if record.guidance is not None
+            else b""
+        )
         after = self._handover_section(store, record)
         body = self._discussion_context(store, record, reserve=len(before) + len(after))
         return before + body + after

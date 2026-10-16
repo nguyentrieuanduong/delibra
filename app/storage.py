@@ -30,6 +30,7 @@ from app.coding import (
     CodingEnvState,
     CodingPolicy,
     CodingPolicyError,
+    normalize_guidance_paths,
     normalize_network_allowlist,
 )
 from app.models import (
@@ -1706,6 +1707,14 @@ class ProjectStore:
         policy.network_warnings = list(warnings or [])
         return self._save_coding(policy)
 
+    def set_build_guidance(self, values: object) -> CodingPolicy:
+        policy = self.coding_policy()
+        try:
+            policy.guidance_files = normalize_guidance_paths(values)
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
+        return self._save_coding(policy)
+
     def set_coding_env(self, state: CodingEnvState) -> CodingPolicy:
         policy = self.coding_policy()
         policy.env = state
@@ -2154,7 +2163,7 @@ class ProjectStore:
             validate_id(session_id, "Auto participant id")
         if len(session_ids) != len(set(session_ids)):
             raise OwnershipError("Auto participants are duplicated")
-        for artifact in (record.topic, record.baseline, record.shared_context):
+        for artifact in (record.topic, record.baseline, record.shared_context, record.guidance):
             if artifact is not None and not SHA256_PATTERN.fullmatch(artifact.sha256):
                 raise OwnershipError("Auto artifact digest is invalid")
         ProjectStore._validate_auto_context_policy(record, set(session_ids))
@@ -2247,8 +2256,17 @@ class ProjectStore:
         topic: bytes,
         baseline: bytes,
         shared_context: bytes | None = None,
+        guidance: bytes | None = None,
     ) -> AutoRunRecord:
         self._validate_auto_record(record, self.project.id)
+        if (record.guidance is None) != (guidance is None):
+            raise OwnershipError("Auto guidance metadata does not match")
+        if (
+            record.guidance is not None
+            and guidance is not None
+            and sha256(guidance).hexdigest() != record.guidance.sha256
+        ):
+            raise OwnershipError("Auto guidance digest does not match")
         if type(record.number) is not int or record.number < 1:
             raise OwnershipError("Auto run number is invalid")
         if sha256(topic).hexdigest() != record.topic.sha256:
@@ -2300,6 +2318,11 @@ class ProjectStore:
                         "shared-context.md",
                     ),
                     shared_context,
+                )
+            if record.guidance is not None and guidance is not None:
+                atomic_write_bytes(
+                    self._auto_artifact_path(temporary, record.guidance, "guidance.md"),
+                    guidance,
                 )
             atomic_write_json(temporary / "config.json", record.to_dict())
             os.replace(temporary, destination)
@@ -2365,7 +2388,7 @@ class ProjectStore:
     ) -> bytes:
         if maximum_bytes < 1:
             raise ValueError("Auto artifact limit must be positive")
-        if artifact.path not in {"topic.md", "baseline.md", "shared-context.md"}:
+        if artifact.path not in {"topic.md", "baseline.md", "shared-context.md", "guidance.md"}:
             raise OwnershipError("Auto artifact path is invalid")
         if not SHA256_PATTERN.fullmatch(artifact.sha256):
             raise OwnershipError("Auto artifact digest is invalid")
