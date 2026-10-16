@@ -113,7 +113,7 @@ async def git_preflight(root: Path) -> AutoBuildGit:
 
 LOCAL_EXCLUDES = (".delibra/", "envs/")
 # Delibra's own copy of the user's default ignore template (taken from the
-# repository's .gitignore at f9c1946). Never read a project's .gitignore.
+# repository's .gitignore at e334b66). Never read a project's .gitignore.
 DEFAULT_EXCLUDE_TEMPLATE = Path(__file__).with_name("build_git_exclude.txt")
 _BLOCK_START = "# >>> Delibra coding mode: default ignores, local to this clone (managed)"
 _BLOCK_END = "# <<< Delibra coding mode"
