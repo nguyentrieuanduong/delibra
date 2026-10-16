@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 from urllib.parse import quote
@@ -46,12 +47,18 @@ class AutoRouteAdapter:
         self._final = ""
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
+        mode = "sleep" if self.sleep else "success"
+        if self.output == "QUOTA":
+            mode = "quota-stderr"
+        if self.output.startswith("WRITE ") and context.coding is not None:
+            # Stands in for an agent's edit: it lands in the project during the turn.
+            (context.coding.project_root / "built.txt").write_text("built\n")
         return Command(
             [
                 sys.executable,
                 str(FAKE_CLI),
                 "--mode",
-                "sleep" if self.sleep else "success",
+                mode,
                 "--delay",
                 "0.03",
             ],
@@ -66,7 +73,7 @@ class AutoRouteAdapter:
         if kind == "delta":
             return [AgentEvent("text_delta", payload.get("text", ""))]
         if kind == "result":
-            self._final = self.output
+            self._final = self.output.removeprefix("WRITE ")
             return [AgentEvent("result", self._final)]
         return []
 
@@ -2188,3 +2195,65 @@ def test_discussion_status_has_no_build_markup(tmp_path: Path) -> None:
     assert "Build · " not in page.text
     assert "auto-build-git" not in page.text
     assert "handed over" not in page.text
+
+
+def test_build_acceptance_enable_handover_commit_and_lan_guard(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setattr("app.routes.projects.private_resolution_warnings", lambda hosts: [])
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
+    monkeypatch.setattr("app.routes.auto._provider_versions", lambda request: {"fake": "1"})
+    app, _settings, project, store, sessions, _factory = auto_route_app(
+        tmp_path, outputs=["QUOTA", "WRITE Built it.\nConverged"]
+    )
+    root = store.project_path
+    for args in (("init", "-q", "-b", "main"), ("config", "user.name", "T"),
+                 ("config", "user.email", "t@example.invalid")):
+        subprocess.run(["git", "-C", str(root), *args], check=True)
+    (root / "README.md").write_text("hi\n")
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "initial"], check=True)
+    # An existing ./envs is adopted, so no real conda/venv runs in the test.
+    python = root / "envs" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\necho Python 3.12.1\n")
+    python.chmod(0o755)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    alpha, beta = sessions[1], sessions[0]
+    form = build_form([alpha.id, beta.id])
+    form["max_cycles"] = "2"
+
+    # One client per peer, sequentially (amendment A4).
+    with TestClient(app, base_url="http://localhost", client=LAN) as lan:
+        assert lan.post(f"{prefix}/coding", data={"enabled": "true"}).status_code == 403
+        assert lan.post(f"/projects/{project.id}/auto-runs", data=form).status_code == 403
+    assert store.coding_policy().enabled is False
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
+        assert local.post(
+            f"{prefix}/coding",
+            data={"enabled": "true", "network_allowlist": "pypi.org"},
+            follow_redirects=False,
+        ).status_code == 303
+        for _ in range(100):
+            if store.coding_policy().env.status == "ready":
+                break
+            time.sleep(0.05)
+        assert store.coding_policy().env.tool == "existing"
+        assert local.post(f"/projects/{project.id}/auto-runs", data=form).status_code == 202
+        wait_for_auto(store, terminal=True)
+
+    on_disk = json.loads((root / ".delibra" / "auto-runs" / "1" / "config.json").read_text())
+    assert (on_disk["kind"], on_disk["status"]) == ("build", "converged")
+    assert [(h["from_session_id"], h["to_session_id"], h["reason"]) for h in on_disk["handovers"]] == [
+        (alpha.id, beta.id, "quota")
+    ]
+    assert on_disk["git"]["enabled"] is True
+    subjects = subprocess.run(
+        ["git", "-C", str(root), "log", "--format=%s"], check=True, capture_output=True, text=True
+    ).stdout.splitlines()
+    assert subjects == ["Auto build 1 · cycle 1 · Beta", "initial"]
+    committed = subprocess.run(
+        ["git", "-C", str(root), "show", "--name-only", "--format=", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.split()
+    assert committed == ["built.txt"]

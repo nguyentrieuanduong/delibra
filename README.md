@@ -510,6 +510,91 @@ budget but a fresh timeout version and extension audit. Rejected stale, late, or
 over-cap submissions refresh the authoritative controls and never revive a
 finished process.
 
+## Coding mode and build runs
+
+Each project has a **Coding** setting on its Settings page. It is off by default,
+and only this machine (a loopback client) can change it. While it is off, every
+agent keeps the capabilities described in "Isolation and security boundary".
+
+Turning it on does three things:
+
+- **Environment.** Delibra adopts an existing `./envs/bin/python` without touching
+  it. Otherwise it runs `conda create -y -p ./envs python=3.12`, or
+  `python3 -m venv ./envs` when conda is absent. Creation runs on the server under
+  this machine's network, not the agents' allowlist. A `./envs` that exists without
+  `bin/python` is reported as an error and never modified. **Retry environment**
+  removes only a partial `./envs` that Delibra itself created.
+- **Build-agent command network access.** This is one exact host per line, and an
+  empty list means no network. The default is the PyPI and Anaconda package
+  hosts. Local-only names (`.local`, `.lan`, `.internal`, `.home.arpa`,
+  `.localdomain`), IP literals, ports and wildcards are rejected. On save, Delibra
+  warns about any listed host that resolves to a private address, but keeps it.
+  This list governs **shell commands only**: Claude's web search and web fetch and
+  Codex's hosted search stay available for research and can reach any public
+  host. A prompt-injected agent could therefore send project content to an
+  arbitrary site through a research tool.
+- **Build guidance files.** These are optional Markdown files every build agent
+  reads, for example the code-craft skills (**Use code-craft skills**). They are
+  snapshotted when a run starts, and nothing in them is executed. No plugins,
+  skills or hooks load in build turns.
+
+With coding on and the environment ready, the Auto dialog offers **Build**:
+agents take turns implementing the topic as a task. A build turn:
+
+- runs from the project root and may write anything in the project except
+  `.delibra/` and `.git/`, plus a private temp directory outside the project;
+- reads the project but nothing else under your home directory;
+- has `envs/bin` first on `PATH`, `GIT_CONFIG_GLOBAL=/dev/null`, and
+  `PIP_USE_DEPRECATED=legacy-certs`. Inside the sandbox, `~/.gitconfig` is
+  unreadable and the macOS trust store is blocked;
+- for Claude, gets sandboxed Bash, which refuses loopback, link-local and this
+  machine's own addresses;
+- for Codex, uses a permission profile behind its domain proxy, which refuses
+  loopback and private destinations. Its browser and computer-use features are
+  disabled in build turns.
+
+Build runs skip preparation and end the same way discussion runs do: an agent
+writes `Converged` once the whole task is complete and verified, or the run reaches
+the cycle limit.
+
+**Commits.** When the project root is a clean Git worktree root, Delibra commits
+after each completed build turn that changed files. The commit is subject
+`Auto build <n> · cycle <c> · <agent>` with a `Delibra-Auto-Run` trailer, made with
+hooks, fsmonitor and signing disabled, and `envs` and `.delibra` excluded.
+Commits are off, with the reason shown in the status box, when any of these holds:
+
+- the tree or index is dirty;
+- HEAD is detached;
+- a merge or rebase is in progress;
+- a Git clean/process filter (for example Git LFS) is configured;
+- no `user.name`/`user.email` is set;
+- the project is not the worktree root.
+
+If HEAD moves during the run, commits stop. Delibra never amends, resets, rebases
+or pushes. Edits you make inside the project during a run are committed together
+with the agents' edits.
+
+**Handover.** In a build run, a turn that fails on a usage limit, or still fails
+after its retries, hands the step to the next available agent. The same happens
+when the pre-turn quota check finds an agent over its limit. That agent is
+skipped for the rest of the run, and its successor receives the failed turn's
+partial output and the list of files it changed. If no agent is left, the run
+stops in a resumable state, and **Continue Auto** makes every agent available
+again. Discussion runs keep their existing pause-on-quota behaviour.
+
+**Verified versions.** Build runs accept only CLI versions whose sandbox was
+verified (`app/coding.py:BUILD_VERIFIED_VERSIONS`; evidence in
+`spike/FINDINGS.md`): Claude Code `2.1.296` and codex-cli `0.162.1`. After an
+upgrade, re-run `spike/spike_build_sandbox.py --provider claude` and
+`spike/spike_build_sandbox_codex_replay.py` before adding the new version.
+
+Known limits:
+
+- Tools that verify TLS through the macOS trust store rather than a CA file may
+  fail inside Claude build turns.
+- In Codex build turns, a command that touches an unlisted host is killed
+  outright rather than receiving an error.
+
 ## Isolation and security boundary
 
 Delibra provides write isolation, not read confidentiality:
@@ -517,6 +602,9 @@ Delibra provides write isolation, not read confidentiality:
 - Agent cwd is the session `workspace/`, with private temp at `workspace/.tmp/`.
   Write access starts there and may include the explicitly granted writable
   project directories described above.
+  Build turns (see "Coding mode and build runs") are the exception: they run from
+  the project root, write the project except `.delibra/` and `.git/`, and get a
+  sandboxed shell with allowlisted command network.
 - Claude receives only Read/Write/Edit/Glob/Grep and native web tools under the
   verified safe command. Codex runs in `workspace-write`, with shell network disabled
   and native web search enabled.
