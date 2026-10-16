@@ -14,7 +14,9 @@ from fastapi.responses import RedirectResponse
 from app.coding import (
     CODE_CRAFT_SUGGESTED_GUIDANCE,
     CodingEnvState,
+    CodingPolicy,
     CodingPolicyError,
+    normalize_guidance_paths,
     normalize_network_allowlist,
     private_resolution_warnings,
 )
@@ -300,16 +302,29 @@ async def save_coding(
         project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
-        store.set_network_allowlist(hosts, warnings=warnings)
         if guidance_preset == "code-craft":
             guidance = [path for path in CODE_CRAFT_SUGGESTED_GUIDANCE if Path(path).is_file()]
         else:
             guidance = guidance_files.splitlines() if guidance_files.strip() else []
-        store.set_build_guidance(guidance)
-        policy = store.set_coding_enabled(enabled)
-        if enabled and policy.env.status == "absent":
+        current = store.coding_policy()
+        # Validate every field before writing: a rejected form must not
+        # change command network access.
+        try:
+            updated = CodingPolicy(
+                enabled=enabled,
+                network_allowlist=hosts,
+                env=current.env,
+                network_warnings=warnings,
+                guidance_files=normalize_guidance_paths(guidance),
+            )
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
+        token = None
+        if enabled and current.env.status == "absent":
             token = utc_now()
-            store.set_coding_env(CodingEnvState(status="creating", updated_at=token))
+            updated.env = CodingEnvState(status="creating", updated_at=token)
+        store.replace_coding_policy(updated)
+        if token is not None:
             _start_env_creation(request.app, resolved_project_id, token)
     return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
