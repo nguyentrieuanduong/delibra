@@ -20,6 +20,7 @@ from app.coding import (
     normalize_network_allowlist,
     private_resolution_warnings,
 )
+from app.build_git import ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env
 from app.project_routing import request_project
 from app.security import (
@@ -326,6 +327,14 @@ async def save_coding(
         store.replace_coding_policy(updated)
         if token is not None:
             _start_env_creation(request.app, resolved_project_id, token)
+    if enabled:
+        try:
+            await ensure_local_excludes(ProjectStore(project).project_path)
+        except OSError:
+            LOGGER.warning(
+                "Could not update .git/info/exclude for project %s",
+                resolved_project_id, exc_info=True,
+            )
     return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
 

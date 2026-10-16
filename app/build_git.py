@@ -107,6 +107,49 @@ async def git_preflight(root: Path) -> AutoBuildGit:
     return AutoBuildGit(enabled=True, reason=None, branch=branch, head=head)
 
 
+LOCAL_EXCLUDES = (".delibra/", "envs/")
+
+
+async def ensure_local_excludes(root: Path) -> list[str]:
+    """Ignore Delibra's own directories in this clone only.
+
+    Writes `.git/info/exclude`, never `.gitignore`: editing a tracked file
+    would dirty the tree and turn build commits off. Anchored to the project
+    root, because a nested `envs` or `.delibra` is the user's code. Returns
+    the lines added; none when the project is not in a Git repository.
+    """
+
+    code, top = await _git(root, "rev-parse", "--show-toplevel")
+    if code != 0:
+        return []
+    code, exclude = await _git(
+        root, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"
+    )
+    if code != 0:
+        return []
+    try:
+        relative = root.resolve().relative_to(Path(top).resolve()).as_posix()
+    except ValueError:
+        return []
+    prefix = "" if relative == "." else f"{relative}/"
+    if any(character in prefix for character in "*?[]\\!#"):
+        return []  # would be read as a pattern, not a path
+    wanted = [f"/{prefix}{name}" for name in LOCAL_EXCLUDES]
+    path = Path(exclude)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    missing = [line for line in wanted if line not in text.splitlines()]
+    if missing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        separator = "" if not text or text.endswith("\n") else "\n"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                separator
+                + "# Delibra coding mode (local to this clone)\n"
+                + "".join(f"{line}\n" for line in missing)
+            )
+    return missing
+
+
 async def commit_turn(
     root: Path, git: AutoBuildGit, subject: str, body: str, trailer: str
 ) -> tuple[AutoBuildGit, str | None]:

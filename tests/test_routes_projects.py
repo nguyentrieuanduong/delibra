@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import time
 from urllib.parse import quote
@@ -1553,3 +1554,24 @@ def test_code_craft_preset_button_follows_the_auto_disable(tmp_path, monkeypatch
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get(f"{prefix}/settings").text
     assert 'name="guidance_preset" value="code-craft" data-disable-during-auto' in page
+
+
+def test_enabling_coding_in_a_git_project_adds_local_excludes(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
+    exclude = project_dir / ".git" / "info" / "exclude"
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/coding", data={"network_allowlist": "pypi.org"}, follow_redirects=False)
+        assert "/envs/" not in exclude.read_text()
+        client.post(
+            f"{prefix}/coding",
+            data={"enabled": "true", "network_allowlist": "pypi.org"},
+            follow_redirects=False,
+        )
+        wait_env(project, "ready")
+        page = client.get(f"{prefix}/settings").text
+
+    text = exclude.read_text()
+    assert "/.delibra/\n" in text and "/envs/\n" in text
+    assert not (project_dir / ".gitignore").exists()
+    assert ".git/info/exclude" in page
