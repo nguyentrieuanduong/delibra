@@ -30,11 +30,16 @@
     {% endif %}
   </div>
   <p>
-    {{ 'All agree' if auto.agreement_policy == 'all_agree' else 'First agree, after everyone speaks once' }}
+    {% if auto.kind == 'build' %}Build · {% endif %}{{ 'All agree' if auto.agreement_policy == 'all_agree' else 'First agree, after everyone speaks once' }}
     · up to {{ auto.max_cycles }} cycle{{ '' if auto.max_cycles == 1 else 's' }}
     · future turn budget {{ auto.future_turn_timeout_seconds }}s
     · {{ 'preparation enabled' if auto.preparation_enabled else 'preparation skipped' }}
   </p>
+  {% if auto.kind == 'build' and auto.git %}
+    <p class="auto-build-git">
+      {% if auto.git.enabled %}Commits on {{ auto.git.branch }}{% else %}Commits off: {{ auto.git.reason }}{% endif %}
+    </p>
+  {% endif %}
   {% if auto.status == 'preparing' and auto.preparation_enabled %}
     <p>Preparing {{ preparing_number }} of {{ auto.participants|length }}{% if current_participant %} · {{ current_participant.name }}{% endif %}</p>
   {% elif auto.status == 'preparing' %}
@@ -73,7 +78,7 @@
     <summary>Preparations</summary>
     {% include "_auto_preparations.html" %}
   </details>
-  {% if auto.discussion %}
+  {% if auto.kind != 'build' and auto.discussion %}
     <details open>
       <summary>Discussion verdicts</summary>
       <ol>
@@ -83,6 +88,23 @@
             · {{ turn.verdict }}
             {% if turn.warning %}· {{ turn.warning }}{% endif %}
           </li>
+        {% endfor %}
+      </ol>
+    </details>
+  {% elif auto.kind == 'build' and (auto.discussion or auto.handovers) %}
+    {% set names = {} %}
+    {% for participant in auto.participants %}{% set _ = names.update({participant.session_id: participant.name}) %}{% endfor %}
+    {% set cycles = ((auto.discussion | map(attribute='cycle') | list) + (auto.handovers | map(attribute='cycle') | list)) | unique | sort %}
+    <details open>
+      <summary>Build turns</summary>
+      <ol>
+        {% for cycle in cycles %}
+          {% for turn in auto.discussion if turn.cycle == cycle %}
+            <li>Cycle {{ turn.cycle }} · {{ auto.participants[turn.position].name }} · {{ turn.verdict }}{% if turn.warning %} · {{ turn.warning }}{% endif %}</li>
+          {% endfor %}
+          {% for handover in auto.handovers if handover.cycle == cycle %}
+            <li class="auto-handover">Cycle {{ handover.cycle }} · {{ names.get(handover.from_session_id, 'unknown') }} · {% if handover.to_session_id %}handed over to {{ names.get(handover.to_session_id, 'unknown') }}{% else %}no agent available{% endif %} ({{ handover.reason }})</li>
+          {% endfor %}
         {% endfor %}
       </ol>
     </details>
