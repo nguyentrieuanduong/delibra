@@ -1,0 +1,76 @@
+import pytest
+
+from app.models import AutoBuildGit, AutoHandover, AutoRunRecord, AutoUnavailable
+
+BASE = {
+    "format": "delibra-auto/1",
+    "id": "c" * 32,
+    "project_id": "d" * 32,
+    "number": 1,
+    "status": "converged",
+    "agreement_policy": "first_agree",
+    "preparation_enabled": False,
+    "max_cycles": 2,
+    "current_cycle": 1,
+    "next_participant": 1,
+    "participants": [
+        {"agent": "fake", "effort": "low", "model": "success", "name": "A", "session_id": "a" * 32},
+        {"agent": "fake", "effort": "low", "model": "success", "name": "B", "session_id": "b" * 32},
+    ],
+    "topic": {"path": "topic.md", "sha256": "0" * 64},
+    "baseline": {"path": "baseline.md", "sha256": "0" * 64},
+    "future_turn_timeout_seconds": 60,
+    "stop_requested": False,
+    "created_at": "2026-10-15T00:00:00Z",
+}
+
+
+def test_legacy_record_loads_as_discussion_and_serializes_unchanged() -> None:
+    record = AutoRunRecord.from_dict(dict(BASE))
+
+    assert record.kind == "discussion"
+    assert record.unavailable == []
+    assert record.handovers == []
+    assert record.git is None
+    payload = record.to_dict()
+    for key in ("kind", "unavailable", "handovers", "git"):
+        assert key not in payload
+
+
+def test_build_record_round_trips() -> None:
+    data = dict(
+        BASE,
+        kind="build",
+        unavailable=[{"session_id": "a" * 32, "reason": "quota", "round_n": 3, "at": "2026-10-15T00:01:00Z"}],
+        handovers=[{"from_session_id": "a" * 32, "to_session_id": "b" * 32,
+                    "reason": "quota", "cycle": 1, "round_n": 3}],
+        git={"enabled": True, "reason": None, "branch": "main", "head": "abc123"},
+    )
+
+    record = AutoRunRecord.from_dict(data)
+
+    assert record.unavailable == [AutoUnavailable("a" * 32, "quota", 3, "2026-10-15T00:01:00Z")]
+    assert record.handovers == [AutoHandover("a" * 32, "b" * 32, "quota", 1, 3)]
+    assert record.git == AutoBuildGit(True, None, "main", "abc123")
+    assert AutoRunRecord.from_dict(record.to_dict()) == record
+    assert record.to_dict()["kind"] == "build"
+
+
+def test_pre_turn_handover_has_no_round_or_target() -> None:
+    data = dict(
+        BASE,
+        kind="build",
+        unavailable=[{"session_id": "a" * 32, "reason": "quota", "round_n": None, "at": "t"}],
+        handovers=[{"from_session_id": "a" * 32, "to_session_id": None,
+                    "reason": "quota", "cycle": 1, "round_n": None}],
+    )
+
+    record = AutoRunRecord.from_dict(data)
+
+    assert record.handovers[0].to_session_id is None
+    assert record.unavailable[0].round_n is None
+
+
+def test_unknown_kind_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        AutoRunRecord.from_dict(dict(BASE, kind="other"))
