@@ -73,17 +73,23 @@ def _usage_events(usage: Any) -> list[AgentEvent]:
     return events
 
 
+def _toml_string(value: str) -> str:
+    """Encode a TOML basic string.
+
+    JSON and TOML basic strings share the escapes emitted for quotes,
+    backslashes and C0 controls. Python leaves DEL raw under
+    ensure_ascii=False and TOML forbids it, so escape that one code point.
+    Other Unicode stays literal: JSON surrogate-pair escapes are not valid
+    TOML Unicode scalar escapes.
+    """
+
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
 def _developer_instructions_config(value: str) -> str:
     """Encode additive instructions without replacing the model base."""
 
-    encoded = json.dumps(value, ensure_ascii=False)
-    # JSON and TOML basic strings share the escapes emitted for quotes,
-    # backslashes and C0 controls. Python leaves DEL raw under
-    # ensure_ascii=False and TOML forbids it, so escape that one code point.
-    # Other Unicode stays literal: JSON surrogate-pair escapes are not valid
-    # TOML Unicode scalar escapes.
-    encoded = encoded.replace("\x7f", "\\u007f")
-    return f"developer_instructions={encoded}"
+    return f"developer_instructions={_toml_string(value)}"
 
 
 BUILD_PROFILE = "delibra_build"
@@ -104,12 +110,6 @@ BUILD_DISABLED_FEATURES = (
     "browser_annotation_api",
     "in_app_browser",
 )
-
-
-def _toml_string(value: str) -> str:
-    # Match the existing developer-instructions TOML escaping: JSON's C0
-    # escapes are compatible, but raw DEL must be escaped for TOML.
-    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def codex_build_overrides(coding: CodingContext) -> list[str]:
