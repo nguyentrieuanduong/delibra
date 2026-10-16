@@ -26,6 +26,12 @@ from typing import Any, AsyncIterator, Iterable, Iterator, Literal
 import unicodedata
 from uuid import uuid4
 
+from app.coding import (
+    CodingEnvState,
+    CodingPolicy,
+    CodingPolicyError,
+    normalize_network_allowlist,
+)
 from app.models import (
     AUTO_FORMAT,
     AutoArtifact,
@@ -1583,6 +1589,10 @@ class ProjectStore:
             normalize_writable_roots(manifest.get("writable_roots", []))
         except StorageError as exc:
             raise OwnershipError("project writable roots are invalid") from exc
+        try:
+            CodingPolicy.from_manifest(manifest)
+        except CodingPolicyError as exc:
+            raise OwnershipError("project coding settings are invalid") from exc
         return manifest
 
     def sync_manifest_name(self, name: str) -> None:
@@ -1668,6 +1678,38 @@ class ProjectStore:
         manifest["writable_roots"] = candidate
         atomic_write_json_recovery_pair(self.manifest_path, manifest)
         return candidate
+
+    def coding_policy(self) -> CodingPolicy:
+        return CodingPolicy.from_manifest(self._load_manifest())
+
+    def _save_coding(self, policy: CodingPolicy) -> CodingPolicy:
+        manifest = self._load_manifest()
+        manifest["coding"] = policy.to_dict()
+        atomic_write_json_recovery_pair(self.manifest_path, manifest)
+        return policy
+
+    def set_coding_enabled(self, enabled: bool) -> CodingPolicy:
+        if type(enabled) is not bool:
+            raise StorageError("coding enabled flag is invalid")
+        policy = self.coding_policy()
+        policy.enabled = enabled
+        return self._save_coding(policy)
+
+    def set_network_allowlist(
+        self, values: object, *, warnings: list[str] | None = None
+    ) -> CodingPolicy:
+        policy = self.coding_policy()
+        try:
+            policy.network_allowlist = normalize_network_allowlist(values)
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
+        policy.network_warnings = list(warnings or [])
+        return self._save_coding(policy)
+
+    def set_coding_env(self, state: CodingEnvState) -> CodingPolicy:
+        policy = self.coding_policy()
+        policy.env = state
+        return self._save_coding(policy)
 
     def session_writable_roots(self, session_id: str) -> list[str]:
         config = self.load_session(session_id)
