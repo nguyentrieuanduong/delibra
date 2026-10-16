@@ -47,7 +47,10 @@ async def _git(root: Path, *args: str) -> tuple[int, str]:
         try:
             await asyncio.wait_for(process.communicate(), timeout=2)
         except TimeoutError:
-            await asyncio.wait_for(process.wait(), timeout=1)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1)
+            except TimeoutError:
+                pass  # unreaped; the cancellation or timeout still wins
         if isinstance(exc, asyncio.CancelledError):
             raise
         return 124, "git command timed out"
