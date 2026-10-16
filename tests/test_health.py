@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings
-from app.health import probe_build_version, probe_provider
+from app.health import USAGE_VERIFIED_VERSIONS, probe_all, probe_build_version, probe_provider
 from app.main import create_app
 
 
@@ -29,6 +29,25 @@ async def test_version_drift_is_reported(tmp_path: Path) -> None:
     assert health.available is True
     assert health.version == "provider-version-2"
     assert "usage reporting was verified on provider-version-1" in (health.warning or "")
+
+
+@pytest.mark.asyncio
+async def test_the_installed_usage_verified_clis_show_no_warning(tmp_path: Path) -> None:
+    reported = {"claude": "2.1.296 (Claude Code)", "codex": "codex-cli 0.162.1"}
+    commands = {}
+    for name, version in reported.items():
+        executable = tmp_path / name
+        executable.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
+        executable.chmod(0o700)
+        commands[name] = str(executable)
+
+    health = await probe_all(commands)
+
+    assert USAGE_VERIFIED_VERSIONS == {"claude": "2.1.296", "codex": "0.162.1"}
+    assert [(item.name, item.warning) for item in health] == [
+        ("claude", None),
+        ("codex", None),
+    ]
 
 
 @pytest.mark.asyncio
