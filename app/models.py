@@ -286,13 +286,22 @@ def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
     return value
 
 
-
 def _optional_strict_int(data: dict[str, Any], key: str) -> int | None:
     return None if data.get(key) is None else _strict_int(data, key)
 
 
 def _optional_strict_str(data: dict[str, Any], key: str) -> str | None:
     return None if data.get(key) is None else _strict_str(data, key)
+
+
+def _optional_strict_float(data: dict[str, Any], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    # ``type(...)`` and not ``isinstance``: ``True`` is an ``int``.
+    if type(value) not in (int, float):
+        raise TypeError(f"{key} must be a number")
+    return float(value)
 
 
 @dataclass(frozen=True)
@@ -339,9 +348,7 @@ class AutoHandover:
             reason=_strict_str(data, "reason"),
             cycle=_strict_int(data, "cycle"),
             round_n=_optional_strict_int(data, "round_n"),
-            started_epoch=(
-                None if data.get("started_epoch") is None else float(data["started_epoch"])
-            ),
+            started_epoch=_optional_strict_float(data, "started_epoch"),
             discussion_len=_strict_int(data, "discussion_len", default=0),
         )
 
@@ -379,6 +386,7 @@ def _auto_kind(data: dict[str, Any]) -> str:
     if kind not in AUTO_KINDS:
         raise ValueError("Auto kind is invalid")
     return kind
+
 
 @dataclass(frozen=True)
 class AutoContextPolicy:

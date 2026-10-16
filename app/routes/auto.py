@@ -464,11 +464,11 @@ def projected_auto_setup_context(
         "context_interval": AutoContextPolicy.interval,
         "context_threshold_percent": settings.auto_context_trigger_percent,
         "stateless_history_limit": settings.stateless_history_limit,
-    "build_available": (
-        is_loopback_client(request)
-        and coding.enabled
-        and coding.env.status == "ready"
-    ),
+        "build_available": (
+            is_loopback_client(request)
+            and coding.enabled
+            and coding.env.status == "ready"
+        ),
     }
 
 
