@@ -282,3 +282,25 @@ async def test_cancelled_git_reaps_a_child_holding_its_output_pipe(
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=1)
     assert spawned[0].returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_commit_turn_works_when_gitignore_already_ignores_the_excluded_dirs(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    (root / ".gitignore").write_text(".delibra/\nenvs/\n")
+    git(root, "add", ".gitignore")
+    git(root, "commit", "-q", "-m", "ignore private dirs")
+    state = await git_preflight(root)
+    for path in (".delibra/run.json", "envs/bin/python", "src/new.py"):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("x\n")
+    (root / "README.md").unlink()
+
+    new_state, warning = await commit_turn(root, state, "subject", "body", "trailer")
+
+    assert warning is None
+    assert new_state.enabled is True
+    assert git(root, "show", "--name-status", "--format=", "HEAD").splitlines() == [
+        "D\tREADME.md", "A\tsrc/new.py",
+    ]
+    assert git(root, "status", "--porcelain") == ""

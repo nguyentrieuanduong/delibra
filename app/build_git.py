@@ -11,6 +11,7 @@ import asyncio
 import os
 from pathlib import Path
 import signal
+import tempfile
 
 from app.models import AutoBuildGit
 
@@ -136,7 +137,27 @@ async def _commit_turn(
     if code != 0:
         warning = "Git index has staged changes; commits disabled"
         return _off(warning), warning
-    code, out = await _git(root, "add", "-A", *PATHSPEC)
+    # `git add` with an exclude pathspec naming an ignored path exits 1
+    # (Git 2.39) after staging everything else; `ls-files` accepts the
+    # same excludes. So list the in-scope changes, then add exactly those.
+    code, listed = await _git(
+        root, "ls-files", "-z", "--modified", "--deleted", "--others",
+        "--exclude-standard", *PATHSPEC,
+    )
+    if code != 0:
+        return _off("git ls-files failed"), f"git ls-files failed: {listed[-500:]}"
+    paths = sorted({path for path in listed.split("\0") if path})
+    if not paths:
+        return git, None
+    with tempfile.NamedTemporaryFile("wb", delete=False) as handle:
+        handle.write(b"\0".join(path.encode("utf-8") for path in paths))
+    try:
+        code, out = await _git(
+            root, "--literal-pathspecs", "add", "-A",
+            f"--pathspec-from-file={handle.name}", "--pathspec-file-nul",
+        )
+    finally:
+        os.unlink(handle.name)
     if code != 0:
         return _off("git add failed"), f"git add failed: {out[-500:]}"
     code, _ = await _git(root, "diff", "--cached", "--quiet")
