@@ -326,6 +326,10 @@ class AutoHandover:
     reason: str
     cycle: int
     round_n: int | None
+    # When the failed turn started (None for a pre-turn handover), and how many
+    # discussion turns existed at handover: the inheriting turn alone sees it.
+    started_epoch: float | None = None
+    discussion_len: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoHandover":
@@ -335,6 +339,10 @@ class AutoHandover:
             reason=_strict_str(data, "reason"),
             cycle=_strict_int(data, "cycle"),
             round_n=_optional_strict_int(data, "round_n"),
+            started_epoch=(
+                None if data.get("started_epoch") is None else float(data["started_epoch"])
+            ),
+            discussion_len=_strict_int(data, "discussion_len", default=0),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -43,14 +43,15 @@ def test_build_record_round_trips() -> None:
         kind="build",
         unavailable=[{"session_id": "a" * 32, "reason": "quota", "round_n": 3, "at": "2026-10-15T00:01:00Z"}],
         handovers=[{"from_session_id": "a" * 32, "to_session_id": "b" * 32,
-                    "reason": "quota", "cycle": 1, "round_n": 3}],
+                    "reason": "quota", "cycle": 1, "round_n": 3,
+                    "started_epoch": 12.5, "discussion_len": 2}],
         git={"enabled": True, "reason": None, "branch": "main", "head": "abc123"},
     )
 
     record = AutoRunRecord.from_dict(data)
 
     assert record.unavailable == [AutoUnavailable("a" * 32, "quota", 3, "2026-10-15T00:01:00Z")]
-    assert record.handovers == [AutoHandover("a" * 32, "b" * 32, "quota", 1, 3)]
+    assert record.handovers == [AutoHandover("a" * 32, "b" * 32, "quota", 1, 3, 12.5, 2)]
     assert record.git == AutoBuildGit(True, None, "main", "abc123")
     assert AutoRunRecord.from_dict(record.to_dict()) == record
     assert record.to_dict()["kind"] == "build"
