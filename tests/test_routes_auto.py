@@ -2121,3 +2121,14 @@ def test_build_choice_only_for_a_local_client_with_a_ready_project(tmp_path: Pat
     assert 'name="kind" value="build"' not in before
     assert 'name="kind" value="build"' in ready_local
     assert 'name="kind" value="build"' not in ready_lan
+
+
+def test_chat_page_setup_dialog_offers_build_when_ready(tmp_path: Path, monkeypatch) -> None:
+    # The chat page passes setup values through a `{% with %}` block, so a
+    # value it does not list never reaches _auto_setup.html.
+    app, _settings, project, store, _sessions, _factory = auto_route_app(tmp_path)
+    build_ready(store, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
+        page = local.get(f"/projects/{quote(project.name, safe='')}/chat?auto_setup=1").text
+
+    assert 'name="kind" value="build"' in page
