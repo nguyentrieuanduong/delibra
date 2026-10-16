@@ -286,6 +286,92 @@ def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
     return value
 
 
+
+def _optional_strict_int(data: dict[str, Any], key: str) -> int | None:
+    return None if data.get(key) is None else _strict_int(data, key)
+
+
+def _optional_strict_str(data: dict[str, Any], key: str) -> str | None:
+    return None if data.get(key) is None else _strict_str(data, key)
+
+
+@dataclass(frozen=True)
+class AutoUnavailable:
+    """A build participant skipped for the rest of the run."""
+
+    session_id: str
+    reason: str
+    round_n: int | None
+    at: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoUnavailable":
+        return cls(
+            session_id=_strict_str(data, "session_id"),
+            reason=_strict_str(data, "reason"),
+            round_n=_optional_strict_int(data, "round_n"),
+            at=_strict_str(data, "at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AutoHandover:
+    """One build step passed on; `to_session_id` is None when nobody was left."""
+
+    from_session_id: str
+    to_session_id: str | None
+    reason: str
+    cycle: int
+    round_n: int | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoHandover":
+        return cls(
+            from_session_id=_strict_str(data, "from_session_id"),
+            to_session_id=_optional_strict_str(data, "to_session_id"),
+            reason=_strict_str(data, "reason"),
+            cycle=_strict_int(data, "cycle"),
+            round_n=_optional_strict_int(data, "round_n"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AutoBuildGit:
+    """Whether Delibra commits after build turns, and the HEAD it expects."""
+
+    enabled: bool
+    reason: str | None
+    branch: str | None
+    head: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoBuildGit":
+        return cls(
+            enabled=_strict_bool(data, "enabled"),
+            reason=_optional_strict_str(data, "reason"),
+            branch=_optional_strict_str(data, "branch"),
+            head=_optional_strict_str(data, "head"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+AUTO_KINDS = frozenset({"discussion", "build"})
+
+
+def _auto_kind(data: dict[str, Any]) -> str:
+    kind = data.get("kind", "discussion")
+    if kind not in AUTO_KINDS:
+        raise ValueError("Auto kind is invalid")
+    return kind
+
 @dataclass(frozen=True)
 class AutoContextPolicy:
     """How one Auto run retires its own material, chosen at setup.
@@ -1322,6 +1408,10 @@ class AutoRunRecord:
     compaction_cooldown_until_discussion_len: int = 0
     consecutive_compaction_failures: int = 0
     compaction_disabled_reason: str | None = None
+    kind: str = "discussion"
+    unavailable: list[AutoUnavailable] = field(default_factory=list)
+    handovers: list[AutoHandover] = field(default_factory=list)
+    git: AutoBuildGit | None = None
 
     @property
     def effective_context_policy(self) -> AutoContextPolicy:
@@ -1457,10 +1547,14 @@ class AutoRunRecord:
                 if data.get("compaction_disabled_reason") is not None
                 else None
             ),
+            kind=_auto_kind(data),
+            unavailable=[AutoUnavailable.from_dict(item) for item in data.get("unavailable", [])],
+            handovers=[AutoHandover.from_dict(item) for item in data.get("handovers", [])],
+            git=AutoBuildGit.from_dict(data["git"]) if data.get("git") is not None else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "format": AUTO_FORMAT,
             "id": self.id,
             "project_id": self.project_id,
@@ -1520,3 +1614,10 @@ class AutoRunRecord:
             "consecutive_compaction_failures": self.consecutive_compaction_failures,
             "compaction_disabled_reason": self.compaction_disabled_reason,
         }
+        if self.kind == "build":
+            # Discussion records keep their exact on-disk shape.
+            payload["kind"] = self.kind
+            payload["unavailable"] = [item.to_dict() for item in self.unavailable]
+            payload["handovers"] = [item.to_dict() for item in self.handovers]
+            payload["git"] = self.git.to_dict() if self.git is not None else None
+        return payload
