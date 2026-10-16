@@ -451,8 +451,17 @@ def test_build_turn_uses_profile_not_legacy_sandbox() -> None:
     assert "--strict-config" in argv
     disabled = {argv[index + 1] for index, item in enumerate(argv) if item == "--disable"}
     assert set(BUILD_DISABLED_FEATURES) <= disabled
-    assert BUILD_DISABLED_FEATURES == ("system_proxy_fallback", "computer_use")
-    assert "browser_use" not in disabled
+    assert BUILD_DISABLED_FEATURES == (
+        "system_proxy_fallback",
+        "computer_use",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "browser_annotation_api",
+        "in_app_browser",
+    )
+    # Hosted search stays for research; it cannot reach this machine.
+    assert "--search" in argv
     for override in codex_build_overrides(coding()):
         assert override in argv
 

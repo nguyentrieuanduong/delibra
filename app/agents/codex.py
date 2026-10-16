@@ -89,10 +89,21 @@ def _developer_instructions_config(value: str) -> str:
 BUILD_PROFILE = "delibra_build"
 # Enabled by default in codex-cli 0.162.1 (`codex features list`).
 # system_proxy_fallback could route command traffic around the domain proxy;
-# computer_use drives the desktop outside every sandbox with no approval.
-# Browser and search stay for research by user decision; plugins stay off
-# through the existing `--disable plugins`.
-BUILD_DISABLED_FEATURES = ("system_proxy_fallback", "computer_use")
+# computer_use drives the desktop outside every sandbox with no approval. The
+# browser features are off by user decision after spike S2: under `exec` no
+# local browser tool appeared (page opens went through hosted search), and a
+# local browser could reach Delibra's own port, which no probe can rule out.
+# Hosted search (`--search`) stays for research; plugins stay off through the
+# shared `--disable plugins`.
+BUILD_DISABLED_FEATURES = (
+    "system_proxy_fallback",
+    "computer_use",
+    "browser_use",
+    "browser_use_external",
+    "browser_use_full_cdp_access",
+    "browser_annotation_api",
+    "in_app_browser",
+)
 
 
 def _toml_string(value: str) -> str:
