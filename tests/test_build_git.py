@@ -1,0 +1,210 @@
+import asyncio
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from app.build_git import commit_turn, git_preflight
+
+
+@pytest.fixture(autouse=True)
+def isolated_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The filter check reads every config scope. Isolate it, or a machine
+    # with Git LFS installed globally would disable commits in every test.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+def git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def make_repo(tmp_path: Path, name: str = "repo") -> Path:
+    root = tmp_path / name
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Tester")
+    git(root, "config", "user.email", "tester@example.invalid")
+    (root / "README.md").write_text("hello\n")
+    git(root, "add", "README.md")
+    git(root, "commit", "-q", "-m", "initial")
+    return root
+
+
+def history(root: Path) -> list[str]:
+    return git(root, "log", "--format=%H").splitlines()
+
+
+async def ready(root: Path):
+    state = await git_preflight(root)
+    assert state.enabled, state.reason
+    return state
+
+
+@pytest.mark.asyncio
+async def test_preflight_on_a_clean_repo(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    state = await git_preflight(root)
+    assert (state.enabled, state.branch, state.head) == (True, "main", history(root)[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prepare", "reason"),
+    [
+        (lambda root: (root / "dirty.py").write_text("x"), "working tree has uncommitted changes"),
+        (lambda root: git(root, "checkout", "-q", "--detach"), "HEAD is detached"),
+        (lambda root: (root / ".git" / "MERGE_HEAD").write_text("0" * 40 + "\n"), "merge, rebase"),
+        (lambda root: git(root, "config", "--unset", "user.email"), "git user.email is not configured"),
+        (
+            lambda root: ((root / ".delibra").mkdir(), (root / ".delibra" / "x").write_text("x"),
+                          git(root, "add", "-f", ".delibra/x")),
+            "Git index has staged changes",
+        ),
+    ],
+)
+async def test_preflight_disables_commits_with_a_reason(tmp_path, prepare, reason) -> None:
+    root = make_repo(tmp_path)
+    prepare(root)
+    state = await git_preflight(root)
+    assert state.enabled is False
+    assert reason in (state.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_preflight_outside_a_repo_or_below_its_root(tmp_path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert (await git_preflight(plain)).reason == "project is not a git repository"
+    root = make_repo(tmp_path)
+    (root / "sub").mkdir()
+    assert (await git_preflight(root / "sub")).reason == "project is not the Git worktree root"
+
+
+@pytest.mark.asyncio
+async def test_missing_git_disables_commits_without_aborting_build(tmp_path, monkeypatch) -> None:
+    async def missing_git(*_args, **_kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", missing_git)
+    state = await git_preflight(tmp_path)
+    assert state.enabled is False
+    assert "Git executable is unavailable" in (state.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_changes_only_in_envs_or_delibra_keep_commits_on(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    for private in ("envs/bin/python", ".delibra/manifest.json"):
+        (root / private).parent.mkdir(parents=True, exist_ok=True)
+        (root / private).write_text("x")
+    assert (await git_preflight(root)).enabled is True
+
+
+@pytest.mark.asyncio
+async def test_a_configured_filter_disables_commits_without_running(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    marker = tmp_path / "filter-ran"
+    git(root, "config", "filter.evil.clean", f"touch {marker}; cat")
+    (root / ".gitattributes").write_text("* filter=evil\n")
+    state = await git_preflight(root)
+    assert state.enabled is False
+    assert "filter" in (state.reason or "")
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_commit_turn_appends_exactly_one_commit(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    state = await ready(root)
+    before = history(root)
+    (root / "a.py").write_text("print('a')\n")
+    (root / "envs").mkdir()
+    (root / "envs" / "big.bin").write_text("x")
+    (root / ".delibra").mkdir()
+    (root / ".delibra" / "x").write_text("x")
+
+    state, warning = await commit_turn(root, state, "Auto build 1 · cycle 1 · Alpha", "Did a", "Delibra-Auto-Run: abc")
+
+    after = history(root)
+    assert warning is None
+    assert after[1:] == before  # strict prefix: nothing rewritten
+    assert state.head == after[0]
+    assert git(root, "show", "--name-only", "--format=", "HEAD").splitlines() == ["a.py"]
+    message = git(root, "log", "-1", "--format=%B")
+    assert message.startswith("Auto build 1 · cycle 1 · Alpha\n\nDid a\n\nDelibra-Auto-Run: abc")
+
+
+@pytest.mark.asyncio
+async def test_no_changes_means_no_commit(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    state = await ready(root)
+    before = history(root)
+    new_state, warning = await commit_turn(root, state, "s", "b", "t")
+    assert (new_state, warning) == (state, None)
+    assert history(root) == before
+
+
+@pytest.mark.asyncio
+async def test_hooks_never_run(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    state = await ready(root)
+    marker = tmp_path / "hook-ran"
+    for hook in ("pre-commit", "commit-msg", "post-commit"):
+        path = root / ".git" / "hooks" / hook
+        path.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+        path.chmod(0o755)
+    (root / "b.py").write_text("b\n")
+
+    _state, warning = await commit_turn(root, state, "s", "b", "t")
+
+    assert warning is None
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_head_moved_by_the_user_disables_commits(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    state = await ready(root)
+    git(root, "commit", "-q", "--allow-empty", "-m", "user commit")
+    (root / "c.py").write_text("c\n")
+    user_history = history(root)
+
+    new_state, warning = await commit_turn(root, state, "s", "b", "t")
+
+    assert new_state.enabled is False
+    assert warning == "branch or HEAD changed outside the run; commits disabled"
+    assert history(root) == user_history
+
+
+@pytest.mark.asyncio
+async def test_user_staged_paths_disable_commits_and_stay_staged(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    state = await ready(root)
+    (root / ".delibra").mkdir()
+    (root / ".delibra" / "x").write_text("x")
+    git(root, "add", "-f", ".delibra/x")
+    (root / "d.py").write_text("d\n")
+
+    new_state, warning = await commit_turn(root, state, "s", "b", "t")
+
+    assert new_state.enabled is False
+    assert warning == "Git index has staged changes; commits disabled"
+    assert git(root, "diff", "--cached", "--name-only") == ".delibra/x"
+
+
+@pytest.mark.asyncio
+async def test_a_filter_added_mid_run_disables_commits_before_add(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    state = await ready(root)
+    marker = tmp_path / "filter-ran"
+    git(root, "config", "filter.evil.clean", f"touch {marker}; cat")
+    (root / ".gitattributes").write_text("* filter=evil\n")
+
+    new_state, warning = await commit_turn(root, state, "s", "b", "t")
+
+    assert new_state.enabled is False
+    assert "filter" in (warning or "")
+    assert not marker.exists()
