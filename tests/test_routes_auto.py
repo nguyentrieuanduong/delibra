@@ -2271,3 +2271,18 @@ def test_app_gives_the_auto_manager_the_cli_commands(tmp_path: Path) -> None:
     )
     with TestClient(app, base_url="http://localhost"):
         assert app.state.auto_manager.provider_commands == commands
+
+
+def test_setup_dialog_previews_why_commits_would_be_off(tmp_path: Path, monkeypatch) -> None:
+    app, _settings, project, store, _sessions, _factory = auto_route_app(tmp_path)
+    build_ready(store, monkeypatch)
+    name = quote(project.name, safe="")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
+        dialog = local.get(f"/projects/{project.id}/auto/setup").text
+        page = local.get(f"/projects/{name}/chat?auto_setup=1").text
+    with TestClient(app, base_url="http://localhost", client=LAN) as lan:
+        remote = lan.get(f"/projects/{project.id}/auto/setup").text
+
+    for html in (dialog, page):
+        assert "Commits would be off: project is not a git repository" in html
+    assert "Commits would be" not in remote

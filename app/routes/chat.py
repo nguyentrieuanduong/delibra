@@ -12,6 +12,7 @@ from app.routes.auto import (
     auto_status_context,
     project_auto_record,
     projected_auto_setup_context,
+    with_build_git_preview,
 )
 from app.routes.runs import start_run_fragment
 from app.routes.usage import usage_badge_context
@@ -137,12 +138,15 @@ async def chat_page(
         and auto_projection.migration_complete
         and len(sessions) >= 2
     ):
-        setup_context = projected_auto_setup_context(
-            request,
-            project,
+        setup_context = await with_build_git_preview(
+            projected_auto_setup_context(
+                request,
+                project,
+                store,
+                sessions,
+                auto_projection.history,
+            ),
             store,
-            sessions,
-            auto_projection.history,
         )
     sidebar = _sidebar_context(
         store,
