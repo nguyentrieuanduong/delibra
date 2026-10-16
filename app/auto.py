@@ -192,6 +192,14 @@ def _reconstruct_build_cursor(record: AutoRunRecord) -> ResumeCursor:
         return ResumeCursor("discussing", record.current_cycle, record.next_participant)
     latest = record.discussion[-1] if record.discussion else None
     if (
+        record.status == "limit_reached"
+        and record.unavailable
+        and (latest is None or latest.cycle != record.current_cycle)
+    ):
+        # Every available participant of a resumed final cycle failed
+        # before speaking (D§6: an incomplete cycle); nothing in it re-runs.
+        return ResumeCursor("discussing", record.current_cycle + 1, 0)
+    if (
         latest is None
         or latest.cycle != record.current_cycle
         or latest.position != record.next_participant
@@ -2496,6 +2504,20 @@ class AutoManager:
         failed_cycle = record.current_cycle
         started_epoch = self._failed_round_epoch(store, failed.session_id, round_n)
         discussion_len = len(record.discussion)
+
+        def record_handover(to_session_id: str | None) -> None:
+            record.handovers.append(
+                AutoHandover(
+                    failed.session_id,
+                    to_session_id,
+                    reason,
+                    failed_cycle,
+                    round_n,
+                    started_epoch=started_epoch,
+                    discussion_len=discussion_len,
+                )
+            )
+
         record.unavailable.append(
             AutoUnavailable(failed.session_id, reason, round_n, utc_now())
         )
@@ -2503,12 +2525,7 @@ class AutoManager:
         record.active_timeout = None
         available = self._available_positions(record)
         if not available:
-            record.handovers.append(
-                AutoHandover(
-                        failed.session_id, None, reason, failed_cycle, round_n,
-                        started_epoch=started_epoch, discussion_len=discussion_len,
-                    )
-            )
+            record_handover(None)
             reasons = ", ".join(sorted({item.reason for item in record.unavailable}))
             # Cursor stays on the failed participant: the resume cursor for
             # "stopped" re-runs exactly that position.
@@ -2520,37 +2537,26 @@ class AutoManager:
         if later:
             target = later[0]
         else:
-            # The cycle ends on a failure. reconstruct_resume_cursor requires a
-            # converged/limit_reached cursor to sit on the latest completed
-            # turn, so park it there before evaluating the cycle. That turn
-            # exists: the cycle began at available[0], which is below the
-            # failed position, and every available position before the
-            # failed one has spoken in this cycle.
-            latest = record.discussion[-1]
-            assert latest.cycle == record.current_cycle and latest.position in available
-            record.next_participant = latest.position
+            # The cycle ends on a failure (D§6): its end-of-cycle rules run
+            # over the available participants' turns. reconstruct_resume_cursor
+            # reads a converged/limit_reached cursor from this cycle's latest
+            # turn, so park the cursor there when one exists. A resumed cycle
+            # can get here before any available participant spoke; the cursor
+            # then stays on the failed position and the cycle is incomplete.
+            latest = record.discussion[-1] if record.discussion else None
+            if (
+                latest is not None
+                and latest.cycle == record.current_cycle
+                and latest.position in available
+            ):
+                record.next_participant = latest.position
             self._end_build_cycle_locked(store, record, available)
             if record.status not in ACTIVE_AUTO_STATUSES:
-                record.handovers.append(
-                    AutoHandover(
-                        failed.session_id, None, reason, failed_cycle, round_n,
-                        started_epoch=started_epoch, discussion_len=discussion_len,
-                    )
-                )
+                record_handover(None)
                 store.save_auto_run(record)
                 return
             target = record.next_participant
-        record.handovers.append(
-            AutoHandover(
-                failed.session_id,
-                record.participants[target].session_id,
-                reason,
-                failed_cycle,
-                round_n,
-                started_epoch=started_epoch,
-                discussion_len=discussion_len,
-            )
-        )
+        record_handover(record.participants[target].session_id)
         record.next_participant = target
         store.save_auto_run(record)
 

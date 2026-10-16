@@ -5059,3 +5059,76 @@ async def test_a_dirty_tree_at_start_runs_without_commits(tmp_path, monkeypatch)
 
     assert created.git is not None and created.git.enabled is False
     assert created.git.reason
+
+
+def _refailing_outputs() -> list[PlannedOutput]:
+    return [
+        PlannedOutput("A1", "continue"),
+        PlannedOutput("B1", "continue"),
+        PlannedOutput("quota", failure_mode="quota-stderr"),
+        PlannedOutput("quota", failure_mode="quota-stderr"),
+        PlannedOutput("quota", failure_mode="quota-stderr"),
+        PlannedOutput("A finishes", "agree"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resumed_cycle_whose_parked_agent_fails_again_hands_over(
+    tmp_path, monkeypatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, _refailing_outputs()
+    )
+    enable_build(store, monkeypatch)
+    created = await start_build(manager, project_id, session_ids, max_cycles=3)
+    stopped = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert (stopped.status, stopped.current_cycle, stopped.next_participant) == (
+        "stopped", 2, 1,
+    )
+
+    await manager.resume(
+        project_id, created.id, max_cycles=3,
+        turn_timeout_seconds=manager.settings.run_timeout,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # Cycle 2 ended with no available participant having spoken (D§6:
+    # incomplete), so cycle 3 starts at the first available position.
+    assert terminal.status == "converged"
+    assert [(turn.cycle, turn.position) for turn in terminal.discussion] == [
+        (1, 0), (1, 1), (3, 0),
+    ]
+    last = terminal.handovers[-1]
+    assert (last.from_session_id, last.to_session_id, last.cycle) == (
+        session_ids[1], session_ids[0], 2,
+    )
+
+
+@pytest.mark.asyncio
+async def test_empty_final_cycle_ends_limit_reached_and_stays_resumable(
+    tmp_path, monkeypatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, _refailing_outputs()
+    )
+    enable_build(store, monkeypatch)
+    created = await start_build(manager, project_id, session_ids, max_cycles=2)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    await manager.resume(
+        project_id, created.id, max_cycles=2,
+        turn_timeout_seconds=manager.settings.run_timeout,
+    )
+    limited = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert limited.status == "limit_reached"
+    assert reconstruct_resume_cursor(limited) == ResumeCursor("discussing", 3, 0)
+
+    await manager.resume(
+        project_id, created.id, max_cycles=3,
+        turn_timeout_seconds=manager.settings.run_timeout,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status == "converged"
+    assert [(turn.cycle, turn.position) for turn in terminal.discussion] == [
+        (1, 0), (1, 1), (3, 0),
+    ]
