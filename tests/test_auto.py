@@ -4650,3 +4650,214 @@ async def test_build_prompt_names_the_staged_context_by_absolute_path(tmp_path, 
     prompt = str(factory.calls[0]["prompt"])
     assert str(store.workspace_dir(session_ids[0]) / "inputs") in prompt
     assert "Delibra commits after your turn" in prompt
+
+
+@pytest.mark.asyncio
+async def test_build_quota_hands_over_to_next_agent(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("Built and verified", "agree"),
+        ],
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert terminal.terminal_reason == "first participant agreement after initial cycle"
+    assert [item.session_id for item in terminal.unavailable] == [session_ids[0]]
+    [handover] = terminal.handovers
+    assert (handover.from_session_id, handover.to_session_id, handover.reason, handover.cycle) == (
+        session_ids[0], session_ids[1], "quota", 1,
+    )
+    assert [turn.position for turn in terminal.discussion] == [1]
+    assert factory.created == 2
+
+
+@pytest.mark.asyncio
+async def test_build_retries_exhausted_hands_over(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("attempt 1", failure_mode="transient"),
+            PlannedOutput("attempt 2", failure_mode="transient"),
+            PlannedOutput("attempt 3", failure_mode="transient"),
+            PlannedOutput("Built and verified", "agree"),
+        ],
+    )
+    manager.settings = replace(manager.settings, auto_turn_retries=2, auto_retry_backoff_seconds=1)
+    manager._backoff_before_retry = _no_backoff
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert [item.reason for item in terminal.handovers] == ["retries exhausted"]
+    assert factory.created == 4
+
+
+@pytest.mark.asyncio
+async def test_discussion_quota_still_pauses(tmp_path) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("quota", failure_mode="quota-stderr"), PlannedOutput("must not run")],
+    )
+
+    created = await manager.create(
+        project_id,
+        topic="Discussion",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "paused: provider quota exhausted during discussion"
+    assert terminal.handovers == []
+    assert terminal.unavailable == []
+    assert factory.created == 1
+
+
+@pytest.mark.asyncio
+async def test_all_unavailable_pauses_resumably(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("Second agent builds", "continue"),
+            PlannedOutput("First agent finishes", "agree"),
+        ],
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    stopped = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert stopped.status == "stopped"
+    assert stopped.terminal_reason == "paused: all agents unavailable (quota)"
+    assert [item.session_id for item in stopped.unavailable] == session_ids
+    assert stopped.handovers[-1].to_session_id is None
+    assert stopped.next_participant == 1
+
+    await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=2,
+        turn_timeout_seconds=manager.settings.run_timeout,
+        provider_versions={"fake": "1"},
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert terminal.unavailable == []
+    # The parked participant re-runs first, then cycle 2 starts at position 0.
+    assert [(turn.cycle, turn.position) for turn in terminal.discussion] == [(1, 1), (2, 0)]
+    assert factory.created == 4
+
+
+@pytest.mark.asyncio
+async def test_cursor_skips_unavailable_in_later_cycles(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("A1", "continue"),
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("C1", "continue"),
+            PlannedOutput("A2", "continue"),
+            PlannedOutput("C2", "agree"),
+        ],
+        participants=3,
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids, max_cycles=3)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert terminal.terminal_reason == "first participant agreement"
+    assert [(turn.cycle, turn.position) for turn in terminal.discussion] == [
+        (1, 0), (1, 2), (2, 0), (2, 2),
+    ]
+    assert factory.created == 5
+
+
+@pytest.mark.asyncio
+async def test_all_agree_counts_only_available(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("A agrees", "agree"),
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("C agrees", "agree"),
+        ],
+        participants=3,
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids, policy="all_agree", max_cycles=1)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert terminal.terminal_reason == "all participants agreed"
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_quota_hands_over_without_starting(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("must not run"), PlannedOutput("must not run either")],
+    )
+    now = datetime.now(timezone.utc)
+    manager.runner.usage.record(
+        RateLimitObservation(
+            provider="fake",
+            account_key="default",
+            window="five_hour",
+            used_percent=94.0,
+            status="unknown",
+            resets_at=now + timedelta(hours=1),
+            observed_at=now,
+            source="codex_rollout_token_count",
+        )
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # Both participants share the limited provider, so both hand over
+    # before any command is built.
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "paused: all agents unavailable (quota)"
+    assert [item.round_n for item in terminal.unavailable] == [None, None]
+    assert terminal.quota_pause is None
+    assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_limit_reached_resume_cursor_with_unavailable_tail(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("A1", "continue"),
+            PlannedOutput("B1", "continue"),
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+        ],
+        participants=3,
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids, max_cycles=1)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "limit_reached"
+    # The cursor sits on the last completed turn, not on the failed C.
+    assert terminal.next_participant == 1
+    assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 2, 0)

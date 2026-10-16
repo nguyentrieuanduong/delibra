@@ -21,6 +21,7 @@ from app.agents.errors import is_retryable
 from app.models import (
     AUTO_KINDS,
     AutoArtifact,
+    AutoHandover,
     AutoBaselineEntry,
     AutoCompactionAttempt,
     AutoContextPolicy,
@@ -30,6 +31,7 @@ from app.models import (
     AutoResumption,
     AutoRunRecord,
     AutoTurn,
+    AutoUnavailable,
     ContextSummaryArtifact,
     RateLimitObservation,
     AutoSummary,
@@ -119,6 +121,8 @@ def reconstruct_resume_cursor(record: AutoRunRecord) -> ResumeCursor:
 
     if record.status not in TERMINAL_AUTO_STATUSES:
         raise StorageError("Auto run is not in a terminal state")
+    if record.kind == "build":
+        return _reconstruct_build_cursor(record)
     participants = len(record.participants)
     if record.current_cycle == 0:
         # The run never entered discussion. ``_drive`` routes a preparation
@@ -160,6 +164,46 @@ def reconstruct_resume_cursor(record: AutoRunRecord) -> ResumeCursor:
             record.current_cycle,
             record.next_participant + 1,
         )
+    return ResumeCursor("discussing", record.current_cycle + 1, 0)
+
+
+def _reconstruct_build_cursor(record: AutoRunRecord) -> ResumeCursor:
+    """Build-run resume cursor.
+
+    resume() clears `unavailable`, so the cursor is expressed over all
+    participants. Only the limit_reached check reads availability as the
+    run ended: a cycle that ended on a handover parks the cursor on the
+    last available speaker, not on the last position.
+    """
+
+    participants = len(record.participants)
+    if record.current_cycle == 0:
+        if not 0 <= record.next_participant <= participants:
+            raise StorageError("Auto preparation cursor is invalid")
+        return ResumeCursor("preparing", 0, record.next_participant)
+    if not 0 <= record.next_participant < participants:
+        raise StorageError("Auto discussion cursor is invalid")
+    if record.status in {"stopped", "error", "interrupted"}:
+        return ResumeCursor("discussing", record.current_cycle, record.next_participant)
+    latest = record.discussion[-1] if record.discussion else None
+    if (
+        latest is None
+        or latest.cycle != record.current_cycle
+        or latest.position != record.next_participant
+    ):
+        raise StorageError("Auto run cursor does not match its latest discussion turn")
+    if record.status == "limit_reached":
+        gone = {item.session_id for item in record.unavailable}
+        if any(
+            index > record.next_participant and participant.session_id not in gone
+            for index, participant in enumerate(record.participants)
+        ):
+            raise StorageError(
+                "Auto limit_reached cursor is not on the last available participant"
+            )
+        return ResumeCursor("discussing", record.current_cycle + 1, 0)
+    if record.next_participant + 1 < participants:
+        return ResumeCursor("discussing", record.current_cycle, record.next_participant + 1)
     return ResumeCursor("discussing", record.current_cycle + 1, 0)
 
 
@@ -763,6 +807,8 @@ class AutoManager:
             record.future_turn_timeout_seconds = turn_timeout
             record.finished_at = None
             record.terminal_reason = None
+            if record.kind == "build":
+                record.unavailable = []
             record.stop_requested = False
             record.stop_after_turn = False
             record.active_key = None
@@ -978,6 +1024,9 @@ class AutoManager:
                     if participant is not None
                     else None
                 )
+                if quota_pause is not None and record.kind == "build":
+                    await self._hand_over_before_turn(record)
+                    continue
                 if quota_pause is not None:
                     await self._pause_for_quota(record, quota_pause)
                     return
@@ -1682,6 +1731,13 @@ class AutoManager:
 
         category = result.error_category or "permanent"
         reason = f"{phase} provider failed: {result.error or result.status}"
+        if current.kind == "build":
+            if category == "quota":
+                self._hand_over_locked(store, current, "quota", result.n)
+                return "done"
+            if is_retryable(category) and attempt >= self.settings.auto_turn_retries:
+                self._hand_over_locked(store, current, "retries exhausted", result.n)
+                return "done"
         if category == "quota":
             # A provider 429 proves the call cannot succeed; retrying it burns
             # nothing but latency. Pause to a resumable stopped instead, so
@@ -2242,6 +2298,9 @@ class AutoManager:
         store: ProjectStore,
         record: AutoRunRecord,
     ) -> None:
+        if record.kind == "build":
+            self._advance_build_locked(store, record)
+            return
         latest = record.discussion[-1]
         last_participant = record.next_participant == len(record.participants) - 1
         if (
@@ -2296,6 +2355,144 @@ class AutoManager:
         else:
             record.current_cycle += 1
             record.next_participant = 0
+            store.save_auto_run(record)
+
+    @staticmethod
+    def _available_positions(record: AutoRunRecord) -> list[int]:
+        gone = {item.session_id for item in record.unavailable}
+        return [
+            index
+            for index, participant in enumerate(record.participants)
+            if participant.session_id not in gone
+        ]
+
+    def _advance_build_locked(self, store: ProjectStore, record: AutoRunRecord) -> None:
+        latest = record.discussion[-1]
+        if (
+            record.agreement_policy == "first_agree"
+            and record.current_cycle > 1
+            and latest.verdict == "agree"
+        ):
+            self._transition_terminal_locked(
+                store, record, "converged", "first participant agreement"
+            )
+            return
+        available = self._available_positions(record)
+        later = [index for index in available if index > record.next_participant]
+        if later:
+            record.next_participant = later[0]
+            store.save_auto_run(record)
+            return
+        self._end_build_cycle_locked(store, record, available)
+
+    async def _hand_over_before_turn(self, record: AutoRunRecord) -> None:
+        store = ProjectStore(self.registry.get(record.project_id))
+        session_ids = [participant.session_id for participant in record.participants]
+        async with self.locks.project_sessions(record.project_id, session_ids):
+            current = store.load_auto_run(record.id)
+            if current.status == "discussing":
+                self._hand_over_locked(store, current, "quota", None)
+        self._publish_status(current)
+
+    def _hand_over_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        reason: str,
+        round_n: int | None,
+    ) -> None:
+        failed = record.participants[record.next_participant]
+        failed_cycle = record.current_cycle
+        record.unavailable.append(
+            AutoUnavailable(failed.session_id, reason, round_n, utc_now())
+        )
+        record.active_key = None
+        record.active_timeout = None
+        available = self._available_positions(record)
+        if not available:
+            record.handovers.append(
+                AutoHandover(failed.session_id, None, reason, failed_cycle, round_n)
+            )
+            reasons = ", ".join(sorted({item.reason for item in record.unavailable}))
+            # Cursor stays on the failed participant: the resume cursor for
+            # "stopped" re-runs exactly that position.
+            self._transition_terminal_locked(
+                store, record, "stopped", f"paused: all agents unavailable ({reasons})"
+            )
+            return
+        later = [index for index in available if index > record.next_participant]
+        if later:
+            target = later[0]
+        else:
+            # The cycle ends on a failure. reconstruct_resume_cursor requires a
+            # converged/limit_reached cursor to sit on the latest completed
+            # turn, so park it there before evaluating the cycle. That turn
+            # exists: the cycle began at available[0], which is below the
+            # failed position, and every available position before the
+            # failed one has spoken in this cycle.
+            latest = record.discussion[-1]
+            assert latest.cycle == record.current_cycle and latest.position in available
+            record.next_participant = latest.position
+            self._end_build_cycle_locked(store, record, available)
+            if record.status not in ACTIVE_AUTO_STATUSES:
+                record.handovers.append(
+                    AutoHandover(failed.session_id, None, reason, failed_cycle, round_n)
+                )
+                store.save_auto_run(record)
+                return
+            target = record.next_participant
+        record.handovers.append(
+            AutoHandover(
+                failed.session_id,
+                record.participants[target].session_id,
+                reason,
+                failed_cycle,
+                round_n,
+            )
+        )
+        record.next_participant = target
+        store.save_auto_run(record)
+
+    def _end_build_cycle_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        available: list[int],
+    ) -> None:
+        """Build-run end-of-cycle rules, over the participants still available.
+
+        Mirrors the discussion branch of `_advance_discussion_locked`, which
+        stays untouched; only build runs ever have unavailable participants.
+        """
+
+        cycle_turns = [
+            turn
+            for turn in record.discussion
+            if turn.cycle == record.current_cycle and turn.position in available
+        ]
+        complete = len(cycle_turns) == len(available)
+        unanimous = complete and all(turn.verdict == "agree" for turn in cycle_turns)
+        initial_first_agreement = (
+            record.agreement_policy == "first_agree"
+            and record.current_cycle == 1
+            and complete
+            and any(turn.verdict == "agree" for turn in cycle_turns)
+        )
+        if initial_first_agreement:
+            self._transition_terminal_locked(
+                store, record, "converged", "first participant agreement after initial cycle"
+            )
+        elif record.agreement_policy == "all_agree" and unanimous:
+            self._transition_terminal_locked(
+                store, record, "converged", "all participants agreed"
+            )
+        elif record.current_cycle >= record.max_cycles:
+            self._transition_terminal_locked(
+                store, record, "limit_reached", "maximum discussion cycles reached"
+            )
+        else:
+            record.current_cycle += 1
+            record.next_participant = available[0]
             store.save_auto_run(record)
 
     async def _transition_terminal(
