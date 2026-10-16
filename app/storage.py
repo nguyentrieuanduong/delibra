@@ -43,6 +43,7 @@ from app.models import (
     RateLimitReading,
     RoundRecord,
     SessionConfig,
+    TurnUsage,
 )
 from app.pass_prompts import (
     BUILT_IN_PASS_PROMPT_TEMPLATE,
@@ -1050,6 +1051,114 @@ class CodexRolloutState:
     # `exec --json` never reports the context window, so this rollout read is
     # the only place the occupancy denominator exists.
     context_window: int | None = None
+    # The newest turn, from its own segment. codex-cli 0.162.1 reports a
+    # resumed thread's running total on `turn.completed`, so stdout no longer
+    # describes one round.
+    turn_usage: TurnUsage | None = None
+    last_tokens: int | None = None
+
+
+
+_ROLLOUT_USAGE_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "cache_write_input_tokens",
+    "total_tokens",
+)
+
+
+def _rollout_record(line: str) -> tuple[datetime | None, dict[str, Any]] | None:
+    """One `event_msg` record's write time and payload; None for anything else."""
+
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict) or record.get("type") != "event_msg":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    stamp = record.get("timestamp")
+    written = None
+    if isinstance(stamp, str):
+        try:
+            written = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            written = None
+        if written is not None and written.tzinfo is None:
+            written = None
+    return written, payload
+
+
+def _rollout_counts(info: Any, key: str) -> dict[str, int] | None:
+    usage = info.get(key) if isinstance(info, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    counts = {name: usage.get(name) for name in _ROLLOUT_USAGE_FIELDS}
+    # ``type(...)`` and not ``isinstance``: ``True`` is an ``int``.
+    if any(type(value) is not int or value < 0 for value in counts.values()):
+        return None
+    return counts
+
+
+def _newest_turn_figures(
+    lines: list[str], since: datetime
+) -> tuple[TurnUsage | None, int | None]:
+    """This run's billing and occupancy, from its own rollout segment.
+
+    Only records written at or after `since` (the round's start, taken
+    before the process spawned) count: a resumed process that exits before
+    starting a turn must never be billed with the previous turn's segment.
+    Billing is how far `total_token_usage` grew across the segment: the
+    first token_count's total minus its own `last_token_usage` is the total
+    before the turn (true on all 67 turns measured on 0.162.1). Summing
+    `last_token_usage` instead over-counts, because Codex repeats
+    token_count events. Occupancy is the newest `last_token_usage`.
+    """
+
+    counts: list[tuple[datetime | None, Any]] = []
+    started: datetime | None = None
+    found_start = False
+    for line in reversed(lines):
+        parsed = _rollout_record(line)
+        if parsed is None:
+            continue
+        written, payload = parsed
+        if payload.get("type") == "task_started":
+            started, found_start = written, True
+            break
+        if payload.get("type") == "token_count" and payload.get("info") is not None:
+            counts.append((written, payload["info"]))
+    if not counts or counts[0][0] is None or counts[0][0] < since:
+        return None, None
+    newest = _rollout_counts(counts[0][1], "last_token_usage")
+    last_tokens = newest["total_tokens"] if newest is not None else None
+    if not found_start or started is None or started < since:
+        return None, last_tokens
+    end = _rollout_counts(counts[0][1], "total_token_usage")
+    first_total = _rollout_counts(counts[-1][1], "total_token_usage")
+    first_last = _rollout_counts(counts[-1][1], "last_token_usage")
+    if end is None or first_total is None or first_last is None:
+        return None, last_tokens
+    spent = {
+        name: end[name] - (first_total[name] - first_last[name])
+        for name in _ROLLOUT_USAGE_FIELDS
+    }
+    if any(value < 0 for value in spent.values()):
+        return None, last_tokens
+    return (
+        TurnUsage(
+            input_tokens=spent["input_tokens"],
+            output_tokens=spent["output_tokens"],
+            cache_read_tokens=spent["cached_input_tokens"],
+            cache_creation_tokens=spent["cache_write_input_tokens"],
+            reasoning_tokens=spent["reasoning_output_tokens"],
+        ),
+        last_tokens,
+    )
 
 
 def _codex_rollout_state(
@@ -1058,6 +1167,7 @@ def _codex_rollout_state(
     *,
     scan_limit: int,
     read_limit: int,
+    turn_since: datetime | None = None,
 ) -> CodexRolloutState:
     try:
         matches = sorted(
@@ -1066,29 +1176,28 @@ def _codex_rollout_state(
         )[:scan_limit]
     except OSError:
         return CodexRolloutState([])
+    figures: tuple[TurnUsage | None, int | None] = (None, None)
     for path in matches:
         try:
             lines = _rollout_tail(path, codex_home, read_limit)
         except (OSError, OwnershipError):
             continue
+        if turn_since is not None and path == matches[0]:
+            # Only the thread's newest rollout holds the turn that just ran.
+            figures = _newest_turn_figures(lines, turn_since)
         for line in reversed(lines):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
+            parsed = _rollout_record(line)
+            if parsed is None or parsed[1].get("type") != "token_count":
                 continue
-            if not isinstance(record, dict) or record.get("type") != "event_msg":
-                continue
-            payload = record.get("payload")
-            if not isinstance(payload, dict) or payload.get("type") != "token_count":
-                continue
+            payload = parsed[1]
             readings = _rollout_rate_limits(payload.get("rate_limits"))
             info = payload.get("info")
             window = info.get("model_context_window") if isinstance(info, dict) else None
             if type(window) is not int or window < 1:
                 window = None
             if readings or window is not None:
-                return CodexRolloutState(readings, window)
-    return CodexRolloutState([])
+                return CodexRolloutState(readings, window, *figures)
+    return CodexRolloutState([], None, *figures)
 
 
 def read_codex_rollout_state(
@@ -1097,6 +1206,7 @@ def read_codex_rollout_state(
     *,
     scan_limit: int,
     read_limit: int,
+    turn_since: datetime | None = None,
 ) -> CodexRolloutState:
     """Read one Codex thread's newest quota and window from its own rollout.
 
@@ -1114,6 +1224,7 @@ def read_codex_rollout_state(
         f"sessions/*/*/*/rollout-*-{thread_id}.jsonl",
         scan_limit=scan_limit,
         read_limit=read_limit,
+        turn_since=turn_since,
     )
 
 

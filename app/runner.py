@@ -52,6 +52,7 @@ from app.models import (
     TurnUsage,
 )
 from app.storage import (
+    CodexRolloutState,
     ConflictError,
     LockCoordinator,
     NotFoundError,
@@ -131,6 +132,7 @@ class ActiveRun:
     deadline_changed: asyncio.Event
     auto_request: AutoRunRequest | None = None
     compact: bool = False
+    resumed: bool = False
     task: asyncio.Task[None] | None = None
     captured: bytearray = field(default_factory=bytearray)
     stderr_tail: bytearray = field(default_factory=bytearray)
@@ -904,6 +906,7 @@ class RunManager:
             deadline_changed=asyncio.Event(),
             auto_request=auto_request,
             compact=request.compact,
+            resumed=resume_id is not None,
             warnings=list(record.warnings),
         )
         self._active[key] = active
@@ -1565,23 +1568,51 @@ class RunManager:
         provider call, because the rollout is app-owned state.
         """
 
-        if active.config.agent != "codex" or active.provider_thread_id is None:
+        if active.config.agent != "codex":
             return
-        state = read_codex_rollout_state(
-            self.settings.codex_home,
-            active.provider_thread_id,
-            scan_limit=self.settings.codex_rollout_scan_limit,
-            read_limit=self.settings.codex_rollout_read_limit,
+        state = (
+            read_codex_rollout_state(
+                self.settings.codex_home,
+                active.provider_thread_id,
+                scan_limit=self.settings.codex_rollout_scan_limit,
+                read_limit=self.settings.codex_rollout_read_limit,
+                # Taken before the process spawned: only rollout records
+                # written since then belong to this round.
+                turn_since=datetime.fromisoformat(
+                    active.record.started_at.replace("Z", "+00:00")
+                ),
+            )
+            if active.provider_thread_id is not None
+            else CodexRolloutState([])
         )
         for reading in state.rate_limits:
             self._record_rate_limit(active, reading)
+        if state.turn_usage is not None and state.turn_usage.reported:
+            active.usage = state.turn_usage
+        elif active.resumed:
+            # codex-cli 0.162.1 reports a resumed thread's running total on
+            # `turn.completed`. Without the segment's start in the rollout
+            # this round's cost is unknown, which beats a wrong figure.
+            active.usage = None
+        if state.last_tokens is not None:
+            active.context_reading = ContextReading(
+                used_tokens=state.last_tokens,
+                context_window=(
+                    active.context_reading.context_window
+                    if active.context_reading is not None
+                    else None
+                ),
+                numerator_source="codex_last_token_usage",
+            )
+        elif active.resumed:
+            active.context_reading = None
         if (
             state.context_window is not None
             and active.context_reading is not None
             and active.context_reading.context_window is None
         ):
-            # The numerator came from stdout's `turn.completed`; only the
-            # rollout knows what to divide it by.
+            # The numerator came from stdout (fresh thread) or the rollout
+            # segment; only the rollout knows what to divide it by.
             active.context_reading = replace(
                 active.context_reading,
                 context_window=state.context_window,
