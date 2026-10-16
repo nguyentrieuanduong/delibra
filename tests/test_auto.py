@@ -30,6 +30,7 @@ from app.auto import (
     render_preparation_context,
     validate_turn_timeout_seconds,
 )
+from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
 from app.config import Settings
 from app.main import create_app
 from app.models import (
@@ -4536,3 +4537,101 @@ async def test_a_status_event_is_published_while_the_round_key_is_live(
         await asyncio.wait_for(published_live.wait(), timeout=3)
     finally:
         await manager.stop(project_id, created.id)
+
+
+def enable_build(store: ProjectStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    store.set_coding_enabled(True)
+    store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
+
+
+async def start_build(
+    manager: AutoManager,
+    project_id: str,
+    session_ids: list[str],
+    *,
+    policy: str = "first_agree",
+    max_cycles: int = 2,
+    provider_versions: dict[str, str | None] | None = None,
+    preparation_enabled: bool = False,
+):
+    return await manager.create(
+        project_id,
+        topic="Build the task",
+        participant_ids=session_ids,
+        agreement_policy=policy,
+        max_cycles=max_cycles,
+        preparation_enabled=preparation_enabled,
+        kind="build",
+        provider_versions={"fake": "1"} if provider_versions is None else provider_versions,
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_requires_coding_enabled(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused")]
+    )
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
+    with pytest.raises(StorageError, match="Coding is not enabled for this project"):
+        await start_build(manager, project_id, session_ids)
+    assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_build_requires_a_ready_env(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused")]
+    )
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
+    store.set_coding_enabled(True)
+    with pytest.raises(StorageError, match="Coding environment is not ready"):
+        await start_build(manager, project_id, session_ids)
+
+
+@pytest.mark.asyncio
+async def test_build_rejects_an_unverified_provider(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused")]
+    )
+    enable_build(store, monkeypatch)
+    monkeypatch.delitem(BUILD_VERIFIED_VERSIONS, "fake")
+    with pytest.raises(StorageError, match=r"Agent 1 \(fake\) is not verified for build runs"):
+        await start_build(manager, project_id, session_ids)
+
+
+@pytest.mark.asyncio
+async def test_build_explains_a_cli_version_still_being_checked(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused")]
+    )
+    enable_build(store, monkeypatch)
+    with pytest.raises(StorageError, match="CLI version is still being checked"):
+        await start_build(manager, project_id, session_ids, provider_versions={})
+
+
+@pytest.mark.asyncio
+async def test_build_rejects_a_project_path_no_sandbox_rule_can_express(tmp_path, monkeypatch) -> None:
+    unsafe = tmp_path / "a,b"
+    unsafe.mkdir()
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        unsafe, [PlannedOutput("unused")]
+    )
+    enable_build(store, monkeypatch)
+    with pytest.raises(StorageError, match="sandbox rule"):
+        await start_build(manager, project_id, session_ids)
+
+
+@pytest.mark.asyncio
+async def test_build_create_records_kind_and_forces_preparation_off(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids, preparation_enabled=True)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert created.kind == "build"
+    assert created.preparation_enabled is False
+    assert terminal.preparations == []

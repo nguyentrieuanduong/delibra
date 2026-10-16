@@ -15,9 +15,11 @@ from typing import AsyncIterator, Literal, Sequence, TYPE_CHECKING
 import unicodedata
 from uuid import uuid4
 
+from app.coding import build_capable
 from app.config import Settings
 from app.agents.errors import is_retryable
 from app.models import (
+    AUTO_KINDS,
     AutoArtifact,
     AutoBaselineEntry,
     AutoCompactionAttempt,
@@ -48,6 +50,7 @@ from app.storage import (
     ProjectStore,
     RegistryStore,
     StorageError,
+    first_unsafe_writable_root_character,
     utc_now,
     validate_id,
     validate_turn_timeout_seconds,
@@ -403,6 +406,8 @@ class AutoManager:
         preparation_enabled: bool = True,
         turn_timeout_seconds: int | None = None,
         context_policy: AutoContextPolicy | None = None,
+        kind: str = "discussion",
+        provider_versions: dict[str, str | None] | None = None,
     ) -> AutoRunRecord:
         if self._quiescing:
             raise ConflictError("Auto manager is shutting down")
@@ -454,6 +459,15 @@ class AutoManager:
                     "Auto context summarizer must be one of the participants"
                 )
             store.require_auto_inactive()
+            if kind not in AUTO_KINDS:
+                raise StorageError("Auto kind is invalid")
+            if kind == "build":
+                self._require_build_ready(
+                    store,
+                    [(by_id[item].name, by_id[item].agent) for item in requested_ids],
+                    provider_versions,
+                )
+                preparation_enabled = False
             if any(session.status == "running" for session in sessions) or any(
                 self.runner.active_key(project_id, session.id) is not None
                 for session in sessions
@@ -520,6 +534,7 @@ class AutoManager:
                 finished_at=None,
                 terminal_reason=None,
                 context_policy=context_policy,
+                kind=kind,
             )
             store.create_auto_run(
                 record,
@@ -544,6 +559,37 @@ class AutoManager:
         self._tasks[(project_id, auto_id)] = task
         return record
 
+    @staticmethod
+    def _require_build_ready(
+        store: ProjectStore,
+        participants: Sequence[tuple[str, str]],
+        provider_versions: dict[str, str | None] | None,
+    ) -> None:
+        """Refuse a build run unless every agent's sandbox was spike-verified.
+
+        `participants` are (name, agent) pairs. Shared by create() and resume().
+        """
+
+        policy = store.coding_policy()
+        if not policy.enabled:
+            raise StorageError("Coding is not enabled for this project")
+        if policy.env.status != "ready":
+            raise StorageError("Coding environment is not ready")
+        if first_unsafe_writable_root_character(str(store.project_path)) is not None:
+            raise StorageError("project path cannot be expressed in a sandbox rule")
+        versions = provider_versions or {}
+        for name, agent in participants:
+            version = versions.get(agent)
+            if version is None:
+                raise StorageError(
+                    f"{name} ({agent}): CLI version is still being checked or "
+                    "unavailable; retry in a few seconds"
+                )
+            if not build_capable(agent, version):
+                raise StorageError(
+                    f"{name} ({agent}) is not verified for build runs (CLI {version})"
+                )
+
     async def resume(
         self,
         project_id: str,
@@ -551,6 +597,7 @@ class AutoManager:
         *,
         max_cycles: int,
         turn_timeout_seconds: int,
+        provider_versions: dict[str, str | None] | None = None,
     ) -> AutoRunRecord:
         """Return a terminal Auto run to its parked cursor and drive it again."""
 
@@ -639,6 +686,12 @@ class AutoManager:
                     raise StorageError(
                         f"Auto participant {participant.name} changed name or provider"
                     )
+            if record.kind == "build":
+                self._require_build_ready(
+                    store,
+                    [(participant.name, by_id[participant.session_id].agent) for participant in record.participants],
+                    provider_versions,
+                )
 
             # Re-verify every artifact the next turn will read. _discussion_context
             # covers topic, preparations, baseline entries, and prior discussion

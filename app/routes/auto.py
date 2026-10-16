@@ -26,7 +26,7 @@ from app.models import (
     SessionConfig,
 )
 from app.project_routing import request_project
-from app.security import validate_field
+from app.security import is_loopback_client, require_loopback_client, validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
 from app.urls import project_url
 from app.views import agent_views, auto_run_usage
@@ -411,6 +411,10 @@ def auto_status_context(
     }
 
 
+def _provider_versions(request: Request) -> dict[str, str | None]:
+    return {health.name: health.version for health in request.app.state.health}
+
+
 def _status_response(
     request: Request,
     project_id: str,
@@ -449,6 +453,7 @@ def projected_auto_setup_context(
     )
     topic = _durable_topic(request, store, auto_records)
     settings = request.app.state.settings
+    coding = store.coding_policy()
     return {
         "project": project,
         "sessions": ordered_sessions,
@@ -462,6 +467,11 @@ def projected_auto_setup_context(
         "context_interval": AutoContextPolicy.interval,
         "context_threshold_percent": settings.auto_context_trigger_percent,
         "stateless_history_limit": settings.stateless_history_limit,
+    "build_available": (
+        is_loopback_client(request)
+        and coding.enabled
+        and coding.env.status == "ready"
+    ),
     }
 
 
@@ -533,7 +543,10 @@ async def start_auto(
     context_interval: int = Form(AutoContextPolicy.interval),
     context_threshold_percent: int = Form(AutoContextPolicy.threshold_percent),
     context_summarizer: str = Form("next"),
+    kind: str = Form("discussion"),
 ) -> HTMLResponse:
+    if kind == "build":
+        require_loopback_client(request)
     topic = validate_field(topic, "Topic", maximum=100_000)
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -556,6 +569,8 @@ async def start_auto(
         preparation_enabled=prepare_first,
         turn_timeout_seconds=turn_timeout_seconds,
         context_policy=context_policy,
+        kind=kind,
+        provider_versions=_provider_versions(request) if kind == "build" else None,
     )
     return _status_response(
         request,
@@ -701,6 +716,8 @@ async def resume_auto(
     project = request_project(request, project_id)
     resolved_project_id = project.id
     record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    if record.kind == "build":
+        require_loopback_client(request)
     # The form asks for cycles to add; the manager stores a cumulative limit.
     # Translate here so the two never have to mean the same number.
     cursor = reconstruct_resume_cursor(record)
@@ -722,6 +739,7 @@ async def resume_auto(
         record.id,
         max_cycles=max_cycles,
         turn_timeout_seconds=turn_timeout_seconds,
+        provider_versions=_provider_versions(request),
     )
     return _status_response(
         request,
