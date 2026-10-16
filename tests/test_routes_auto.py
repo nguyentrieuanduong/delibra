@@ -2063,11 +2063,16 @@ async def _verified_fake_version(self, agent: str) -> str | None:
     return "1"
 
 
+async def _working_env_python(self, project_path) -> str | None:
+    return "3.12.1"
+
+
 def build_ready(store: ProjectStore, monkeypatch: pytest.MonkeyPatch) -> None:
     store.set_coding_enabled(True)
     store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
     monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
     monkeypatch.setattr(AutoManager, "_build_version", _verified_fake_version)
+    monkeypatch.setattr(AutoManager, "_env_python", _working_env_python)
 
 
 def build_form(session_ids: list[str], *, kind: str = "build") -> dict:

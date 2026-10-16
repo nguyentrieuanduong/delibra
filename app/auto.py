@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 import logging
@@ -18,6 +18,7 @@ from uuid import uuid4
 from app.build_git import commit_turn, git_preflight
 from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, render_handover
 from app.coding import GUIDANCE_MAX_BYTES, CodingPolicyError, build_capable, read_guidance
+from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
 from app.health import probe_build_version
 from app.agents.errors import is_retryable
@@ -105,6 +106,10 @@ BUILD_TURN_PROMPT = (
     "Converged only if the whole task is complete and verified; otherwise "
     "write Not converged. Follow the Guidance section where it applies to this "
     "task; the task and the project's existing conventions take precedence."
+)
+ENV_BROKEN_ERROR = (
+    "envs/bin/python no longer runs --version; fix ./envs, then press "
+    "Retry environment in Settings"
 )
 
 
@@ -519,6 +524,11 @@ class AutoManager:
             if kind == "build"
             else {}
         )
+        env_python = (
+            await self._env_python(ProjectStore(project).project_path)
+            if kind == "build"
+            else None
+        )
         all_session_ids = [session.id for session in discovered]
         async with self.locks.registry_project_sessions(project_id, all_session_ids):
             project = self.registry.get(project_id)
@@ -547,6 +557,7 @@ class AutoManager:
                     store,
                     [(by_id[item].name, by_id[item].agent) for item in requested_ids],
                     build_versions,
+                    env_python,
                 )
                 preparation_enabled = False
                 guidance_files = store.coding_policy().guidance_files
@@ -675,6 +686,15 @@ class AutoManager:
         found = await asyncio.gather(*(self._build_version(agent) for agent in unique))
         return dict(zip(unique, found))
 
+    async def _env_python(self, project_path: Path) -> str | None:
+        """A fresh `envs/bin/python --version`; None if it failed.
+
+        The saved "ready" status only records what setup saw. Like the CLI
+        probe, this runs before any lock is held.
+        """
+
+        return await probe_env_python(project_path, environ=server_environment())
+
     async def _build_turn_refusal(self, record: AutoRunRecord) -> str | None:
         participant = record.participants[record.next_participant]
         version = await self._build_version(participant.agent)
@@ -691,10 +711,14 @@ class AutoManager:
         store: ProjectStore,
         participants: Sequence[tuple[str, str]],
         versions: dict[str, str | None],
+        env_python: str | None,
     ) -> None:
-        """Refuse a build run unless every agent's sandbox was spike-verified.
+        """Refuse a build run unless every agent's sandbox was spike-verified
+        and the environment's Python still runs.
 
-        `participants` are (name, agent) pairs. Shared by create() and resume().
+        `participants` are (name, agent) pairs. Shared by create() and
+        resume(). A "ready" env whose probe failed is saved as "error", so
+        the settings page offers Retry environment.
         """
 
         policy = store.coding_policy()
@@ -702,6 +726,13 @@ class AutoManager:
             raise StorageError("Coding is not enabled for this project")
         if policy.env.status != "ready":
             raise StorageError("Coding environment is not ready")
+        if env_python is None:
+            store.set_coding_env(
+                replace(
+                    policy.env, status="error", error=ENV_BROKEN_ERROR, updated_at=utc_now()
+                )
+            )
+            raise StorageError(ENV_BROKEN_ERROR)
         if first_unsafe_writable_root_character(str(store.project_path)) is not None:
             raise StorageError("project path cannot be expressed in a sandbox rule")
         for name, agent in participants:
@@ -761,6 +792,11 @@ class AutoManager:
             )
             if pending.kind == "build"
             else {}
+        )
+        env_python = (
+            await self._env_python(ProjectStore(self.registry.get(project_id)).project_path)
+            if pending.kind == "build"
+            else None
         )
         project = self.registry.get(project_id)
         discovered = ProjectStore(project).list_sessions()
@@ -824,6 +860,7 @@ class AutoManager:
                     store,
                     [(participant.name, by_id[participant.session_id].agent) for participant in record.participants],
                     build_versions,
+                    env_python,
                 )
 
             # Re-verify every artifact the next turn will read. _discussion_context

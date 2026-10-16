@@ -524,7 +524,12 @@ Turning it on does three things:
   this machine's network, not the agents' allowlist. A `./envs` that exists without
   `bin/python`, or whose `python --version` fails or prints no version, is
   reported as an error and never modified. **Retry environment**
-  removes only a partial `./envs` that Delibra itself created.
+  removes only a partial `./envs` that Delibra itself created. Creating or
+  continuing a build run runs `envs/bin/python --version` again; if it fails,
+  the run is refused and the environment is marked as an error, and Retry then
+  re-adopts a fixed `./envs`. A venv Delibra created whose base Python was
+  removed has a dangling `bin/python`, so Retry removes and recreates it;
+  reinstall its packages afterwards.
 - **Build-agent command network access.** This is one exact host per line, and an
   empty list means no network. The default is the PyPI and Anaconda package
   hosts. Local-only names (`.local`, `.lan`, `.internal`, `.home.arpa`,
