@@ -389,3 +389,30 @@ async def test_local_excludes_write_a_projects_own_list(tmp_path) -> None:
 
     assert lines == ["/.delibra/", "/envs/", "only-this/", "*.tmp"]
     assert "__pycache__/" not in (root / ".git" / "info" / "exclude").read_text()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_git_command_stays_cancelled_when_cleanup_is_slow(tmp_path, monkeypatch) -> None:
+    import app.build_git as build_git
+
+    class Stuck:
+        pid = 999_999_999
+        returncode = None
+
+        async def communicate(self):
+            await asyncio.sleep(60)
+
+        async def wait(self):
+            await asyncio.sleep(60)
+
+    async def spawn(*_args, **_kwargs):
+        return Stuck()
+
+    monkeypatch.setattr(build_git.asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(build_git.os, "killpg", lambda *_args: None)
+    task = asyncio.create_task(build_git._git(tmp_path, "status"))
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
