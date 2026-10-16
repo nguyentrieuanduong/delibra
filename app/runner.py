@@ -1247,7 +1247,12 @@ class RunManager:
             project_root=store.project_path,
             temp_dir=temp_dir,
             env_dir=store.project_path / "envs",
-            env_tool=policy.env.tool or "existing",
+            # An adopted env may be conda; conda-meta/ is what marks one.
+            env_tool=(
+                "conda"
+                if (store.project_path / "envs" / "conda-meta").is_dir()
+                else policy.env.tool or "existing"
+            ),
             network_allowlist=tuple(policy.network_allowlist),
             # Amendment A2: /usr/bin/git shims into the developer tools.
             read_roots=(tools,) if tools is not None else (),

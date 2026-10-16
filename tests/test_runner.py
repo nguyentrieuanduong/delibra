@@ -2327,3 +2327,19 @@ async def test_an_unexpected_finalization_failure_ends_the_round(tmp_path, monke
     assert saved.status == "error"
     assert saved.rounds[-1].status == "error"
     assert "finalization broke" in (saved.rounds[-1].error or "")
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_conda_env_is_activated_as_conda(tmp_path, monkeypatch) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    store.set_coding_enabled(True)
+    store.set_network_allowlist(["pypi.org"])
+    store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
+    (store.project_path / "envs" / "conda-meta").mkdir(parents=True)
+    spawned = record_spawns(monkeypatch)
+
+    await run_auto_turn(manager, project_id, session_id, store, kind="build", build=True)
+
+    env = spawned[-1]["env"]
+    assert env["CONDA_PREFIX"] == str(store.project_path / "envs")
+    assert "VIRTUAL_ENV" not in env
