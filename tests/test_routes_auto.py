@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
 from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
+from app.models import AutoBuildGit, AutoHandover
 from app.config import Settings
 from app.main import create_app
 from app.models import (
@@ -2132,3 +2133,58 @@ def test_chat_page_setup_dialog_offers_build_when_ready(tmp_path: Path, monkeypa
         page = local.get(f"/projects/{quote(project.name, safe='')}/chat?auto_setup=1").text
 
     assert 'name="kind" value="build"' in page
+
+
+def _finished_run(tmp_path: Path):
+    app, _settings, project, store, sessions, _factory = auto_route_app(
+        tmp_path, outputs=["One", "Two"]
+    )
+    return app, project, store, sessions
+
+
+def test_build_status_shows_kind_git_and_handovers(tmp_path: Path) -> None:
+    app, project, store, sessions = _finished_run(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        assert start_auto(client, project.id, [s.id for s in sessions]).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+        record.kind = "build"
+        record.git = AutoBuildGit(
+            enabled=False, reason="working tree has uncommitted changes", branch=None, head=None
+        )
+        record.handovers = [
+            AutoHandover(sessions[1].id, sessions[0].id, "quota", 1, None),
+            AutoHandover(sessions[0].id, None, "retries exhausted", 1, None),
+        ]
+        store.save_auto_run(record)
+        page = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}")
+
+    assert page.status_code == 200
+    assert "Build · " in page.text
+    assert "Commits off: working tree has uncommitted changes" in page.text
+    assert "Cycle 1 · alpha · handed over to Beta (quota)" in page.text
+    assert "Cycle 1 · Beta · no agent available (retries exhausted)" in page.text
+
+
+def test_build_status_shows_commit_branch(tmp_path: Path) -> None:
+    app, project, store, sessions = _finished_run(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        assert start_auto(client, project.id, [s.id for s in sessions]).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+        record.kind = "build"
+        record.git = AutoBuildGit(enabled=True, reason=None, branch="main", head="abc123")
+        store.save_auto_run(record)
+        page = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}")
+
+    assert "Commits on main" in page.text
+
+
+def test_discussion_status_has_no_build_markup(tmp_path: Path) -> None:
+    app, project, store, sessions = _finished_run(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        assert start_auto(client, project.id, [s.id for s in sessions]).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+        page = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}")
+
+    assert "Build · " not in page.text
+    assert "auto-build-git" not in page.text
+    assert "handed over" not in page.text
