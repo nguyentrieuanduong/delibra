@@ -4545,6 +4545,7 @@ def enable_build(store: ProjectStore, monkeypatch: pytest.MonkeyPatch) -> None:
     store.set_coding_env(CodingEnvState(status="ready", tool="existing"))
     monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
     monkeypatch.setattr(AutoManager, "_build_version", fake_build_version(lambda agent: "1"))
+    monkeypatch.setattr(AutoManager, "_env_python", fake_env_python("3.12.1"))
 
 
 def fake_build_version(answer):
@@ -4552,6 +4553,15 @@ def fake_build_version(answer):
 
     async def probe(self, agent: str) -> str | None:
         return answer(agent)
+
+    return probe
+
+
+def fake_env_python(answer: str | None):
+    """Stand-in for AutoManager._env_python: no interpreter is launched."""
+
+    async def probe(self, project_path) -> str | None:
+        return answer
 
     return probe
 
@@ -4618,6 +4628,79 @@ async def test_build_refuses_when_the_version_probe_fails(tmp_path, monkeypatch)
     monkeypatch.setattr(AutoManager, "_build_version", fake_build_version(lambda agent: None))
     with pytest.raises(StorageError, match="CLI version probe failed"):
         await start_build(manager, project_id, session_ids)
+
+
+ENV_BROKEN = "envs/bin/python no longer runs --version"
+
+
+@pytest.mark.asyncio
+async def test_build_refuses_and_marks_the_env_error_when_its_python_fails(
+    tmp_path, monkeypatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused")]
+    )
+    # No _env_python stub: this probes a real interpreter that exits 1.
+    store.set_coding_enabled(True)
+    store.set_coding_env(
+        CodingEnvState(status="ready", tool="venv", python="3.12.1", created_by_delibra=True)
+    )
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1")
+    monkeypatch.setattr(AutoManager, "_build_version", fake_build_version(lambda agent: "1"))
+    python = store.project_path / "envs" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 1\n")
+    python.chmod(0o755)
+
+    with pytest.raises(StorageError, match=ENV_BROKEN):
+        await start_build(manager, project_id, session_ids)
+
+    env = store.coding_policy().env
+    assert (env.status, env.tool, env.created_by_delibra) == ("error", "venv", True)
+    assert "Retry environment" in (env.error or "")
+    assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_build_resume_reprobes_the_env_python(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue")]
+    )
+    enable_build(store, monkeypatch)
+    created = await start_build(manager, project_id, session_ids, max_cycles=1)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    monkeypatch.setattr(AutoManager, "_env_python", fake_env_python(None))
+    with pytest.raises(StorageError, match=ENV_BROKEN):
+        await manager.resume(
+            project_id, created.id, max_cycles=2,
+            turn_timeout_seconds=manager.settings.run_timeout,
+        )
+    assert store.coding_policy().env.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_discussion_runs_never_probe_the_env(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue")]
+    )
+    calls: list[object] = []
+
+    async def counting(self, project_path) -> str | None:
+        calls.append(project_path)
+        return None
+
+    monkeypatch.setattr(AutoManager, "_env_python", counting)
+    created = await manager.create(
+        project_id,
+        topic="Discuss",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    assert calls == []
 
 
 @pytest.mark.asyncio

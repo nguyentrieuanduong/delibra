@@ -417,6 +417,11 @@ def test_build_handover_updates_status_box_live(
         return "spike-verified"
 
     monkeypatch.setattr(AutoManager, "_build_version", spike_version)
+
+    async def env_python(self, project_path) -> str | None:
+        return "3.12.1"
+
+    monkeypatch.setattr(AutoManager, "_env_python", env_python)
     app = live_server(["quota-stderr", "success"], tmp_path)
     store = app["store"]
     store.set_coding_enabled(True)
