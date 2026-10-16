@@ -1870,3 +1870,26 @@ def test_recovery_pair_replaces_backup_before_current(
     store.clear_native_session_ids_for_relocation()
 
     assert observed[-2:] == ["config.json.bak", "config.json"]
+
+
+def test_coding_policy_defaults_and_persists(tmp_path: Path) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    (tmp_path / "p").mkdir()
+    store = ProjectStore(registry.register("P", tmp_path / "p"))
+    assert store.coding_policy().enabled is False
+    store.set_coding_enabled(True)
+    store.set_network_allowlist(["pypi.org"])
+    reloaded = ProjectStore(registry.get(store.project.id)).coding_policy()
+    assert reloaded.enabled is True
+    assert reloaded.network_allowlist == ["pypi.org"]
+
+
+def test_tampered_coding_settings_fail_closed(tmp_path: Path) -> None:
+    registry = RegistryStore(tmp_path / "home")
+    (tmp_path / "p").mkdir()
+    store = ProjectStore(registry.register("P", tmp_path / "p"))
+    manifest = json.loads(store.manifest_path.read_text())
+    manifest["coding"] = {"enabled": "yes"}
+    store.manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(OwnershipError):
+        store.coding_policy()
