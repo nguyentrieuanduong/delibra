@@ -411,10 +411,6 @@ def auto_status_context(
     }
 
 
-def _provider_versions(request: Request) -> dict[str, str | None]:
-    return {health.name: health.version for health in request.app.state.health}
-
-
 def _status_response(
     request: Request,
     project_id: str,
@@ -570,7 +566,6 @@ async def start_auto(
         turn_timeout_seconds=turn_timeout_seconds,
         context_policy=context_policy,
         kind=kind,
-        provider_versions=_provider_versions(request) if kind == "build" else None,
     )
     return _status_response(
         request,
@@ -739,7 +734,6 @@ async def resume_auto(
         record.id,
         max_cycles=max_cycles,
         turn_timeout_seconds=turn_timeout_seconds,
-        provider_versions=_provider_versions(request),
     )
     return _status_response(
         request,

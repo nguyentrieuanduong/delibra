@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from playwright.sync_api import expect
 
+from app.auto import AutoManager
 from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
 from tests.browser.conftest import FAKE_CLI, LiveServer
 
@@ -412,9 +413,10 @@ def test_build_handover_updates_status_box_live(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "claude", "spike-verified")
-    monkeypatch.setattr(
-        "app.routes.auto._provider_versions", lambda request: {"claude": "spike-verified"}
-    )
+    async def spike_version(self, agent: str) -> str | None:
+        return "spike-verified"
+
+    monkeypatch.setattr(AutoManager, "_build_version", spike_version)
     app = live_server(["quota-stderr", "success"], tmp_path)
     store = app["store"]
     store.set_coding_enabled(True)

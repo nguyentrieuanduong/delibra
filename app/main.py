@@ -111,6 +111,7 @@ def create_app(
             locks=locks,
             settings=app_settings,
             runner=manager,
+            provider_commands=commands,
         )
         app.state.registry = registry
         app.state.locks = locks

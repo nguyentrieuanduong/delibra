@@ -594,6 +594,9 @@ Known limits:
   fail inside Claude build turns.
 - In Codex build turns, a command that touches an unlisted host is killed
   outright rather than receiving an error.
+- Delibra re-probes each build agent's CLI version before admitting a run
+  and before every build turn. A CLI replaced in the instant between that
+  probe and the launch is not detected.
 
 ## Isolation and security boundary
 
