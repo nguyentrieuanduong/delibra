@@ -19,9 +19,16 @@ import shutil
 import signal
 from typing import Callable, Protocol
 
-from app.agents.base import AgentAdapter, AgentEvent, RunContext
+from app.agents.base import (
+    AgentAdapter,
+    AgentEvent,
+    CodingContext,
+    RunContext,
+    build_command_environment,
+)
 from app.agents.errors import CODEX_AUTH_MARKERS, classify_text, fold_categories
 from app.auto import parse_auto_verdict
+from app.coding_env import developer_tools_dir
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
 from app.models import (
@@ -185,6 +192,8 @@ class AutoRunRequest:
     initial_timeout_seconds: int
     preserve_native_session: bool
     ignore_returned_session: bool
+    # Auto build-run discussion turns only: cwd, env and argv get coding mode.
+    build: bool = False
 
 
 class RunManager:
@@ -326,6 +335,9 @@ class RunManager:
         record = store.require_auto_owner(request.auto_id)
         if request.phase not in {"preparation", "discussion", "compaction"}:
             raise StorageError("Auto phase is invalid")
+        # Build runs' compaction turns stay ordinary: the summarizer needs no shell.
+        if request.build != (record.kind == "build" and request.phase == "discussion"):
+            raise StorageError("Auto build flag does not match the run kind")
         expected_status = (
             "preparing" if request.phase == "preparation" else "discussing"
         )
@@ -756,6 +768,9 @@ class RunManager:
         except Exception:
             self._cleanup_input_root(input_root)
             raise
+        coding_context = None
+        if auto_request is not None and auto_request.build:
+            coding_context = self._build_coding_context(store, session_id)
         context = RunContext(
             user_prompt=execution_prompt,
             resume_id=resume_id,
@@ -771,6 +786,7 @@ class RunManager:
                 is None
                 else None
             ),
+            coding=coding_context,
         )
         try:
             adapter = self.adapter_factory(config)
@@ -887,10 +903,10 @@ class RunManager:
         )
         self._active[key] = active
         try:
-            environment = self._subprocess_environment(config, workspace)
+            environment = self._subprocess_environment(config, workspace, coding=context.coding)
             active.process = await asyncio.create_subprocess_exec(
                 *command.argv,
-                cwd=workspace,
+                cwd=context.coding.project_root if context.coding is not None else workspace,
                 env=environment,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -1197,10 +1213,37 @@ class RunManager:
         config.cli_session_id = None
         config.context_observation = None
 
+    def _build_coding_context(self, store: ProjectStore, session_id: str) -> CodingContext:
+        """Recreate the turn's private temp dir and describe its capabilities."""
+
+        policy = store.coding_policy()
+        root = self.settings.build_tmp_root
+        ensure_owned_directory(root, self.settings.home)
+        temp_dir = root / session_id
+        if temp_dir.parent != root:
+            raise StorageError("build temp directory escaped its root")
+        if temp_dir.is_symlink():
+            temp_dir.unlink()
+        elif temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        temp_dir.mkdir(mode=0o700)
+        tools = developer_tools_dir({"PATH": os.environ.get("PATH", "")})
+        return CodingContext(
+            project_root=store.project_path,
+            temp_dir=temp_dir,
+            env_dir=store.project_path / "envs",
+            env_tool=policy.env.tool or "existing",
+            network_allowlist=tuple(policy.network_allowlist),
+            # Amendment A2: /usr/bin/git shims into the developer tools.
+            read_roots=(tools,) if tools is not None else (),
+        )
+
     def _subprocess_environment(
         self,
         config: SessionConfig,
         workspace: Path,
+        *,
+        coding: CodingContext | None = None,
     ) -> dict[str, str]:
         environment = {
             name: os.environ[name]
@@ -1213,6 +1256,12 @@ class RunManager:
         if config.agent == "codex":
             self._prepare_codex_home()
             environment["CODEX_HOME"] = str(self.settings.codex_home)
+        if coding is not None:
+            env_bin = coding.env_dir / "bin"
+            environment["PATH"] = f"{env_bin}{os.pathsep}{environment.get('PATH', '')}"
+            # Overrides the workspace TMPDIR set above, and adds the git/pip
+            # variables spike S1 showed are needed (amendment A1).
+            environment.update(build_command_environment(coding))
         return environment
 
     def _prepare_codex_home(self) -> None:

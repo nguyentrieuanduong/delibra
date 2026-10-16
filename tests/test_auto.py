@@ -4635,3 +4635,18 @@ async def test_build_create_records_kind_and_forces_preparation_off(tmp_path, mo
     assert created.kind == "build"
     assert created.preparation_enabled is False
     assert terminal.preparations == []
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_names_the_staged_context_by_absolute_path(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    prompt = str(factory.calls[0]["prompt"])
+    assert str(store.workspace_dir(session_ids[0]) / "inputs") in prompt
+    assert "Delibra commits after your turn" in prompt
