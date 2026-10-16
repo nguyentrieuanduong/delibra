@@ -8,12 +8,18 @@ refuses to commit once HEAD moves under it.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+import signal
 
 from app.models import AutoBuildGit
 
 PATHSPEC = ["--", ".", ":(exclude)envs", ":(exclude).delibra"]
 SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false"]
+COMMAND_TIMEOUT_SECONDS = 30
+# The commit runs under the participant's session lock, which Stop also
+# needs, so the whole sequence is bounded, not only each command.
+COMMIT_TIMEOUT_SECONDS = 60
 
 
 async def _git(root: Path, *args: str) -> tuple[int, str]:
@@ -23,14 +29,25 @@ async def _git(root: Path, *args: str) -> tuple[int, str]:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
     except OSError as exc:
         return 127, f"Git executable is unavailable: {exc}"
     try:
-        out, _ = await asyncio.wait_for(process.communicate(), timeout=60)
-    except TimeoutError:
-        process.kill()
-        await process.communicate()
+        out, _ = await asyncio.wait_for(process.communicate(), timeout=COMMAND_TIMEOUT_SECONDS)
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        # Git helpers can inherit stdout. Kill the entire process group,
+        # including a child that outlives its parent.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(process.communicate(), timeout=2)
+        except TimeoutError:
+            await asyncio.wait_for(process.wait(), timeout=1)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         return 124, "git command timed out"
     return process.returncode or 0, out.decode("utf-8", "replace").strip()
 
@@ -89,6 +106,20 @@ async def commit_turn(
 ) -> tuple[AutoBuildGit, str | None]:
     if not git.enabled:
         return git, None
+    try:
+        return await asyncio.wait_for(
+            _commit_turn(root, git, subject, body, trailer), COMMIT_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        return _off("commit timed out"), (
+            f"commit did not finish within {COMMIT_TIMEOUT_SECONDS}s; commits "
+            "disabled. Check `git status` for staged changes"
+        )
+
+
+async def _commit_turn(
+    root: Path, git: AutoBuildGit, subject: str, body: str, trailer: str
+) -> tuple[AutoBuildGit, str | None]:
     if reason := await _unsafe_filter_reason(root):
         return _off(reason), f"{reason}; commits disabled"
     _code, branch = await _git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
