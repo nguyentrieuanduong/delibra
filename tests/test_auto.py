@@ -5161,3 +5161,38 @@ async def test_first_build_tools_probe_runs_before_the_session_lock(
     terminal = await wait_for_auto_terminal(manager, project_id, created.id)
     assert terminal.status == "converged"
     assert checked
+
+
+@pytest.mark.asyncio
+async def test_build_compaction_measures_the_prompt_the_build_turn_sends(
+    tmp_path, monkeypatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    guide = tmp_path / "guide.md"
+    guide.write_text("Guidance a discussion render would not count.\n" * 50)
+    enable_build(store, monkeypatch)
+    store.set_build_guidance([str(guide)])
+    measured: list[int | None] = []
+
+    def recording(record, *, prompt_limit, rendered_bytes=None):
+        measured.append(rendered_bytes)
+        return compaction_boundary_due(
+            record, prompt_limit=prompt_limit, rendered_bytes=rendered_bytes
+        )
+
+    monkeypatch.setattr("app.auto.compaction_boundary_due", recording)
+    created = await manager.create(
+        project_id,
+        topic="Build the task",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+        kind="build",
+        context_policy=AutoContextPolicy(mode="clear", unit="context", threshold_percent=95),
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert measured[0] == len(factory.calls[0]["material"])

@@ -1118,7 +1118,10 @@ class AutoManager:
                     # A sibling step, never inside the post-turn locked block:
                     # that block must not make provider calls.
                     store = ProjectStore(self.registry.get(project_id))
-                    due, frozen = self._compaction_decision(store, record)
+                    if record.kind == "build":
+                        due, frozen = await self._build_compaction_due(store, record), None
+                    else:
+                        due, frozen = self._compaction_decision(store, record)
                     if due:
                         await self._run_context_operation(record)
                         continue
@@ -2134,6 +2137,25 @@ class AutoManager:
             rendered_bytes=len(frozen),
         )
         return due, None if due else frozen
+
+    async def _build_compaction_due(self, store: ProjectStore, record: AutoRunRecord) -> bool:
+        """Build twin of _compaction_decision: it measures the build turn's own
+        prompt, guidance and handover included. Never frozen: build turns
+        always re-render."""
+
+        policy = record.effective_context_policy
+        if policy.mode == "off" or record.compaction_disabled_reason is not None:
+            return False
+        rendered = (
+            len(await self._build_turn_context(store, record))
+            if policy.unit == "context"
+            else None
+        )
+        return compaction_boundary_due(
+            record,
+            prompt_limit=self.settings.stateless_history_limit,
+            rendered_bytes=rendered,
+        )
 
     def _context_material(
         self,
