@@ -71,6 +71,7 @@
         firewall: research tools (web search, web fetch, browser) are not limited,
         and environment creation uses this machine's network.
       </p>
+      <p class="hint">In a Git repository, enabling coding adds <code>/.delibra/</code> and <code>/envs/</code> to <code>.git/info/exclude</code>: local to this clone, never committed.</p>
       {% for warning in coding.network_warnings %}<p class="warning">{{ warning }}</p>{% endfor %}
       {% if coding.network_warnings %}
         <p class="hint">Allowed by your choice: build agents may connect there. Claude's sandbox permits private addresses for listed hosts; Codex's refuses them.</p>

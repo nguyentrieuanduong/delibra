@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.build_git import _git, commit_turn, git_preflight
+from app.build_git import _git, commit_turn, ensure_local_excludes, git_preflight
 
 
 @pytest.fixture(autouse=True)
@@ -304,3 +304,36 @@ async def test_commit_turn_works_when_gitignore_already_ignores_the_excluded_dir
         "D\tREADME.md", "A\tsrc/new.py",
     ]
     assert git(root, "status", "--porcelain") == ""
+
+
+@pytest.mark.asyncio
+async def test_local_excludes_ignore_delibra_dirs_only_at_the_project_root(tmp_path) -> None:
+    root = make_repo(tmp_path)
+    for path in (".delibra/run.json", "envs/bin/python", "src/envs/tool.py"):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("x\n")
+
+    assert await ensure_local_excludes(root) == ["/.delibra/", "/envs/"]
+    assert await ensure_local_excludes(root) == []
+    exclude = (root / ".git" / "info" / "exclude").read_text()
+    assert exclude.count("/.delibra/\n") == 1
+    assert exclude.count("/envs/\n") == 1
+    assert git(root, "status", "--porcelain", "--untracked-files=all") == "?? src/envs/tool.py"
+
+
+@pytest.mark.asyncio
+async def test_local_excludes_are_anchored_to_a_project_below_the_repo_root(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    root = repo / "apps" / "site"
+    root.mkdir(parents=True)
+
+    assert await ensure_local_excludes(root) == ["/apps/site/.delibra/", "/apps/site/envs/"]
+
+
+@pytest.mark.asyncio
+async def test_local_excludes_skip_a_project_outside_git(tmp_path) -> None:
+    root = tmp_path / "plain"
+    root.mkdir()
+
+    assert await ensure_local_excludes(root) == []
+    assert not (root / ".git").exists()

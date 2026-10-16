@@ -601,6 +601,9 @@ Known limits:
   arrives during a commit waits for its 60-second budget plus up to three
   seconds of subprocess cleanup. A slower commit is abandoned and turns
   commits off for the run.
+- Enabling coding in a Git repository adds `/.delibra/` and `/envs/` to
+  `.git/info/exclude` (local to the clone, never committed). Delibra never
+  edits `.gitignore`; add the same lines there to share them.
 
 ## Isolation and security boundary
 
