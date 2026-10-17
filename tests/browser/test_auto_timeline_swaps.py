@@ -111,8 +111,12 @@ def test_agent_completion_refresh_preserves_the_reading_position(
         timeout=30_000
     )
 
-    observed_scroll_top = page.locator("#chat-timeline").evaluate(
-        """timeline => {
+    # The stream's replay keeps replacing #chat-timeline, so a locator could
+    # resolve an element that is detached before its function runs; a
+    # detached scrollport reads 0. Looking it up inside one task cannot race.
+    observed_scroll_top = page.evaluate(
+        """() => {
+          const timeline = document.getElementById("chat-timeline");
           window.timelineBeforeCompletion = timeline;
           timeline.scrollTop = 700;
           return timeline.scrollTop;
@@ -123,12 +127,17 @@ def test_agent_completion_refresh_preserves_the_reading_position(
     expect(page.locator(f"section.live-round#round-{beta}-1")).to_be_visible(
         timeout=30_000
     )
-    assert page.locator("#chat-timeline").evaluate(
-        "timeline => timeline !== window.timelineBeforeCompletion"
+    replaced, scroll_top = page.evaluate(
+        """() => {
+          const timeline = document.getElementById("chat-timeline");
+          return [
+            timeline !== window.timelineBeforeCompletion,
+            timeline.scrollTop,
+          ];
+        }"""
     )
-    assert page.locator("#chat-timeline").evaluate(
-        "timeline => timeline.scrollTop"
-    ) == pytest.approx(observed_scroll_top, abs=1)
+    assert replaced
+    assert scroll_top == pytest.approx(observed_scroll_top, abs=1)
 
 
 @pytest.mark.browser
