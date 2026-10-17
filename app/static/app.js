@@ -193,6 +193,36 @@ function syncConversationDisclosure(timeline) {
   return true;
 }
 
+// Every sse:status replaces #auto-status, and a fresh stream replays the run's
+// events, so an opened Stop disclosure would otherwise snap shut under the
+// reader before they can choose.
+function captureAutoStopDisclosure(target) {
+  if (!target || target.id !== "auto-status") {
+    return null;
+  }
+  const details = target.querySelector("details.auto-stop");
+  return {
+    autoId: target.dataset.autoId,
+    open: Boolean(details && details.open),
+  };
+}
+
+function restoreAutoStopDisclosure(documentRoot, snapshot) {
+  if (!snapshot || !snapshot.open) {
+    return false;
+  }
+  const status = documentRoot.getElementById("auto-status");
+  if (!status || status.dataset.autoId !== snapshot.autoId) {
+    return false;
+  }
+  const details = status.querySelector("details.auto-stop");
+  if (!details) {
+    return false;
+  }
+  details.open = true;
+  return true;
+}
+
 function formatRemainingSeconds(value) {
   const parsed = Number(value);
   const bounded = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
@@ -374,6 +404,7 @@ function initializeDynamicPresentation(root) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    captureAutoStopDisclosure,
     chatErrorMessage,
     captureConversationScroll,
     closeAutoSetup,
@@ -388,6 +419,7 @@ if (typeof module !== "undefined" && module.exports) {
     removeConversationEmptyState,
     resetFileReader,
     renderChatError,
+    restoreAutoStopDisclosure,
     restoreConversationScroll,
     setTimeoutFormPending,
     shouldClearChatError,
@@ -400,6 +432,7 @@ if (typeof module !== "undefined" && module.exports) {
 
 if (typeof document !== "undefined") {
   const conversationScrollSnapshots = new WeakMap();
+  const autoStopDisclosureSnapshots = new WeakMap();
 
   initializeDynamicPresentation(document);
 
@@ -474,6 +507,10 @@ if (typeof document !== "undefined") {
     if (timeline) {
       conversationScrollSnapshots.set(xhr, captureConversationScroll(timeline));
     }
+    const autoStop = captureAutoStopDisclosure(target);
+    if (autoStop) {
+      autoStopDisclosureSnapshots.set(xhr, autoStop);
+    }
   });
 
   document.addEventListener("htmx:afterSwap", function (event) {
@@ -494,6 +531,13 @@ if (typeof document !== "undefined") {
       if (detail.xhr) {
         conversationScrollSnapshots.delete(detail.xhr);
       }
+    }
+    if (detail.xhr && autoStopDisclosureSnapshots.has(detail.xhr)) {
+      restoreAutoStopDisclosure(
+        document,
+        autoStopDisclosureSnapshots.get(detail.xhr)
+      );
+      autoStopDisclosureSnapshots.delete(detail.xhr);
     }
     if (focusAutoHistoryView(target)) {
       return;

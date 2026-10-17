@@ -406,6 +406,51 @@ def test_stopping_auto_refreshes_every_participant_card_without_a_reload(
 
 
 @pytest.mark.browser
+def test_a_status_refresh_keeps_the_open_stop_disclosure_open(
+    live_server: LiveServer,
+    page: Any,
+    tmp_path: Path,
+) -> None:
+    """An sse:status refresh replaces #auto-status while Stop is open.
+
+    The refresh issues the same GET and swap the sse:status trigger does,
+    so it deterministically lands between opening the disclosure and
+    choosing.
+    """
+
+    app = live_server(["sleep"], tmp_path)
+    first = app["session_ids"][0]
+    _start_auto(page, app["base_url"], [first], "Open stop disclosure")
+    expect(page.locator(f"section.live-round#round-{first}-1")).to_be_visible(
+        timeout=30_000
+    )
+
+    stop_controls = page.locator("#auto-status details.auto-stop")
+    stop_controls.locator("summary").click()
+    expect(stop_controls).to_have_attribute("open", "")
+    page.evaluate(
+        """() => {
+          window.statusBeforeRefresh = document.getElementById("auto-status");
+          const refresh = document.querySelector(
+            "#auto-status [hx-target='#auto-status']"
+          );
+          htmx.ajax("GET", refresh.getAttribute("hx-get"), {
+            target: "#auto-status",
+            swap: "outerHTML",
+          });
+        }"""
+    )
+    page.wait_for_function(
+        "() => document.getElementById('auto-status') !== window.statusBeforeRefresh"
+    )
+
+    expect(stop_controls).to_have_attribute("open", "")
+    expect(
+        stop_controls.locator("form[hx-post$='/stop'] button[type=submit]")
+    ).to_be_visible()
+
+
+@pytest.mark.browser
 def test_build_handover_updates_status_box_live(
     live_server: LiveServer,
     page: Any,
