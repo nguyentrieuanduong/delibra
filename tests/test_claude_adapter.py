@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -594,7 +595,10 @@ def build_context(allowlist: tuple[str, ...] = ("pypi.org",)) -> RunContext:
 def test_build_turn_grants_sandboxed_bash_and_keeps_research_tools() -> None:
     argv = ClaudeAdapter(executable="claude").build_command(config(), build_context()).argv
     assert argv[argv.index("--tools") + 1] == "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
-    assert argv[argv.index("--allowedTools") + 1] == "Read(/**),Edit(/**),Bash,WebSearch,WebFetch"
+    assert argv[argv.index("--allowedTools") + 1] == (
+        "Read(/**),Edit(/**),Bash,WebSearch,WebFetch,"
+        "Edit(//home/.delibra/build-tmp/" + "a" * 32 + "/questions/**)"
+    )
     # Edit rules cover every built-in file-editing tool; Claude Code has no
     # Write(path) rule form, so none is emitted (spike_add_dir.py rev. 2).
     assert argv[argv.index("--disallowedTools") + 1] == (
@@ -630,6 +634,19 @@ def test_build_turn_grants_sandboxed_bash_and_keeps_research_tools() -> None:
         }
     }
     assert "--safe-mode" in argv
+
+
+def test_build_turn_omits_the_questions_rule_for_an_unsafe_temp_path() -> None:
+    context = build_context()
+    assert context.coding is not None
+    unsafe = replace(
+        context,
+        coding=replace(context.coding, temp_dir=Path("/home/de,libra/build-tmp/" + "a" * 32)),
+    )
+
+    argv = ClaudeAdapter(executable="claude").build_command(config(), unsafe).argv
+
+    assert argv[argv.index("--allowedTools") + 1] == "Read(/**),Edit(/**),Bash,WebSearch,WebFetch"
 
 
 def test_build_turn_with_empty_allowlist_has_no_domains() -> None:
