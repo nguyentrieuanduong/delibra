@@ -439,6 +439,27 @@ def test_prepare_outbox_repairs_an_unreadable_questions_directory(tmp_path: Path
     assert stat.S_IMODE(prepared.parent.stat().st_mode) == 0o700
 
 
+def test_prepare_outbox_removes_nested_unreadable_outbox_directories(
+    tmp_path: Path,
+) -> None:
+    outbox = prepare_outbox(tmp_path)
+    outbox.mkdir()
+    nested = outbox / "nested"
+    nested.mkdir()
+    (nested / "stale").write_text("stale", encoding="utf-8")
+    nested.chmod(0)
+    outbox.chmod(0)
+    try:
+        prepared = prepare_outbox(tmp_path)
+    finally:
+        if outbox.exists():
+            outbox.chmod(0o700)
+            if nested.exists():
+                nested.chmod(0o700)
+    assert prepared == outbox
+    assert not prepared.exists()
+
+
 def test_prepare_outbox_replaces_a_planted_symlink_without_touching_its_target(
     tmp_path: Path,
 ) -> None:

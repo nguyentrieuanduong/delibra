@@ -15,7 +15,6 @@ import logging
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 from typing import Any
 
@@ -509,14 +508,34 @@ def _open_directory(directory: Path) -> int:
 
 
 def _remove_entry(descriptor: int, name: str) -> None:
+    pending: list[tuple[int, str, int | None]] = [(descriptor, name, None)]
+    opened_descriptors: set[int] = set()
     try:
-        info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-    except FileNotFoundError:
-        return
-    if stat.S_ISDIR(info.st_mode):
-        shutil.rmtree(name, dir_fd=descriptor)
-    else:
-        os.unlink(name, dir_fd=descriptor)
+        while pending:
+            parent, entry, opened = pending.pop()
+            if opened is not None:
+                os.close(opened)
+                opened_descriptors.remove(opened)
+                os.rmdir(entry, dir_fd=parent)
+                continue
+            try:
+                info = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                os.unlink(entry, dir_fd=parent)
+                continue
+            # Agents can leave any level unreadable. Repair each directory
+            # through its parent descriptor without following symlinks.
+            os.chmod(entry, 0o700, dir_fd=parent, follow_symlinks=False)
+            child = os.open(entry, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=parent)
+            opened_descriptors.add(child)
+            pending.append((parent, entry, child))
+            with os.scandir(child) as entries:
+                pending.extend((child, item.name, None) for item in entries)
+    finally:
+        for opened in opened_descriptors:
+            os.close(opened)
 
 
 def prepare_outbox(root: Path) -> Path:
