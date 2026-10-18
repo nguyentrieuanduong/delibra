@@ -2286,6 +2286,11 @@ class ProjectStore:
         for artifact in (record.topic, record.baseline, record.shared_context, record.guidance):
             if artifact is not None and not SHA256_PATTERN.fullmatch(artifact.sha256):
                 raise OwnershipError("Auto artifact digest is invalid")
+        for turn in record.discussion:
+            if turn.questions_sha256 is not None and not SHA256_PATTERN.fullmatch(
+                turn.questions_sha256
+            ):
+                raise OwnershipError("Auto turn questions digest is invalid")
         ProjectStore._validate_auto_context_policy(record, set(session_ids))
         for resumption in record.resumptions:
             if resumption.from_status not in TERMINAL_AUTO_STATUSES:

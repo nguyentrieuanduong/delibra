@@ -294,6 +294,15 @@ def _optional_strict_str(data: dict[str, Any], key: str) -> str | None:
     return None if data.get(key) is None else _strict_str(data, key)
 
 
+def _optional_str_list(data: dict[str, Any], key: str) -> list[str] | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{key} must be a list of strings")
+    return list(value)
+
+
 def _optional_strict_float(data: dict[str, Any], key: str) -> float | None:
     value = data.get(key)
     if value is None:
@@ -620,6 +629,11 @@ class AutoTurn:
     verdict: str | None = None
     warning: str | None = None
     timeout: TimeoutRecord | None = None
+    # Auto questions: the view digest and "Q7@2" pairs at turn start, and
+    # the ids this turn asked. Absent on every turn before the feature.
+    questions_sha256: str | None = None
+    questions_seen: list[str] | None = None
+    asked: list[str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoTurn":
@@ -639,6 +653,9 @@ class AutoTurn:
                 if data.get("timeout") is not None
                 else None
             ),
+            questions_sha256=_optional_strict_str(data, "questions_sha256"),
+            questions_seen=_optional_str_list(data, "questions_seen"),
+            asked=_optional_str_list(data, "asked"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1430,6 +1447,8 @@ class AutoRunRecord:
     git: AutoBuildGit | None = None
     # Snapshot of the project's guidance files at creation (build runs only).
     guidance: AutoArtifact | None = None
+    # Absent means on: every run that never turned it off keeps its shape.
+    pause_on_blocking_questions: bool = True
 
     @property
     def effective_context_policy(self) -> AutoContextPolicy:
@@ -1574,6 +1593,11 @@ class AutoRunRecord:
                 if data.get("guidance") is not None
                 else None
             ),
+            pause_on_blocking_questions=(
+                _strict_bool(data, "pause_on_blocking_questions")
+                if "pause_on_blocking_questions" in data
+                else True
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1644,4 +1668,6 @@ class AutoRunRecord:
             payload["handovers"] = [item.to_dict() for item in self.handovers]
             payload["git"] = self.git.to_dict() if self.git is not None else None
             payload["guidance"] = self.guidance.to_dict() if self.guidance is not None else None
+        if not self.pause_on_blocking_questions:
+            payload["pause_on_blocking_questions"] = False
         return payload

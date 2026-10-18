@@ -5279,3 +5279,50 @@ async def test_build_compaction_measures_the_prompt_the_build_turn_sends(
     await wait_for_auto_terminal(manager, project_id, created.id)
 
     assert measured[0] == len(factory.calls[0]["material"])
+
+
+def test_auto_turn_question_fields_round_trip_and_stay_absent_by_default() -> None:
+    plain = _discussion_turn(1, 0)
+    assert not {"questions_sha256", "questions_seen", "asked"} & set(plain.to_dict())
+
+    rich = replace(plain, questions_sha256="2" * 64, questions_seen=["Q1@2"], asked=["Q3"])
+
+    assert AutoTurn.from_dict(rich.to_dict()) == rich
+
+
+def test_auto_turn_rejects_a_non_list_questions_seen() -> None:
+    data = {**_discussion_turn(1, 0).to_dict(), "questions_seen": "Q1@2"}
+
+    with pytest.raises(TypeError):
+        AutoTurn.from_dict(data)
+
+
+def test_pause_on_blocking_questions_is_written_only_when_off() -> None:
+    record = _resume_record(status="stopped", current_cycle=1, next_participant=0)
+    assert record.pause_on_blocking_questions is True
+    assert "pause_on_blocking_questions" not in record.to_dict()
+
+    record.pause_on_blocking_questions = False
+
+    assert record.to_dict()["pause_on_blocking_questions"] is False
+    assert AutoRunRecord.from_dict(record.to_dict()).pause_on_blocking_questions is False
+
+
+@pytest.mark.asyncio
+async def test_saving_a_turn_with_an_invalid_questions_digest_is_refused(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+    created = await manager.create(
+        project_id,
+        topic="Digest topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    terminal.discussion[0] = replace(terminal.discussion[0], questions_sha256="not-a-digest")
+
+    with pytest.raises(OwnershipError, match="questions digest"):
+        store.save_auto_run(terminal)
