@@ -510,6 +510,48 @@ budget but a fresh timeout version and extension audit. Rejected stale, late, or
 over-cap submissions refresh the authoritative controls and never revive a
 finished process.
 
+## Auto questions
+
+An Auto agent that needs something only you can decide writes it to its own
+outbox, `questions/outbox.json`: in its workspace on discussion turns, in its
+build temp directory on build turns. The turn prompt names the path and the
+format, `{"questions": [{"question": "...", "assumption": "...", "blocking": false}]}`,
+at most 25 questions and 192 KiB. After a completed turn Delibra validates
+the outbox, moves its questions into the project store, and deletes it; an
+invalid outbox only adds a warning to that turn, and a failed or cancelled
+turn's outbox is discarded.
+
+The store is `.delibra/questions-history.json`, written only by Delibra.
+Auto agents read `.delibra/questions.json`: open and answered questions,
+latest answer only, newest first. An answer you save while a turn runs
+reaches that turn if the agent reads the file afterwards, and every later
+turn. Two exceptions, both for paths containing a character Claude's
+permission rules cannot express (`,*?[]!#\` or a control character): on such
+a project path, discussion turns read a copy taken at turn start in their
+workspace, so answers saved during a turn reach the next one; and when the
+build temp directory (under `DELIBRA_HOME`) has such a path, Claude build
+turns are not offered an outbox, and each such turn records the warning
+`question outbox unavailable: the build temp path cannot be expressed in a Claude permission rule`.
+Each turn records the view's digest and question revisions at turn start.
+When the view exceeds `DELIBRA_AUTO_QUESTIONS_LIMIT`, the oldest answered
+questions leave it first, then the oldest open ones; they stay in the history,
+and the Questions panel lists their ids as "not shown to agents".
+
+**Questions for you** on the Chat page lists every question with its asker,
+run and cycle. Answer, update or clear an answer (every revision is kept in
+the history), dismiss, restore, mark a duplicate, or delete. New questions
+appear while Auto runs without disturbing an answer you are typing.
+
+**Pause when an agent marks a question as blocking** is on by default in the
+Auto setup and editable on **Continue Auto**. When on, a turn that asks a
+blocking question ends the run as `stopped` with
+`paused: <agent> needs input (<ids>)`; **Continue Auto** lists blocking
+questions with their current status and resumes with the next speaker,
+answered or not. If that same turn converged the run or reached its cycle
+limit, that outcome stands and Continue Auto still lists the questions. When off,
+agents are told the run will not pause and continue on their assumptions.
+Preparation and compaction turns neither see nor ask questions.
+
 ## Coding mode and build runs
 
 Each project has a **Coding** setting on its Settings page. It is off by default,
@@ -729,6 +771,9 @@ The main environment settings are:
   failed compactions before compaction turns off for that run
 - `DELIBRA_AUTO_CONTEXT_TRIGGER_PERCENT` (default 70; 10 through 95) — the
   Auto prompt byte budget offered in the setup box; each run stores its own
+- `DELIBRA_AUTO_QUESTIONS_LIMIT` (default 98304, i.e. 96 KiB; 8192 through
+  1048576) — the byte cap on `.delibra/questions.json`, the questions view
+  every Auto turn reads
 
 Names/models are capped at 200 characters, role instructions at 20,000, prompts at
 100,000, and pass instructions at 10,000.
