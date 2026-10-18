@@ -5375,6 +5375,31 @@ async def test_unreadable_old_questions_directory_does_not_stop_auto(
 
 
 @pytest.mark.asyncio
+async def test_nested_unreadable_old_outbox_directory_does_not_stop_auto(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+    outbox = store.workspace_dir(session_ids[0]) / "questions" / "outbox.json"
+    outbox.parent.mkdir()
+    outbox.mkdir()
+    nested = outbox / "nested"
+    nested.mkdir()
+    nested.chmod(0)
+    outbox.chmod(0)
+    try:
+        _, terminal = await _one_cycle(manager, project_id, session_ids)
+    finally:
+        if outbox.exists():
+            outbox.chmod(0o700)
+            if nested.exists():
+                nested.chmod(0o700)
+    assert terminal.status == "limit_reached"
+    assert factory.created == 2
+
+
+@pytest.mark.asyncio
 async def test_a_completed_turn_harvests_its_outbox_into_the_project_store(
     tmp_path: Path,
 ) -> None:
