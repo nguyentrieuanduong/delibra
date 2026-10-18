@@ -11,8 +11,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
+import logging
+import os
 from pathlib import Path
 import re
+import shutil
+import stat
 from typing import Any
 
 from app.storage import (
@@ -21,6 +25,7 @@ from app.storage import (
     StorageError,
     atomic_write_bytes,
     atomic_write_json,
+    first_unsafe_writable_root_character,
     load_json_recover,
     utc_now,
 )
@@ -35,6 +40,8 @@ ASSUMPTION_MAX_CHARS = 2_000
 ANSWER_MAX_CHARS = 20_000
 QUESTION_ID = re.compile(r"Q[1-9][0-9]{0,8}")
 _OUTBOX_KEYS = frozenset({"question", "assumption", "blocking"})
+VIEW_COPY_NAME = "questions.json"
+LOGGER = logging.getLogger(__name__)
 
 
 class OutboxError(ValueError):
@@ -473,3 +480,148 @@ class QuestionStore:
         book = self.load()
         book.questions.remove(book.find(question_id))
         self._save(book)
+
+
+# O_NONBLOCK: an agent can plant a FIFO, and a blocking open would hang the
+# post-turn block that holds the project lock.
+_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_directory(directory: Path) -> int:
+    try:
+        return os.open(directory, _OPEN_FLAGS | os.O_DIRECTORY)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise OutboxError("questions directory is not a real directory") from exc
+
+
+def _remove_entry(descriptor: int, name: str) -> None:
+    try:
+        info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode):
+        shutil.rmtree(name, dir_fd=descriptor)
+    else:
+        os.unlink(name, dir_fd=descriptor)
+
+
+def prepare_outbox(root: Path) -> Path:
+    """Give the agent an empty ``questions/`` under a Delibra-owned root.
+
+    The agent can write inside ``root``, so whatever sits at ``questions`` may
+    be a planted symlink or file; it is removed, never followed.
+    """
+
+    directory = root / QUESTIONS_DIR
+    try:
+        info = os.lstat(directory)
+    except FileNotFoundError:
+        info = None
+    if info is not None and not stat.S_ISDIR(info.st_mode):
+        os.unlink(directory)
+        info = None
+    if info is None:
+        directory.mkdir(mode=0o700)
+    descriptor = _open_directory(directory)
+    try:
+        _remove_entry(descriptor, OUTBOX_NAME)
+    finally:
+        os.close(descriptor)
+    return directory / OUTBOX_NAME
+
+
+def _read_outbox(descriptor: int) -> bytes | None:
+    try:
+        file_descriptor = os.open(OUTBOX_NAME, _OPEN_FLAGS, dir_fd=descriptor)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise OutboxError("outbox is not a regular file") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+            raise OutboxError("outbox is not a regular file")
+        chunks: list[bytes] = []
+        remaining = OUTBOX_MAX_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(file_descriptor, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(file_descriptor)
+
+
+def take_outbox(root: Path) -> bytes | None:
+    """Read and remove the agent's outbox; None when it wrote none.
+
+    The read stops one byte past the limit, so parse_outbox rejects an
+    oversized file without Delibra ever holding more than that.
+    """
+
+    try:
+        descriptor = _open_directory(root / QUESTIONS_DIR)
+    except FileNotFoundError:
+        return None
+    try:
+        return _read_outbox(descriptor)
+    finally:
+        try:
+            _remove_entry(descriptor, OUTBOX_NAME)
+        finally:
+            os.close(descriptor)
+
+
+def discard_outbox(root: Path) -> None:
+    """Drop a failed or cancelled turn's outbox; it never reaches the store."""
+
+    try:
+        take_outbox(root)
+    except (OutboxError, OSError):
+        LOGGER.warning("could not discard the questions outbox under %s", root, exc_info=True)
+
+
+def questions_prompt(
+    view_path: Path, outbox_path: Path | None, *, pause_enabled: bool
+) -> str:
+    """Read answers on every turn; ask only when an outbox is available."""
+
+    read_view = (
+        f" The user's questions and answers are in {view_path.as_posix()}; read it "
+        "before deciding, and again before finishing if you asked or are waiting "
+        "on anything. Treat its answers as user decisions."
+    )
+    if outbox_path is None:
+        return read_view
+    pause = (
+        "unless your turn ends the run by agreement or the cycle limit, the run "
+        "then pauses for the user after your turn"
+        if pause_enabled
+        else "this run does not pause, so continue on your stated assumption"
+    )
+    return (
+        read_view
+        + " If you need something "
+        "only the user can decide (a preference, access, or a decision outside "
+        f"the material), write it to {outbox_path.as_posix()} as JSON: "
+        '{"questions": [{"question": "...", "assumption": "...", "blocking": false}]} '
+        f"with at most {OUTBOX_MAX_QUESTIONS} questions. State in assumption what "
+        "you will proceed on, then continue. Set blocking to true only if no "
+        f"reasonable assumption exists; {pause}. Do not ask what the material or "
+        "another participant can answer. An open question for the user is not by "
+        "itself a reason to write Not converged."
+    )
+
+
+def outbox_rule_expressible(outbox_dir: Path) -> bool:
+    """Whether a Claude permission rule can name this outbox directory.
+
+    Claude's build argv grants the outbox with an ``Edit`` rule, and some
+    characters cannot appear in one; the adapter and AutoManager both ask
+    here, so an outbox is never promised without the rule that allows it.
+    """
+
+    return first_unsafe_writable_root_character(outbox_dir.as_posix()) is None

@@ -2,6 +2,7 @@
 
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import random
 
@@ -10,13 +11,20 @@ import pytest
 from app.questions import (
     OUTBOX_MAX_BYTES,
     OUTBOX_MAX_QUESTIONS,
+    OUTBOX_NAME,
+    QUESTIONS_DIR,
     OutboxError,
     ProposedQuestion,
     Question,
     QuestionBook,
     QuestionStore,
+    discard_outbox,
+    outbox_rule_expressible,
     parse_outbox,
+    prepare_outbox,
+    questions_prompt,
     render_view,
+    take_outbox,
 )
 from app.storage import ConflictError, NotFoundError, StorageError
 
@@ -359,3 +367,116 @@ def test_a_corrupt_history_without_a_backup_is_a_storage_error(tmp_path: Path) -
 
     with pytest.raises(StorageError, match="questions history is invalid"):
         questions.load()
+
+
+def test_prepare_outbox_creates_the_directory_and_removes_a_stale_outbox(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    path.write_text("stale", encoding="utf-8")
+
+    again = prepare_outbox(tmp_path)
+
+    assert again == tmp_path / QUESTIONS_DIR / OUTBOX_NAME
+    assert not again.exists()
+    assert (tmp_path / QUESTIONS_DIR).stat().st_mode & 0o777 == 0o700
+
+
+def test_prepare_outbox_replaces_a_planted_symlink_without_touching_its_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / OUTBOX_NAME).write_text("keep", encoding="utf-8")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / QUESTIONS_DIR).symlink_to(target)
+
+    prepare_outbox(root)
+
+    assert not (root / QUESTIONS_DIR).is_symlink()
+    assert (target / OUTBOX_NAME).read_text(encoding="utf-8") == "keep"
+
+
+def test_take_outbox_reads_then_removes_it(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    path.write_bytes(b'{"questions": []}')
+
+    assert take_outbox(tmp_path) == b'{"questions": []}'
+    assert not path.exists()
+    assert take_outbox(tmp_path) is None
+
+
+def test_take_outbox_without_a_directory_is_none(tmp_path: Path) -> None:
+    assert take_outbox(tmp_path) is None
+
+
+def test_take_outbox_refuses_a_symlinked_outbox_and_keeps_its_target(tmp_path: Path) -> None:
+    target = tmp_path / "secret.json"
+    target.write_text('{"questions": []}', encoding="utf-8")
+    (tmp_path / "root").mkdir()
+    path = prepare_outbox(tmp_path / "root")
+    path.symlink_to(target)
+
+    with pytest.raises(OutboxError, match="not a regular file"):
+        take_outbox(tmp_path / "root")
+    assert target.exists()
+    assert not path.is_symlink()
+
+
+def test_take_outbox_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    os.mkfifo(path)
+
+    with pytest.raises(OutboxError, match="not a regular file"):
+        take_outbox(tmp_path)
+    assert not path.exists()
+
+
+def test_take_outbox_bounds_the_read_one_byte_past_the_limit(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    path.write_bytes(b" " * (OUTBOX_MAX_BYTES + 10))
+
+    assert len(take_outbox(tmp_path)) == OUTBOX_MAX_BYTES + 1
+
+
+def test_discard_outbox_removes_a_directory_planted_as_the_outbox(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    path.mkdir()
+    (path / "inner").write_text("x", encoding="utf-8")
+
+    discard_outbox(tmp_path)
+
+    assert not path.exists()
+
+
+def test_questions_prompt_names_both_paths_and_the_pause_behaviour() -> None:
+    view_path = Path("/p/.delibra/questions.json")
+    outbox_path = Path("/w/questions/outbox.json")
+
+    pausing = questions_prompt(view_path, outbox_path, pause_enabled=True)
+    unattended = questions_prompt(view_path, outbox_path, pause_enabled=False)
+
+    for prompt in (pausing, unattended):
+        assert "/p/.delibra/questions.json" in prompt
+        assert "/w/questions/outbox.json" in prompt
+        assert "at most 25 questions" in prompt
+        assert "not by itself a reason to write Not converged" in prompt
+    assert "unless your turn ends the run by agreement or the cycle limit" in pausing
+    assert "the run then pauses for the user after your turn" in pausing
+    assert "this run does not pause" in unattended
+
+
+def test_questions_prompt_without_an_outbox_still_names_the_answer_view() -> None:
+    prompt = questions_prompt(
+        Path("/p/.delibra/questions.json"), None, pause_enabled=True
+    )
+
+    assert "/p/.delibra/questions.json" in prompt
+    assert "read it before deciding" in prompt
+    assert "write it to" not in prompt
+    assert "blocking" not in prompt
+
+
+def test_outbox_rule_expressible_rejects_paths_a_permission_rule_cannot_name() -> None:
+    assert outbox_rule_expressible(Path("/home/.delibra/build-tmp/a/questions"))
+    assert not outbox_rule_expressible(Path("/home/de,libra/build-tmp/a/questions"))
+    assert not outbox_rule_expressible(Path("/home/x[1]/questions"))
