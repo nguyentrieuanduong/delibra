@@ -500,6 +500,7 @@ class AutoManager:
         turn_timeout_seconds: int | None = None,
         context_policy: AutoContextPolicy | None = None,
         kind: str = "discussion",
+        pause_on_blocking_questions: bool = True,
     ) -> AutoRunRecord:
         if self._quiescing:
             raise ConflictError("Auto manager is shutting down")
@@ -511,6 +512,8 @@ class AutoManager:
             raise StorageError("Auto agreement policy is invalid")
         if type(preparation_enabled) is not bool:
             raise StorageError("Auto preparation choice is invalid")
+        if type(pause_on_blocking_questions) is not bool:
+            raise StorageError("Auto blocking-question choice is invalid")
         if type(max_cycles) is not int or not 1 <= max_cycles <= AUTO_MAX_INITIAL_CYCLES:
             raise StorageError(
                 f"Auto cycle limit must be from 1 through {AUTO_MAX_INITIAL_CYCLES}"
@@ -653,6 +656,7 @@ class AutoManager:
                 terminal_reason=None,
                 context_policy=context_policy,
                 kind=kind,
+                pause_on_blocking_questions=pause_on_blocking_questions,
                 git=git_state,
                 guidance=(
                     AutoArtifact("guidance.md", sha256(guidance_bytes).hexdigest())
@@ -770,9 +774,12 @@ class AutoManager:
         *,
         max_cycles: int,
         turn_timeout_seconds: int,
+        pause_on_blocking_questions: bool | None = None,
     ) -> AutoRunRecord:
         """Return a terminal Auto run to its parked cursor and drive it again."""
 
+        if pause_on_blocking_questions is not None and type(pause_on_blocking_questions) is not bool:
+            raise StorageError("Auto blocking-question choice is invalid")
         if self._quiescing:
             raise ConflictError("Auto manager is shutting down")
         # Fail fast on a run that is still going, so an active run is refused
@@ -934,6 +941,8 @@ class AutoManager:
             record.next_participant = cursor.next_participant
             record.max_cycles = max_cycles
             record.future_turn_timeout_seconds = turn_timeout
+            if pause_on_blocking_questions is not None:
+                record.pause_on_blocking_questions = pause_on_blocking_questions
             record.finished_at = None
             record.terminal_reason = None
             if record.kind == "build":
@@ -2110,6 +2119,7 @@ class AutoManager:
                 current.active_key = None
                 current.active_timeout = None
                 self._advance_discussion_locked(store, current)
+                self._pause_for_blocking_questions_locked(store, current, participant, asked)
         self._publish_status(current)
         return outcome
 
@@ -2633,6 +2643,31 @@ class AutoManager:
             LOGGER.exception("Auto run %s could not save its questions", record.id)
             return [], "questions store unavailable; this turn's questions were not saved"
         return added, None
+
+    def _pause_for_blocking_questions_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        participant: AutoParticipant,
+        asked: list[Question],
+    ) -> None:
+        blocking = [question.id for question in asked if question.blocking]
+        # A turn that already converged the run or reached its cycle limit
+        # keeps that outcome; Continue Auto lists the open questions.
+        if (
+            not blocking
+            or not record.pause_on_blocking_questions
+            or record.status not in ACTIVE_AUTO_STATUSES
+        ):
+            return
+        # The cursor already moved past this turn, so Continue Auto starts
+        # with the next speaker.
+        self._transition_terminal_locked(
+            store,
+            record,
+            "stopped",
+            f"paused: {participant.name} needs input ({', '.join(blocking)})",
+        )
 
     @staticmethod
     def _available_positions(record: AutoRunRecord) -> list[int]:

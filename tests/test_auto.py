@@ -5556,3 +5556,151 @@ def test_a_claude_build_turn_gets_no_outbox_when_its_rule_is_inexpressible(
         "Claude permission rule"
     )
     assert (codex_outbox, codex_warning) == (unsafe_root / "questions" / "outbox.json", None)
+
+
+@pytest.mark.asyncio
+async def test_a_blocking_question_pauses_the_run_after_its_turn(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", outbox=_outbox({"question": "Deploy where?", "blocking": True})),
+            PlannedOutput("must not run"),
+        ],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids, max_cycles=2)
+
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "paused: Agent 1 needs input (Q1)"
+    assert len(terminal.discussion) == 1
+    assert factory.created == 1
+    assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_last_speaker_blocking_question_pauses_at_the_next_cycle(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha"),
+            PlannedOutput("Beta", outbox=_outbox({"question": "Deploy where?", "blocking": True})),
+            PlannedOutput("must not run"),
+        ],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids, max_cycles=2)
+
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "paused: Agent 2 needs input (Q1)"
+    assert factory.created == 2
+    assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 2, 0)
+
+
+@pytest.mark.asyncio
+async def test_the_cycle_limit_outranks_a_final_blocking_question(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha"),
+            PlannedOutput("Beta", outbox=_outbox({"question": "Deploy where?", "blocking": True})),
+        ],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    assert terminal.status == "limit_reached"
+    assert terminal.discussion[1].asked == ["Q1"]
+    [question] = QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions
+    assert (question.status, question.blocking) == ("open", True)
+
+
+@pytest.mark.asyncio
+async def test_convergence_outranks_a_blocking_question_on_the_same_turn(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha 1"),
+            PlannedOutput("Beta 1"),
+            PlannedOutput(
+                "Alpha 2",
+                "agree",
+                outbox=_outbox({"question": "Deploy where?", "blocking": True}),
+            ),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Questions topic",
+        participant_ids=session_ids,
+        agreement_policy="first_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert terminal.terminal_reason == "first participant agreement"
+    assert terminal.discussion[2].asked == ["Q1"]
+    assert factory.created == 3
+
+
+@pytest.mark.asyncio
+async def test_with_pausing_off_a_blocking_question_does_not_stop_the_run(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", outbox=_outbox({"question": "Deploy where?", "blocking": True})),
+            PlannedOutput("Beta"),
+        ],
+    )
+
+    _, terminal = await _one_cycle(
+        manager, project_id, session_ids, pause_on_blocking_questions=False
+    )
+
+    assert terminal.status == "limit_reached"
+    assert len(terminal.discussion) == 2
+    assert terminal.pause_on_blocking_questions is False
+    assert "this run does not pause" in str(factory.calls[0]["prompt"])
+
+
+@pytest.mark.asyncio
+async def test_continue_auto_can_turn_pausing_off(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", outbox=_outbox({"question": "Deploy where?", "blocking": True})),
+            PlannedOutput("Beta", outbox=_outbox({"question": "Again?", "blocking": True})),
+        ],
+    )
+    created, paused = await _one_cycle(manager, project_id, session_ids)
+    assert paused.status == "stopped"
+
+    resumed = await manager.resume(
+        project_id,
+        created.id,
+        max_cycles=1,
+        turn_timeout_seconds=2,
+        pause_on_blocking_questions=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert resumed.pause_on_blocking_questions is False
+    assert terminal.status == "limit_reached"
+    assert [turn.session_id for turn in terminal.discussion] == session_ids
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_non_boolean_pause_choice(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, _ = auto_manager_fixture(tmp_path, [])
+
+    with pytest.raises(StorageError, match="blocking-question choice"):
+        await manager.create(
+            project_id,
+            topic="t",
+            participant_ids=session_ids,
+            agreement_policy="all_agree",
+            max_cycles=1,
+            pause_on_blocking_questions="yes",
+        )
