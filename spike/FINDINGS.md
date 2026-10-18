@@ -547,3 +547,96 @@ codex -c 'default_permissions="delibra_build"' -c 'permissions={delibra_build={e
   fields `app/codex_quota.py` reads.
 - Consequence: `app/health.py` `USAGE_VERIFIED_VERSIONS` now names these
   versions, so the footer no longer warns about usage verification.
+
+<!-- QUESTIONS-SPIKE-CLAUDE:START -->
+## Auto questions spike: claude
+
+- Version: `2.1.296 (Claude Code)`
+- Verdict: **PASS**
+
+| Probe | Result |
+|---|---|
+| discussion_read_store | PASS |
+| discussion_write_outbox | PASS |
+| discussion_store_protected | PASS |
+| discussion_other_outbox_protected | PASS |
+| build_read_store | PASS |
+| build_write_outbox | PASS |
+| build_store_protected | PASS |
+| build_other_outbox_protected | PASS |
+
+Argv (sanitized):
+
+```text
+/opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),WebSearch,WebFetch,Read(/<TMP>/project/**)' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+/opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --add-dir '<TMP>/build-tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),Bash,WebSearch,WebFetch,Edit(/<TMP>/build-tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/questions/**)' --disallowedTools 'Edit(/.delibra/**),Edit(/.git/**)' --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":[],"strictAllowlist":true},"filesystem":{"denyRead":["~/"],"allowRead":["<TMP>/project","<TMP>/build-tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"denyWrite":["<TMP>/project/.delibra","<TMP>/project/.git"]},"credentials":{"envVars":[{"name":"ANTHROPIC_API_KEY","mode":"deny"},{"name":"OPENAI_API_KEY","mode":"deny"},{"name":"GITHUB_TOKEN","mode":"deny"},{"name":"GH_TOKEN","mode":"deny"},{"name":"NPM_TOKEN","mode":"deny"},{"name":"AWS_ACCESS_KEY_ID","mode":"deny"},{"name":"AWS_SECRET_ACCESS_KEY","mode":"deny"},{"name":"AWS_SESSION_TOKEN","mode":"deny"}]}}}' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+```
+<!-- QUESTIONS-SPIKE-CLAUDE:END -->
+
+<!-- QUESTIONS-SPIKE-CODEX:START -->
+## Auto questions spike: codex
+
+- Version: `codex-cli 0.163.0`
+- Verdict: **INCONCLUSIVE** (rows below corrected by hand; see decisions)
+
+| Probe | Result |
+|---|---|
+| discussion_read_store | PASS |
+| discussion_write_outbox | PASS |
+| discussion_store_protected | INCONCLUSIVE (no attempt in events) |
+| discussion_other_outbox_protected | INCONCLUSIVE (no attempt in events) |
+| build_read_store | PASS |
+| build_write_outbox | PASS |
+| build_store_protected | INCONCLUSIVE (no attempt in events) |
+| build_other_outbox_protected | INCONCLUSIVE (no attempt in events) |
+
+Argv (sanitized):
+
+```text
+/opt/homebrew/bin/codex --model gpt-6-sol --sandbox workspace-write --ask-for-approval never --search --cd '/<TMP>/project/.delibra/sessions/Spike/workspace' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config sandbox_workspace_write.exclude_slash_tmp=true --config sandbox_workspace_write.exclude_tmpdir_env_var=false --config sandbox_workspace_write.network_access=false --config 'shell_environment_policy.inherit="all"' --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+/opt/homebrew/bin/codex --model gpt-6-sol --ask-for-approval never --search --cd '/<TMP>/project' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --config 'default_permissions="delibra_build"' --config 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "/<TMP>/build-tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=false}}}' --config 'shell_environment_policy={inherit="core", set={"VIRTUAL_ENV"="/<TMP>/project/envs", "TMPDIR"="/<TMP>/build-tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "PIP_CACHE_DIR"="/<TMP>/build-tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="/<TMP>/build-tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/xdg", "PIP_USE_DEPRECATED"="legacy-certs"}}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable browser_annotation_api --disable in_app_browser exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+```
+<!-- QUESTIONS-SPIKE-CODEX:END -->
+
+<!-- QUESTIONS-SPIKE-DECISIONS:START -->
+## Auto questions spike: verdicts and decisions (2026-10-17)
+
+Produced by `spike/spike_questions.py` for Task 0 of
+`docs/specs/2026-10-17-auto-questions-design.md`. One discussion turn and one
+build turn per provider, Delibra's pinned argv; the Claude build argv adds
+`Edit(//<temp>/questions/**)`.
+
+- **Claude Code 2.1.296: PASS, all eight rows backed by tool results.**
+  - Discussion: `Read` of `<project>/.delibra/questions.json` succeeded
+    through `Read(//<project>/**)`; `Write` of
+    `<workspace>/questions/outbox.json` succeeded; both forbidden `Write`s were
+    refused in don't-ask mode.
+  - Build: `Read` of `.delibra/questions.json` succeeded; `Write` of
+    `<temp>/questions/outbox.json` succeeded with the added rule; both forbidden
+    `Write`s were refused ("denied by your permission settings"). No Bash
+    workaround was attempted.
+  - The argv above shows `Read(/<TMP>…` and `Edit(/<TMP>…`: the sanitizer of
+    that run collapsed the `//` anchor. The rules were `//`-anchored
+    (`with_write_rules`, covered by `tests/test_spike_add_dir.py`); the
+    sanitizer is fixed.
+- **codex-cli 0.163.0: read and outbox write PASS; protection rows not
+  exercised.**
+  - Both turns ran `cat` on the store (token in output) and a `printf … >`
+    into the outbox (exit 0, file content matched).
+  - Neither turn's event stream contains an attempt at steps 3 or 4, although
+    the final message claims both failed with "operation not permitted". The
+    harness scored unchanged bytes as PASS; those four rows are corrected to
+    INCONCLUSIVE here, and `judge` now requires a per-step marker in the events.
+  - Codex write protection is already established: discussion writes outside
+    the workspace fail with `sandbox:PermissionError` (`--add-dir` spike,
+    `delibra_sentinel`), and build writes to `.delibra` are denied
+    (`codex-replay`, `write_dot_delibra`).
+- **Decisions.**
+  - Discussion outbox: `<workspace>/questions/outbox.json`, both providers.
+  - Build outbox: `<build-tmp>/<session_id>/questions/outbox.json`; Claude
+    build argv gains `Edit(//<temp>/questions/**)`.
+  - Agents read `<project>/.delibra/questions.json` directly. Claude
+    discussion turns depend on the `Read(//<project>/**)` grant, which the
+    runner omits when the project path has an unsafe character
+    (`app/runner.py:790-794`).
+<!-- QUESTIONS-SPIKE-DECISIONS:END -->
