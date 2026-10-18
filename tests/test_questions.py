@@ -19,6 +19,7 @@ from app.questions import (
     Question,
     QuestionBook,
     QuestionStore,
+    QuestionsViewWriteError,
     discard_outbox,
     outbox_rule_expressible,
     parse_outbox,
@@ -190,6 +191,37 @@ def test_add_assigns_ids_records_provenance_and_writes_both_files(tmp_path: Path
     assert first.status == "open"
     assert [entry["id"] for entry in view(questions)["questions"]] == ["Q2", "Q1"]
     assert view(questions)["format"] == "delibra-questions-view/1"
+
+
+def test_add_reports_saved_questions_when_only_view_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    questions = store(tmp_path)
+
+    def fail_view(_path: Path, _data: bytes) -> None:
+        raise StorageError("injected view failure")
+
+    monkeypatch.setattr("app.questions.atomic_write_bytes", fail_view)
+    with pytest.raises(StorageError) as caught:
+        ask(questions, "Need input?", blocking=True)
+    assert isinstance(caught.value, QuestionsViewWriteError)
+    assert [question.id for question in getattr(caught.value, "saved", ())] == ["Q1"]
+    assert questions.load().find("Q1").blocking is True
+
+
+def test_add_does_not_claim_saved_questions_when_history_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    questions = store(tmp_path)
+
+    def fail_history(_path: Path, _data: object) -> None:
+        raise StorageError("injected history failure")
+
+    monkeypatch.setattr("app.questions.atomic_write_json", fail_history)
+    with pytest.raises(StorageError) as caught:
+        ask(questions, "Need input?", blocking=True)
+    assert not isinstance(caught.value, QuestionsViewWriteError)
+    assert questions.load().questions == []
 
 
 def test_ids_are_never_reused_after_delete(tmp_path: Path) -> None:

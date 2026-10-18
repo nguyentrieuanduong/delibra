@@ -51,6 +51,7 @@ from app.questions import (
     Question,
     QuestionStore,
     QuestionView,
+    QuestionsViewWriteError,
     discard_outbox,
     outbox_rule_expressible,
     parse_outbox,
@@ -2639,6 +2640,13 @@ class AutoManager:
                 cycle=record.current_cycle,
                 round_n=round_n,
             )
+        except QuestionsViewWriteError as exc:
+            LOGGER.warning(
+                "Auto run %s saved questions but could not update their view",
+                record.id,
+                exc_info=True,
+            )
+            return list(exc.saved), "questions saved, but the agent view could not be updated"
         except StorageError:
             LOGGER.exception("Auto run %s could not save its questions", record.id)
             return [], "questions store unavailable; this turn's questions were not saved"
