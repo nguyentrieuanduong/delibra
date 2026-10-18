@@ -43,6 +43,21 @@ from app.models import (
     SessionConfig,
     auto_trigger_key,
 )
+from app.questions import (
+    OUTBOX_NAME,
+    QUESTIONS_DIR,
+    VIEW_COPY_NAME,
+    OutboxError,
+    Question,
+    QuestionStore,
+    QuestionView,
+    discard_outbox,
+    outbox_rule_expressible,
+    parse_outbox,
+    prepare_outbox,
+    questions_prompt,
+    take_outbox,
+)
 from app.storage import (
     ACTIVE_AUTO_STATUSES,
     AUTO_MAX_COMPACTION_ATTEMPTS,
@@ -57,6 +72,7 @@ from app.storage import (
     ProjectStore,
     RegistryStore,
     StorageError,
+    atomic_write_bytes,
     first_unsafe_writable_root_character,
     utc_now,
     validate_id,
@@ -1952,6 +1968,9 @@ class AutoManager:
             )
         context_source, context_digest = store.write_auto_context(record.id, context)
         participant = record.participants[record.next_participant]
+        outbox_root = self._outbox_root(store, record, participant.session_id)
+        view: QuestionView | None = None
+        unavailable: str | None = None
         key = None
         try:
             async with self.locks.registry_project_sessions(
@@ -1962,6 +1981,11 @@ class AutoManager:
                 if self._halted_locked(store, current):
                     terminal = current
                 else:
+                    # Before the round exists, so a failure here orphans nothing.
+                    view, view_path, outbox_path, unavailable = self._prepare_questions_locked(
+                        store, current, participant.session_id,
+                        participant.agent, outbox_root
+                    )
                     round_n = store.allocate_round(participant.session_id)
                     staged = Path("inputs") / f"round-{round_n:02d}" / "auto-context.md"
                     request = AutoRunRequest(
@@ -1996,10 +2020,13 @@ class AutoManager:
                                 "Address the latest state. State your conclusion within the final three "
                                 "non-empty response lines. Include the standalone word Converged "
                                 "(or Hội tụ, if you are answering in Vietnamese) when no "
-                                "substantive objection remains. If a necessary change or unanswered "
-                                "question remains, write Not converged (or Chưa hội tụ) instead, and "
+                                "substantive objection remains. If a necessary change remains, or a "
+                                "question another participant must answer is unanswered, write Not "
+                                "converged (or Chưa hội tụ) instead, and "
                                 "do not use Converged or Hội tụ in those final three lines."
                             )
+                        ) + questions_prompt(
+                            view_path, outbox_path, pause_enabled=current.pause_on_blocking_questions
                         ),
                         build=current.kind == "build",
                         initial_timeout_seconds=current.future_turn_timeout_seconds,
@@ -2027,6 +2054,7 @@ class AutoManager:
         async with self.locks.project_sessions(record.project_id, [participant.session_id]):
             current = store.load_auto_run(record.id)
             if current.stop_requested:
+                discard_outbox(outbox_root)
                 self._transition_terminal_locked(
                     store,
                     current,
@@ -2034,6 +2062,7 @@ class AutoManager:
                     "stopped by user",
                 )
             elif result.status != "complete":
+                discard_outbox(outbox_root)
                 outcome = self._classify_turn_failure(
                     store,
                     current,
@@ -2051,11 +2080,15 @@ class AutoManager:
                     self.settings.captured_output_limit,
                 )
                 digest = sha256(output).hexdigest()
-                warning = (
+                build_warning = (
                     await self._commit_build_turn(store, current, participant, output)
                     if current.kind == "build"
                     else None
                 )
+                asked, question_warning = self._harvest_questions_locked(
+                    store, current, participant, result.n, outbox_root
+                )
+                assert view is not None
                 current.discussion.append(
                     AutoTurn(
                         phase="discussion",
@@ -2065,8 +2098,13 @@ class AutoManager:
                         position=current.next_participant,
                         output_sha256=digest,
                         verdict=result.auto.verdict or "continue",
-                        warning=warning,
+                        warning="; ".join(
+                            item for item in (build_warning, unavailable, question_warning) if item
+                        ) or None,
                         timeout=deepcopy(result.timeout),
+                        questions_sha256=view.sha256,
+                        questions_seen=list(view.seen) or None,
+                        asked=[question.id for question in asked] or None,
                     )
                 )
                 current.active_key = None
@@ -2517,6 +2555,84 @@ class AutoManager:
             record.current_cycle += 1
             record.next_participant = 0
             store.save_auto_run(record)
+
+    def _outbox_root(self, store: ProjectStore, record: AutoRunRecord, session_id: str) -> Path:
+        """Where a participant's questions outbox lives for this run kind.
+
+        Build turns cannot write their workspace, which is under .delibra;
+        the runner recreates their temp dir, with questions/, every turn.
+        """
+
+        if record.kind == "build":
+            return self.settings.build_tmp_root / session_id
+        return store.workspace_dir(session_id)
+
+    def _prepare_questions_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        session_id: str,
+        agent: str,
+        outbox_root: Path,
+    ) -> tuple[QuestionView, Path, Path | None, str | None]:
+        """Refresh the view and name the paths this turn's prompt carries.
+
+        Returns the view, the view path to name, the outbox path (None when
+        this turn cannot be given one) and a turn warning.
+        """
+
+        questions = QuestionStore(store.root, self.settings.auto_questions_view_limit)
+        view = questions.refresh_view()
+        if record.kind == "build":
+            outbox_dir = outbox_root / QUESTIONS_DIR
+            if agent == "claude" and not outbox_rule_expressible(outbox_dir):
+                return view, questions.view_path, None, (
+                    "question outbox unavailable: the build temp path cannot be "
+                    "expressed in a Claude permission rule"
+                )
+            return view, questions.view_path, outbox_dir / OUTBOX_NAME, None
+        outbox_path = prepare_outbox(outbox_root)
+        if first_unsafe_writable_root_character(str(store.project_path)) is None:
+            return view, questions.view_path, outbox_path, None
+        # Claude cannot read .delibra here (RunManager omits the project read
+        # rule) and no provider's read from such a path is measured, so every
+        # provider gets the same turn-start copy. Refreshing it mid-turn would
+        # mean writing where the agent can plant a symlink; answers saved
+        # during this turn reach the next one.
+        copy = outbox_path.with_name(VIEW_COPY_NAME)
+        atomic_write_bytes(copy, view.data)
+        return view, copy, outbox_path, None
+
+    def _harvest_questions_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        participant: AutoParticipant,
+        round_n: int,
+        outbox_root: Path,
+    ) -> tuple[list[Question], str | None]:
+        """Move a completed turn's outbox into the store; never fail the turn."""
+
+        try:
+            data = take_outbox(outbox_root)
+            proposals = parse_outbox(data) if data is not None else []
+        except (OutboxError, OSError) as exc:
+            return [], f"questions outbox ignored: {exc}"
+        if not proposals:
+            return [], None
+        try:
+            added = QuestionStore(store.root, self.settings.auto_questions_view_limit).add(
+                proposals,
+                asked_by=participant.session_id,
+                asked_by_name=participant.name,
+                auto_run=record.number,
+                cycle=record.current_cycle,
+                round_n=round_n,
+            )
+        except StorageError:
+            LOGGER.exception("Auto run %s could not save its questions", record.id)
+            return [], "questions store unavailable; this turn's questions were not saved"
+        return added, None
 
     @staticmethod
     def _available_positions(record: AutoRunRecord) -> list[int]:

@@ -55,6 +55,7 @@ from app.models import (
     SourceDescriptor,
     TimeoutRecord,
 )
+from app.questions import ProposedQuestion, QuestionStore
 from app.runner import RunManager
 from app.storage import (
     AUTO_MAX_COMPACTION_ATTEMPTS,
@@ -456,6 +457,7 @@ class PlannedOutput:
     # Drives fake_cli's failure modes, so the runner classifies a real stream
     # rather than a category injected straight onto the record.
     failure_mode: str | None = None
+    outbox: str | None = None
 
 
 class RecordingAutoAdapter:
@@ -474,6 +476,13 @@ class RecordingAutoAdapter:
             if context.staged_source is not None
             else b""
         )
+        if self.output.outbox is not None:
+            outbox_root = (
+                context.coding.temp_dir if context.coding is not None else context.workspace
+            )
+            (outbox_root / "questions" / "outbox.json").write_text(
+                self.output.outbox, encoding="utf-8"
+            )
         verdict_line = ""
         if self.output.decision is not None:
             verdict_line = (
@@ -562,6 +571,7 @@ def auto_manager_fixture(
     participants: int = 2,
     captured_output_limit: int | None = None,
     stateless_history_limit: int | None = None,
+    project_dir_name: str = "project",
 ) -> tuple[AutoManager, RecordingAutoFactory, str, list[str], ProjectStore]:
     settings = Settings(
         home=tmp_path / "home",
@@ -577,7 +587,7 @@ def auto_manager_fixture(
             else Settings.stateless_history_limit
         ),
     )
-    project_dir = tmp_path / "project"
+    project_dir = tmp_path / project_dir_name
     project_dir.mkdir()
     registry = RegistryStore(settings.home)
     project = registry.register("Auto manager", project_dir)
@@ -5326,3 +5336,223 @@ async def test_saving_a_turn_with_an_invalid_questions_digest_is_refused(tmp_pat
 
     with pytest.raises(OwnershipError, match="questions digest"):
         store.save_auto_run(terminal)
+
+
+def _outbox(*questions: dict) -> str:
+    return json.dumps({"questions": list(questions)})
+
+
+async def _one_cycle(manager, project_id, session_ids, **options):
+    created = await manager.create(
+        project_id,
+        topic="Questions topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=options.pop("max_cycles", 1),
+        preparation_enabled=False,
+        **options,
+    )
+    return created, await wait_for_auto_terminal(manager, project_id, created.id)
+
+
+@pytest.mark.asyncio
+async def test_a_completed_turn_harvests_its_outbox_into_the_project_store(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput(
+                "Alpha",
+                outbox=_outbox({"question": "Which database?", "assumption": "SQLite"}),
+            ),
+            PlannedOutput("Beta"),
+        ],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    [question] = QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions
+    assert (question.id, question.question, question.assumption, question.blocking) == (
+        "Q1", "Which database?", "SQLite", False,
+    )
+    assert (question.asked_by, question.asked_by_name, question.auto_run, question.cycle) == (
+        session_ids[0], "Agent 1", terminal.number, 1,
+    )
+    assert question.round == terminal.discussion[0].round_n
+    assert terminal.discussion[0].asked == ["Q1"]
+    assert terminal.discussion[1].asked is None
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox.json").exists()
+    # The second speaker started after the harvest, so its view held Q1.
+    assert terminal.discussion[1].questions_seen == ["Q1@0"]
+
+
+@pytest.mark.asyncio
+async def test_a_completed_build_turn_harvests_its_temp_outbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", outbox=_outbox({"question": "Deploy where?"})),
+            PlannedOutput("Beta"),
+        ],
+    )
+    enable_build(store, monkeypatch)
+    created = await start_build(
+        manager, project_id, session_ids, policy="all_agree", max_cycles=1
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    [question] = QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions
+    assert question.question == "Deploy where?"
+    assert terminal.discussion[0].asked == [question.id]
+    assert terminal.discussion[1].questions_seen == [f"{question.id}@0"]
+    temp_outbox = manager.settings.build_tmp_root / session_ids[0] / "questions" / "outbox.json"
+    assert temp_outbox.as_posix() in str(factory.calls[0]["prompt"])
+    assert not temp_outbox.exists()
+
+
+@pytest.mark.asyncio
+async def test_every_discussion_turn_names_the_view_and_its_own_outbox(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+
+    await _one_cycle(manager, project_id, session_ids)
+
+    for call, session_id in zip(factory.calls, session_ids):
+        prompt = str(call["prompt"])
+        assert (store.root / "questions.json").as_posix() in prompt
+        assert (store.workspace_dir(session_id) / "questions" / "outbox.json").as_posix() in prompt
+        assert "the run then pauses for the user after your turn" in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_turn_records_the_answers_its_view_held_at_turn_start(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+    questions = QuestionStore(store.root, manager.settings.auto_questions_view_limit)
+    questions.add(
+        [ProposedQuestion("Earlier?", "", False)],
+        asked_by=session_ids[1],
+        asked_by_name="Agent 2",
+        auto_run=None,
+        cycle=None,
+        round_n=1,
+    )
+    questions.answer("Q1", "Yes")
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    first = terminal.discussion[0]
+    assert first.questions_seen == ["Q1@1"]
+    assert first.questions_sha256 == sha256(questions.view_path.read_bytes()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_outbox_warns_on_the_turn_and_harvests_nothing(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", outbox='{"questions": [{"question": "x", "extra": 1}]}'),
+            PlannedOutput("Beta"),
+        ],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    assert terminal.status == "limit_reached"
+    assert terminal.discussion[0].warning == (
+        "questions outbox ignored: question 1 has unknown keys: extra"
+    )
+    assert QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions == []
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_discards_its_outbox(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("unused", provider_error=True, outbox=_outbox({"question": "Lost?"}))],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    assert terminal.status == "error"
+    assert terminal.discussion == []
+    assert QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions == []
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_unsafe_project_path_reads_a_turn_start_copy(tmp_path: Path) -> None:
+    """Mid-turn answers reach these turns on the next turn, by design.
+
+    Delibra never writes into an agent-writable workspace during a turn,
+    where a planted symlink could redirect the write.
+    """
+
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha", delay=0.3), PlannedOutput("Beta")],
+        project_dir_name="pro,ject",
+    )
+    questions = QuestionStore(store.root, manager.settings.auto_questions_view_limit)
+    questions.add(
+        [ProposedQuestion("Earlier?", "", False)],
+        asked_by=session_ids[1],
+        asked_by_name="Agent 2",
+        auto_run=None,
+        cycle=None,
+        round_n=1,
+    )
+    questions.answer("Q1", "Before the turn")
+    created = await manager.create(
+        project_id,
+        topic="Questions topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    questions.answer("Q1", "During the turn")
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    first_copy, second_copy = (
+        store.workspace_dir(session_id) / "questions" / "questions.json"
+        for session_id in session_ids
+    )
+    assert first_copy.as_posix() in str(factory.calls[0]["prompt"])
+    assert (store.root / "questions.json").as_posix() not in str(factory.calls[0]["prompt"])
+    assert b"Before the turn" in first_copy.read_bytes()
+    assert b"During the turn" not in first_copy.read_bytes()
+    assert sha256(first_copy.read_bytes()).hexdigest() == terminal.discussion[0].questions_sha256
+    assert b"During the turn" in second_copy.read_bytes()
+
+
+def test_a_claude_build_turn_gets_no_outbox_when_its_rule_is_inexpressible(
+    tmp_path: Path,
+) -> None:
+    manager, _, _, session_ids, store = auto_manager_fixture(tmp_path, [])
+    record = replace(
+        _resume_record(status="discussing", current_cycle=1, next_participant=0),
+        kind="build",
+    )
+    unsafe_root = tmp_path / "bu,ild" / session_ids[0]
+
+    _, _, claude_outbox, claude_warning = manager._prepare_questions_locked(
+        store, record, session_ids[0], "claude", unsafe_root
+    )
+    _, _, codex_outbox, codex_warning = manager._prepare_questions_locked(
+        store, record, session_ids[0], "codex", unsafe_root
+    )
+
+    assert claude_outbox is None
+    assert claude_warning == (
+        "question outbox unavailable: the build temp path cannot be expressed in a "
+        "Claude permission rule"
+    )
+    assert (codex_outbox, codex_warning) == (unsafe_root / "questions" / "outbox.json", None)
