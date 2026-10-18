@@ -240,6 +240,12 @@ class Question:
         }
 
 
+class QuestionsViewWriteError(StorageError):
+    def __init__(self, saved: Sequence[Question]) -> None:
+        super().__init__("questions were saved but the agent view write failed")
+        self.saved = tuple(saved)
+
+
 @dataclass
 class QuestionBook:
     next_id: int = 1
@@ -414,7 +420,11 @@ class QuestionStore:
             book.questions.append(question)
             added.append(question)
         if added:
-            self._save(book)
+            atomic_write_json(self.history_path, book.to_dict())
+            try:
+                atomic_write_bytes(self.view_path, render_view(book, self.view_limit).data)
+            except StorageError as exc:
+                raise QuestionsViewWriteError(added) from exc
         return added
 
     @staticmethod

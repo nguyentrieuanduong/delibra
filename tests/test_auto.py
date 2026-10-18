@@ -65,6 +65,7 @@ from app.storage import (
     ProjectStore,
     RegistryStore,
     StorageError,
+    atomic_write_bytes,
     atomic_write_json,
 )
 
@@ -5593,6 +5594,48 @@ async def test_a_blocking_question_pauses_the_run_after_its_turn(tmp_path: Path)
     assert len(terminal.discussion) == 1
     assert factory.created == 1
     assert reconstruct_resume_cursor(terminal) == ResumeCursor("discussing", 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_committed_blocking_question_pauses_when_view_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput(
+                "Alpha", outbox=_outbox({"question": "Need input?", "blocking": True})
+            ),
+            PlannedOutput("must not run"),
+        ],
+    )
+    real_write = atomic_write_bytes
+    failed = False
+
+    def fail_first_post_history_view(path: Path, data: bytes) -> None:
+        nonlocal failed
+        if (
+            not failed
+            and path == store.root / "questions.json"
+            and (store.root / "questions-history.json").exists()
+        ):
+            failed = True
+            raise StorageError("injected view failure")
+        real_write(path, data)
+
+    monkeypatch.setattr("app.questions.atomic_write_bytes", fail_first_post_history_view)
+    _, terminal = await _one_cycle(manager, project_id, session_ids, max_cycles=2)
+    assert failed
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "paused: Agent 1 needs input (Q1)"
+    assert terminal.discussion[0].asked == ["Q1"]
+    assert "questions saved, but the agent view could not be updated" in (
+        terminal.discussion[0].warning or ""
+    )
+    assert factory.created == 1
+    assert QuestionStore(
+        store.root, manager.settings.auto_questions_view_limit
+    ).load().find("Q1").blocking
 
 
 @pytest.mark.asyncio
