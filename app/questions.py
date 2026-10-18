@@ -508,28 +508,29 @@ def _remove_entry(descriptor: int, name: str) -> None:
 
 
 def prepare_outbox(root: Path) -> Path:
-    """Give the agent an empty ``questions/`` under a Delibra-owned root.
-
-    The agent can write inside ``root``, so whatever sits at ``questions`` may
-    be a planted symlink or file; it is removed, never followed.
-    """
-
-    directory = root / QUESTIONS_DIR
+    """Prepare a previous agent's questions directory for this turn."""
+    root_descriptor = _open_directory(root)
     try:
-        info = os.lstat(directory)
-    except FileNotFoundError:
-        info = None
-    if info is not None and not stat.S_ISDIR(info.st_mode):
-        os.unlink(directory)
-        info = None
-    if info is None:
-        directory.mkdir(mode=0o700)
-    descriptor = _open_directory(directory)
-    try:
-        _remove_entry(descriptor, OUTBOX_NAME)
+        try:
+            info = os.stat(QUESTIONS_DIR, dir_fd=root_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None and not stat.S_ISDIR(info.st_mode):
+            os.unlink(QUESTIONS_DIR, dir_fd=root_descriptor)
+            info = None
+        if info is None:
+            os.mkdir(QUESTIONS_DIR, mode=0o700, dir_fd=root_descriptor)
+        os.chmod(QUESTIONS_DIR, 0o700, dir_fd=root_descriptor, follow_symlinks=False)
+        descriptor = os.open(
+            QUESTIONS_DIR, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=root_descriptor
+        )
+        try:
+            _remove_entry(descriptor, OUTBOX_NAME)
+        finally:
+            os.close(descriptor)
     finally:
-        os.close(descriptor)
-    return directory / OUTBOX_NAME
+        os.close(root_descriptor)
+    return root / QUESTIONS_DIR / OUTBOX_NAME
 
 
 def _read_outbox(descriptor: int) -> bytes | None:
