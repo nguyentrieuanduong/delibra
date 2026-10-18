@@ -1,6 +1,8 @@
 """Unit tests for the Auto questions store, view, outbox and prompt."""
 
+from hashlib import sha256
 import json
+from pathlib import Path
 import random
 
 import pytest
@@ -10,8 +12,13 @@ from app.questions import (
     OUTBOX_MAX_QUESTIONS,
     OutboxError,
     ProposedQuestion,
+    Question,
+    QuestionBook,
+    QuestionStore,
     parse_outbox,
+    render_view,
 )
+from app.storage import ConflictError, NotFoundError, StorageError
 
 
 def outbox(*questions: object) -> bytes:
@@ -132,3 +139,223 @@ def test_parse_outbox_generated_inputs_parse_or_raise_only_outbox_error() -> Non
             valid += 1
             assert parse_outbox(data) == expected
     assert valid > 50
+
+
+def store(tmp_path: Path, limit: int = 96 * 1024) -> QuestionStore:
+    root = tmp_path / ".delibra"
+    root.mkdir(exist_ok=True)
+    return QuestionStore(root, limit)
+
+
+def ask(questions: QuestionStore, *texts: str, blocking: bool = False):
+    return questions.add(
+        [ProposedQuestion(text, f"assume {text}", blocking) for text in texts],
+        asked_by="a" * 32,
+        asked_by_name="Alpha",
+        auto_run=3,
+        cycle=2,
+        round_n=14,
+    )
+
+
+def view(questions: QuestionStore) -> dict:
+    return json.loads(questions.view_path.read_bytes())
+
+
+def test_a_missing_history_is_an_empty_book(tmp_path: Path) -> None:
+    book = store(tmp_path).load()
+
+    assert (book.next_id, book.questions) == (1, [])
+
+
+def test_add_assigns_ids_records_provenance_and_writes_both_files(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+
+    added = ask(questions, "Which database?", "Deploy where?")
+
+    assert [question.id for question in added] == ["Q1", "Q2"]
+    first = questions.load().questions[0]
+    assert (first.asked_by, first.asked_by_name, first.auto_run, first.cycle, first.round) == (
+        "a" * 32, "Alpha", 3, 2, 14,
+    )
+    assert first.status == "open"
+    assert [entry["id"] for entry in view(questions)["questions"]] == ["Q2", "Q1"]
+    assert view(questions)["format"] == "delibra-questions-view/1"
+
+
+def test_ids_are_never_reused_after_delete(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    ask(questions, "one", "two")
+
+    questions.delete("Q2")
+    [added] = ask(questions, "three")
+
+    assert added.id == "Q3"
+
+
+def test_answers_append_revisions_and_the_view_holds_only_the_latest(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    ask(questions, "Which database?")
+
+    questions.answer("Q1", " Postgres ")
+    questions.answer("Q1", "SQLite")
+    cleared = questions.clear_answer("Q1")
+    answered = questions.answer("Q1", "MySQL")
+
+    assert [(item.revision, item.text) for item in answered.answers] == [
+        (1, "Postgres"), (2, "SQLite"), (3, None), (4, "MySQL"),
+    ]
+    assert cleared.status == "open"
+    assert answered.status == "answered"
+    [entry] = view(questions)["questions"]
+    assert (entry["answer"], entry["answer_revision"], entry["status"]) == ("MySQL", 4, "answered")
+
+
+def test_dismiss_duplicate_and_restore_move_questions_out_of_and_into_the_view(
+    tmp_path: Path,
+) -> None:
+    questions = store(tmp_path)
+    ask(questions, "one", "two", "three")
+    questions.answer("Q2", "yes")
+
+    questions.dismiss("Q1")
+    duplicate = questions.mark_duplicate("Q3", "Q2")
+
+    assert duplicate.duplicate_of == "Q2"
+    assert [entry["id"] for entry in view(questions)["questions"]] == ["Q2"]
+    assert questions.restore("Q1").status == "open"
+    restored = questions.restore("Q3")
+    assert (restored.status, restored.duplicate_of) == ("open", None)
+    questions.dismiss("Q2")
+    assert questions.restore("Q2").status == "answered"
+
+
+@pytest.mark.parametrize(
+    ("action", "error"),
+    [
+        (lambda q: q.answer("Q1", "late"), ConflictError),
+        (lambda q: q.clear_answer("Q1"), ConflictError),
+        (lambda q: q.dismiss("Q1"), ConflictError),
+        (lambda q: q.mark_duplicate("Q1", "Q2"), ConflictError),
+    ],
+)
+def test_a_dismissed_question_must_be_restored_before_it_changes(
+    tmp_path: Path, action, error
+) -> None:
+    questions = store(tmp_path)
+    ask(questions, "one", "two")
+    questions.dismiss("Q1")
+
+    with pytest.raises(error):
+        action(questions)
+
+
+def test_invalid_answers_and_references_are_rejected(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    ask(questions, "one")
+
+    with pytest.raises(StorageError, match="1 to 20000"):
+        questions.answer("Q1", "   ")
+    with pytest.raises(StorageError, match="1 to 20000"):
+        questions.answer("Q1", "x" * 20_001)
+    with pytest.raises(NotFoundError):
+        questions.answer("Q9", "yes")
+    with pytest.raises(StorageError, match="cannot duplicate itself"):
+        questions.mark_duplicate("Q1", "Q1")
+    with pytest.raises(StorageError, match="Q9 does not exist"):
+        questions.mark_duplicate("Q1", "Q9")
+
+
+def test_render_view_drops_oldest_answered_then_oldest_open_over_the_limit(
+    tmp_path: Path,
+) -> None:
+    questions = store(tmp_path)
+    ask(questions, *(f"question {index} " + "x" * 400 for index in range(1, 7)))
+    for question_id in ("Q1", "Q2", "Q3"):
+        questions.answer(question_id, "answer " + "y" * 400)
+    book = questions.load()
+    full = render_view(book, 1024 * 1024)
+
+    rendered = render_view(book, len(full.data) - 1)
+    assert rendered.omitted == frozenset({"Q1"})
+    small = render_view(book, 1500)
+    assert small.omitted >= {"Q1", "Q2", "Q3"}
+    assert len(small.data) <= 1500 or small.omitted == frozenset(f"Q{i}" for i in range(1, 7))
+    for kept in json.loads(small.data)["questions"]:
+        assert kept["id"] not in small.omitted
+    assert json.loads(small.data)["omitted"] == len(small.omitted)
+
+
+def test_render_view_uses_bounded_serializations_over_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.questions as questions_module
+
+    book = QuestionBook(
+        next_id=1201,
+        questions=[
+            Question(
+                id=f"Q{number}", asked_by="a" * 32, asked_by_name="Alpha",
+                auto_run=1, cycle=1, round=1, asked_at="2026-10-18T00:00:00Z",
+                question="x" * 120, assumption="", blocking=False,
+            )
+            for number in range(1, 1201)
+        ],
+    )
+    original_dumps = questions_module.json.dumps
+    calls = 0
+
+    def counted_dumps(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(questions_module.json, "dumps", counted_dumps)
+    rendered = render_view(book, 96 * 1024)
+
+    assert rendered.omitted
+    assert len(rendered.data) <= 96 * 1024
+    assert calls <= 16
+
+
+def test_refresh_view_describes_exactly_the_bytes_it_wrote(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    ask(questions, "one", "two")
+    questions.answer("Q1", "yes")
+    questions.view_path.unlink()
+
+    refreshed = questions.refresh_view()
+
+    assert questions.view_path.read_bytes() == refreshed.data
+    assert refreshed.sha256 == sha256(refreshed.data).hexdigest()
+    assert refreshed.seen == ("Q2@0", "Q1@1")
+
+
+def test_turn_start_refresh_repairs_view_after_interrupted_pair_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    questions = store(tmp_path)
+    ask(questions, "one")
+    stale_view = questions.view_path.read_bytes()
+
+    def fail_view_write(_path: Path, _data: bytes) -> None:
+        raise StorageError("injected view write failure")
+
+    monkeypatch.setattr("app.questions.atomic_write_bytes", fail_view_write)
+    with pytest.raises(StorageError, match="injected view write failure"):
+        questions.answer("Q1", "yes")
+    assert questions.load().find("Q1").answer == "yes"
+    assert questions.view_path.read_bytes() == stale_view
+
+    monkeypatch.undo()
+    refreshed = questions.refresh_view()
+    assert questions.view_path.read_bytes() == refreshed.data
+    assert json.loads(refreshed.data)["questions"][0]["answer"] == "yes"
+
+
+def test_a_corrupt_history_without_a_backup_is_a_storage_error(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    questions.history_path.write_text('{"format": "other"}', encoding="utf-8")
+
+    with pytest.raises(StorageError, match="questions history is invalid"):
+        questions.load()
