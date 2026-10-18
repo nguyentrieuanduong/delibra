@@ -1,0 +1,5 @@
+{% for question in questions %}{% include "_question_item.html" %}{% endfor %}
+<input type="hidden" id="questions-cursor" name="after" value="{{ cursor }}" hx-swap-oob="true">
+{% if questions %}<p id="questions-empty" hx-swap-oob="delete"></p>{% endif %}
+{% with oob_summary=true %}{% include "_questions_summary.html" %}{% endwith %}
+{% with oob_omitted=true %}{% include "_questions_omitted.html" %}{% endwith %}
