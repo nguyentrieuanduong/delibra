@@ -12,6 +12,7 @@ from app.agents.errors import (
     classify_text,
 )
 from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsage
+from app.questions import QUESTIONS_DIR, outbox_rule_expressible
 from app.storage import epoch_instant
 
 
@@ -258,6 +259,16 @@ class ClaudeAdapter:
                 ]},
             }
         }
+        # Build turns cannot write their workspace (it is under .delibra, and an
+        # allow rule cannot carve an exception out of the .delibra deny), so the
+        # questions outbox lives in the turn's temp dir (Auto questions spike).
+        # AutoManager checks the same predicate before promising an outbox.
+        questions_dir = coding.temp_dir / QUESTIONS_DIR
+        questions_rule = (
+            f",Edit(/{questions_dir.as_posix()}/**)"
+            if outbox_rule_expressible(questions_dir)
+            else ""
+        )
         argv = [
             self.executable,
             "-p",
@@ -280,7 +291,7 @@ class ClaudeAdapter:
             # are in-process and not covered by the sandbox allowlist.
             "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch",
             "--allowedTools",
-            "Read(/**),Edit(/**),Bash,WebSearch,WebFetch",
+            "Read(/**),Edit(/**),Bash,WebSearch,WebFetch" + questions_rule,
             "--disallowedTools",
             "Edit(/.delibra/**),Edit(/.git/**)",
             "--settings",

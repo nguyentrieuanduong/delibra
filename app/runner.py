@@ -33,6 +33,7 @@ from app.auto import parse_auto_verdict
 from app.coding_env import developer_tools_dir
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
+from app.questions import QUESTIONS_DIR
 from app.models import (
     AutoQuotaOverride,
     AutoRoundDescriptor,
@@ -1242,6 +1243,8 @@ class RunManager:
             os.replace(temp_dir, discarded)
             self._discard_tree(discarded)
         temp_dir.mkdir(mode=0o700)
+        # The agent's questions outbox; AutoManager harvests it after the turn.
+        (temp_dir / QUESTIONS_DIR).mkdir(mode=0o700)
         tools = await self.developer_tools()
         return CodingContext(
             project_root=store.project_path,
