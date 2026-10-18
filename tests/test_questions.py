@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import random
+import stat
 
 import pytest
 
@@ -378,6 +379,19 @@ def test_prepare_outbox_creates_the_directory_and_removes_a_stale_outbox(tmp_pat
     assert again == tmp_path / QUESTIONS_DIR / OUTBOX_NAME
     assert not again.exists()
     assert (tmp_path / QUESTIONS_DIR).stat().st_mode & 0o777 == 0o700
+
+
+def test_prepare_outbox_repairs_an_unreadable_questions_directory(tmp_path: Path) -> None:
+    outbox = prepare_outbox(tmp_path)
+    outbox.write_text("stale", encoding="utf-8")
+    outbox.parent.chmod(0)
+    try:
+        prepared = prepare_outbox(tmp_path)
+    finally:
+        outbox.parent.chmod(0o700)
+    assert prepared == outbox
+    assert not prepared.exists()
+    assert stat.S_IMODE(prepared.parent.stat().st_mode) == 0o700
 
 
 def test_prepare_outbox_replaces_a_planted_symlink_without_touching_its_target(
