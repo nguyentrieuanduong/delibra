@@ -1,0 +1,11 @@
+<details id="questions-panel" class="questions-panel"{% if open_count %} open{% endif %}>
+  {% include "_questions_summary.html" %}
+  <input type="hidden" id="questions-cursor" name="after" value="{{ cursor }}">
+  {% include "_questions_omitted.html" %}
+  {% if not questions %}
+    <p id="questions-empty" class="hint">No questions yet. Auto agents add questions here when only you can answer.</p>
+  {% endif %}
+  <ol id="questions-list" class="questions-list">
+    {% for question in questions %}{% include "_question_item.html" %}{% endfor %}
+  </ol>
+</details>

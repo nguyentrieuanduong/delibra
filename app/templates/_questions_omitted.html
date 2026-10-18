@@ -1,0 +1,9 @@
+<div id="questions-omitted"{% if oob_omitted|default(false) %} hx-swap-oob="outerHTML"{% endif %}>
+  {% if omitted %}
+    <p class="notice" role="status">
+      {{ omitted|length }} question{% if omitted|length != 1 %}s are{% else %} is{% endif %} not shown to agents
+      because the agent view is over its size limit: {{ omitted|sort|join(', ') }}.
+      Dismiss or delete answered questions to make room.
+    </p>
+  {% endif %}
+</div>

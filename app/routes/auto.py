@@ -27,6 +27,7 @@ from app.models import (
     SessionConfig,
 )
 from app.project_routing import request_project
+from app.questions import QuestionStore
 from app.security import is_loopback_client, require_loopback_client, validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
 from app.urls import project_url
@@ -244,6 +245,16 @@ def _context_policy_context(
     }
 
 
+def _run_questions(request: Request, store: ProjectStore, record: AutoRunRecord) -> list:
+    return [
+        question
+        for question in QuestionStore(
+            store.root, request.app.state.settings.auto_questions_view_limit
+        ).load().questions
+        if record.number is not None and question.auto_run == record.number
+    ]
+
+
 def _resume_context(
     request: Request,
     store: ProjectStore,
@@ -285,6 +296,17 @@ def _resume_context(
         ),
         "resume_turn_timeout_seconds": record.future_turn_timeout_seconds,
         "max_turn_timeout_seconds": request.app.state.settings.max_run_timeout,
+        "resume_pause_on_blocking": record.pause_on_blocking_questions,
+        "resume_blocking_questions": (
+            [
+                question
+                for question in _run_questions(request, store, record)
+                if question.blocking
+                and any(question.id in (turn.asked or []) for turn in record.discussion)
+            ]
+            if resumable
+            else []
+        ),
     }
 
 
@@ -408,6 +430,9 @@ def auto_status_context(
         "auto_history_status_oob": refresh_history_status,
         "auto_agent_cards": (
             _participant_cards(store, record) if refresh_agent_cards else []
+        ),
+        "run_open_questions": sum(
+            1 for question in _run_questions(request, store, record) if question.status == "open"
         ),
     }
 
@@ -559,6 +584,7 @@ async def start_auto(
     context_threshold_percent: int = Form(AutoContextPolicy.threshold_percent),
     context_summarizer: str = Form("next"),
     kind: str = Form("discussion"),
+    pause_on_blocking_questions: bool = Form(False),
 ) -> HTMLResponse:
     if kind == "build":
         require_loopback_client(request)
@@ -585,6 +611,7 @@ async def start_auto(
         turn_timeout_seconds=turn_timeout_seconds,
         context_policy=context_policy,
         kind=kind,
+        pause_on_blocking_questions=pause_on_blocking_questions,
     )
     return _status_response(
         request,
@@ -726,6 +753,7 @@ async def resume_auto(
     auto_id: str,
     additional_cycles: int = Form(...),
     turn_timeout_seconds: int = Form(...),
+    pause_on_blocking_questions: bool = Form(False),
 ) -> HTMLResponse:
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -753,6 +781,7 @@ async def resume_auto(
         record.id,
         max_cycles=max_cycles,
         turn_timeout_seconds=turn_timeout_seconds,
+        pause_on_blocking_questions=pause_on_blocking_questions,
     )
     return _status_response(
         request,

@@ -1,0 +1,46 @@
+{% set question_url = project_url(project.name, '/questions/' ~ question.id) %}
+<li id="question-{{ question.id }}" class="question question-{{ question.status }}">
+  <p class="question-meta">
+    <strong>{{ question.id }}</strong> · {{ question.asked_by_name }}{% if question.auto_run %} · Auto {{ question.auto_run }}{% endif %}{% if question.cycle %} · cycle {{ question.cycle }}{% endif %}
+    · <span class="question-status">{{ question.status }}</span>{% if question.duplicate_of %} · duplicate of {{ question.duplicate_of }}{% endif %}
+    {% if question.blocking %}<span class="question-badge">blocking</span>{% endif %}
+  </p>
+  <p class="question-text">{{ question.question }}</p>
+  {% if question.assumption %}<p class="question-assumption">Assuming: {{ question.assumption }}</p>{% endif %}
+  {% if question.status in ("open", "answered") %}
+    <form method="post" action="{{ question_url }}/answer" hx-post="{{ question_url }}/answer" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">
+      <label>Answer
+        <textarea name="answer" rows="3" maxlength="{{ answer_max }}" required>{{ question.answer or '' }}</textarea>
+      </label>
+      <button type="submit">{% if question.answer %}Update answer{% else %}Save answer{% endif %}</button>
+    </form>
+    <div class="question-actions">
+      {% if question.answer %}<button type="button" hx-post="{{ question_url }}/clear" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">Clear answer</button>{% endif %}
+      <button type="button" hx-post="{{ question_url }}/dismiss" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">Dismiss</button>
+      <form method="post" action="{{ question_url }}/duplicate" hx-post="{{ question_url }}/duplicate" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">
+        <label>Duplicate of <input name="duplicate_of" size="6" pattern="Q[1-9][0-9]*" required></label>
+        <button type="submit">Mark duplicate</button>
+      </form>
+      <button type="button" hx-post="{{ question_url }}/delete" hx-confirm="Delete {{ question.id }} and its answer history?" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">Delete</button>
+    </div>
+  {% else %}
+    <div class="question-actions">
+      <button type="button" hx-post="{{ question_url }}/restore" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">Restore</button>
+      <button type="button" hx-post="{{ question_url }}/delete" hx-confirm="Delete {{ question.id }} and its answer history?" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">Delete</button>
+    </div>
+  {% endif %}
+  {% if question.answers %}
+    <details class="question-history">
+      <summary>Answer history ({{ question.answers|length }})</summary>
+      <ol>
+        {% for revision in question.answers|reverse %}
+          <li><time datetime="{{ revision.at }}">{{ revision.at }}</time> · revision {{ revision.revision }}: {% if revision.text is none %}<em>cleared</em>{% else %}{{ revision.text }}{% endif %}</li>
+        {% endfor %}
+      </ol>
+    </details>
+  {% endif %}
+</li>
+{% if oob_summary|default(false) %}{% include "_questions_summary.html" %}{% endif %}
+{% if oob_summary|default(false) %}
+  {% with oob_omitted=true %}{% include "_questions_omitted.html" %}{% endwith %}
+{% endif %}

@@ -24,6 +24,7 @@ from app.routes.auto import router as auto_router
 from app.routes.chat import router as chat_router
 from app.routes.files import router as files_router
 from app.routes.projects import router as projects_router
+from app.routes.questions import router as questions_router
 from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
 from app.routes.usage import router as usage_router
@@ -207,6 +208,7 @@ def create_app(
     app.include_router(sessions_router)
     app.include_router(runs_router)
     app.include_router(usage_router)
+    app.include_router(questions_router)
 
     @app.exception_handler(NotFoundError)
     async def not_found(_: Request, exc: NotFoundError):

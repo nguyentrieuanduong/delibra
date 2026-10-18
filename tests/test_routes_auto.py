@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import functools
 import json
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,7 @@ from app.models import (
     TurnUsage,
     auto_trigger_key,
 )
+from app.questions import ProposedQuestion, QuestionStore
 from app.storage import ProjectStore, RegistryStore
 
 
@@ -432,9 +434,9 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     assert "checked" not in prepare_tag
     assert "checked" in first_tag
     assert "checked" not in all_tag
-    # One row per agent, plus prepare-first, two agreement radios, and the
-    # three context-management modes.
-    assert setup.text.count('class="auto-choice"') == len(sessions) + 6
+    # One row per agent, plus prepare-first, pause-on-blocking-questions, two
+    # agreement radios, and the three context-management modes.
+    assert setup.text.count('class="auto-choice"') == len(sessions) + 7
     assert "enabling preparation adds 2 calls" in setup.text
     assert re.search(
         r'<input[^>]*name="max_cycles"[^>]*min="1"[^>]*max="20"[^>]*value="3"',
@@ -1346,7 +1348,8 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
     assert status.text.count(
         f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.number}/stream"'
     ) == 1
-    assert status.text.count('hx-trigger="sse:status, sse:reset"') == 2
+    # Status, timeline, and the Questions for you append.
+    assert status.text.count('hx-trigger="sse:status, sse:reset"') == 3
 
 
 def test_discussion_places_current_timeout_in_timeline_not_auto_status(
@@ -2323,3 +2326,69 @@ def test_build_stop_works_from_a_lan_client(tmp_path: Path, monkeypatch) -> None
     assert stopped.status_code == 200
     assert terminal.kind == "build"
     assert terminal.status == "stopped"
+
+
+def test_start_route_records_the_blocking_pause_choice(tmp_path: Path) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(tmp_path)
+    data = {
+        "topic": "Pause choice",
+        "participant_id": [s.id for s in sessions],
+        "agreement_policy": "first_agree",
+        "max_cycles": "1",
+        "turn_timeout_seconds": "2",
+    }
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post(f"/projects/{project.id}/auto-runs", data={**data, "pause_on_blocking_questions": "true"})
+        first = wait_for_auto(store, terminal=True)
+        client.post(f"/projects/{project.id}/auto-runs", data=data)
+        for _ in range(300):
+            second = store.list_auto_runs()[-1]
+            if second.id != first.id and second.status not in {"preparing", "discussing"}:
+                break
+            time.sleep(0.01)
+        setup = client.get(f"/projects/{quote(project.name, safe='')}/auto/setup")
+
+    assert first.pause_on_blocking_questions is True
+    assert second.pause_on_blocking_questions is False
+    assert 'name="pause_on_blocking_questions" value="true" checked' in setup.text
+
+
+def test_resume_form_offers_the_pause_choice_and_lists_waiting_questions(tmp_path: Path) -> None:
+    app, settings, project, store, sessions, _ = auto_route_app(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [s.id for s in sessions], cycles=1)
+        record = wait_for_auto(store, terminal=True)
+        QuestionStore(store.root, settings.auto_questions_view_limit).add(
+            [ProposedQuestion("Deploy where?", "", True)],
+            asked_by=sessions[0].id,
+            asked_by_name=sessions[0].name,
+            auto_run=record.number,
+            cycle=1,
+            round_n=1,
+        )
+        record.discussion[0] = replace(record.discussion[0], asked=["Q1"])
+        store.save_auto_run(record)
+        status = client.get(f"{base}/auto-runs/{record.number}")
+        client.post(f"{base}/questions/Q1/answer", data={"answer": "Staging"})
+        answered_status = client.get(f"{base}/auto-runs/{record.number}")
+        client.post(
+            f"{base}/auto-runs/{record.number}/resume",
+            data={
+                "additional_cycles": "1",
+                "turn_timeout_seconds": "2",
+                "pause_on_blocking_questions": "true",
+            },
+        )
+        resumed = store.load_auto_run(record.id)
+
+    # start_auto posts no pause field, so the run started with pausing off
+    # and the resume form reflects that before the user turns it back on.
+    assert 'name="pause_on_blocking_questions" value="true">' in status.text
+    assert "Q1: Deploy where?" in status.text
+    assert "Q1: Deploy where? (answered)" in answered_status.text
+    assert "asked Q1" in status.text
+    assert "1 open question for you from this run" in status.text
+    assert resumed.pause_on_blocking_questions is True

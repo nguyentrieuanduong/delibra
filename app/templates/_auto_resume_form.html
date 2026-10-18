@@ -50,6 +50,21 @@
         required
       >
     </label>
+    {% if resume_blocking_questions|default([]) %}
+      <div class="auto-blocking-questions notice" role="status">
+        <p><strong>Blocking questions from this run:</strong></p>
+        <ul>
+          {% for question in resume_blocking_questions %}
+            <li>{{ question.id }}: {{ question.question }} ({{ question.status }})</li>
+          {% endfor %}
+        </ul>
+        <p>Answer them under Questions for you, or continue without answers.</p>
+      </div>
+    {% endif %}
+    <label class="auto-choice">
+      <input type="checkbox" name="pause_on_blocking_questions" value="true"{% if resume_pause_on_blocking|default(true) %} checked{% endif %}>
+      Pause when an agent marks a question as blocking
+    </label>
     <p class="hint">
       Continues at discussion cycle {{ resume_cycle }}. One additional cycle runs
       through cycle {{ resume_cycle }}.

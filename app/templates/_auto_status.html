@@ -86,6 +86,7 @@
           <li>
             Cycle {{ turn.cycle }} · {{ auto.participants[turn.position].name }}
             · {{ turn.verdict }}
+            {% if turn.asked %}· asked {{ turn.asked|join(', ') }}{% endif %}
             {% if turn.warning %}· {{ turn.warning }}{% endif %}
           </li>
         {% endfor %}
@@ -100,7 +101,7 @@
       <ol>
         {% for cycle in cycles %}
           {% for turn in auto.discussion if turn.cycle == cycle %}
-            <li>Cycle {{ turn.cycle }} · {{ auto.participants[turn.position].name }} · {{ turn.verdict }}{% if turn.warning %} · {{ turn.warning }}{% endif %}</li>
+            <li>Cycle {{ turn.cycle }} · {{ auto.participants[turn.position].name }} · {{ turn.verdict }}{% if turn.asked %} · asked {{ turn.asked|join(', ') }}{% endif %}{% if turn.warning %} · {{ turn.warning }}{% endif %}</li>
           {% endfor %}
           {% for handover in auto.handovers if handover.cycle == cycle %}
             <li class="auto-handover">Cycle {{ handover.cycle }} · {{ names.get(handover.from_session_id, 'unknown') }} · {% if handover.to_session_id %}handed over to {{ names.get(handover.to_session_id, 'unknown') }}{% else %}no agent available{% endif %} ({{ handover.reason }})</li>
@@ -111,6 +112,7 @@
   {% endif %}
   {% include "_auto_context_policy.html" %}
   {{ turn_usage(auto_usage, "Run total, every round included") }}
+  {% if run_open_questions|default(0) %}<p class="auto-open-questions">{{ run_open_questions }} open question{% if run_open_questions != 1 %}s{% endif %} for you from this run.</p>{% endif %}
   {% if auto.terminal_reason %}<p class="auto-terminal-reason">{{ auto.terminal_reason }}</p>{% endif %}
   {% if auto_active %}
     <span
@@ -133,6 +135,14 @@
         hx-trigger="sse:status, sse:reset"
         hx-target="#chat-timeline"
         hx-swap="outerHTML"
+      ></span>
+      <span
+        hidden
+        hx-get="{{ project_url(project.name, '/questions/new') }}"
+        hx-trigger="sse:status, sse:reset"
+        hx-include="#questions-cursor"
+        hx-target="#questions-list"
+        hx-swap="afterbegin"
       ></span>
     </span>
   {% endif %}
