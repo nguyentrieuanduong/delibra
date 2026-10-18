@@ -25,6 +25,7 @@ from app.storage import (
     StorageError,
     atomic_write_bytes,
     atomic_write_json,
+    atomic_write_json_recovery_pair,
     first_unsafe_writable_root_character,
     load_json_recover,
     utc_now,
@@ -373,10 +374,11 @@ class QuestionStore:
         atomic_write_bytes(self.view_path, view.data)
         return view
 
-    def _save(self, book: QuestionBook) -> None:
+    def _save(self, book: QuestionBook, *, replace_recovery: bool = False) -> None:
         # History first: a crash between the writes leaves a stale view, which
         # the next refresh_view rewrites, never a view the history lacks.
-        atomic_write_json(self.history_path, book.to_dict())
+        writer = atomic_write_json_recovery_pair if replace_recovery else atomic_write_json
+        writer(self.history_path, book.to_dict())
         atomic_write_bytes(self.view_path, render_view(book, self.view_limit).data)
 
     def _change(
@@ -489,7 +491,7 @@ class QuestionStore:
     def delete(self, question_id: str) -> None:
         book = self.load()
         book.questions.remove(book.find(question_id))
-        self._save(book)
+        self._save(book, replace_recovery=True)
 
 
 # O_NONBLOCK: an agent can plant a FIFO, and a blocking open would hang the

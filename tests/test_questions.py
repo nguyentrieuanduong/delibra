@@ -234,6 +234,19 @@ def test_ids_are_never_reused_after_delete(tmp_path: Path) -> None:
     assert added.id == "Q3"
 
 
+def test_deleted_question_does_not_return_from_history_backup(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    ask(questions, "Sensitive?")
+    questions.answer("Q1", "private answer")
+    questions.delete("Q1")
+    backup = questions.history_path.with_name("questions-history.json.bak")
+    assert b"private answer" not in backup.read_bytes()
+    questions.history_path.write_text("{", encoding="utf-8")
+    recovered = questions.load()
+    assert recovered.questions == []
+    assert recovered.next_id == 2
+
+
 def test_answers_append_revisions_and_the_view_holds_only_the_latest(tmp_path: Path) -> None:
     questions = store(tmp_path)
     ask(questions, "Which database?")
