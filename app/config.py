@@ -145,6 +145,9 @@ class Settings:
     # A percentage of the Auto prompt's *byte* budget, never of a provider
     # token window; a per-run policy overrides it.
     auto_context_trigger_percent: int = 70
+    # The agent-facing questions view (app/questions.py); over it, the oldest
+    # questions leave the view but stay in the history.
+    auto_questions_view_limit: int = 96 * 1024
 
     def __post_init__(self) -> None:
         # Imported here and not at module scope: security pulls in storage and
@@ -373,5 +376,11 @@ class Settings:
                 70,
                 minimum=10,
                 maximum=95,
+            ),
+            auto_questions_view_limit=_integer(
+                "DELIBRA_AUTO_QUESTIONS_LIMIT",
+                96 * 1024,
+                minimum=8 * 1024,
+                maximum=MIB,
             ),
         )

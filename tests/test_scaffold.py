@@ -145,6 +145,13 @@ def test_max_run_timeout_defaults_to_four_hours_and_rejects_smaller_run_timeout(
             "9",
             "96",
         ),
+        (
+            "DELIBRA_AUTO_QUESTIONS_LIMIT",
+            "auto_questions_view_limit",
+            96 * 1024,
+            str(8 * 1024 - 1),
+            str(1024 * 1024 + 1),
+        ),
     ],
 )
 def test_new_settings_defaults_and_bounds(
