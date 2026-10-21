@@ -51,6 +51,9 @@ class DockerAccess:
     cli_read_roots: tuple[Path, ...] = ()
     # Real directories holding docker-compose/docker-buildx (cliPluginsExtraDirs).
     plugin_dirs: tuple[Path, ...] = ()
+    # Real directory of the docker binary, appended to PATH: Codex cannot read
+    # /usr/local/bin, where Docker Desktop links it (spike S4, 2026-10-21).
+    bin_dir: Path | None = None
 
 
 @dataclass(frozen=True)

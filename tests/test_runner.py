@@ -2233,6 +2233,7 @@ async def test_docker_build_turn_gets_the_socket_and_a_private_cli_config(tmp_pa
     access = DockerAccess(
         socket=tmp_path / "docker.sock",
         plugin_dirs=(Path("/Applications/Docker.app/Contents/Resources/cli-plugins"),),
+        bin_dir=Path("/Applications/Docker.app/Contents/Resources/bin"),
     )
     record = create_runner_auto_record(store, session_id, status="discussing")
     record.kind = "build"
@@ -2250,6 +2251,8 @@ async def test_docker_build_turn_gets_the_socket_and_a_private_cli_config(tmp_pa
     temp = manager.settings.build_tmp_root / session_id
     assert spawn["tmp_entries"] == ["docker", "questions"]
     assert spawn["env"]["DOCKER_HOST"] == f"unix://{tmp_path / 'docker.sock'}"
+    # Last on PATH: found when /usr/local/bin is unreadable, shadows nothing.
+    assert spawn["env"]["PATH"].endswith(f"{os.pathsep}/Applications/Docker.app/Contents/Resources/bin")
     assert json.loads((temp / "docker" / "config.json").read_text()) == {
         "auths": {"delibra.invalid": {}},
         "cliPluginsExtraDirs": ["/Applications/Docker.app/Contents/Resources/cli-plugins"],

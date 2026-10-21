@@ -127,12 +127,16 @@ def codex_build_overrides(coding: CodingContext) -> list[str]:
         if coding.docker is not None
         else ""
     )
+    # Codex honours unix_sockets only through its network proxy (S4 and a
+    # `codex sandbox` probe, 2026-10-21). With Docker on and no hosts listed,
+    # the proxy runs with no domains and refuses every host (403).
+    proxied = bool(coding.network_allowlist) or coding.docker is not None
     network = (
         "network={enabled=true, domains={"
         + ", ".join(f"{_toml_string(host)}=\"allow\"" for host in coding.network_allowlist)
         + "}" + sockets + "}"
-        if coding.network_allowlist
-        else "network={enabled=false" + sockets + "}"
+        if proxied
+        else "network={enabled=false}"
     )
     read_roots = (
         *coding.read_roots,
@@ -156,7 +160,7 @@ def codex_build_overrides(coding: CodingContext) -> list[str]:
         )
         + "}}",
     ]
-    if coding.network_allowlist:
+    if proxied:
         overrides.append(
             "features.network_proxy={enabled=true, allow_local_binding=false, "
             "allow_upstream_proxy=false}"

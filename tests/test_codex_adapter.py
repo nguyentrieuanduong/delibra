@@ -533,11 +533,19 @@ def test_docker_profile_allows_exactly_the_project_socket() -> None:
     assert "dangerously_allow_all_unix_sockets" not in profile
 
 
-def test_docker_profile_with_an_empty_allowlist_keeps_network_off() -> None:
-    profile = next(
-        item for item in codex_build_overrides(docker_coding(())) if item.startswith("permissions=")
-    )
-    assert f'network={{enabled=false, unix_sockets={{"{SOCKET}"="allow"}}}}' in profile
+def test_docker_profile_with_an_empty_allowlist_proxies_only_the_socket() -> None:
+    # Codex honours unix_sockets only through its network proxy (S4 and a
+    # `codex sandbox` probe, 2026-10-21); with no domains the proxy refuses
+    # every host (403), so command network stays off.
+    overrides = codex_build_overrides(docker_coding(()))
+    profile = next(item for item in overrides if item.startswith("permissions="))
+    assert f'network={{enabled=true, domains={{}}, unix_sockets={{"{SOCKET}"="allow"}}}}' in profile
+    assert (
+        "features.network_proxy={enabled=true, allow_local_binding=false, "
+        "allow_upstream_proxy=false}"
+    ) in overrides
+    without_docker = codex_build_overrides(coding(()))
+    assert not any(item.startswith("features.network_proxy") for item in without_docker)
 
 
 def test_docker_command_environment_points_the_cli_at_the_socket() -> None:
