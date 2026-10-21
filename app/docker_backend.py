@@ -611,6 +611,76 @@ class DockerController:
             LOGGER.exception("Could not stop Lima instance %s", docker.instance)
             return False
 
+    async def adopt_local(self) -> DockerPolicy:
+        """Resolve the current Docker context's unix socket (design §5)."""
+
+        cli = find_host_docker_cli(self._environ())
+        code, out, err = await self._run(
+            [str(cli.executable), "context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"],
+            self._environ(), COMMAND_TIMEOUT_SECONDS,
+        )
+        if code != 0:
+            raise DockerUnavailable(f"docker context inspect failed: {tail(err)}")
+        try:
+            host = json.loads(out)
+        except ValueError:
+            host = None
+        if not isinstance(host, str) or not host.startswith("unix://"):
+            raise DockerUnavailable(f"the current Docker context uses {host!r}; only a unix socket is supported")
+        endpoint = Path(host.removeprefix("unix://")).resolve()
+        require_user_socket(endpoint)
+        version = await self._docker_version(cli, endpoint)
+        now = utc_now()
+        return DockerPolicy(
+            enabled=True, backend="local", status="ready", local_endpoint=endpoint.as_posix(),
+            local_acknowledged_at=now, docker_version=version, updated_at=now,
+        )
+
+    async def backend_refusal(self, policy: DockerPolicy) -> str | None:
+        """Why a Docker build run cannot start or resume now; None if it can."""
+
+        if not policy.enabled:
+            return None
+        if policy.status != "ready":
+            return f"Docker is not ready for this project ({policy.status}); see Settings"
+        try:
+            find_host_docker_cli(self._environ())
+            if policy.backend == "local":
+                require_user_socket(Path(policy.local_endpoint or "/nonexistent"))
+                return None
+        except DockerUnavailable as exc:
+            return f"Docker is unavailable: {exc}"
+        status = await self.lima_status()
+        if not status.available:
+            return (
+                f"Lima is unavailable ({status.reason}). This project uses the Lima backend, "
+                "and Delibra will not fall back to local Docker; fix Lima, or choose local "
+                "Docker in Settings."
+            )
+        if policy.lima_instance is None or not (self.lima_home / policy.lima_instance).is_dir():
+            return "The project's Lima VM is missing; press Retry Docker in Settings"
+        return None
+
+    async def delete(self, instance: str) -> None:
+        status = await self.lima_status()
+        if status.executable is None:
+            raise DockerUnavailable("limactl is not on PATH; the VM cannot be deleted")
+        async with self._instance_lock(instance):
+            if instance in self._running:
+                raise DockerUnavailable("the VM is in use by a build run, or did not stop")
+            code, _out, err = await self._limactl(
+                status, ["delete", "--tty=false", "--force", instance], STOP_TIMEOUT_SECONDS
+            )
+        if code != 0 and (self.lima_home / instance).exists():
+            raise DockerUnavailable(f"limactl delete failed: {tail(err)}")
+        (self.settings.home / "lima-config" / f"{instance}.yaml").unlink(missing_ok=True)
+
+    def existing_instance(self, project_id: str) -> str | None:
+        """The project's VM name if its directory exists (it may hold a disk)."""
+
+        name = instance_name(project_id)
+        return name if (self.lima_home / name).is_dir() else None
+
     async def stop_all(self, *, include_held: bool = False) -> None:
         """Stop running Delibra VMs: at startup (unheld only) and shutdown (all)."""
 
