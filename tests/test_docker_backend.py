@@ -93,6 +93,40 @@ def test_host_docker_cli_resolves_desktop_style_symlinks(tmp_path) -> None:
     assert access.bin_dir == real.resolve().parent
 
 
+@pytest.mark.parametrize("target", ["home", "inside_home", "ancestor"])
+def test_host_docker_cli_never_grants_home_or_its_ancestors(tmp_path, target) -> None:
+    home = (tmp_path / "home").resolve()
+    real_docker = _executable(tmp_path / "Docker.app" / "bin" / "docker")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "docker").symlink_to(real_docker)
+    real_dir = {"home": home, "inside_home": home / "tools", "ancestor": tmp_path}[target]
+    compose = _executable(real_dir / "docker-compose")
+    (home / ".docker" / "cli-plugins").mkdir(parents=True)
+    (home / ".docker" / "cli-plugins" / "docker-compose").symlink_to(compose)
+
+    with pytest.raises(DockerUnavailable, match="may not read"):
+        find_host_docker_cli({"PATH": str(tmp_path / "bin"), "HOME": str(home)}, system_plugin_dirs=())
+
+
+def test_host_docker_cli_refuses_a_docker_binary_inside_home(tmp_path) -> None:
+    home = tmp_path / "home"
+    docker = _executable(home / "bin" / "docker")
+    _executable(home / ".docker" / "cli-plugins" / "docker-compose")
+
+    with pytest.raises(DockerUnavailable, match="may not read"):
+        find_host_docker_cli({"PATH": str(docker.parent), "HOME": str(home)}, system_plugin_dirs=())
+
+
+def test_host_docker_cli_accepts_dockers_own_dirs_in_home(tmp_path) -> None:
+    home = (tmp_path / "home").resolve()
+    docker = _executable(home / ".docker" / "bin" / "docker")
+    _executable(home / ".docker" / "cli-plugins" / "docker-compose")
+
+    cli = find_host_docker_cli({"PATH": str(docker.parent), "HOME": str(home)}, system_plugin_dirs=())
+
+    assert cli.read_roots == (home / ".docker" / "bin", home / ".docker" / "cli-plugins")
+
+
 def test_host_docker_cli_requires_docker_and_compose(tmp_path) -> None:
     _executable(tmp_path / "bin" / "docker")
     with pytest.raises(DockerUnavailable, match="compose"):
