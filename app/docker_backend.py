@@ -654,7 +654,7 @@ class DockerController:
         instance = instance_name(project_id)
         status = await self.lima_status()
         if not status.available:
-            return _failed(f"Lima is unavailable: {status.reason}")
+            return _failed(f"Lima is unavailable: {status.reason}", instance=self.existing_instance(project_id))
         try:
             if ":" in project_root.as_posix():
                 raise DockerUnavailable("the project path contains ':', which limactl cannot mount")
