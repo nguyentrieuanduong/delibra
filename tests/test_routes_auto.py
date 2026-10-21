@@ -2226,6 +2226,21 @@ def test_build_status_labels_the_docker_backend(tmp_path: Path) -> None:
     assert "limactl stop --force delibra-0123456789" in page.text
 
 
+def test_local_docker_status_says_containers_outlive_the_run(tmp_path: Path) -> None:
+    # Design §5: Delibra never stops local Docker, and the status box says so.
+    app, project, store, sessions = _finished_run(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        assert start_auto(client, project.id, [s.id for s in sessions]).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+        record.kind = "build"
+        record.docker = AutoBuildDocker("local", None, None, None, "/Users/me/.docker/run/docker.sock")
+        store.save_auto_run(record)
+        page = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}")
+
+    assert "Docker: local Docker · Not isolated" in page.text
+    assert "Containers the agents started keep running in your local Docker after the run" in page.text
+
+
 def test_discussion_status_has_no_build_markup(tmp_path: Path) -> None:
     app, project, store, sessions = _finished_run(tmp_path)
     with TestClient(app, base_url="http://localhost") as client:
