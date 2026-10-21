@@ -5908,3 +5908,96 @@ async def test_build_without_docker_never_touches_the_controller(tmp_path, monke
 
     assert terminal.docker is None
     assert docker.events == []
+
+
+@pytest.mark.asyncio
+async def test_docker_vm_starts_once_per_run_and_stops_at_the_end(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")], docker=docker,
+    )
+    enable_docker(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert len(factory.calls) == 2  # two turns, one VM start
+    assert docker.events == ["acquire", "release"]
+    assert all(call["docker"] is not None for call in factory.calls)
+    assert "Docker is available" in str(factory.calls[0]["prompt"])
+    assert terminal.docker is not None and terminal.docker.host_loopback_closed is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_docker_start_parks_a_resumable_run(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker(acquire_error="limactl start delibra-0123456789 failed: boot failed")
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason.startswith("paused: Docker is unavailable: limactl start")
+    assert factory.created == 0
+    assert docker.events == ["acquire"]
+
+    docker.acquire_error = None
+    await manager.resume(project_id, created.id, max_cycles=2, turn_timeout_seconds=60)
+    resumed = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert resumed.status == "converged"
+    assert docker.events == ["acquire", "acquire", "release"]
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_docker_run_releases_the_vm(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", sleep=True), PlannedOutput("B", "agree")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    await manager.stop(project_id, created.id)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    for _ in range(100):
+        if docker.events[-1:] == ["release"]:
+            break
+        await asyncio.sleep(0.01)
+
+    assert docker.events == ["acquire", "release"]
+
+
+@pytest.mark.asyncio
+async def test_a_vm_that_did_not_stop_is_flagged_on_the_ended_run(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    docker.stop_ok = False
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    for _ in range(300):
+        record = manager.get(project_id, created.id)
+        if record.docker is not None and record.docker.stop_failed:
+            break
+        await asyncio.sleep(0.01)
+
+    assert record.status == "converged"
+    assert record.docker is not None and record.docker.stop_failed is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_every_delibra_vm(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    manager, *_rest = auto_manager_fixture(tmp_path, [PlannedOutput("unused")], docker=docker)
+
+    await manager.shutdown()
+
+    assert docker.events == ["stop_all"]

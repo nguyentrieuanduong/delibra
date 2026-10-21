@@ -135,6 +135,21 @@ BUILD_TURN_PROMPT = (
     "write Not converged. Follow the Guidance section where it applies to this "
     "task; the task and the project's existing conventions take precedence."
 )
+DOCKER_TURN_NOTES = {
+    "lima": (
+        " Docker is available: docker and docker compose reach this project's "
+        "Docker VM through the preset DOCKER_HOST; do not change Docker contexts. "
+        "Containers see the project read-only, so write files from your own "
+        "shell. Published ports are not reachable from your shell; test services "
+        "with docker compose exec or docker run --network <network>. Docker is "
+        "rootless, so --privileged and some kernel features are limited."
+    ),
+    "local": (
+        " Docker is available: docker and docker compose reach this machine's "
+        "Docker through the preset DOCKER_HOST; do not change Docker contexts. "
+        "Bind-mount only paths inside this project."
+    ),
+}
 ENV_BROKEN_ERROR = (
     "envs/bin/python no longer runs --version; fix ./envs, then press "
     "Retry environment in Settings"
@@ -756,7 +771,9 @@ class AutoManager:
     async def _build_turn_refusal(self, record: AutoRunRecord) -> str | None:
         participant = record.participants[record.next_participant]
         version = await self._build_version(participant.agent)
-        if build_capable(participant.agent, version):
+        if build_capable(participant.agent, version) and (
+            record.docker is None or docker_capable(participant.agent, version)
+        ):
             return None
         found = f"CLI {version}" if version is not None else "a failed CLI version probe"
         return (
@@ -1280,6 +1297,14 @@ class AutoManager:
                         await self._begin_discussion(record)
                     continue
                 if record.status == "discussing":
+                    if (
+                        record.kind == "build"
+                        and record.docker is not None
+                        and (project_id, auto_id) not in self._docker_leases
+                    ):
+                        if not await self._acquire_docker(record):
+                            return
+                        continue
                     # A sibling step, never inside the post-turn locked block:
                     # that block must not make provider calls.
                     store = ProjectStore(self.registry.get(project_id))
@@ -1313,6 +1338,12 @@ class AutoManager:
             except Exception:
                 LOGGER.exception("Auto run %s terminal transition failed", auto_id)
         finally:
+            lease = self._docker_leases.pop((project_id, auto_id), None)
+            if lease is not None:
+                # Shielded: a VM must stop even if this task is cancelled.
+                stopped = await asyncio.shield(self.docker.release(lease[1]))
+                if not stopped:
+                    await self._record_docker_stop_failure(project_id, auto_id)
             # The terminal status and the released reservation become visible
             # before this pop runs, so a resume can already have installed a new
             # task under this key. Popping unconditionally would leave that task
@@ -1320,6 +1351,46 @@ class AutoManager:
             key = (project_id, auto_id)
             if self._tasks.get(key) is asyncio.current_task():
                 self._tasks.pop(key, None)
+
+    async def _record_docker_stop_failure(self, project_id: str, auto_id: str) -> None:
+        """The run has ended, but its VM may still run: say so on the run."""
+
+        LOGGER.error("Docker VM of Auto run %s did not stop", auto_id)
+        try:
+            store = ProjectStore(self.registry.get(project_id))
+            record = store.load_auto_run(auto_id)
+            session_ids = [participant.session_id for participant in record.participants]
+            async with self.locks.project_sessions(project_id, session_ids):
+                current = store.load_auto_run(auto_id)
+                if current.docker is not None:
+                    current.docker = replace(current.docker, stop_failed=True)
+                    store.save_auto_run(current)
+            self._publish_status(current)
+        except Exception:
+            LOGGER.exception("Could not record the Docker stop failure of Auto run %s", auto_id)
+
+    async def _acquire_docker(self, record: AutoRunRecord) -> bool:
+        """Start and verify the run's Docker backend; park the run if it cannot."""
+
+        store = ProjectStore(self.registry.get(record.project_id))
+        try:
+            access, state = await self.docker.acquire(
+                record.project_id, store.project_path, store.coding_policy().docker
+            )
+        except DockerUnavailable as exc:
+            await self._transition_terminal(
+                record.project_id, record.id, "stopped",
+                f"paused: Docker is unavailable: {exc}",
+            )
+            return False
+        self._docker_leases[(record.project_id, record.id)] = (access, state)
+        session_ids = [participant.session_id for participant in record.participants]
+        async with self.locks.project_sessions(record.project_id, session_ids):
+            current = store.load_auto_run(record.id)
+            current.docker = state
+            store.save_auto_run(current)
+        self._publish_status(current)
+        return True
 
     async def _pause_for_quota(
         self,
@@ -2058,11 +2129,19 @@ class AutoManager:
 
         project = self.registry.get(record.project_id)
         store = ProjectStore(project)
+        lease = None
         if record.kind == "build":
             refusal = await self._build_turn_refusal(record)
             if refusal is not None:
                 await self._transition_terminal(
                     record.project_id, record.id, "error", refusal
+                )
+                return "done"
+            lease = self._docker_leases.get((record.project_id, record.id))
+            if record.docker is not None and lease is None:
+                await self._transition_terminal(
+                    record.project_id, record.id, "error",
+                    "Docker lease is missing for this build turn",
                 )
                 return "done"
             # Prime the cache outside the session lock; the call inside
@@ -2121,10 +2200,17 @@ class AutoManager:
                             else None
                         ),
                         execution_prompt=(
-                            BUILD_TURN_PROMPT.format(
-                                context=(
-                                    store.workspace_dir(participant.session_id) / staged
-                                ).as_posix()
+                            (
+                                BUILD_TURN_PROMPT.format(
+                                    context=(
+                                        store.workspace_dir(participant.session_id) / staged
+                                    ).as_posix()
+                                )
+                                + (
+                                    DOCKER_TURN_NOTES[current.docker.backend]
+                                    if current.docker is not None
+                                    else ""
+                                )
                             )
                             if current.kind == "build"
                             else (
@@ -2141,6 +2227,7 @@ class AutoManager:
                             view_path, outbox_path, pause_enabled=current.pause_on_blocking_questions
                         ),
                         build=current.kind == "build",
+                        docker=lease[0] if lease is not None else None,
                         initial_timeout_seconds=current.future_turn_timeout_seconds,
                         preserve_native_session=False,
                         ignore_returned_session=True,
@@ -3350,6 +3437,10 @@ class AutoManager:
                 LOGGER.exception("Failed to cancel Auto run %s during shutdown", auto_id)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await self.docker.stop_all(include_held=True)
+        except Exception:
+            LOGGER.exception("Could not stop Docker VMs during shutdown")
 
     @staticmethod
     def _error_reason(exc: Exception) -> str:
