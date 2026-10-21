@@ -154,7 +154,12 @@ class HostDockerCli:
         return tuple(roots)
 
     def access(self, endpoint: Path) -> DockerAccess:
-        return DockerAccess(socket=endpoint, cli_read_roots=self.read_roots, plugin_dirs=self.plugin_dirs)
+        return DockerAccess(
+            socket=endpoint,
+            cli_read_roots=self.read_roots,
+            plugin_dirs=self.plugin_dirs,
+            bin_dir=self.executable.parent,
+        )
 
 
 def find_host_docker_cli(

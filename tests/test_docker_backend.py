@@ -89,6 +89,8 @@ def test_host_docker_cli_resolves_desktop_style_symlinks(tmp_path) -> None:
     assert cli.read_roots == (real.resolve().parent, plugins.resolve())
     access = cli.access(Path("/s.sock"))
     assert (access.socket, access.plugin_dirs) == (Path("/s.sock"), (plugins.resolve(),))
+    # Codex cannot read /usr/local/bin, so the real directory joins PATH (S4).
+    assert access.bin_dir == real.resolve().parent
 
 
 def test_host_docker_cli_requires_docker_and_compose(tmp_path) -> None:

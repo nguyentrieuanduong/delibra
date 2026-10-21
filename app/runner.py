@@ -1318,6 +1318,9 @@ class RunManager:
         if coding is not None:
             env_bin = coding.env_dir / "bin"
             environment["PATH"] = f"{env_bin}{os.pathsep}{environment.get('PATH', '')}"
+            if coding.docker is not None and coding.docker.bin_dir is not None:
+                # Last, so it shadows nothing; Codex finds docker here (S4).
+                environment["PATH"] += f"{os.pathsep}{coding.docker.bin_dir}"
             # Overrides the workspace TMPDIR set above, and adds the git/pip
             # variables spike S1 showed are needed (amendment A1).
             environment.update(build_command_environment(coding))
