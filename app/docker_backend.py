@@ -489,11 +489,9 @@ class DockerController:
         ):
             raise DockerUnavailable(f"the root read-only probe did not run as expected: {tail(err)}")
         await self._check_shares(shell, environ, root)
-        closed = await self._host_loopback_closed(shell, environ)
-        if status.closes_host_loopback and not closed:
-            raise DockerUnavailable(
-                "Lima was told to close host loopback (hostLoopback: false), but the VM still reached it"
-            )
+        closed = await self._host_loopback_closed(
+            shell, environ, expect_closed=status.closes_host_loopback
+        )
         await self._no_guest_port_forwarding(shell, environ)
         return closed
 
@@ -510,7 +508,17 @@ class DockerController:
         ):
             raise DockerUnavailable(f"the VM must share only the project, read-only; it shares {out.strip()[:500]!r}")
 
-    async def _host_loopback_closed(self, shell: list[str], environ: dict[str, str]) -> bool:
+    async def _host_loopback_closed(
+        self, shell: list[str], environ: dict[str, str], *, expect_closed: bool
+    ) -> bool:
+        """Whether the guest is cut off from this machine's 127.0.0.1. Fails closed.
+
+        Lima < 2.3 cannot close it (lima#5574): there only a reached listener
+        is a working probe, and the answer is always "open". On >= 2.3,
+        "closed" needs no hit on our listener and a refused or timed-out
+        connect (design §4; narrow to one exit once S5 runs on stable 2.3).
+        """
+
         hits: list[int] = []
 
         async def accept(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -529,9 +537,18 @@ class DockerController:
             await server.wait_closed()
         # A hit, or a curl exit that means a TCP connection was made (0 ok,
         # 52 empty reply, 56 receive failure): the port is ours, so reached.
-        if hits or code in (0, 52, 56):
-            return False
-        if code in (7, 28):  # connection refused / timed out
+        reached = bool(hits) or code in (0, 52, 56)
+        if not expect_closed:
+            if reached:
+                return False
+            raise DockerUnavailable(
+                f"the host-loopback probe did not reach its own listener (curl exit {code}): {tail(err)}"
+            )
+        if reached:
+            raise DockerUnavailable(
+                "Lima was told to close host loopback (hostLoopback: false), but the VM still reached it"
+            )
+        if code in (7, 28):  # connection refused / timed out, and nothing arrived
             return True
         raise DockerUnavailable(f"the host-loopback probe did not run (curl exit {code}): {tail(err)}")
 
