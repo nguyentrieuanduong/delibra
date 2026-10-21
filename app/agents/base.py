@@ -43,6 +43,17 @@ class AgentEvent:
 
 
 @dataclass(frozen=True)
+class DockerAccess:
+    """Build-turn Docker: the one socket the sandbox allows, and the CLI's files."""
+
+    socket: Path
+    # Real directories of the docker binary and its plugins, granted read-only.
+    cli_read_roots: tuple[Path, ...] = ()
+    # Real directories holding docker-compose/docker-buildx (cliPluginsExtraDirs).
+    plugin_dirs: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class CodingContext:
     """Build-turn capabilities. Present only on Auto build turns."""
 
@@ -55,6 +66,8 @@ class CodingContext:
     # `:root` reads, which hides the macOS developer tools that /usr/bin/git
     # shims to; Claude's sandbox already reads outside HOME.
     read_roots: tuple[Path, ...] = ()
+    # Auto build runs with Docker only (design §6).
+    docker: DockerAccess | None = None
 
 
 def build_command_environment(coding: CodingContext) -> dict[str, str]:
@@ -68,7 +81,7 @@ def build_command_environment(coding: CodingContext) -> dict[str, str]:
 
     temp = coding.temp_dir.as_posix()
     prefix = "CONDA_PREFIX" if coding.env_tool == "conda" else "VIRTUAL_ENV"
-    return {
+    environment = {
         prefix: coding.env_dir.as_posix(),
         "TMPDIR": temp,
         "PIP_CACHE_DIR": f"{temp}/pip-cache",
@@ -76,6 +89,13 @@ def build_command_environment(coding: CodingContext) -> dict[str, str]:
         "XDG_CONFIG_HOME": f"{temp}/xdg",
         "PIP_USE_DEPRECATED": "legacy-certs",
     }
+    if coding.docker is not None:
+        # HOME is unreadable in the sandbox, so the CLI's config lives in the
+        # turn's temp dir, written by the runner.
+        environment["DOCKER_HOST"] = f"unix://{coding.docker.socket.as_posix()}"
+        environment["DOCKER_CONFIG"] = f"{temp}/docker"
+        environment["DOCKER_CLI_HINTS"] = "false"
+    return environment
 
 
 @dataclass(frozen=True)

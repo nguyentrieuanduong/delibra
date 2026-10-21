@@ -235,19 +235,27 @@ class ClaudeAdapter:
         # The cwd is the project root on build turns, so `/` rules anchor
         # there. Built-in file tools follow these rules; Bash follows the
         # sandbox below, which the OS enforces for every child process.
+        network: dict[str, object] = {
+            "allowedDomains": list(coding.network_allowlist),
+            "strictAllowlist": True,
+        }
+        allow_read = [root, temp]
+        if coding.docker is not None:
+            # Exactly one socket, never allowAllUnixSockets: the sandbox docs
+            # warn a Docker socket is host access, so only the project's
+            # backend socket is offered (design §6).
+            network["allowUnixSockets"] = [coding.docker.socket.as_posix()]
+            allow_read.extend(path.as_posix() for path in coding.docker.cli_read_roots)
         settings = {
             "sandbox": {
                 "enabled": True,
                 "failIfUnavailable": True,
                 "allowUnsandboxedCommands": False,
                 "autoAllowBashIfSandboxed": True,
-                "network": {
-                    "allowedDomains": list(coding.network_allowlist),
-                    "strictAllowlist": True,
-                },
+                "network": network,
                 "filesystem": {
                     "denyRead": ["~/"],
-                    "allowRead": [root, temp],
+                    "allowRead": allow_read,
                     "denyWrite": [f"{root}/.delibra", f"{root}/.git"],
                 },
                 "credentials": {"envVars": [
