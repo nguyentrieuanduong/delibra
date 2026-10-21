@@ -660,11 +660,26 @@ build turn per provider, Delibra's pinned argv; the Claude build argv adds
 | container_host_loopback | RECORDED (reached) |
 | container_lan | RECORDED (not reached 192.168.1.1:80) |
 | published_port_not_on_host | PASS |
+| no_container_survives_a_run | PASS |
 
-- prepare took 112 s
-- second boot (acquire) took 14 s
-- guest mounts: /Users/apollo/.dlb-docker-spike-ch69xra3/project virtiofs ro,relatime
+- prepare took 91 s
+- second boot (acquire) took 17 s
+- guest mounts: /Users/apollo/.dlb-docker-spike-mrikrn5d/project virtiofs ro,relatime
 <!-- DOCKER-SPIKE-LIMA:END -->
+
+### S5 re-run after the review fixes (2026-10-22)
+
+The run above follows the fixes from the 2026-10-21 implementation review: an owner-aware VM lease, container removal at
+acquire and release, a guest-Docker floor of stable `29.9.2` and up, and the honest host-loopback rule. `no_container_survives_a_run`
+started a `--restart=always` container, released the VM (`release()` returned True, so `limactl` showed it stopped),
+re-acquired it, and found no container.
+
+Scope: this run exercised only today's Ubuntu image, guest Docker `29.9.2`, and Lima `2.2.1`. Under decision D2, later
+images and stable guest Docker releases are accepted without a re-run. Lima >= 2.3 host-loopback closure (decision D3)
+remains unverified live; re-run S5 when stable 2.3 ships.
+
+S3/S4 were not re-run: the provider sandboxes, read roots and command environment are unchanged on this machine
+(Docker Desktop's CLI and plugins resolve into `/Applications`, which the new home-directory guard accepts).
 
 <!-- DOCKER-SPIKE-CLAUDE:START -->
 ## Docker spike: claude

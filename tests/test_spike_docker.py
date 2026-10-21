@@ -1,5 +1,6 @@
 from spike.spike_docker import (
     judge_container_loopback,
+    judge_container_survival,
     judge_container_write,
     judge_home_listing,
     judge_refused,
@@ -49,3 +50,11 @@ def test_codex_stopping_the_command_on_a_blocked_domain_is_evidence() -> None:
     assert judge_unlisted_host(None, []).startswith("INCONCLUSIVE")
     assert judge_unlisted_host(0, blocked) == "FAIL (reached example.com)"
     assert judge_unlisted_host(22, []) == "PASS"
+
+
+def test_container_survival_needs_a_clean_release_and_a_listing() -> None:
+    assert judge_container_survival(started=False, released=False, left_rc=None, left="").startswith("INCONCLUSIVE")
+    assert judge_container_survival(started=True, released=False, left_rc=None, left="") == "FAIL (release did not stop the VM)"
+    assert judge_container_survival(started=True, released=True, left_rc=1, left="").startswith("INCONCLUSIVE")
+    assert judge_container_survival(started=True, released=True, left_rc=0, left="abc\n") == "FAIL (left 'abc')"
+    assert judge_container_survival(started=True, released=True, left_rc=0, left="") == "PASS"
