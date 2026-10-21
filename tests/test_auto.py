@@ -37,7 +37,7 @@ from app.coding import (
     CodingEnvState,
     DockerPolicy,
 )
-from app.docker_backend import DockerUnavailable
+from app.docker_backend import DockerStopFailed, DockerUnavailable
 from app.config import Settings
 from app.main import create_app
 from app.models import (
@@ -5825,6 +5825,7 @@ class FakeDocker:
         self.stop_ok = True
         self.events: list[str] = []
         self.owners: list[str] = []
+        self.acquire_exc: type[DockerUnavailable] = DockerUnavailable
 
     async def backend_refusal(self, policy):
         return self.refusal
@@ -5833,7 +5834,7 @@ class FakeDocker:
         self.events.append("acquire")
         self.owners.append(owner)
         if self.acquire_error is not None:
-            raise DockerUnavailable(self.acquire_error)
+            raise self.acquire_exc(self.acquire_error)
         return DockerAccess(socket=project_root / "fake-docker.sock"), AutoBuildDocker(
             backend="lima", instance="delibra-0123456789", lima_version="2.2.1",
             host_loopback_closed=False, local_endpoint=None,
@@ -5971,6 +5972,27 @@ async def test_a_failed_docker_start_parks_a_resumable_run(tmp_path, monkeypatch
     resumed = await wait_for_auto_terminal(manager, project_id, created.id)
     assert resumed.status == "converged"
     assert docker.events == ["acquire", "acquire", "release"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_docker_start_that_left_the_vm_running_is_flagged(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker(acquire_error="probe failed; the Docker VM delibra-0123456789 did not stop")
+    docker.acquire_exc = DockerStopFailed
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    for _ in range(300):
+        record = manager.get(project_id, created.id)
+        if record.docker is not None and record.docker.stop_failed:
+            break
+        await asyncio.sleep(0.01)
+
+    assert terminal.status == "stopped"
+    assert record.docker is not None and record.docker.stop_failed is True
 
 
 @pytest.mark.asyncio

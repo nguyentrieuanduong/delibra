@@ -15,6 +15,7 @@ from app.config import Settings
 from app.models import AutoBuildDocker
 from app.docker_backend import (
     DockerController,
+    DockerStopFailed,
     DockerUnavailable,
     find_host_docker_cli,
     instance_name,
@@ -493,6 +494,18 @@ async def test_a_failed_start_stops_the_vm_and_refuses(short_home) -> None:
         await controller.acquire("a" * 32, project, policy, owner="run-a")
 
     assert fake.instances[instance_name("a" * 32)] == "Stopped"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_acquire_whose_vm_will_not_stop_says_so(short_home) -> None:
+    controller, fake, project = controller_for(short_home)
+    policy = await controller.prepare_lima("a" * 32, project)
+    fake.forwarded = True  # a probe fails after the start
+    fake.stop_code = 1  # and the VM will not stop
+
+    with pytest.raises(DockerStopFailed, match="did not stop"):
+        await controller.acquire("a" * 32, project, policy, owner="run-a")
+    assert fake.instances[instance_name("a" * 32)] == "Running"
 
 
 @pytest.mark.asyncio
