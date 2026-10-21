@@ -165,7 +165,8 @@ class FakeLima:
         self.owner_error = "Read-only file system"
         self.root_error = "Permission denied"
         self.root_writes = False
-        self.loopback_reachable = False
+        self.loopback_reachable = True  # Lima 2.2.1 reaches host loopback (S5, 2026-10-21)
+        self.loopback_exit = 7  # curl exit when it does not
         self.forwarded = False
         self.start_code = 0
         self.stop_code = 0
@@ -227,7 +228,7 @@ class FakeLima:
             return 1, "", f"touch: cannot touch '{target}': {self.root_error}"
         if guest[0] == "curl" and "host.lima.internal" in guest[-1]:
             if not self.loopback_reachable:
-                return 7, "", ""
+                return self.loopback_exit, "", ""
             port = int(guest[-1].rstrip("/").rsplit(":", 1)[1])
             _reader, writer = await asyncio.open_connection("127.0.0.1", port)
             writer.close()
@@ -279,7 +280,7 @@ async def test_prepare_creates_the_vm_in_delibras_own_lima_home(short_home) -> N
 
     name = instance_name("a" * 32)
     assert (policy.status, policy.backend, policy.lima_instance) == ("ready", "lima", name)
-    assert (policy.lima_version, policy.docker_version, policy.host_loopback_closed) == ("2.2.1", "29.0.0", True)
+    assert (policy.lima_version, policy.docker_version, policy.host_loopback_closed) == ("2.2.1", "29.0.0", False)
     assert fake.instances == {name: "Stopped"}
     assert fake.configs[name]["mounts"] == [{"location": str(project), "writable": False}]
     assert "networkOpts" not in fake.configs[name]
@@ -308,6 +309,42 @@ async def test_lima_2_3_closes_host_loopback_or_refuses(short_home) -> None:
     assert fake.configs[instance_name("a" * 32)]["networkOpts"] == {"hostLoopback": False}
     assert policy.status == "error"
     assert "still reached" in (policy.error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("curl_exit", [7, 28])
+async def test_lima_2_2_never_records_host_loopback_closed(short_home, curl_exit) -> None:
+    controller, fake, project = controller_for(short_home)
+    fake.loopback_reachable = False
+    fake.loopback_exit = curl_exit
+
+    policy = await controller.prepare_lima("a" * 32, project)
+
+    assert policy.status == "error"
+    assert policy.host_loopback_closed is None
+    assert "did not reach its own listener" in (policy.error or "")
+
+
+@pytest.mark.asyncio
+async def test_lima_2_3_records_host_loopback_closed_when_nothing_arrives(short_home) -> None:
+    controller, fake, project = controller_for(short_home, version="2.3.0")
+    fake.loopback_reachable = False
+
+    policy = await controller.prepare_lima("a" * 32, project)
+
+    assert (policy.status, policy.host_loopback_closed) == ("ready", True)
+
+
+@pytest.mark.asyncio
+async def test_lima_2_3_loopback_probe_that_did_not_run_fails_closed(short_home) -> None:
+    controller, fake, project = controller_for(short_home, version="2.3.0")
+    fake.loopback_reachable = False
+    fake.loopback_exit = 6  # curl could not resolve host.lima.internal
+
+    policy = await controller.prepare_lima("a" * 32, project)
+
+    assert policy.status == "error"
+    assert "did not run" in (policy.error or "")
 
 
 @pytest.mark.asyncio
