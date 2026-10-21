@@ -32,6 +32,14 @@ BUILD_VERIFIED_VERSIONS: dict[str, str] = {
     "codex": "codex-cli 0.162.1",
 }
 _LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
+# CLI versions whose build sandbox reached the Docker socket, and only that
+# socket, in spikes S3 (claude) and S4 (codex). Empty until they pass: a
+# Docker build run is refused for any provider missing here. Same rule as
+# BUILD_VERIFIED_VERSIONS: these or a newer release of the same major.
+DOCKER_VERIFIED_VERSIONS: dict[str, str] = {}
+DOCKER_STATUSES = frozenset({"absent", "preparing", "ready", "error", "deleting"})
+DOCKER_BACKENDS = frozenset({"lima", "local"})
+LIMA_INSTANCE = re.compile(r"delibra-[0-9a-f]{10}")
 
 
 class CodingPolicyError(ValueError):
@@ -247,6 +255,75 @@ class CodingEnvState:
 
 
 @dataclass
+class DockerPolicy:
+    """A project's Docker backend for build runs (design §1)."""
+
+    enabled: bool = False
+    backend: str | None = None
+    status: str = "absent"
+    error: str | None = None
+    lima_instance: str | None = None
+    lima_version: str | None = None
+    host_loopback_closed: bool | None = None
+    local_endpoint: str | None = None
+    local_acknowledged_at: str | None = None
+    docker_version: str | None = None
+    updated_at: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: object) -> "DockerPolicy":
+        if not isinstance(data, dict) or type(data.get("enabled", False)) is not bool:
+            raise CodingPolicyError("docker settings are invalid")
+        for key in (
+            "backend", "error", "lima_instance", "lima_version", "local_endpoint",
+            "local_acknowledged_at", "docker_version", "updated_at",
+        ):
+            value = data.get(key)
+            if value is not None and type(value) is not str:
+                raise CodingPolicyError(f"docker {key} is invalid")
+        closed = data.get("host_loopback_closed")
+        if closed is not None and type(closed) is not bool:
+            raise CodingPolicyError("docker host_loopback_closed is invalid")
+        status = data.get("status", "absent")
+        if type(status) is not str or status not in DOCKER_STATUSES:
+            raise CodingPolicyError("docker status is invalid")
+        backend = data.get("backend")
+        if backend is not None and backend not in DOCKER_BACKENDS:
+            raise CodingPolicyError("docker backend is invalid")
+        # The instance name reaches limactl argv: only Delibra's own shape.
+        instance = data.get("lima_instance")
+        if instance is not None and not LIMA_INSTANCE.fullmatch(instance):
+            raise CodingPolicyError("docker lima_instance is invalid")
+        endpoint = data.get("local_endpoint")
+        if endpoint is not None and not Path(endpoint).is_absolute():
+            raise CodingPolicyError("docker local_endpoint is invalid")
+        if status == "ready" and (
+            backend is None
+            or (backend == "lima" and instance is None)
+            or (backend == "local" and endpoint is None)
+        ):
+            raise CodingPolicyError("docker ready state is incomplete")
+        if status == "deleting" and instance is None:
+            raise CodingPolicyError("docker deleting state names no VM")
+        return cls(
+            enabled=data.get("enabled", False),
+            backend=backend,
+            status=status,
+            error=data.get("error"),
+            lima_instance=instance,
+            lima_version=data.get("lima_version"),
+            host_loopback_closed=closed,
+            local_endpoint=endpoint,
+            local_acknowledged_at=data.get("local_acknowledged_at"),
+            docker_version=data.get("docker_version"),
+            updated_at=data.get("updated_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class CodingPolicy:
     enabled: bool = False
     network_allowlist: list[str] = field(
@@ -257,6 +334,7 @@ class CodingPolicy:
     guidance_files: list[str] = field(default_factory=list)
     # None follows Delibra's default list (app/build_git_exclude.txt).
     git_exclude: list[str] | None = None
+    docker: DockerPolicy = field(default_factory=DockerPolicy)
 
     @classmethod
     def from_manifest(cls, manifest: dict[str, Any]) -> "CodingPolicy":
@@ -290,6 +368,7 @@ class CodingPolicy:
                 if data.get("git_exclude") is None
                 else normalize_git_exclude(data["git_exclude"])
             ),
+            docker=DockerPolicy.from_dict(data.get("docker", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -300,6 +379,7 @@ class CodingPolicy:
             "network_warnings": list(self.network_warnings),
             "guidance_files": list(self.guidance_files),
             "git_exclude": None if self.git_exclude is None else list(self.git_exclude),
+            "docker": self.docker.to_dict(),
         }
 
 
@@ -351,3 +431,9 @@ def cli_newer_than_verified(
     ):
         return None
     return f"{agent} CLI {probed_version} is newer than the spike-verified {verified}"
+
+
+def docker_capable(agent: str, probed_version: str | None) -> bool:
+    """The build gate's rule against the S3/S4-verified versions."""
+
+    return cli_version_compatible(DOCKER_VERIFIED_VERSIONS.get(agent), probed_version)

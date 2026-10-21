@@ -4,14 +4,17 @@ import pytest
 
 from app.coding import (
     BUILD_VERIFIED_VERSIONS,
+    DOCKER_VERIFIED_VERSIONS,
     CODE_CRAFT_SUGGESTED_GUIDANCE,
     GUIDANCE_MAX_BYTES,
     DEFAULT_NETWORK_ALLOWLIST,
     CodingPolicy,
     CodingPolicyError,
+    DockerPolicy,
     build_capable,
     cli_newer_than_verified,
     cli_version_compatible,
+    docker_capable,
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
@@ -19,6 +22,7 @@ from app.coding import (
     private_resolution_warnings,
     read_guidance,
 )
+from app.storage import ProjectStore, RegistryStore
 
 
 def test_default_policy_is_disabled_with_package_indexes() -> None:
@@ -221,3 +225,61 @@ def test_git_exclude_is_bounded() -> None:
         normalize_git_exclude(["x"] * 2_001)
     with pytest.raises(CodingPolicyError):
         normalize_git_exclude(["x" * 70_000])
+
+
+def test_docker_defaults_off_and_round_trips() -> None:
+    policy = CodingPolicy.from_manifest({})
+    assert policy.docker == DockerPolicy()
+    policy.docker = DockerPolicy(
+        enabled=True, backend="lima", status="ready",
+        lima_instance="delibra-0123456789", lima_version="2.2.1",
+        host_loopback_closed=False, docker_version="29.0.0",
+        updated_at="2026-10-21T00:00:00Z",
+    )
+    assert CodingPolicy.from_manifest({"coding": policy.to_dict()}) == policy
+
+
+def test_a_coding_manifest_from_before_docker_loads_with_docker_off() -> None:
+    legacy = CodingPolicy.from_manifest({}).to_dict()
+    del legacy["docker"]
+    assert CodingPolicy.from_manifest({"coding": legacy}).docker == DockerPolicy()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"enabled": "yes"},
+        {"status": "running"},
+        {"backend": "desktop"},
+        {"lima_instance": "--force"},
+        {"local_endpoint": "relative.sock"},
+        {"host_loopback_closed": "no"},
+        {"status": "ready"},
+        {"status": "ready", "backend": "lima"},
+        {"status": "ready", "backend": "local"},
+        {"status": "deleting"},
+    ],
+)
+def test_invalid_docker_settings_are_rejected(bad: dict) -> None:
+    with pytest.raises(CodingPolicyError):
+        DockerPolicy.from_dict(bad)
+
+
+def test_docker_capability_follows_the_same_major_rule(monkeypatch) -> None:
+    monkeypatch.delitem(DOCKER_VERIFIED_VERSIONS, "claude", raising=False)
+    assert not docker_capable("claude", "2.1.296 (Claude Code)")
+    monkeypatch.setitem(DOCKER_VERIFIED_VERSIONS, "claude", "2.1.296 (Claude Code)")
+    assert docker_capable("claude", "2.1.296 (Claude Code)")
+    assert docker_capable("claude", "2.1.297 (Claude Code)")
+    assert not docker_capable("claude", "2.1.295 (Claude Code)")
+    assert not docker_capable("claude", "3.0.0 (Claude Code)")
+    assert not docker_capable("claude", None)
+
+
+def test_store_saves_docker_state(tmp_path) -> None:
+    project_dir = tmp_path / "p"
+    project_dir.mkdir()
+    store = ProjectStore(RegistryStore(tmp_path / "home").register("P", project_dir))
+    state = DockerPolicy(enabled=True, status="preparing", updated_at="t")
+    assert store.set_coding_docker(state).docker == state
+    assert store.coding_policy().docker == state
