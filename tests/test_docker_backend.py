@@ -401,7 +401,7 @@ async def test_acquire_reshares_starts_probes_and_release_stops(short_home) -> N
     policy = await controller.prepare_lima("a" * 32, project)
     fake.calls.clear()
 
-    access, state = await controller.acquire("a" * 32, project, policy)
+    access, state = await controller.acquire("a" * 32, project, policy, owner="run-a")
 
     name = instance_name("a" * 32)
     assert access.socket == socket_path(short_home / "lima", name)
@@ -411,8 +411,23 @@ async def test_acquire_reshares_starts_probes_and_release_stops(short_home) -> N
     ]
     assert fake.instances[name] == "Running"
 
-    assert await controller.release(state) is True
+    assert await controller.release(state, owner="run-a") is True
 
+    assert fake.instances[name] == "Stopped"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_release_never_stops_a_newer_runs_vm(short_home) -> None:
+    controller, fake, project = controller_for(short_home)
+    policy = await controller.prepare_lima("a" * 32, project)
+    name = instance_name("a" * 32)
+    _access, old = await controller.acquire("a" * 32, project, policy, owner="run-a")
+    # Run A ended, but its release is late: run B takes the VM first.
+    _access, new = await controller.acquire("a" * 32, project, policy, owner="run-b")
+
+    assert await controller.release(old, owner="run-a") is True
+    assert fake.instances[name] == "Running"  # B's turn keeps its daemon
+    assert await controller.release(new, owner="run-b") is True
     assert fake.instances[name] == "Stopped"
 
 
@@ -420,11 +435,11 @@ async def test_acquire_reshares_starts_probes_and_release_stops(short_home) -> N
 async def test_a_vm_that_will_not_stop_stays_held_and_is_reported(short_home) -> None:
     controller, fake, project = controller_for(short_home)
     policy = await controller.prepare_lima("a" * 32, project)
-    _access, state = await controller.acquire("a" * 32, project, policy)
+    _access, state = await controller.acquire("a" * 32, project, policy, owner="run-a")
     name = instance_name("a" * 32)
     fake.stop_code = 1  # both `stop` and `stop --force` fail; list still says Running
 
-    assert await controller.release(state) is False
+    assert await controller.release(state, owner="run-a") is False
     assert fake.instances[name] == "Running"
     failed = await controller.prepare_lima("a" * 32, project)
     assert failed.status == "error" and "did not stop" in (failed.error or "")
@@ -441,7 +456,7 @@ async def test_a_failed_start_stops_the_vm_and_refuses(short_home) -> None:
     fake.start_code = 1
 
     with pytest.raises(DockerUnavailable, match="boot failed"):
-        await controller.acquire("a" * 32, project, policy)
+        await controller.acquire("a" * 32, project, policy, owner="run-a")
 
     assert fake.instances[instance_name("a" * 32)] == "Stopped"
 
@@ -452,14 +467,14 @@ async def test_acquire_refuses_a_missing_vm(short_home) -> None:
     policy = DockerPolicy(enabled=True, backend="lima", status="ready", lima_instance=instance_name("a" * 32))
 
     with pytest.raises(DockerUnavailable, match="VM is missing"):
-        await controller.acquire("a" * 32, project, policy)
+        await controller.acquire("a" * 32, project, policy, owner="run-a")
 
 
 @pytest.mark.asyncio
 async def test_stop_all_skips_a_vm_a_run_holds_unless_shutting_down(short_home) -> None:
     controller, fake, project = controller_for(short_home)
     policy = await controller.prepare_lima("a" * 32, project)
-    await controller.acquire("a" * 32, project, policy)
+    await controller.acquire("a" * 32, project, policy, owner="run-a")
     stale = "delibra-ffffffffff"
     fake.instances[stale] = "Running"
 
@@ -518,13 +533,13 @@ async def test_backend_refusal_never_falls_back_to_local(short_home) -> None:
 async def test_delete_removes_the_vm_and_refuses_a_held_one(short_home) -> None:
     controller, fake, project = controller_for(short_home)
     policy = await controller.prepare_lima("a" * 32, project)
-    await controller.acquire("a" * 32, project, policy)
+    await controller.acquire("a" * 32, project, policy, owner="run-a")
     name = instance_name("a" * 32)
 
     with pytest.raises(DockerUnavailable, match="in use"):
         await controller.delete(name)
     fake.stop_code = 1  # a VM that will not stop stays held: delete refuses it
-    assert await controller.release(AutoBuildDocker("lima", name, "2.2.1", False, None)) is False
+    assert await controller.release(AutoBuildDocker("lima", name, "2.2.1", False, None), owner="run-a") is False
     with pytest.raises(DockerUnavailable, match="did not stop"):
         await controller.delete(name)
     fake.stop_code = 0

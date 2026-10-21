@@ -185,7 +185,7 @@ async def lima_spike(tree: Path, rows: dict[str, str], versions: dict[str, str],
     rows["prepare"] = "PASS"
     versions["docker (guest)"] = policy.docker_version or "unknown"
     started = time.monotonic()
-    access, state = await controller.acquire("spike-project", project, policy)
+    access, state = await controller.acquire("spike-project", project, policy, owner="spike")
     notes.append(f"second boot (acquire) took {time.monotonic() - started:.0f} s")
     rows["restart_and_probes"] = "PASS"
     endpoint = access.socket
@@ -252,7 +252,7 @@ async def lima_spike(tree: Path, rows: dict[str, str], versions: dict[str, str],
             if published.stdout.strip():
                 docker(endpoint, "rm", "-f", published.stdout.strip())
     finally:
-        await controller.release(state)
+        await controller.release(state, owner="spike")
 
 
 PROMPT = (
@@ -277,7 +277,7 @@ async def provider_spike(provider: str, _tree: Path, rows: dict[str, str], versi
             )
         shutil.rmtree(tree.root, ignore_errors=True)
         return
-    access, state = await controller.acquire("spike-" + provider, tree.project, policy)
+    access, state = await controller.acquire("spike-" + provider, tree.project, policy, owner="spike")
     other = tree.root / "other.sock"
     other_listener = socket.socket(socket.AF_UNIX)
     other_listener.bind(str(other))
@@ -355,7 +355,7 @@ async def provider_spike(provider: str, _tree: Path, rows: dict[str, str], versi
     finally:
         sandbox_spike.context, sandbox_spike.environment = original_context, original_environment
         other_listener.close()
-        await controller.release(state)
+        await controller.release(state, owner="spike")
         # The provider tree is build_tree's, not main()'s, so delete its VM here.
         subprocess.run(
             ["limactl", "delete", "--tty=false", "--force", state.instance or ""],

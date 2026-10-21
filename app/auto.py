@@ -1341,7 +1341,7 @@ class AutoManager:
             lease = self._docker_leases.pop((project_id, auto_id), None)
             if lease is not None:
                 # Shielded: a VM must stop even if this task is cancelled.
-                stopped = await asyncio.shield(self.docker.release(lease[1]))
+                stopped = await asyncio.shield(self.docker.release(lease[1], owner=auto_id))
                 if not stopped:
                     await self._record_docker_stop_failure(project_id, auto_id)
             # The terminal status and the released reservation become visible
@@ -1375,7 +1375,8 @@ class AutoManager:
         store = ProjectStore(self.registry.get(record.project_id))
         try:
             access, state = await self.docker.acquire(
-                record.project_id, store.project_path, store.coding_policy().docker
+                record.project_id, store.project_path, store.coding_policy().docker,
+                owner=record.id,
             )
         except DockerUnavailable as exc:
             await self._transition_terminal(
