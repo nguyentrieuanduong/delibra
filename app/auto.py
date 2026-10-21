@@ -28,7 +28,7 @@ from app.coding import (
 )
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
-from app.docker_backend import DockerController, DockerUnavailable
+from app.docker_backend import DockerController, DockerStopFailed, DockerUnavailable
 from app.health import probe_build_version
 from app.agents.base import DockerAccess
 from app.agents.errors import is_retryable
@@ -1383,6 +1383,8 @@ class AutoManager:
                 record.project_id, record.id, "stopped",
                 f"paused: Docker is unavailable: {exc}",
             )
+            if isinstance(exc, DockerStopFailed):
+                await self._record_docker_stop_failure(record.project_id, record.id)
             return False
         self._docker_leases[(record.project_id, record.id)] = (access, state)
         session_ids = [participant.session_id for participant in record.participants]

@@ -88,6 +88,10 @@ class DockerUnavailable(Exception):
     """A backend cannot serve Docker; the message is shown to the user."""
 
 
+class DockerStopFailed(DockerUnavailable):
+    """The backend failed, and its VM then did not stop (design §7)."""
+
+
 def tail(text: str) -> str:
     return text.encode("utf-8")[-ERROR_TAIL_BYTES:].decode("utf-8", "ignore").strip()
 
@@ -658,8 +662,9 @@ class DockerController:
                 await self._start(status, instance, START_TIMEOUT_SECONDS)
                 await self._docker_version(cli, endpoint)
                 closed = await self._isolation_probes(status, instance, project_root)
-            except BaseException:
-                await self._stop(status, instance)
+            except BaseException as exc:
+                if not await self._stop(status, instance) and isinstance(exc, DockerUnavailable):
+                    raise DockerStopFailed(f"{exc}; {self._stop_failed(instance)}") from exc
                 raise
             self._owners[instance] = owner
         return cli.access(endpoint), AutoBuildDocker(
