@@ -414,6 +414,22 @@ def cli_version_compatible(verified: str | None, probed: str | None) -> bool:
     return floor is not None and found is not None and found[0] == floor[0] and found >= floor
 
 
+def version_at_least(verified: str, probed: str | None) -> bool:
+    """A stable release no lower than the verified one, of any major.
+
+    For components whose upgrades must not block runs (guest Docker,
+    user decision 2026-10-21); a pre-release or unparseable string
+    needs an exact match.
+    """
+
+    if probed is None:
+        return False
+    if probed == verified:
+        return True
+    floor, found = parse_cli_version(verified), parse_cli_version(probed)
+    return floor is not None and found is not None and found >= floor
+
+
 def build_capable(agent: str, probed_version: str | None) -> bool:
     return cli_version_compatible(BUILD_VERIFIED_VERSIONS.get(agent), probed_version)
 

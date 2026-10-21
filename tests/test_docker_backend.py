@@ -207,6 +207,7 @@ class FakeLima:
         self.stop_code = 0
         self.listener = None
         self.containers: list[str] = []
+        self.guest_docker = "29.9.2"
         self.removed: list[str] = []
         self.order: list[str] = []
 
@@ -221,7 +222,7 @@ class FakeLima:
                 self.removed.extend(argv[argv.index("--force") + 1:])
                 self.containers = []
                 return 0, "", ""
-            return 0, "29.0.0\n", ""
+            return 0, f"{self.guest_docker}\n", ""
         command = argv[1]
         if command == "--version":
             return 0, f"limactl version {self.version}\n", ""
@@ -326,7 +327,7 @@ async def test_prepare_creates_the_vm_in_delibras_own_lima_home(short_home) -> N
 
     name = instance_name("a" * 32)
     assert (policy.status, policy.backend, policy.lima_instance) == ("ready", "lima", name)
-    assert (policy.lima_version, policy.docker_version, policy.host_loopback_closed) == ("2.2.1", "29.0.0", False)
+    assert (policy.lima_version, policy.docker_version, policy.host_loopback_closed) == ("2.2.1", "29.9.2", False)
     assert fake.instances == {name: "Stopped"}
     assert fake.configs[name]["mounts"] == [{"location": str(project), "writable": False}]
     assert "networkOpts" not in fake.configs[name]
@@ -545,6 +546,22 @@ async def test_a_container_listing_that_is_not_ids_fails_closed(short_home) -> N
     with pytest.raises(DockerUnavailable, match="listing the VM's containers"):
         await controller.acquire("a" * 32, project, policy, owner="run-a")
     assert fake.instances[instance_name("a" * 32)] == "Stopped"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("guest_docker", "accepted"),
+    [("29.9.2", True), ("29.10.0", True), ("30.0.0", True), ("29.0.0", False), ("30.0.0-rc.1", False)],
+)
+async def test_guest_docker_is_a_stable_release_at_least_the_verified_one(short_home, guest_docker, accepted) -> None:
+    controller, fake, project = controller_for(short_home)
+    fake.guest_docker = guest_docker
+
+    policy = await controller.prepare_lima("a" * 32, project)
+
+    assert (policy.status == "ready") is accepted
+    if not accepted:
+        assert "re-run spike S5" in (policy.error or "")
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agents.base import DockerAccess
-from app.coding import DockerPolicy
+from app.coding import DockerPolicy, version_at_least
 from app.coding_env import server_environment
 from app.config import Settings
 from app.models import AutoBuildDocker
@@ -33,6 +33,9 @@ from app.storage import atomic_write_text, ensure_owned_directory, utc_now
 LIMA_MIN_VERSION = (2, 2, 1)
 # networkOpts.hostLoopback (lima-vm/lima#5581) ships in the first stable 2.3.
 LIMA_HOST_LOOPBACK_VERSION = (2, 3, 0)
+# Guest Docker Engine verified by spike S5 (spike/FINDINGS.md, 2026-10-21);
+# any stable release at or above it is accepted (user decision).
+GUEST_DOCKER_VERIFIED = "29.9.2"
 INSTANCE_PREFIX = "delibra-"
 # macOS sun_path is 104 bytes including the terminating NUL.
 SUN_PATH_MAX = 103
@@ -119,11 +122,22 @@ def socket_path(lima_home: Path, instance: str) -> Path:
     return lima_home / instance / "sock" / "docker.sock"
 
 
+def _require_verified_guest_docker(version: str) -> None:
+    if not version_at_least(GUEST_DOCKER_VERIFIED, version):
+        raise DockerUnavailable(
+            f"the VM runs Docker {version}; Delibra needs a stable release of at least "
+            f"{GUEST_DOCKER_VERIFIED}; re-run spike S5 before accepting it"
+        )
+
+
 def lima_config(project_root: Path, *, close_host_loopback: bool) -> str:
     """The instance's lima.yaml as JSON (a YAML subset): paths need no escaping."""
 
     config: dict[str, object] = {
         "minimumLimaVersion": "2.2.1",
+        # Lima tries the dated, digest-checked image first; once Ubuntu
+        # removes it, Lima falls back to the current release image of the
+        # same LTS, checked only by HTTPS (design §3).
         "base": ["template:_images/ubuntu-lts"],
         "vmType": "vz",
         "mountType": "virtiofs",
@@ -657,6 +671,7 @@ class DockerController:
                     await self._start(status, instance, PREPARE_TIMEOUT_SECONDS)
                     endpoint = socket_path(self.lima_home, instance)
                     version = await self._docker_version(cli, endpoint)
+                    _require_verified_guest_docker(version)
                     await self._remove_containers(cli, endpoint)
                     closed = await self._isolation_probes(status, instance, project_root)
                 finally:
@@ -698,7 +713,7 @@ class DockerController:
             endpoint = socket_path(self.lima_home, instance)
             try:
                 await self._start(status, instance, START_TIMEOUT_SECONDS)
-                await self._docker_version(cli, endpoint)
+                _require_verified_guest_docker(await self._docker_version(cli, endpoint))
                 await self._remove_containers(cli, endpoint)
                 closed = await self._isolation_probes(status, instance, project_root)
             except BaseException as exc:

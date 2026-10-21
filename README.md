@@ -676,6 +676,10 @@ needs the host Docker CLI with the compose plugin (Docker Desktop, or
 - The VM lives in `$DELIBRA_HOME/lima`, never `~/.lima`; it shares only
   the project, read-only (macOS enforces this even against root in the VM),
   and forwards no ports to this machine. Docker inside it is rootless.
+- The VM boots Lima's Ubuntu LTS image. Lima prefers a dated image it
+  checks by digest; once Ubuntu removes that one, it uses the current
+  release image, checked only by HTTPS. Docker comes from Docker's signed
+  apt repository; any stable release from 29.9.2 up is accepted.
 - It runs only while a build run is active and stops when the run ends,
   stops or pauses. Delibra removes every container when a run starts and
   ends; images, volumes and build cache persist until **Delete Docker VM**.
