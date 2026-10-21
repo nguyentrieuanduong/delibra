@@ -39,6 +39,11 @@ from app.config import Settings  # noqa: E402
 from app.docker_backend import (  # noqa: E402
     DockerController, find_host_docker_cli, write_cli_config,
 )
+from spike.spike_add_dir import cli_path, cli_version  # noqa: E402
+from spike.spike_build_sandbox import (  # noqa: E402
+    build_tree, context, environment, rc, run_turn, write_script,
+)
+import spike.spike_build_sandbox as sandbox_spike  # noqa: E402
 
 FINDINGS = ROOT / "spike" / "FINDINGS.md"
 IMAGE = "busybox:1.36"
@@ -106,6 +111,26 @@ def judge_container_write(written: bool, stderr: str) -> str:
     if "Read-only file system" in stderr:
         return "PASS"
     return f"INCONCLUSIVE (no read-only refusal seen: {stderr.strip()[:200]!r})"
+
+
+def judge_refused(code: int | None, breach: str) -> str:
+    """A probe that must be refused: a missing result proves nothing."""
+
+    if code is None:
+        return "INCONCLUSIVE (no result: the probe did not run to completion)"
+    return "PASS" if code != 0 else f"FAIL ({breach})"
+
+
+def judge_unlisted_host(code: int | None, events: list[dict]) -> str:
+    """Codex aborts a whole command on a blocked domain, so its result file is
+    never written; its own command output is then the evidence (S4 run 3)."""
+
+    if code is None and any(
+        "was blocked: domain is not on the allowlist" in str((event.get("item") or {}).get("aggregated_output", ""))
+        for event in events
+    ):
+        return "PASS (Codex blocked the domain and stopped the command)"
+    return judge_refused(code, "reached example.com")
 
 
 def judge_home_listing(returncode: int, stdout: str, allowed: str) -> str:
@@ -230,8 +255,119 @@ async def lima_spike(tree: Path, rows: dict[str, str], versions: dict[str, str],
         await controller.release(state)
 
 
-async def provider_spike(provider: str, tree: Path, rows: dict[str, str], versions: dict[str, str], notes: list[str]) -> None:
-    raise NotImplementedError("Task 8")
+PROMPT = (
+    "Run exactly this shell command with your shell tool, once, and nothing "
+    "else: sh spike-probes.sh\nThen reply with the single word DONE."
+)
+
+
+async def provider_spike(provider: str, _tree: Path, rows: dict[str, str], versions: dict[str, str], notes: list[str]) -> None:
+    versions[provider] = cli_version(cli_path(provider))
+    # build_tree runs its own asyncio.run (env creation), so not on this loop.
+    tree = await asyncio.to_thread(build_tree, provider)
+    settings = Settings(home=tree.root / "h")
+    controller = DockerController(settings)
+    policy = await controller.prepare_lima("spike-" + provider, tree.project)
+    if policy.status != "ready":
+        rows["prepare"] = f"INCONCLUSIVE ({policy.error})"
+        if policy.lima_instance is not None:
+            subprocess.run(
+                ["limactl", "delete", "--tty=false", "--force", policy.lima_instance],
+                env=dict(os.environ, LIMA_HOME=str(settings.home / "lima")), capture_output=True,
+            )
+        shutil.rmtree(tree.root, ignore_errors=True)
+        return
+    access, state = await controller.acquire("spike-" + provider, tree.project, policy)
+    other = tree.root / "other.sock"
+    other_listener = socket.socket(socket.AF_UNIX)
+    other_listener.bind(str(other))
+    other_listener.listen()
+    other_listener.settimeout(0.2)
+    original_context = sandbox_spike.context
+    original_environment = sandbox_spike.environment
+    try:
+        (tree.project / "marker.txt").write_text(MARKER)
+        (tree.project / "compose.yaml").write_text(
+            f"services:\n  probe:\n    image: {IMAGE}\n    volumes: ['./:/w:ro']\n    command: ['cat', '/w/marker.txt']\n"
+        )
+        (tree.project / "Dockerfile").write_text(f"FROM {IMAGE}\nRUN echo built > /built\n")
+        lima_key = settings.home / "lima" / "_config" / "user"
+        commands = {
+            "docker_version": "docker version --format '{{.Server.Version}}' > docker-version.txt",
+            "docker_compose": "docker compose run --rm probe > compose.out",
+            "docker_build": "docker build -q -t delibra-spike-build .",
+            "container_write": "docker run --rm -v \"$PWD:/w\" busybox:1.36 sh -c 'echo x > /w/container-write.txt' 2> container-write.err",
+            "other_socket": f"envs/bin/python -c \"import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[1])\" {shlex.quote(str(other))}",
+            "read_lima_key": f"dd if={shlex.quote(str(lima_key))} of=/dev/null bs=1 count=1",
+            "read_sentinel": f"cat {shlex.quote(str(tree.sentinel))}",
+            "net_unlisted": "curl -fsS -m 10 https://example.com -o /dev/null 2> net-unlisted.err",
+        }
+        write_script(tree.project, commands)
+        write_cli_config(tree.temp / "docker", access.plugin_dirs)
+
+        def docker_context(tree_arg, prompt, allowlist):
+            base = original_context(tree_arg, prompt, allowlist)
+            return replace(base, coding=replace(base.coding, docker=access))
+
+        sandbox_spike.context = docker_context
+
+        def docker_environment(provider_arg, tree_arg):
+            env = original_environment(provider_arg, tree_arg)
+            coding = docker_context(tree_arg, "", ()).coding
+            env.update(build_command_environment(coding))
+            if access.bin_dir is not None:  # mirrors RunManager._subprocess_environment
+                env["PATH"] += os.pathsep + str(access.bin_dir)
+            return env
+
+        sandbox_spike.environment = docker_environment
+        report: dict = {}
+        first_turn = run_turn(provider, tree, PROMPT, ("pypi.org",), report)
+        accepted = 0
+        try:
+            while True:
+                other_listener.accept()[0].close()
+                accepted += 1
+        except OSError:
+            pass
+        p = tree.project
+        rows["docker_version"] = "PASS" if rc(p, "docker_version") == 0 and (p / "docker-version.txt").read_text().strip() else f"FAIL (rc {rc(p, 'docker_version')})"
+        rows["docker_compose"] = "PASS" if (p / "compose.out").exists() and (p / "compose.out").read_text() == MARKER else f"FAIL (rc {rc(p, 'docker_compose')})"
+        rows["docker_build"] = "PASS" if rc(p, "docker_build") == 0 else f"FAIL (rc {rc(p, 'docker_build')})"
+        rows["container_cannot_write_project"] = judge_container_write(
+            (p / "container-write.txt").exists(),
+            (p / "container-write.err").read_text() if (p / "container-write.err").exists() else "",
+        )
+        rows["other_socket_refused"] = (
+            judge_refused(rc(p, "other_socket"), "connected") if accepted == 0
+            else f"FAIL (accepted {accepted} connection(s))"
+        )
+        rows["lima_key_unreadable"] = (
+            judge_refused(rc(p, "read_lima_key"), "read") if lima_key.exists() else "INCONCLUSIVE (no key to read)"
+        )
+        rows["sentinel_unreadable"] = judge_refused(rc(p, "read_sentinel"), "read")
+        rows["net_unlisted_blocked"] = judge_unlisted_host(rc(p, "net_unlisted"), first_turn.events)
+        unlisted_err = p / "net-unlisted.err"
+        notes.append("net_unlisted stderr: " + (unlisted_err.read_text().strip()[:200] if unlisted_err.exists() else "(none)"))
+        write_script(p, {"docker_version_empty": "docker version --format '{{.Server.Version}}' > docker-version-empty.txt"})
+        run_turn(provider, tree, PROMPT, (), report)
+        rows["docker_with_empty_allowlist"] = "PASS" if rc(p, "docker_version_empty") == 0 else f"FAIL (rc {rc(p, 'docker_version_empty')}; socket may need the network proxy)"
+        notes.extend(shlex.join(item) for item in report.get("argv", []))
+    finally:
+        sandbox_spike.context, sandbox_spike.environment = original_context, original_environment
+        other_listener.close()
+        await controller.release(state)
+        # The provider tree is build_tree's, not main()'s, so delete its VM here.
+        subprocess.run(
+            ["limactl", "delete", "--tty=false", "--force", state.instance or ""],
+            env=dict(os.environ, LIMA_HOME=str(settings.home / "lima")), capture_output=True,
+        )
+        # Keep the turn transcripts (no credentials) for diagnosis; the tree
+        # holds a copied auth.json for Codex, so it is always deleted.
+        kept = Path(tempfile.mkdtemp(prefix=f"dlb-spike-{provider}-turns-"))
+        for log in tree.root.glob("turn-*"):
+            shutil.copy2(log, kept / log.name)
+        notes.append(f"turn transcripts kept in {kept}")
+        shutil.rmtree(tree.root, ignore_errors=True)
 
 
 def main() -> int:

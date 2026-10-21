@@ -665,3 +665,51 @@ build turn per provider, Delibra's pinned argv; the Claude build argv adds
 - second boot (acquire) took 14 s
 - guest mounts: /Users/apollo/.dlb-docker-spike-ch69xra3/project virtiofs ro,relatime
 <!-- DOCKER-SPIKE-LIMA:END -->
+
+<!-- DOCKER-SPIKE-CLAUDE:START -->
+## Docker spike: claude
+
+- claude: `2.1.296 (Claude Code)`
+- Verdict: **PASS**
+
+| Probe | Result |
+|---|---|
+| docker_version | PASS |
+| docker_compose | PASS |
+| docker_build | PASS |
+| container_cannot_write_project | PASS |
+| other_socket_refused | PASS |
+| lima_key_unreadable | PASS |
+| sentinel_unreadable | PASS |
+| net_unlisted_blocked | PASS |
+| docker_with_empty_allowlist | PASS |
+
+- net_unlisted stderr: curl: (22) The requested URL returned error: 403
+- /opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --add-dir '<TMP>/build-tmp' --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),Bash,WebSearch,WebFetch,Edit(/<TMP>/build-tmp/questions/**)' --disallowedTools 'Edit(/.delibra/**),Edit(/.git/**)' --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":["pypi.org"],"strictAllowlist":true,"allowUnixSockets":["<TMP>/h/lima/delibra-93baeec502/sock/docker.sock"]},"filesystem":{"denyRead":["~/"],"allowRead":["<TMP>/project","<TMP>/build-tmp","/Applications/Docker.app/Contents/Resources/bin","/Applications/Docker.app/Contents/Resources/cli-plugins"],"denyWrite":["<TMP>/project/.delibra","<TMP>/project/.git"]},"credentials":{"envVars":[{"name":"ANTHROPIC_API_KEY","mode":"deny"},{"name":"OPENAI_API_KEY","mode":"deny"},{"name":"GITHUB_TOKEN","mode":"deny"},{"name":"GH_TOKEN","mode":"deny"},{"name":"NPM_TOKEN","mode":"deny"},{"name":"AWS_ACCESS_KEY_ID","mode":"deny"},{"name":"AWS_SECRET_ACCESS_KEY","mode":"deny"},{"name":"AWS_SESSION_TOKEN","mode":"deny"}]}}}' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+- /opt/homebrew/bin/claude -p --output-format stream-json --verbose --include-partial-messages --model claude-opus-5-5 --effort low --add-dir '<TMP>/build-tmp' --append-system-prompt 'Follow the user'"'"'s instructions exactly.' --permission-mode dontAsk --tools Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch --allowedTools 'Read(/**),Edit(/**),Bash,WebSearch,WebFetch,Edit(/<TMP>/build-tmp/questions/**)' --disallowedTools 'Edit(/.delibra/**),Edit(/.git/**)' --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":["<TMP>/h/lima/delibra-93baeec502/sock/docker.sock"]},"filesystem":{"denyRead":["~/"],"allowRead":["<TMP>/project","<TMP>/build-tmp","/Applications/Docker.app/Contents/Resources/bin","/Applications/Docker.app/Contents/Resources/cli-plugins"],"denyWrite":["<TMP>/project/.delibra","<TMP>/project/.git"]},"credentials":{"envVars":[{"name":"ANTHROPIC_API_KEY","mode":"deny"},{"name":"OPENAI_API_KEY","mode":"deny"},{"name":"GITHUB_TOKEN","mode":"deny"},{"name":"GH_TOKEN","mode":"deny"},{"name":"NPM_TOKEN","mode":"deny"},{"name":"AWS_ACCESS_KEY_ID","mode":"deny"},{"name":"AWS_SECRET_ACCESS_KEY","mode":"deny"},{"name":"AWS_SESSION_TOKEN","mode":"deny"}]}}}' --safe-mode --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands --no-chrome
+- turn transcripts kept in /var/folders/s0/95bxcn355151vd97d8tg79nm0000gn/T/dlb-spike-claude-turns-mbk8nuf2
+<!-- DOCKER-SPIKE-CLAUDE:END -->
+
+<!-- DOCKER-SPIKE-CODEX:START -->
+## Docker spike: codex
+
+- codex: `codex-cli 0.163.0`
+- Verdict: **PASS**
+
+| Probe | Result |
+|---|---|
+| docker_version | PASS |
+| docker_compose | PASS |
+| docker_build | PASS |
+| container_cannot_write_project | PASS |
+| other_socket_refused | PASS |
+| lima_key_unreadable | PASS |
+| sentinel_unreadable | PASS |
+| net_unlisted_blocked | PASS (Codex blocked the domain and stopped the command) |
+| docker_with_empty_allowlist | PASS |
+
+- net_unlisted stderr: 
+- /opt/homebrew/bin/codex --model gpt-6-sol --ask-for-approval never --search --cd '<TMP>/project' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --config 'default_permissions="delibra_build"' --config 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "/Applications/Docker.app/Contents/Resources/bin"="read", "/Applications/Docker.app/Contents/Resources/cli-plugins"="read", "<TMP>/build-tmp"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=true, domains={"pypi.org"="allow"}, unix_sockets={"<TMP>/h/lima/delibra-0f3c7042b7/sock/docker.sock"="allow"}}}}' --config 'shell_environment_policy={inherit="core", set={"CONDA_PREFIX"="<TMP>/project/envs", "TMPDIR"="<TMP>/build-tmp", "PIP_CACHE_DIR"="<TMP>/build-tmp/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="<TMP>/build-tmp/xdg", "PIP_USE_DEPRECATED"="legacy-certs", "DOCKER_HOST"="unix://<TMP>/h/lima/delibra-0f3c7042b7/sock/docker.sock", "DOCKER_CONFIG"="<TMP>/build-tmp/docker", "DOCKER_CLI_HINTS"="false"}}' --config 'features.network_proxy={enabled=true, allow_local_binding=false, allow_upstream_proxy=false}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable browser_annotation_api --disable in_app_browser exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+- /opt/homebrew/bin/codex --model gpt-6-sol --ask-for-approval never --search --cd '<TMP>/project' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --config 'default_permissions="delibra_build"' --config 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "/Applications/Docker.app/Contents/Resources/bin"="read", "/Applications/Docker.app/Contents/Resources/cli-plugins"="read", "<TMP>/build-tmp"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=true, domains={}, unix_sockets={"<TMP>/h/lima/delibra-0f3c7042b7/sock/docker.sock"="allow"}}}}' --config 'shell_environment_policy={inherit="core", set={"CONDA_PREFIX"="<TMP>/project/envs", "TMPDIR"="<TMP>/build-tmp", "PIP_CACHE_DIR"="<TMP>/build-tmp/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="<TMP>/build-tmp/xdg", "PIP_USE_DEPRECATED"="legacy-certs", "DOCKER_HOST"="unix://<TMP>/h/lima/delibra-0f3c7042b7/sock/docker.sock", "DOCKER_CONFIG"="<TMP>/build-tmp/docker", "DOCKER_CLI_HINTS"="false"}}' --config 'features.network_proxy={enabled=true, allow_local_binding=false, allow_upstream_proxy=false}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable browser_annotation_api --disable in_app_browser exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
+- turn transcripts kept in /var/folders/s0/95bxcn355151vd97d8tg79nm0000gn/T/dlb-spike-codex-turns-zoud8yny
+<!-- DOCKER-SPIKE-CODEX:END -->

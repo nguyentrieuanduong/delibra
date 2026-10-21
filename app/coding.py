@@ -36,7 +36,11 @@ _LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
 # socket, in spikes S3 (claude) and S4 (codex). Empty until they pass: a
 # Docker build run is refused for any provider missing here. Same rule as
 # BUILD_VERIFIED_VERSIONS: these or a newer release of the same major.
-DOCKER_VERIFIED_VERSIONS: dict[str, str] = {}
+DOCKER_VERIFIED_VERSIONS: dict[str, str] = {
+    # spike/FINDINGS.md, Docker spikes S3 and S4, 2026-10-21.
+    "claude": "2.1.296 (Claude Code)",
+    "codex": "codex-cli 0.163.0",
+}
 DOCKER_STATUSES = frozenset({"absent", "preparing", "ready", "error", "deleting"})
 DOCKER_BACKENDS = frozenset({"lima", "local"})
 LIMA_INSTANCE = re.compile(r"delibra-[0-9a-f]{10}")

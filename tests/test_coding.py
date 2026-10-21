@@ -1,4 +1,5 @@
 import random
+from pathlib import Path
 
 import pytest
 
@@ -283,3 +284,11 @@ def test_store_saves_docker_state(tmp_path) -> None:
     state = DockerPolicy(enabled=True, status="preparing", updated_at="t")
     assert store.set_coding_docker(state).docker == state
     assert store.coding_policy().docker == state
+
+
+def test_docker_verified_versions_match_the_s3_s4_findings() -> None:
+    findings = (Path(__file__).resolve().parents[1] / "spike" / "FINDINGS.md").read_text()
+    assert DOCKER_VERIFIED_VERSIONS
+    for agent, version in DOCKER_VERIFIED_VERSIONS.items():
+        assert f"## Docker spike: {agent}" in findings
+        assert f"- {agent}: `{version}`" in findings
