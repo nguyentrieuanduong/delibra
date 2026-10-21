@@ -56,6 +56,7 @@ LOGGER = logging.getLogger(__name__)
 
 Run = Callable[[list[str], dict[str, str], float], Awaitable[tuple[int, str, str]]]
 _LIMA_VERSION = re.compile(r"limactl version (\d+)\.(\d+)\.(\d+)")
+_CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}")
 # Docker's signed apt repository, never `curl get.docker.com | sh`.
 SYSTEM_PROVISION = """#!/bin/bash
 set -eux -o pipefail
@@ -485,6 +486,41 @@ class DockerController:
             raise DockerUnavailable(f"docker version through {endpoint} failed: {tail(err)}")
         return out.strip()[:100]
 
+    async def _remove_containers(self, cli: HostDockerCli, endpoint: Path) -> None:
+        """Remove every container in the VM; images, volumes and caches stay.
+
+        A container must not outlive its run: one with a restart policy
+        would otherwise start at the next boot, before the probes, with the
+        project and the network. Fails closed; only hex ids reach argv.
+        """
+
+        host = ["--host", f"unix://{endpoint.as_posix()}"]
+        code, out, err = await self._run(
+            [str(cli.executable), *host, "ps", "--all", "--quiet", "--no-trunc"],
+            self._environ(), COMMAND_TIMEOUT_SECONDS,
+        )
+        ids = out.split()
+        if code != 0 or not all(_CONTAINER_ID.fullmatch(item) for item in ids):
+            raise DockerUnavailable(f"listing the VM's containers failed: {tail(err or out)}")
+        if not ids:
+            return
+        code, _out, err = await self._run(
+            [str(cli.executable), *host, "rm", "--force", *ids], self._environ(), STOP_TIMEOUT_SECONDS
+        )
+        if code != 0:
+            raise DockerUnavailable(f"removing the VM's containers failed: {tail(err)}")
+
+    async def _discard_containers(self, instance: str) -> None:
+        """Release's best effort; the next acquire removes them again, fail-closed."""
+
+        endpoint = socket_path(self.lima_home, instance)
+        if not _is_socket(endpoint):
+            return
+        try:
+            await self._remove_containers(find_host_docker_cli(self._environ()), endpoint)
+        except DockerUnavailable as exc:
+            LOGGER.warning("Could not remove the containers of %s: %s", instance, exc)
+
     async def _isolation_probes(self, status: LimaStatus, instance: str, project_root: Path) -> bool:
         """Design §4. Fails closed; returns whether host loopback is closed."""
 
@@ -619,7 +655,9 @@ class DockerController:
                 stopped = False
                 try:
                     await self._start(status, instance, PREPARE_TIMEOUT_SECONDS)
-                    version = await self._docker_version(cli, socket_path(self.lima_home, instance))
+                    endpoint = socket_path(self.lima_home, instance)
+                    version = await self._docker_version(cli, endpoint)
+                    await self._remove_containers(cli, endpoint)
                     closed = await self._isolation_probes(status, instance, project_root)
                 finally:
                     stopped = await self._stop(status, instance)
@@ -661,6 +699,7 @@ class DockerController:
             try:
                 await self._start(status, instance, START_TIMEOUT_SECONDS)
                 await self._docker_version(cli, endpoint)
+                await self._remove_containers(cli, endpoint)
                 closed = await self._isolation_probes(status, instance, project_root)
             except BaseException as exc:
                 if not await self._stop(status, instance) and isinstance(exc, DockerUnavailable):
@@ -689,6 +728,7 @@ class DockerController:
             async with self._instance_lock(docker.instance):
                 if self._owners.get(docker.instance) != owner:
                     return True
+                await self._discard_containers(docker.instance)
                 stopped = await self._stop(status, docker.instance)
                 if stopped:
                     self._owners.pop(docker.instance, None)
