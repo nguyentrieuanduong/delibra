@@ -40,6 +40,9 @@
       {% if auto.git.enabled %}Commits on {{ auto.git.branch }}{% else %}Commits off: {{ auto.git.reason }}{% endif %}
     </p>
   {% endif %}
+  {% if auto.kind == 'build' %}{% for note in auto.cli_notes %}
+    <p class="hint auto-build-cli">Unverified newer CLI: {{ note }}</p>
+  {% endfor %}{% endif %}
   {% if auto.status == 'preparing' and auto.preparation_enabled %}
     <p>Preparing {{ preparing_number }} of {{ auto.participants|length }}{% if current_participant %} · {{ current_participant.name }}{% endif %}</p>
   {% elif auto.status == 'preparing' %}

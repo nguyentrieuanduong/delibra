@@ -15,7 +15,7 @@
     <footer>
       {% for provider in health %}
         <span class="health {{ 'warning' if provider.checking or provider.warning else 'ok' }}">
-          {% if provider.checking %}Checking {{ provider.name|title }} CLI…{% else %}{{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}{% if provider.available and build_capable(provider.name, provider.version) %} · verified for build runs{% endif %}{% endif %}
+          {% if provider.checking %}Checking {{ provider.name|title }} CLI…{% else %}{{ provider.warning or (provider.name|title ~ ' ' ~ provider.version) }}{% if provider.available and build_capable(provider.name, provider.version) %} · {% if cli_newer_than_verified(provider.name, provider.version) %}accepted for build runs (newer than the verified version){% else %}verified for build runs{% endif %}{% endif %}{% endif %}
         </span>
       {% endfor %}
     </footer>

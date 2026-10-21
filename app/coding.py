@@ -22,9 +22,11 @@ DEFAULT_NETWORK_ALLOWLIST = (
 MAX_ALLOWLIST_HOSTS = 64
 ENV_STATUSES = frozenset({"absent", "creating", "ready", "error"})
 ENV_TOOLS = frozenset({"conda", "venv", "existing"})
-# Exact CLI versions that passed spikes S1 (claude) and S2 (codex), as
-# app/health.py reports them (spike/FINDINGS.md, 2026-10-16). Any other
-# version is refused until the spikes are re-run against it.
+# CLI versions that passed spikes S1 (claude) and S2 (codex), as
+# app/health.py reports them (spike/FINDINGS.md, 2026-10-16). Build runs
+# accept these or a newer release of the same major (user decision,
+# 2026-10-21); a new major, a downgrade or a pre-release is refused until
+# the spikes are re-run against it.
 BUILD_VERIFIED_VERSIONS: dict[str, str] = {
     "claude": "2.1.296 (Claude Code)",
     "codex": "codex-cli 0.162.1",
@@ -301,10 +303,51 @@ class CodingPolicy:
         }
 
 
+# A version number standing alone: no pre-release or build suffix attached.
+_CLI_VERSION = re.compile(r"(?<![\w.-])(\d+)(?:\.(\d+))?(?:\.(\d+))?(?![\w.-])")
+
+
+def parse_cli_version(text: str) -> tuple[int, int, int] | None:
+    match = _CLI_VERSION.search(text)
+    if match is None:
+        return None
+    major, minor, patch = (int(part or 0) for part in match.groups())
+    return major, minor, patch
+
+
+def cli_version_compatible(verified: str | None, probed: str | None) -> bool:
+    """Same major as the spike-verified version, and not lower.
+
+    An exact match always passes; otherwise both must parse, so a
+    pre-release or an unrecognised string needs an exact match.
+    """
+
+    if verified is None or probed is None:
+        return False
+    if probed == verified:
+        return True
+    floor, found = parse_cli_version(verified), parse_cli_version(probed)
+    return floor is not None and found is not None and found[0] == floor[0] and found >= floor
+
+
 def build_capable(agent: str, probed_version: str | None) -> bool:
-    verified = BUILD_VERIFIED_VERSIONS.get(agent)
-    return (
-        verified is not None
-        and probed_version is not None
-        and verified == probed_version
-    )
+    return cli_version_compatible(BUILD_VERIFIED_VERSIONS.get(agent), probed_version)
+
+
+def cli_newer_than_verified(
+    agent: str,
+    probed_version: str | None,
+    verified_versions: dict[str, str] | None = None,
+) -> str | None:
+    """A note for an accepted CLI that the spikes never ran against."""
+
+    table = BUILD_VERIFIED_VERSIONS if verified_versions is None else verified_versions
+    verified = table.get(agent)
+    if (
+        verified is None
+        or probed_version is None
+        or probed_version == verified
+        or not cli_version_compatible(verified, probed_version)
+    ):
+        return None
+    return f"{agent} CLI {probed_version} is newer than the spike-verified {verified}"

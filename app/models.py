@@ -1449,6 +1449,8 @@ class AutoRunRecord:
     guidance: AutoArtifact | None = None
     # Absent means on: every run that never turned it off keeps its shape.
     pause_on_blocking_questions: bool = True
+    # Build runs: accepted CLIs newer than the spike-verified ones.
+    cli_notes: list[str] = field(default_factory=list)
 
     @property
     def effective_context_policy(self) -> AutoContextPolicy:
@@ -1598,6 +1600,7 @@ class AutoRunRecord:
                 if "pause_on_blocking_questions" in data
                 else True
             ),
+            cli_notes=_strict_str_list(data, "cli_notes"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1668,6 +1671,8 @@ class AutoRunRecord:
             payload["handovers"] = [item.to_dict() for item in self.handovers]
             payload["git"] = self.git.to_dict() if self.git is not None else None
             payload["guidance"] = self.guidance.to_dict() if self.guidance is not None else None
+            if self.cli_notes:
+                payload["cli_notes"] = list(self.cli_notes)
         if not self.pause_on_blocking_questions:
             payload["pause_on_blocking_questions"] = False
         return payload

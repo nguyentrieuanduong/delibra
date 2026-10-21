@@ -85,3 +85,11 @@ def test_handover_epoch_must_be_a_number(value) -> None:
     }
     with pytest.raises(TypeError):
         AutoHandover.from_dict(data)
+
+
+def test_cli_notes_round_trip_and_stay_off_old_records() -> None:
+    record = AutoRunRecord.from_dict(dict(BASE, kind="build"))
+    assert record.cli_notes == []
+    assert "cli_notes" not in record.to_dict()
+    record.cli_notes = ["codex CLI codex-cli 0.163.0 is newer than the spike-verified codex-cli 0.162.1"]
+    assert AutoRunRecord.from_dict(record.to_dict()).cli_notes == record.cli_notes

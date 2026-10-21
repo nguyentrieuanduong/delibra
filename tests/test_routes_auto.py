@@ -2198,6 +2198,19 @@ def test_build_status_shows_commit_branch(tmp_path: Path) -> None:
     assert "Commits on main" in page.text
 
 
+def test_build_status_shows_an_unverified_newer_cli(tmp_path: Path) -> None:
+    app, project, store, sessions = _finished_run(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        assert start_auto(client, project.id, [s.id for s in sessions]).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+        record.kind = "build"
+        record.cli_notes = ["codex CLI codex-cli 0.163.0 is newer than the spike-verified codex-cli 0.162.1"]
+        store.save_auto_run(record)
+        page = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}")
+
+    assert "Unverified newer CLI: codex CLI codex-cli 0.163.0 is newer than the spike-verified codex-cli 0.162.1" in page.text
+
+
 def test_discussion_status_has_no_build_markup(tmp_path: Path) -> None:
     app, project, store, sessions = _finished_run(tmp_path)
     with TestClient(app, base_url="http://localhost") as client:
