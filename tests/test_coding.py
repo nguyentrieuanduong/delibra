@@ -22,6 +22,7 @@ from app.coding import (
     parse_cli_version,
     private_resolution_warnings,
     read_guidance,
+    version_at_least,
 )
 from app.storage import ProjectStore, RegistryStore
 
@@ -292,3 +293,12 @@ def test_docker_verified_versions_match_the_s3_s4_findings() -> None:
     for agent, version in DOCKER_VERIFIED_VERSIONS.items():
         assert f"## Docker spike: {agent}" in findings
         assert f"- {agent}: `{version}`" in findings
+
+
+def test_version_at_least_accepts_newer_majors_but_not_downgrades_or_prereleases() -> None:
+    assert version_at_least("29.9.2", "29.9.2")
+    assert version_at_least("29.9.2", "29.10.0")
+    assert version_at_least("29.9.2", "30.1.0")
+    assert not version_at_least("29.9.2", "29.9.1")
+    assert not version_at_least("29.9.2", "30.0.0-rc.1")
+    assert not version_at_least("29.9.2", None)
