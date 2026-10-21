@@ -640,3 +640,28 @@ build turn per provider, Delibra's pinned argv; the Claude build argv adds
     runner omits when the project path has an unsafe character
     (`app/runner.py:790-794`).
 <!-- QUESTIONS-SPIKE-DECISIONS:END -->
+
+<!-- DOCKER-SPIKE-LIMA:START -->
+## Docker spike: lima
+
+- limactl: `2.2.1`
+- docker (guest): `29.9.2`
+- Verdict: **PASS**
+
+| Probe | Result |
+|---|---|
+| prepare | PASS |
+| restart_and_probes | PASS |
+| host_loopback | RECORDED (OPEN (Delibra reachable from the VM)) |
+| container_reads_project | PASS |
+| container_cannot_write_project | PASS |
+| privileged_cannot_write_project | PASS |
+| home_not_shared | PASS |
+| container_host_loopback | RECORDED (reached) |
+| container_lan | RECORDED (not reached 192.168.1.1:80) |
+| published_port_not_on_host | PASS |
+
+- prepare took 112 s
+- second boot (acquire) took 14 s
+- guest mounts: /Users/apollo/.dlb-docker-spike-ch69xra3/project virtiofs ro,relatime
+<!-- DOCKER-SPIKE-LIMA:END -->
