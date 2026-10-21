@@ -677,9 +677,13 @@ needs the host Docker CLI with the compose plugin (Docker Desktop, or
   the project, read-only (macOS enforces this even against root in the VM),
   and forwards no ports to this machine. Docker inside it is rootless.
 - It runs only while a build run is active and stops when the run ends,
-  stops or pauses. Images and volumes persist until **Delete Docker VM**.
-  If a VM ever fails to stop, the run's status box says so and gives the
-  `limactl stop --force` command; Delibra retries at shutdown and startup.
+  stops or pauses. Delibra removes every container when a run starts and
+  ends; images, volumes and build cache persist until **Delete Docker VM**.
+  The VM's disk is untrusted across runs: code an agent leaves inside the
+  VM (outside containers) can run again in later runs, with the same reach
+  as a container. If a VM ever fails to stop, the run's status box says so
+  and gives the `limactl stop --force` command; Delibra retries at
+  shutdown and startup.
 - Agents reach only that VM's socket: Claude's sandbox allows that one unix
   socket, and Codex reaches it through its network proxy (with no hosts
   listed, the proxy refuses every host). The Docker CLI gets a private

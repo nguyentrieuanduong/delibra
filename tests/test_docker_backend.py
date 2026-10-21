@@ -206,11 +206,21 @@ class FakeLima:
         self.start_code = 0
         self.stop_code = 0
         self.listener = None
+        self.containers: list[str] = []
+        self.removed: list[str] = []
+        self.order: list[str] = []
 
     async def __call__(self, argv, environ, timeout):
         self.calls.append(list(argv))
         self.environs.append(dict(environ))
         if Path(argv[0]).name == "docker":
+            if "ps" in argv:
+                return 0, "".join(f"{item}\n" for item in self.containers), ""
+            if "rm" in argv:
+                self.order.append("rm")
+                self.removed.extend(argv[argv.index("--force") + 1:])
+                self.containers = []
+                return 0, "", ""
             return 0, "29.0.0\n", ""
         command = argv[1]
         if command == "--version":
@@ -249,6 +259,7 @@ class FakeLima:
 
     async def guest(self, guest: list[str]):
         if guest[0] == "findmnt":
+            self.order.append("findmnt")
             self.findmnt_calls += 1
             if self.findmnt_calls > 1 and self.findmnt_after is not None:
                 return 0, self.findmnt_after, ""
@@ -506,6 +517,34 @@ async def test_a_failed_acquire_whose_vm_will_not_stop_says_so(short_home) -> No
     with pytest.raises(DockerStopFailed, match="did not stop"):
         await controller.acquire("a" * 32, project, policy, owner="run-a")
     assert fake.instances[instance_name("a" * 32)] == "Running"
+
+
+@pytest.mark.asyncio
+async def test_no_container_outlives_its_run(short_home) -> None:
+    controller, fake, project = controller_for(short_home)
+    policy = await controller.prepare_lima("a" * 32, project)
+    left_over = "a" * 64  # e.g. started with --restart=always by an earlier run
+    fake.containers = [left_over]
+    fake.order.clear()
+
+    _access, state = await controller.acquire("a" * 32, project, policy, owner="run-a")
+
+    assert fake.removed == [left_over]
+    assert fake.order[0] == "rm"  # before any probe, and so before any turn
+    fake.containers = ["b" * 64]
+    assert await controller.release(state, owner="run-a") is True
+    assert fake.removed == [left_over, "b" * 64]
+
+
+@pytest.mark.asyncio
+async def test_a_container_listing_that_is_not_ids_fails_closed(short_home) -> None:
+    controller, fake, project = controller_for(short_home)
+    policy = await controller.prepare_lima("a" * 32, project)
+    fake.containers = ["--help"]
+
+    with pytest.raises(DockerUnavailable, match="listing the VM's containers"):
+        await controller.acquire("a" * 32, project, policy, owner="run-a")
+    assert fake.instances[instance_name("a" * 32)] == "Stopped"
 
 
 @pytest.mark.asyncio
