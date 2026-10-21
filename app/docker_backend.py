@@ -305,9 +305,7 @@ class LimaStatus:
 
 
 def _failed(message: str, *, instance: str | None = None) -> DockerPolicy:
-    return DockerPolicy(
-        enabled=True, status="error", error=tail(message), lima_instance=instance, updated_at=utc_now()
-    )
+    return DockerPolicy.failed(tail(message), instance=instance, updated_at=utc_now())
 
 
 def _is_socket(path: Path) -> bool:

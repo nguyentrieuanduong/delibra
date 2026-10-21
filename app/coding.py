@@ -323,6 +323,15 @@ class DockerPolicy:
             updated_at=data.get("updated_at"),
         )
 
+    @classmethod
+    def failed(
+        cls, message: str, *, instance: str | None, updated_at: str, enabled: bool = True
+    ) -> "DockerPolicy":
+        """A project whose Docker preparation or deletion failed; the VM name
+        stays so Delete Docker VM can still reach its disk."""
+
+        return cls(enabled=enabled, status="error", error=message, lima_instance=instance, updated_at=updated_at)
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
