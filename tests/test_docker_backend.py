@@ -12,6 +12,7 @@ import pytest
 
 from app.coding import DockerPolicy
 from app.config import Settings
+from app.models import AutoBuildDocker
 from app.docker_backend import (
     DockerController,
     DockerUnavailable,
@@ -412,3 +413,59 @@ async def test_stop_all_without_a_lima_home_runs_nothing(short_home) -> None:
     await controller.stop_all()
 
     assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_adopting_local_docker_needs_a_users_unix_socket(short_home) -> None:
+    controller, fake, _project = controller_for(short_home)
+    endpoint = short_home / "desktop.sock"
+    bind_socket(endpoint)
+    inspect = {"answer": json.dumps(f"unix://{endpoint}")}
+    original = fake.__call__
+
+    async def run(argv, environ, timeout):
+        if argv[1:3] == ["context", "inspect"]:
+            return 0, inspect["answer"], ""
+        return await original(argv, environ, timeout)
+
+    controller._run = run
+    policy = await controller.adopt_local()
+    assert (policy.status, policy.backend, policy.local_endpoint) == ("ready", "local", str(endpoint))
+    assert policy.local_acknowledged_at is not None
+
+    inspect["answer"] = json.dumps("tcp://192.168.1.9:2375")
+    with pytest.raises(DockerUnavailable, match="only a unix socket"):
+        await controller.adopt_local()
+
+
+@pytest.mark.asyncio
+async def test_backend_refusal_never_falls_back_to_local(short_home) -> None:
+    controller, _fake, project = controller_for(short_home, limactl=False)
+    policy = DockerPolicy(enabled=True, backend="lima", status="ready", lima_instance=instance_name("a" * 32))
+
+    refusal = await controller.backend_refusal(policy)
+
+    assert refusal is not None and "will not fall back to local Docker" in refusal
+    assert await controller.backend_refusal(DockerPolicy()) is None
+    assert "not ready" in (await controller.backend_refusal(DockerPolicy(enabled=True, status="error")) or "")
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_the_vm_and_refuses_a_held_one(short_home) -> None:
+    controller, fake, project = controller_for(short_home)
+    policy = await controller.prepare_lima("a" * 32, project)
+    await controller.acquire("a" * 32, project, policy)
+    name = instance_name("a" * 32)
+
+    with pytest.raises(DockerUnavailable, match="in use"):
+        await controller.delete(name)
+    fake.stop_code = 1  # a VM that will not stop stays held: delete refuses it
+    assert await controller.release(AutoBuildDocker("lima", name, "2.2.1", False, None)) is False
+    with pytest.raises(DockerUnavailable, match="did not stop"):
+        await controller.delete(name)
+    fake.stop_code = 0
+    await controller.stop_all(include_held=True)
+    await controller.delete(name)
+
+    assert not (short_home / "lima" / name).exists()
+    assert name not in fake.instances
