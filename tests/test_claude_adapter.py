@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.base import CodingContext, RunContext
+from app.agents.base import CodingContext, DockerAccess, RunContext
 from app.agents.claude import ClaudeAdapter
 from app.models import SessionConfig
 
@@ -634,6 +634,39 @@ def test_build_turn_grants_sandboxed_bash_and_keeps_research_tools() -> None:
         }
     }
     assert "--safe-mode" in argv
+
+
+SOCKET = "/home/.delibra/lima/delibra-0123456789/sock/docker.sock"
+
+
+def docker_build_context() -> RunContext:
+    context = build_context()
+    assert context.coding is not None
+    return replace(context, coding=replace(context.coding, docker=DockerAccess(
+        socket=Path(SOCKET),
+        cli_read_roots=(Path("/Applications/Docker.app/Contents/Resources/bin"),),
+        plugin_dirs=(Path("/Applications/Docker.app/Contents/Resources/cli-plugins"),),
+    )))
+
+
+def test_docker_build_turn_allows_exactly_the_project_socket() -> None:
+    argv = ClaudeAdapter(executable="claude").build_command(config(), docker_build_context()).argv
+    sandbox = json.loads(argv[argv.index("--settings") + 1])["sandbox"]
+    assert sandbox["network"] == {
+        "allowedDomains": ["pypi.org"],
+        "strictAllowlist": True,
+        "allowUnixSockets": [SOCKET],
+    }
+    assert "allowAllUnixSockets" not in json.dumps(sandbox)
+    assert "excludedCommands" not in sandbox
+    assert sandbox["filesystem"]["allowRead"] == [
+        "/project",
+        "/home/.delibra/build-tmp/" + "a" * 32,
+        "/Applications/Docker.app/Contents/Resources/bin",
+    ]
+    plain = ClaudeAdapter(executable="claude").build_command(config(), build_context()).argv
+    settings_at = argv.index("--settings") + 1
+    assert argv[:settings_at] + argv[settings_at + 1:] == plain[:settings_at] + plain[settings_at + 1:]
 
 
 def test_build_turn_omits_the_questions_rule_for_an_unsafe_temp_path() -> None:

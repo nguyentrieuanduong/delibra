@@ -122,17 +122,26 @@ def codex_build_overrides(coding: CodingContext) -> list[str]:
     """
 
     temp = _toml_string(coding.temp_dir.as_posix())
+    sockets = (
+        ", unix_sockets={" + _toml_string(coding.docker.socket.as_posix()) + '="allow"}'
+        if coding.docker is not None
+        else ""
+    )
     network = (
         "network={enabled=true, domains={"
         + ", ".join(f"{_toml_string(host)}=\"allow\"" for host in coding.network_allowlist)
-        + "}}"
+        + "}" + sockets + "}"
         if coding.network_allowlist
-        else "network={enabled=false}"
+        else "network={enabled=false" + sockets + "}"
+    )
+    read_roots = (
+        *coding.read_roots,
+        *(coding.docker.cli_read_roots if coding.docker is not None else ()),
     )
     profile = (
         f"permissions={{{BUILD_PROFILE}={{extends=\":workspace\", "
         "filesystem={\":root\"=\"deny\", \":minimal\"=\"read\", "
-        + "".join(f"{_toml_string(root.as_posix())}=\"read\", " for root in coding.read_roots)
+        + "".join(f"{_toml_string(root.as_posix())}=\"read\", " for root in read_roots)
         + f"{temp}=\"write\", "
         "\":workspace_roots\"={\".\"=\"write\", \".delibra\"=\"read\", \".git\"=\"read\"}}, "
         f"{network}}}}}"

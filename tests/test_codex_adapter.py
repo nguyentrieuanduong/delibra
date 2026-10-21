@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.base import CodingContext, RunContext, build_command_environment
+from app.agents.base import CodingContext, DockerAccess, RunContext, build_command_environment
 from app.agents.codex import BUILD_DISABLED_FEATURES, CodexAdapter, codex_build_overrides
 from app.models import SessionConfig
 
@@ -509,6 +509,43 @@ def test_empty_allowlist_disables_command_network() -> None:
     profile = next(item for item in overrides if item.startswith("permissions="))
     assert "network={enabled=false}" in profile
     assert not any(item.startswith("features.network_proxy") for item in overrides)
+
+
+SOCKET = "/home/.delibra/lima/delibra-0123456789/sock/docker.sock"
+
+
+def docker_coding(allowlist: tuple[str, ...] = ("pypi.org",)) -> CodingContext:
+    return replace(coding(allowlist), docker=DockerAccess(
+        socket=Path(SOCKET),
+        cli_read_roots=(Path("/Applications/Docker.app/Contents/Resources/bin"),),
+    ))
+
+
+def test_docker_profile_allows_exactly_the_project_socket() -> None:
+    profile = next(
+        item for item in codex_build_overrides(docker_coding()) if item.startswith("permissions=")
+    )
+    assert (
+        'network={enabled=true, domains={"pypi.org"="allow"}, '
+        f'unix_sockets={{"{SOCKET}"="allow"}}}}'
+    ) in profile
+    assert '"/Applications/Docker.app/Contents/Resources/bin"="read"' in profile
+    assert "dangerously_allow_all_unix_sockets" not in profile
+
+
+def test_docker_profile_with_an_empty_allowlist_keeps_network_off() -> None:
+    profile = next(
+        item for item in codex_build_overrides(docker_coding(())) if item.startswith("permissions=")
+    )
+    assert f'network={{enabled=false, unix_sockets={{"{SOCKET}"="allow"}}}}' in profile
+
+
+def test_docker_command_environment_points_the_cli_at_the_socket() -> None:
+    environment = build_command_environment(docker_coding())
+    assert environment["DOCKER_HOST"] == f"unix://{SOCKET}"
+    assert environment["DOCKER_CONFIG"] == "/home/.delibra/build-tmp/" + "b" * 32 + "/docker"
+    assert environment["DOCKER_CLI_HINTS"] == "false"
+    assert not any(key.startswith("DOCKER") for key in build_command_environment(coding()))
 
 
 def test_build_command_environment_fixes_git_and_pip_under_the_sandbox() -> None:
