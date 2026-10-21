@@ -1831,6 +1831,82 @@ def test_deleting_the_vm_turns_docker_off(tmp_path, monkeypatch) -> None:
     assert (docker.enabled, docker.status, docker.lima_instance) == (False, "absent", None)
 
 
+def test_local_adoption_refuses_once_lima_becomes_available(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    controller.lima_available = False
+    controller.on_adopt = lambda: setattr(controller, "lima_available", True)
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        response = client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
+
+    assert response.status_code == 409
+    assert ProjectStore(project).coding_policy().docker.backend is None
+
+
+def test_deleting_a_leftover_vm_keeps_local_docker(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "ready")
+        controller.lima_available = False
+        client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
+        deleted = client.post(f"{prefix}/coding/docker/delete", follow_redirects=False)
+
+    assert deleted.status_code == 303
+    assert controller.deleted == ["delibra-0123456789"]
+    docker = ProjectStore(project).coding_policy().docker
+    assert (docker.enabled, docker.backend, docker.status, docker.lima_instance) == (True, "local", "ready", None)
+
+
+def test_a_failed_leftover_vm_deletion_keeps_local_docker_throughout(tmp_path, monkeypatch) -> None:
+    # Codex plan review P2: "deleting" must not drop the local backend.
+    from app.docker_backend import DockerUnavailable
+
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    seen: dict[str, DockerPolicy] = {}
+
+    async def failing_delete() -> None:
+        seen["during"] = ProjectStore(project).coding_policy().docker
+        raise DockerUnavailable("limactl delete failed: busy")
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "ready")
+        controller.lima_available = False
+        client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
+        controller.on_delete = failing_delete
+        client.post(f"{prefix}/coding/docker/delete")
+
+    assert (seen["during"].status, seen["during"].backend) == ("deleting", "local")
+    docker = ProjectStore(project).coding_policy().docker
+    assert (docker.backend, docker.status, docker.lima_instance) == ("local", "ready", "delibra-0123456789")
+
+
+def test_startup_restores_local_docker_after_an_interrupted_vm_deletion(tmp_path) -> None:
+    controller = FakeDockerController()
+    app, settings = project_app(tmp_path, docker_controller=controller)
+    project_dir = tmp_path / "p"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("P", project_dir)
+    ProjectStore(project).set_coding_docker(DockerPolicy(
+        enabled=True, backend="local", status="deleting", lima_instance="delibra-0123456789",
+        local_endpoint="/Users/me/.docker/run/docker.sock", local_acknowledged_at="t", updated_at="t",
+    ))
+
+    with TestClient(app, base_url="http://localhost"):
+        pass
+
+    docker = ProjectStore(project).coding_policy().docker
+    assert (docker.enabled, docker.backend, docker.status, docker.lima_instance) == (
+        True, "local", "ready", "delibra-0123456789",
+    )
+
+
 def test_vm_deletion_runs_outside_the_project_lock(tmp_path, monkeypatch) -> None:
     controller = FakeDockerController()
     app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)

@@ -565,6 +565,18 @@ async def test_guest_docker_is_a_stable_release_at_least_the_verified_one(short_
 
 
 @pytest.mark.asyncio
+async def test_a_retry_without_lima_keeps_the_vm_deletable(short_home) -> None:
+    controller, _fake, project = controller_for(short_home)
+    await controller.prepare_lima("a" * 32, project)
+    (short_home / "bin" / "limactl").unlink()
+
+    policy = await controller.prepare_lima("a" * 32, project)
+
+    assert policy.status == "error"
+    assert policy.lima_instance == instance_name("a" * 32)
+
+
+@pytest.mark.asyncio
 async def test_acquire_refuses_a_missing_vm(short_home) -> None:
     controller, _fake, project = controller_for(short_home)
     policy = DockerPolicy(enabled=True, backend="lima", status="ready", lima_instance=instance_name("a" * 32))

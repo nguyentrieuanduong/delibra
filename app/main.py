@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import logging
 from pathlib import Path
 from fastapi import FastAPI, Request
@@ -72,6 +73,11 @@ def _recover_interrupted_docker(store: ProjectStore, controller: DockerControlle
 
     docker = store.coding_policy().docker
     if docker.status not in ("preparing", "deleting"):
+        return
+    if docker.status == "deleting" and docker.backend == "local":
+        # Deleting a local project's leftover VM was interrupted: local
+        # Docker stays, and the VM name stays so Delete can be retried.
+        store.set_coding_docker(replace(docker, status="ready", updated_at=utc_now()))
         return
     preparing = docker.status == "preparing"
     store.set_coding_docker(

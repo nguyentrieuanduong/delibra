@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import logging
 from pathlib import Path
 import shutil
@@ -519,6 +520,9 @@ async def use_local_docker(request: Request, project_id: str, acknowledge: bool 
         adopted = await controller.adopt_local()
     except DockerUnavailable as exc:
         raise StorageError(f"Local Docker is unavailable: {exc}") from exc
+    # Lima may have become usable while adoption ran: decide again.
+    if (await controller.lima_status()).available and checked.status != "error":
+        raise ConflictError("Lima is available; Delibra uses it instead of local Docker")
     async with request.app.state.locks.registry_project_sessions(resolved):
         store = _locked_docker_store(request, resolved)
         current = store.coding_policy().docker
@@ -549,18 +553,31 @@ async def delete_docker_vm(request: Request, project_id: str):
         if docker.lima_instance is None:
             raise StorageError("This project has no Docker VM")
         token = utc_now()
-        store.set_coding_docker(DockerPolicy(
-            status="deleting", lima_instance=docker.lima_instance, updated_at=token,
-        ))
+        # A local backend outlives its leftover VM, which no run uses. It is
+        # kept through "deleting" so a restart can restore it (startup recovery).
+        local = docker if docker.backend == "local" and docker.status == "ready" else None
+        store.set_coding_docker(
+            replace(local, status="deleting", updated_at=token)
+            if local is not None
+            else DockerPolicy(status="deleting", lima_instance=docker.lima_instance, updated_at=token)
+        )
         instance, name = docker.lima_instance, store.project.name
     try:
         await request.app.state.docker_controller.delete(instance)
-        result = DockerPolicy(updated_at=utc_now())
+        result = (
+            replace(local, lima_instance=None, updated_at=utc_now())
+            if local is not None
+            else DockerPolicy(updated_at=utc_now())
+        )
         failure = None
     except DockerUnavailable as exc:
         failure = str(exc)
-        result = DockerPolicy(status="error", error=f"Deleting the Docker VM failed: {exc}",
+        result = (
+            replace(local, updated_at=utc_now())
+            if local is not None
+            else DockerPolicy(status="error", error=f"Deleting the Docker VM failed: {exc}",
                               lima_instance=instance, updated_at=utc_now())
+        )
     async with request.app.state.locks.registry_project_sessions(resolved):
         store = ProjectStore(request.app.state.registry.get(resolved))
         current = store.coding_policy().docker
