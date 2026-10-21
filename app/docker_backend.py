@@ -43,6 +43,9 @@ SYSTEM_PLUGIN_DIRS = (
     Path("/usr/local/libexec/docker/cli-plugins"),
     Path("/usr/libexec/docker/cli-plugins"),
 )
+# Docker's own CLI dirs under HOME hold executables only (Desktop's
+# user-mode install, cli-plugins); nothing else under HOME is granted.
+HOME_CLI_DIRS = (Path(".docker") / "bin", Path(".docker") / "cli-plugins")
 PREPARE_TIMEOUT_SECONDS = 1_800
 START_TIMEOUT_SECONDS = 180
 STOP_TIMEOUT_SECONDS = 60
@@ -162,6 +165,20 @@ class HostDockerCli:
         )
 
 
+def _require_grantable(directory: Path, home: Path) -> Path:
+    """A directory build turns may read: never HOME, an ancestor of it, or
+    anything inside it but Docker's own CLI dirs (HOME holds credentials)."""
+
+    home = home.resolve()
+    inside = directory.is_relative_to(home) and directory not in {home / part for part in HOME_CLI_DIRS}
+    if directory == home or directory in home.parents or inside:
+        raise DockerUnavailable(
+            f"the Docker CLI resolves into {directory}, which build turns may not read; install "
+            "Docker Desktop or `brew install docker docker-compose docker-buildx`"
+        )
+    return directory
+
+
 def find_host_docker_cli(
     environ: dict[str, str],
     *,
@@ -178,13 +195,14 @@ def find_host_docker_cli(
             "the docker CLI is not on PATH; install Docker Desktop or "
             "`brew install docker docker-compose docker-buildx`"
         )
-    candidates = (Path(environ.get("HOME", "/nonexistent")) / ".docker" / "cli-plugins", *system_plugin_dirs)
+    home = Path(environ.get("HOME", "/nonexistent"))
+    candidates = (home / ".docker" / "cli-plugins", *system_plugin_dirs)
     plugin_dirs: list[Path] = []
     has_compose = False
     for plugin in ("docker-compose", "docker-buildx"):
         for directory in candidates:
             if (directory / plugin).is_file():
-                real = (directory / plugin).resolve().parent
+                real = _require_grantable((directory / plugin).resolve().parent, home)
                 if real not in plugin_dirs:
                     plugin_dirs.append(real)
                 has_compose = has_compose or plugin == "docker-compose"
@@ -194,7 +212,9 @@ def find_host_docker_cli(
             "the docker compose plugin was not found; install Docker Desktop or "
             "`brew install docker-compose`"
         )
-    return HostDockerCli(Path(found).resolve(), tuple(plugin_dirs))
+    executable = Path(found).resolve()
+    _require_grantable(executable.parent, home)
+    return HostDockerCli(executable, tuple(plugin_dirs))
 
 
 def write_cli_config(config_dir: Path, plugin_dirs: tuple[Path, ...]) -> None:
