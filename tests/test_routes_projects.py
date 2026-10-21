@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
-from app.coding import DEFAULT_NETWORK_ALLOWLIST, CodingEnvState
+from app.coding import DEFAULT_NETWORK_ALLOWLIST, CodingEnvState, DockerPolicy
 from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
@@ -47,11 +47,12 @@ class SleepingAdapter:
         return ""
 
 
-def project_app(tmp_path: Path):
+def project_app(tmp_path: Path, docker_controller=None):
     settings = Settings(home=tmp_path / "home", run_timeout=2)
     return create_app(
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
+        docker_controller_override=docker_controller,
     ), settings
 
 
@@ -1343,8 +1344,8 @@ VENV_STUB = (
 )
 
 
-def coding_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    app, settings = project_app(tmp_path)
+def coding_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, docker_controller=None):
+    app, settings = project_app(tmp_path, docker_controller=docker_controller)
     project_dir = tmp_path / "coded"
     project_dir.mkdir()
     project = RegistryStore(settings.home).register("Coded", project_dir)
@@ -1667,3 +1668,69 @@ def test_coding_hint_does_not_claim_the_browser_is_unlimited(tmp_path, monkeypat
         page = client.get(f"{prefix}/settings").text
     assert "web fetch, browser) are not limited" not in page
     assert "browser features are off in build turns" in page
+
+
+class FakeDockerController:
+    def __init__(self) -> None:
+        self.stopped = 0
+        self.lima_available = True
+        self.prepared: list[Path] = []
+        self.deleted: list[str] = []
+        self.local_error: str | None = None
+        self.prepare_result: DockerPolicy | None = None
+        self.on_adopt = None  # sync callable run inside adopt_local
+        self.on_delete = None  # async callable run inside delete
+        self.prepare_gate: asyncio.Event | None = None
+        self.instance: str | None = None
+
+    async def stop_all(self, *, include_held: bool = False) -> None:
+        self.stopped += 1
+
+    async def lima_status(self):
+        from app.docker_backend import LimaStatus
+        return LimaStatus("/usr/local/bin/limactl", (2, 2, 1), None if self.lima_available else "limactl is not on PATH")
+
+    async def prepare_lima(self, project_id: str, project_root: Path) -> DockerPolicy:
+        self.prepared.append(project_root)
+        if self.prepare_gate is not None:
+            await self.prepare_gate.wait()
+        return self.prepare_result or DockerPolicy(
+            enabled=True, backend="lima", status="ready", lima_instance="delibra-0123456789",
+            lima_version="2.2.1", host_loopback_closed=False, docker_version="29.0.0", updated_at="t",
+        )
+
+    async def adopt_local(self) -> DockerPolicy:
+        from app.docker_backend import DockerUnavailable
+        if self.local_error is not None:
+            raise DockerUnavailable(self.local_error)
+        if self.on_adopt is not None:
+            self.on_adopt()
+        return DockerPolicy(
+            enabled=True, backend="local", status="ready",
+            local_endpoint="/Users/me/.docker/run/docker.sock", local_acknowledged_at="t",
+            docker_version="29.0.0", updated_at="t",
+        )
+
+    async def delete(self, instance: str) -> None:
+        if self.on_delete is not None:
+            await self.on_delete()
+        self.deleted.append(instance)
+
+    def existing_instance(self, project_id: str) -> str | None:
+        return self.instance
+
+
+def test_startup_marks_interrupted_docker_preparation_and_stops_stale_vms(tmp_path) -> None:
+    controller = FakeDockerController()
+    app, settings = project_app(tmp_path, docker_controller=controller)
+    project_dir = tmp_path / "p"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("P", project_dir)
+    ProjectStore(project).set_coding_docker(DockerPolicy(enabled=True, status="preparing", updated_at="t"))
+
+    with TestClient(app, base_url="http://localhost"):
+        pass
+
+    docker = ProjectStore(project).coding_policy().docker
+    assert (docker.status, docker.error) == ("error", "Docker preparation was interrupted; retry to continue")
+    assert controller.stopped >= 1
