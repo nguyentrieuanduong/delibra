@@ -30,6 +30,7 @@ from app.coding import (
     CodingEnvState,
     CodingPolicy,
     CodingPolicyError,
+    DockerPolicy,
     normalize_guidance_paths,
     normalize_network_allowlist,
 )
@@ -1839,6 +1840,11 @@ class ProjectStore:
         policy = self.coding_policy()
         policy.env = state
         return self._save_coding(policy)
+
+    def set_coding_docker(self, state: DockerPolicy) -> CodingPolicy:
+        policy = self.coding_policy()
+        policy.docker = state
+        return self.replace_coding_policy(policy)
 
     def session_writable_roots(self, session_id: str) -> list[str]:
         config = self.load_session(session_id)
