@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import shlex
 import functools
 import json
 from datetime import datetime, timedelta, timezone
@@ -2223,7 +2224,9 @@ def test_build_status_labels_the_docker_backend(tmp_path: Path) -> None:
 
     assert "Docker: Lima VM 2.2.1 · Not isolated: containers can reach this machine&#39;s 127.0.0.1, including Delibra" in page.text
     assert "The Docker VM did not stop when this run ended" in page.text
-    assert "limactl stop --force delibra-0123456789" in page.text
+    lima_home = shlex.quote(str(app.state.settings.home / "lima"))
+    assert f"LIMA_HOME={lima_home} limactl stop --force delibra-0123456789" in page.text
+    assert "$DELIBRA_HOME" not in page.text
 
 
 def test_local_docker_status_says_containers_outlive_the_run(tmp_path: Path) -> None:

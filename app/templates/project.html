@@ -109,7 +109,7 @@
     </form>
     {% set docker = coding.docker %}
     <p class="coding-docker-status">Docker: {{ docker.status }}{% if docker.backend == 'lima' %} · Lima VM{% if docker.lima_version %} {{ docker.lima_version }}{% endif %} · {% if docker.host_loopback_closed %}Isolated{% else %}Not isolated: containers can reach this machine's 127.0.0.1, including Delibra{% endif %}{% elif docker.backend == 'local' %} · local Docker ({{ docker.local_endpoint }}) · Not isolated{% endif %}</p>
-    <p class="hint">Containers see the project read-only and have unrestricted internet access; the command allowlist does not apply to them. Preparation downloads an Ubuntu image and Docker over this machine's network.</p>
+    <p class="hint">Containers see the project read-only, so they can read its secrets (for example .env); they have unrestricted internet access and reach your LAN, and the command allowlist does not apply to them. Preparation downloads an Ubuntu image and Docker over this machine's network.</p>
     {% if docker.status == 'error' %}
       <pre class="coding-docker-error">{{ docker.error }}</pre>
       <form method="post" action="{{ project_url(project.name, '/coding/docker/retry') }}">
@@ -125,7 +125,7 @@
     {% endif %}
     {% if docker.backend == 'local' and docker_lima and docker_lima.available %}
       <form method="post" action="{{ project_url(project.name, '/coding/docker/lima') }}">
-        <button type="submit"{% if not coding_local %} disabled{% endif %}>Switch to a Lima VM (isolated)</button>
+        <button type="submit"{% if not coding_local %} disabled{% endif %}>Switch to a Lima VM</button>
       </form>
     {% endif %}
     {% if docker.lima_instance %}
