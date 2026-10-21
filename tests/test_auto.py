@@ -13,7 +13,7 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agents.base import AgentEvent, Command, RunContext
+from app.agents.base import AgentEvent, Command, DockerAccess, RunContext
 from app.auto import (
     AUTO_MAX_INITIAL_CYCLES,
     AUTO_SUMMARY_LABEL,
@@ -31,12 +31,19 @@ from app.auto import (
     render_preparation_context,
     validate_turn_timeout_seconds,
 )
-from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
+from app.coding import (
+    BUILD_VERIFIED_VERSIONS,
+    DOCKER_VERIFIED_VERSIONS,
+    CodingEnvState,
+    DockerPolicy,
+)
+from app.docker_backend import DockerUnavailable
 from app.config import Settings
 from app.main import create_app
 from app.models import (
     AutoArtifact,
     AutoBaselineEntry,
+    AutoBuildDocker,
     AutoCompactionAttempt,
     AutoContextPolicy,
     AutoParticipant,
@@ -498,6 +505,7 @@ class RecordingAutoAdapter:
         self.factory.calls.append(
             {
                 "prompt": context.user_prompt,
+                "docker": context.coding.docker if context.coding is not None else None,
                 "material": material,
                 "shared": (
                     (context.workspace / context.staged_shared_context).read_bytes()
@@ -573,6 +581,7 @@ def auto_manager_fixture(
     captured_output_limit: int | None = None,
     stateless_history_limit: int | None = None,
     project_dir_name: str = "project",
+    docker=None,
 ) -> tuple[AutoManager, RecordingAutoFactory, str, list[str], ProjectStore]:
     settings = Settings(
         home=tmp_path / "home",
@@ -627,6 +636,7 @@ def auto_manager_fixture(
         locks=locks,
         settings=settings,
         runner=runner,
+        docker=docker,
     )
     return manager, factory, project.id, session_ids, store
 
@@ -5806,3 +5816,95 @@ async def test_create_rejects_a_non_boolean_pause_choice(tmp_path: Path) -> None
             max_cycles=1,
             pause_on_blocking_questions="yes",
         )
+
+
+class FakeDocker:
+    def __init__(self, *, refusal: str | None = None, acquire_error: str | None = None) -> None:
+        self.refusal = refusal
+        self.acquire_error = acquire_error
+        self.stop_ok = True
+        self.events: list[str] = []
+
+    async def backend_refusal(self, policy):
+        return self.refusal
+
+    async def acquire(self, project_id, project_root, policy):
+        self.events.append("acquire")
+        if self.acquire_error is not None:
+            raise DockerUnavailable(self.acquire_error)
+        return DockerAccess(socket=project_root / "fake-docker.sock"), AutoBuildDocker(
+            backend="lima", instance="delibra-0123456789", lima_version="2.2.1",
+            host_loopback_closed=False, local_endpoint=None,
+        )
+
+    async def release(self, docker):
+        self.events.append("release")
+        return self.stop_ok
+
+    async def stop_all(self, *, include_held: bool = False):
+        self.events.append("stop_all")
+
+
+def enable_docker(store: ProjectStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    enable_build(store, monkeypatch)
+    store.set_coding_docker(DockerPolicy(
+        enabled=True, backend="lima", status="ready", lima_instance="delibra-0123456789",
+        lima_version="2.2.1", host_loopback_closed=False, docker_version="29.0.0",
+    ))
+    monkeypatch.setitem(DOCKER_VERIFIED_VERSIONS, "fake", "1")
+
+
+@pytest.mark.asyncio
+async def test_docker_build_refuses_a_provider_not_verified_for_docker(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+    monkeypatch.delitem(DOCKER_VERIFIED_VERSIONS, "fake")
+
+    with pytest.raises(StorageError, match=r"Agent 1 \(fake\) is not verified for Docker build runs"):
+        await start_build(manager, project_id, session_ids)
+    assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_docker_build_refuses_with_the_backend_reason(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker(refusal="Lima is unavailable (limactl is not on PATH). ... will not fall back to local Docker")
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+
+    with pytest.raises(StorageError, match="will not fall back to local Docker"):
+        await start_build(manager, project_id, session_ids)
+
+
+@pytest.mark.asyncio
+async def test_docker_build_records_the_backend_at_creation(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert created.docker is not None
+    assert (created.docker.backend, created.docker.instance) == ("lima", "delibra-0123456789")
+
+
+@pytest.mark.asyncio
+async def test_build_without_docker_never_touches_the_controller(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")], docker=docker
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.docker is None
+    assert docker.events == []
