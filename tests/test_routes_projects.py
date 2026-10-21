@@ -1907,6 +1907,23 @@ def test_startup_restores_local_docker_after_an_interrupted_vm_deletion(tmp_path
     )
 
 
+def test_settings_never_call_lima_isolated_and_disclose_every_risk(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "ready")
+        controller.lima_available = False
+        client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
+        controller.lima_available = True
+        page = client.get(f"{prefix}/settings").text
+
+    assert "Switch to a Lima VM</button>" in page
+    assert "(isolated)" not in page
+    assert ".env" in page and "your LAN" in page
+
+
 def test_vm_deletion_runs_outside_the_project_lock(tmp_path, monkeypatch) -> None:
     controller = FakeDockerController()
     app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)

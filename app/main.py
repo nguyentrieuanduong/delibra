@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 import logging
 from pathlib import Path
+import shlex
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -123,6 +124,8 @@ def create_app(
     templates.env.globals["project_url"] = project_url
     templates.env.globals["build_capable"] = build_capable
     templates.env.globals["cli_newer_than_verified"] = cli_newer_than_verified
+    # The exact command a user can paste when a VM did not stop.
+    templates.env.globals["docker_lima_home"] = shlex.quote(str(app_settings.home / "lima"))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

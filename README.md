@@ -705,6 +705,7 @@ Residual risks (the UI repeats them):
 | Containers reach this machine's 127.0.0.1, including Delibra (no authentication) | yes | no (probe-verified; Delibra must bind loopback only) | yes |
 | Containers reach the LAN and services bound to `*` | yes | yes | yes |
 | Container internet egress (the command allowlist does not apply) | unrestricted | unrestricted | unrestricted |
+| Project secrets (e.g. `.env`) readable by containers, and sendable through their egress | yes | yes | yes |
 | Container access to host files | project, read-only | project, read-only | anything Docker can mount (`/Users` by default) |
 
 ## Isolation and security boundary
