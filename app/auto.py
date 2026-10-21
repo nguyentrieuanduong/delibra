@@ -20,17 +20,22 @@ from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, ren
 from app.coding import (
     GUIDANCE_MAX_BYTES,
     CodingPolicyError,
+    DockerPolicy,
     build_capable,
     cli_newer_than_verified,
+    docker_capable,
     read_guidance,
 )
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
+from app.docker_backend import DockerController, DockerUnavailable
 from app.health import probe_build_version
+from app.agents.base import DockerAccess
 from app.agents.errors import is_retryable
 from app.models import (
     AUTO_KINDS,
     AutoArtifact,
+    AutoBuildDocker,
     AutoHandover,
     AutoBaselineEntry,
     AutoCompactionAttempt,
@@ -485,12 +490,16 @@ class AutoManager:
         settings: Settings,
         runner: RunManager,
         provider_commands: dict[str, str] | None = None,
+        docker: DockerController | None = None,
     ) -> None:
         self.registry = registry
         self.locks = locks
         self.settings = settings
         self.runner = runner
         self.provider_commands = dict(provider_commands or {})
+        self.docker = docker if docker is not None else DockerController(settings)
+        # Live Docker leases of build runs this process drives (design §7).
+        self._docker_leases: dict[tuple[str, str], tuple[DockerAccess, AutoBuildDocker]] = {}
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._events: dict[tuple[str, str], _AutoEventState] = {}
         self._quiescing = False
@@ -555,6 +564,14 @@ class AutoManager:
             if kind == "build"
             else None
         )
+        docker_checked = (
+            ProjectStore(project).coding_policy().docker if kind == "build" else None
+        )
+        docker_refusal = (
+            await self.docker.backend_refusal(docker_checked)
+            if docker_checked is not None
+            else None
+        )
         all_session_ids = [session.id for session in discovered]
         async with self.locks.registry_project_sessions(project_id, all_session_ids):
             project = self.registry.get(project_id)
@@ -579,12 +596,20 @@ class AutoManager:
                 raise StorageError("Auto kind is invalid")
             guidance_bytes = None
             cli_notes: list[str] = []
+            docker_state = None
             if kind == "build":
                 self._require_build_ready(
                     store,
                     [(by_id[item].name, by_id[item].agent) for item in requested_ids],
                     build_versions,
                     env_python,
+                )
+                docker_state = self._require_docker_ready(
+                    store,
+                    [(by_id[item].name, by_id[item].agent) for item in requested_ids],
+                    build_versions,
+                    docker_checked,
+                    docker_refusal,
                 )
                 cli_notes = self._cli_notes(
                     [by_id[item].agent for item in requested_ids], build_versions
@@ -675,6 +700,7 @@ class AutoManager:
                     else None
                 ),
                 cli_notes=cli_notes,
+                docker=docker_state,
             )
             store.create_auto_run(
                 record,
@@ -736,6 +762,41 @@ class AutoManager:
         return (
             f"{participant.name} ({participant.agent}): {found} is not verified "
             "for build runs; re-run the spikes before continuing"
+        )
+
+    @staticmethod
+    def _require_docker_ready(
+        store: ProjectStore,
+        participants: Sequence[tuple[str, str]],
+        versions: dict[str, str | None],
+        checked: DockerPolicy | None,
+        refusal: str | None,
+    ) -> AutoBuildDocker | None:
+        """Refuse a Docker build run the backend or a provider cannot serve.
+
+        `checked` is the policy `refusal` was computed from, before the lock;
+        a settings change in between must not slip through.
+        """
+
+        policy = store.coding_policy().docker
+        if not policy.enabled:
+            return None
+        if checked is None or checked.to_dict() != policy.to_dict():
+            raise ConflictError("Docker settings changed during setup; try again")
+        if refusal is not None:
+            raise StorageError(refusal)
+        for name, agent in participants:
+            if not docker_capable(agent, versions.get(agent)):
+                raise StorageError(
+                    f"{name} ({agent}) is not verified for Docker build runs "
+                    f"(CLI {versions.get(agent)}); turn Docker off or re-run spikes S3/S4"
+                )
+        return AutoBuildDocker(
+            backend=policy.backend or "lima",
+            instance=policy.lima_instance,
+            lima_version=policy.lima_version,
+            host_loopback_closed=policy.host_loopback_closed,
+            local_endpoint=policy.local_endpoint,
         )
 
     @staticmethod
@@ -843,6 +904,16 @@ class AutoManager:
             if pending.kind == "build"
             else None
         )
+        docker_checked = (
+            ProjectStore(self.registry.get(project_id)).coding_policy().docker
+            if pending.kind == "build"
+            else None
+        )
+        docker_refusal = (
+            await self.docker.backend_refusal(docker_checked)
+            if docker_checked is not None
+            else None
+        )
         project = self.registry.get(project_id)
         discovered = ProjectStore(project).list_sessions()
         all_session_ids = [session.id for session in discovered]
@@ -909,6 +980,13 @@ class AutoManager:
                 )
                 record.cli_notes = self._cli_notes(
                     [participant.agent for participant in record.participants], build_versions
+                )
+                record.docker = self._require_docker_ready(
+                    store,
+                    [(participant.name, by_id[participant.session_id].agent) for participant in record.participants],
+                    build_versions,
+                    docker_checked,
+                    docker_refusal,
                 )
 
             # Re-verify every artifact the next turn will read. _discussion_context
