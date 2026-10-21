@@ -15,7 +15,7 @@ from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
 from app.build_git import default_git_exclude
-from app.coding import CodingEnvState, build_capable
+from app.coding import CodingEnvState, build_capable, cli_newer_than_verified
 from app.config import Settings
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
@@ -91,6 +91,7 @@ def create_app(
     templates.env.filters["md"] = render_markdown
     templates.env.globals["project_url"] = project_url
     templates.env.globals["build_capable"] = build_capable
+    templates.env.globals["cli_newer_than_verified"] = cli_newer_than_verified
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

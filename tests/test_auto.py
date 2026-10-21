@@ -4736,6 +4736,22 @@ async def test_a_cli_changed_mid_run_stops_the_build_before_its_next_turn(
 
 
 @pytest.mark.asyncio
+async def test_a_newer_same_major_cli_builds_and_is_noted_on_the_run(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    enable_build(store, monkeypatch)
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "fake", "1.0.0")
+    monkeypatch.setattr(AutoManager, "_build_version", fake_build_version(lambda agent: "1.2.0"))
+
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    assert terminal.cli_notes == ["fake CLI 1.2.0 is newer than the spike-verified 1.0.0"]
+
+
+@pytest.mark.asyncio
 async def test_build_resume_reprobes_the_cli(tmp_path, monkeypatch) -> None:
     manager, _factory, project_id, session_ids, store = auto_manager_fixture(
         tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue")]

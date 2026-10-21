@@ -630,11 +630,15 @@ partial output and the list of files it changed. If no agent is left, the run
 stops in a resumable state, and **Continue Auto** makes every agent available
 again. Discussion runs keep their existing pause-on-quota behaviour.
 
-**Verified versions.** Build runs accept only CLI versions whose sandbox was
+**Verified versions.** Build runs accept the CLI versions whose sandbox was
 verified (`app/coding.py:BUILD_VERIFIED_VERSIONS`; evidence in
-`spike/FINDINGS.md`): Claude Code `2.1.296` and codex-cli `0.162.1`. After an
-upgrade, re-run `spike/spike_build_sandbox.py --provider claude` and
-`spike/spike_build_sandbox_codex_replay.py` before adding the new version.
+`spike/FINDINGS.md`), Claude Code `2.1.296` and codex-cli `0.162.1`, or any
+newer release of the same major (Claude Code `2.x`, codex-cli `0.x`). A new
+major, a downgrade, or a pre-release is refused. A run on a newer, unverified
+CLI says so in its status box: the spikes never ran against it, and a CLI
+update can change what a sandbox setting means. After an upgrade, re-run
+`spike/spike_build_sandbox.py --provider claude` and
+`spike/spike_build_sandbox_codex_replay.py`, then record the new version.
 
 Known limits:
 

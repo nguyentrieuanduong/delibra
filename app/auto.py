@@ -17,7 +17,13 @@ from uuid import uuid4
 
 from app.build_git import commit_turn, git_preflight
 from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, render_handover
-from app.coding import GUIDANCE_MAX_BYTES, CodingPolicyError, build_capable, read_guidance
+from app.coding import (
+    GUIDANCE_MAX_BYTES,
+    CodingPolicyError,
+    build_capable,
+    cli_newer_than_verified,
+    read_guidance,
+)
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
 from app.health import probe_build_version
@@ -572,12 +578,16 @@ class AutoManager:
             if kind not in AUTO_KINDS:
                 raise StorageError("Auto kind is invalid")
             guidance_bytes = None
+            cli_notes: list[str] = []
             if kind == "build":
                 self._require_build_ready(
                     store,
                     [(by_id[item].name, by_id[item].agent) for item in requested_ids],
                     build_versions,
                     env_python,
+                )
+                cli_notes = self._cli_notes(
+                    [by_id[item].agent for item in requested_ids], build_versions
                 )
                 preparation_enabled = False
                 guidance_files = store.coding_policy().guidance_files
@@ -664,6 +674,7 @@ class AutoManager:
                     if guidance_bytes is not None
                     else None
                 ),
+                cli_notes=cli_notes,
             )
             store.create_auto_run(
                 record,
@@ -725,6 +736,16 @@ class AutoManager:
         return (
             f"{participant.name} ({participant.agent}): {found} is not verified "
             "for build runs; re-run the spikes before continuing"
+        )
+
+    @staticmethod
+    def _cli_notes(agents: Sequence[str], versions: dict[str, str | None]) -> list[str]:
+        return sorted(
+            {
+                note
+                for agent in agents
+                if (note := cli_newer_than_verified(agent, versions.get(agent))) is not None
+            }
         )
 
     @staticmethod
@@ -885,6 +906,9 @@ class AutoManager:
                     [(participant.name, by_id[participant.session_id].agent) for participant in record.participants],
                     build_versions,
                     env_python,
+                )
+                record.cli_notes = self._cli_notes(
+                    [participant.agent for participant in record.participants], build_versions
                 )
 
             # Re-verify every artifact the next turn will read. _discussion_context

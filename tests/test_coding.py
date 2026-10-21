@@ -1,3 +1,5 @@
+import random
+
 import pytest
 
 from app.coding import (
@@ -8,9 +10,12 @@ from app.coding import (
     CodingPolicy,
     CodingPolicyError,
     build_capable,
+    cli_newer_than_verified,
+    cli_version_compatible,
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
+    parse_cli_version,
     private_resolution_warnings,
     read_guidance,
 )
@@ -89,21 +94,60 @@ def test_policy_keeps_network_warnings() -> None:
     assert CodingPolicy.from_manifest({"coding": policy.to_dict()}) == policy
 
 
-def test_only_the_spike_verified_cli_versions_are_build_capable() -> None:
-    # S1/S2 on 2026-10-16 (spike/FINDINGS.md); strings as app/health.py reports them.
-    assert build_capable("claude", "2.1.296 (Claude Code)") is True
-    assert build_capable("codex", "codex-cli 0.162.1") is True
-    assert build_capable("claude", "2.1.1") is False
-    assert build_capable("claude", "2.1.297 (Claude Code)") is False
-    assert build_capable("codex", "codex-cli 0.162.2") is False
-    assert build_capable("claude", None) is False
-    assert build_capable("fake", "1") is False
-
-
-def test_version_match_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_runs_accept_the_same_major_and_not_lower(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "claude", "2.1.296 (Claude Code)")
     monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "codex", "codex-cli 0.162.1")
-    assert build_capable("codex", "codex-cli 0.162.1") is True
-    assert build_capable("codex", "codex-cli 0.162.10") is False
+    assert build_capable("claude", "2.1.296 (Claude Code)") is True
+    assert build_capable("claude", "2.1.297 (Claude Code)") is True
+    assert build_capable("claude", "2.4.0 (Claude Code)") is True
+    assert build_capable("claude", "2.1.295 (Claude Code)") is False
+    assert build_capable("claude", "3.0.0 (Claude Code)") is False
+    assert build_capable("codex", "codex-cli 0.163.0") is True
+    assert build_capable("codex", "codex-cli 0.162.10") is True
+    assert build_capable("codex", "codex-cli 0.162.0") is False
+    assert build_capable("codex", "codex-cli 1.0.0") is False
+    assert build_capable("codex", "codex-cli 0.164.0-alpha.1") is False
+    assert build_capable("claude", "garbage") is False
+    assert build_capable("claude", None) is False
+    assert build_capable("unknown-agent", "1") is False
+
+
+def test_unparseable_verified_versions_need_an_exact_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "claude", "spike-verified")
+    assert build_capable("claude", "spike-verified") is True
+    assert build_capable("claude", "spike-verified-2") is False
+
+
+def test_cli_versions_parse_from_both_providers_output() -> None:
+    assert parse_cli_version("2.1.296 (Claude Code)") == (2, 1, 296)
+    assert parse_cli_version("codex-cli 0.163.0") == (0, 163, 0)
+    assert parse_cli_version("1") == (1, 0, 0)
+    assert parse_cli_version("codex-cli 0.164.0-alpha.1") is None
+    assert parse_cli_version("garbage") is None
+
+
+def test_cli_version_parsing_survives_arbitrary_text() -> None:
+    # Generated inputs (TDD rule 3: the parser reads external CLI output).
+    rng = random.Random(20261021)
+    alphabet = "0123456789.-+ abcxyz()\t\n"
+    for _ in range(5_000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 24)))
+        parsed = parse_cli_version(text)
+        assert parsed is None or (len(parsed) == 3 and all(part >= 0 for part in parsed))
+        # An exact match always passes; anything else never crosses a major.
+        assert cli_version_compatible(text, text) is True
+        if parsed is not None:
+            assert cli_version_compatible("9999.0.0", text) is (parsed[0] == 9999)
+
+
+def test_a_newer_accepted_cli_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(BUILD_VERIFIED_VERSIONS, "codex", "codex-cli 0.162.1")
+    assert cli_newer_than_verified("codex", "codex-cli 0.162.1") is None
+    assert cli_newer_than_verified("codex", "codex-cli 0.163.0") == (
+        "codex CLI codex-cli 0.163.0 is newer than the spike-verified codex-cli 0.162.1"
+    )
+    assert cli_newer_than_verified("codex", "codex-cli 1.0.0") is None
+    assert cli_newer_than_verified("codex", None) is None
 
 
 def test_guidance_paths_must_be_absolute_markdown_regular_files(tmp_path) -> None:
