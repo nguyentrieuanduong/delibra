@@ -1494,6 +1494,8 @@ class AutoRunRecord:
     git: AutoBuildGit | None = None
     # Snapshot of the project's guidance files at creation (build runs only).
     guidance: AutoArtifact | None = None
+    # Docker build runs only: the backend and its probed isolation (design §4).
+    docker: AutoBuildDocker | None = None
     # Absent means on: every run that never turned it off keeps its shape.
     pause_on_blocking_questions: bool = True
     # Build runs: accepted CLIs newer than the spike-verified ones.
@@ -1648,6 +1650,11 @@ class AutoRunRecord:
                 else True
             ),
             cli_notes=_strict_str_list(data, "cli_notes"),
+            docker=(
+                AutoBuildDocker.from_dict(data["docker"])
+                if data.get("docker") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1720,6 +1727,8 @@ class AutoRunRecord:
             payload["guidance"] = self.guidance.to_dict() if self.guidance is not None else None
             if self.cli_notes:
                 payload["cli_notes"] = list(self.cli_notes)
+            if self.docker is not None:
+                payload["docker"] = self.docker.to_dict()
         if not self.pause_on_blocking_questions:
             payload["pause_on_blocking_questions"] = False
         return payload
