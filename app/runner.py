@@ -25,12 +25,14 @@ from app.agents.base import (
     AgentAdapter,
     AgentEvent,
     CodingContext,
+    DockerAccess,
     RunContext,
     build_command_environment,
 )
 from app.agents.errors import CODEX_AUTH_MARKERS, classify_text, fold_categories
 from app.auto import parse_auto_verdict
 from app.coding_env import developer_tools_dir
+from app.docker_backend import write_cli_config
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
 from app.questions import QUESTIONS_DIR
@@ -200,6 +202,8 @@ class AutoRunRequest:
     ignore_returned_session: bool
     # Auto build-run discussion turns only: cwd, env and argv get coding mode.
     build: bool = False
+    # Docker build runs only: the run's VM or local socket (design §6).
+    docker: DockerAccess | None = None
 
 
 class RunManager:
@@ -778,7 +782,9 @@ class RunManager:
             raise
         coding_context = None
         if auto_request is not None and auto_request.build:
-            coding_context = await self._build_coding_context(store, session_id)
+            coding_context = await self._build_coding_context(
+                store, session_id, auto_request.docker
+            )
         context = RunContext(
             user_prompt=execution_prompt,
             resume_id=resume_id,
@@ -1222,7 +1228,12 @@ class RunManager:
         config.cli_session_id = None
         config.context_observation = None
 
-    async def _build_coding_context(self, store: ProjectStore, session_id: str) -> CodingContext:
+    async def _build_coding_context(
+        self,
+        store: ProjectStore,
+        session_id: str,
+        docker: DockerAccess | None = None,
+    ) -> CodingContext:
         """Recreate the turn's private temp dir and describe its capabilities.
 
         Runs under the session lock. The old temp dir is renamed aside and
@@ -1245,6 +1256,8 @@ class RunManager:
         temp_dir.mkdir(mode=0o700)
         # The agent's questions outbox; AutoManager harvests it after the turn.
         (temp_dir / QUESTIONS_DIR).mkdir(mode=0o700)
+        if docker is not None:
+            write_cli_config(temp_dir / "docker", docker.plugin_dirs)
         tools = await self.developer_tools()
         return CodingContext(
             project_root=store.project_path,
@@ -1259,6 +1272,7 @@ class RunManager:
             network_allowlist=tuple(policy.network_allowlist),
             # Amendment A2: /usr/bin/git shims into the developer tools.
             read_roots=(tools,) if tools is not None else (),
+            docker=docker,
         )
 
     def _discard_tree(self, path: Path) -> None:

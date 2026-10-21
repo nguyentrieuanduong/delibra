@@ -15,7 +15,7 @@ from typing import Callable
 
 import pytest
 
-from app.agents.base import AgentEvent, Command, RunContext
+from app.agents.base import AgentEvent, Command, DockerAccess, RunContext
 from app.coding import CodingEnvState
 from app.coding_env import developer_tools_dir
 from app.config import Settings
@@ -2222,6 +2222,37 @@ async def test_build_turn_runs_from_the_project_root_with_coding_context(tmp_pat
     # Amendment A2: the macOS developer tools are readable for /usr/bin/git.
     tools = developer_tools_dir({"PATH": os.environ.get("PATH", "")})
     assert coding.read_roots == ((tools,) if tools is not None else ())
+
+
+@pytest.mark.asyncio
+async def test_docker_build_turn_gets_the_socket_and_a_private_cli_config(tmp_path, monkeypatch) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    ready_build_project(store)
+    spawned = record_spawns(monkeypatch)
+    access = DockerAccess(
+        socket=tmp_path / "docker.sock",
+        plugin_dirs=(Path("/Applications/Docker.app/Contents/Resources/cli-plugins"),),
+    )
+    record = create_runner_auto_record(store, session_id, status="discussing")
+    record.kind = "build"
+    store.save_auto_run(record)
+    request = replace(
+        auto_run_request(store, record, phase="discussion"), build=True, docker=access
+    )
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(project_id, session_id, request)
+    await manager.wait(key)
+
+    coding = contexts[0].coding
+    assert coding is not None and coding.docker == access
+    [spawn] = spawned
+    temp = manager.settings.build_tmp_root / session_id
+    assert spawn["tmp_entries"] == ["docker", "questions"]
+    assert spawn["env"]["DOCKER_HOST"] == f"unix://{tmp_path / 'docker.sock'}"
+    assert json.loads((temp / "docker" / "config.json").read_text()) == {
+        "cliPluginsExtraDirs": ["/Applications/Docker.app/Contents/Resources/cli-plugins"]
+    }
 
 
 @pytest.mark.asyncio
