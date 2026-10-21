@@ -15,8 +15,9 @@ from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
 from app.build_git import default_git_exclude
-from app.coding import CodingEnvState, build_capable, cli_newer_than_verified
+from app.coding import CodingEnvState, DockerPolicy, build_capable, cli_newer_than_verified
 from app.config import Settings
+from app.docker_backend import DockerController
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
 from app.project_routing import CanonicalProjectMiddleware, request_project
@@ -66,11 +67,35 @@ def _recover_interrupted_env(store: ProjectStore) -> None:
         )
 
 
+def _recover_interrupted_docker(store: ProjectStore, controller: DockerController) -> None:
+    """A "preparing"/"deleting" state at startup means the server died mid-way."""
+
+    docker = store.coding_policy().docker
+    if docker.status not in ("preparing", "deleting"):
+        return
+    preparing = docker.status == "preparing"
+    store.set_coding_docker(
+        DockerPolicy(
+            enabled=docker.enabled and preparing,
+            status="error",
+            error=(
+                "Docker preparation was interrupted; retry to continue"
+                if preparing
+                else "Docker VM deletion was interrupted; delete again to continue"
+            ),
+            # `limactl create` may have run: keep the disk deletable.
+            lima_instance=docker.lima_instance or controller.existing_instance(store.project.id),
+            updated_at=utc_now(),
+        )
+    )
+
+
 def create_app(
     *,
     settings_override: Settings | None = None,
     provider_commands: dict[str, str] | None = None,
     adapter_factory_override: AdapterFactory | None = None,
+    docker_controller_override: DockerController | None = None,
 ) -> FastAPI:
     # Read when the app is built, never at import: a malformed operator config
     # must fail the server that would have used it, not every import of this
@@ -110,17 +135,20 @@ def create_app(
             # so it resolves through the same command.
             codex_executable=commands["codex"],
         )
+        docker_controller = docker_controller_override or DockerController(app_settings)
         auto_manager = AutoManager(
             registry=registry,
             locks=locks,
             settings=app_settings,
             runner=manager,
             provider_commands=commands,
+            docker=docker_controller,
         )
         app.state.registry = registry
         app.state.locks = locks
         app.state.manager = manager
         app.state.auto_manager = auto_manager
+        app.state.docker_controller = docker_controller
         app.state.usage_monitor = usage_monitor
         app.state.health = checking_health(commands)
 
@@ -147,6 +175,7 @@ def create_app(
             try:
                 store = ProjectStore(project)
                 _recover_interrupted_env(store)
+                _recover_interrupted_docker(store, docker_controller)
                 migration = store.migrate_session_directories()
                 if migration.issues:
                     LOGGER.warning(
@@ -167,6 +196,11 @@ def create_app(
                     )
             except StorageError:
                 LOGGER.exception("Startup reconciliation failed for project %s", project.id)
+        # A crash can leave VMs running; no build run is active yet, and
+        # stop_all skips any VM a fresh run acquires meanwhile.
+        docker_recovery = asyncio.create_task(
+            docker_controller.stop_all(), name="delibra-docker-recovery"
+        )
         try:
             yield
         finally:
@@ -181,6 +215,10 @@ def create_app(
             for task in env_tasks:
                 task.cancel()
             await asyncio.gather(*env_tasks, return_exceptions=True)
+            docker_tasks = [docker_recovery, *app.state.coding_docker_tasks.values()]
+            for task in docker_tasks:
+                task.cancel()
+            await asyncio.gather(*docker_tasks, return_exceptions=True)
             await auto_manager.shutdown()
             await manager.shutdown()
 
@@ -202,6 +240,8 @@ def create_app(
     app.state.templates = templates
     app.state.health = []
     app.state.coding_env_tasks = {}
+    app.state.coding_docker_tasks = {}
+    app.state.docker_controller = None
     app.include_router(projects_router)
     app.include_router(auto_router)
     app.include_router(chat_router)
