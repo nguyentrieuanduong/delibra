@@ -101,8 +101,10 @@ def test_host_docker_cli_requires_docker_and_compose(tmp_path) -> None:
 
 def test_cli_config_lists_only_the_plugin_dirs(tmp_path) -> None:
     write_cli_config(tmp_path / "docker", (Path("/a"), Path("/b")))
+    # An auths entry stops the CLI picking the Keychain helper (S3, 2026-10-21).
     assert json.loads((tmp_path / "docker" / "config.json").read_text()) == {
-        "cliPluginsExtraDirs": ["/a", "/b"]
+        "auths": {"delibra.invalid": {}},
+        "cliPluginsExtraDirs": ["/a", "/b"],
     }
     assert (tmp_path / "docker").stat().st_mode & 0o777 == 0o700
 
