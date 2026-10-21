@@ -154,7 +154,13 @@ class FakeLima:
         self.instances: dict[str, str] = {}
         self.configs: dict[str, dict] = {}
         self.findmnt = f"{project} virtiofs ro,relatime\n"
-        self.ro_error = "touch: cannot touch 'x': Read-only file system"
+        self.findmnt_after: str | None = None  # what findmnt says once probed
+        self.findmnt_calls = 0
+        # Measured on Lima 2.2.1 (ro diagnostic, 2026-10-21): the owner meets the
+        # guest's ro mount; root after a remount meets VZ's host-side refusal.
+        self.owner_error = "Read-only file system"
+        self.root_error = "Permission denied"
+        self.root_writes = False
         self.loopback_reachable = False
         self.forwarded = False
         self.start_code = 0
@@ -203,9 +209,18 @@ class FakeLima:
 
     async def guest(self, guest: list[str]):
         if guest[0] == "findmnt":
+            self.findmnt_calls += 1
+            if self.findmnt_calls > 1 and self.findmnt_after is not None:
+                return 0, self.findmnt_after, ""
             return 0, self.findmnt, ""
+        if guest[0] == "touch":
+            return 1, "", f"touch: cannot touch '{guest[1]}': {self.owner_error}"
         if guest[0] == "sudo":
-            return 1, "", self.ro_error
+            target = re.search(r"touch (\S+);", guest[3]).group(1)
+            if self.root_writes:
+                Path(target).touch()
+                return 0, "", ""
+            return 1, "", f"touch: cannot touch '{target}': {self.root_error}"
         if guest[0] == "curl" and "host.lima.internal" in guest[-1]:
             if not self.loopback_reachable:
                 return 7, "", ""
@@ -312,15 +327,22 @@ async def test_unavailable_lima_is_an_error_never_a_fallback(short_home, version
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("breach", ["home_share", "writable_share", "no_erofs", "forwarded"])
+@pytest.mark.parametrize(
+    "breach",
+    ["home_share", "writable_share", "owner_not_erofs", "root_writes", "ro_not_restored", "forwarded"],
+)
 async def test_a_failed_probe_fails_closed_and_stops_the_vm(short_home, breach) -> None:
     controller, fake, project = controller_for(short_home)
     if breach == "home_share":
         fake.findmnt += f"{short_home / 'user'} virtiofs ro,relatime\n"
     elif breach == "writable_share":
         fake.findmnt = f"{project} virtiofs rw,relatime\n"
-    elif breach == "no_erofs":
-        fake.ro_error = "sudo: a password is required"
+    elif breach == "owner_not_erofs":
+        fake.owner_error = "Permission denied"
+    elif breach == "root_writes":
+        fake.root_writes = True
+    elif breach == "ro_not_restored":
+        fake.findmnt_after = f"{project} virtiofs rw,relatime\n"
     else:
         fake.forwarded = True
 
@@ -329,6 +351,7 @@ async def test_a_failed_probe_fails_closed_and_stops_the_vm(short_home, breach) 
     assert policy.status == "error"
     assert policy.lima_instance == instance_name("a" * 32)  # Delete VM stays possible
     assert set(fake.instances.values()) == {"Stopped"}
+    assert not list(project.glob(".delibra-ro-probe-*"))  # a written marker is removed
 
 
 @pytest.mark.asyncio
@@ -469,3 +492,13 @@ async def test_delete_removes_the_vm_and_refuses_a_held_one(short_home) -> None:
 
     assert not (short_home / "lima" / name).exists()
     assert name not in fake.instances
+
+
+@pytest.mark.asyncio
+async def test_root_may_be_refused_with_either_host_or_guest_error(short_home) -> None:
+    controller, fake, project = controller_for(short_home)
+    fake.root_error = "Read-only file system"  # remount refused: the guest's ro still holds
+
+    policy = await controller.prepare_lima("a" * 32, project)
+
+    assert policy.status == "ready"

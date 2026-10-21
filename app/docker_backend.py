@@ -281,6 +281,12 @@ async def _connects(host: str, port: int) -> bool:
     return True
 
 
+def _require_unwritten(marker: Path, writer: str) -> None:
+    if marker.exists():
+        marker.unlink()
+        raise DockerUnavailable(f"{writer} could write the project share")
+
+
 def _unescape_findmnt(value: str) -> str:
     return re.sub(r"\\x([0-9a-fA-F]{2})", lambda match: chr(int(match.group(1), 16)), value)
 
@@ -448,6 +454,38 @@ class DockerController:
         shell = [status.executable, "shell", "--tty=false", "--workdir", "/", instance]
         environ = self._lima_environ()
         root = project_root.as_posix()
+        await self._check_shares(shell, environ, root)
+        marker = f".delibra-ro-probe-{secrets.token_hex(8)}"
+        target = f"{root}/{marker}"
+        # The files' owner, whom rootless containers run as, meets the guest's
+        # read-only mount (ro diagnostic on Lima 2.2.1, 2026-10-21).
+        code, _out, err = await self._run([*shell, "touch", target], environ, COMMAND_TIMEOUT_SECONDS)
+        _require_unwritten(project_root / marker, "the guest user")
+        if code == 0 or marker not in err or "Read-only file system" not in err:
+            raise DockerUnavailable(f"the read-only probe did not run as expected: {tail(err)}")
+        # Root can remount the share writable inside the guest, but VZ refuses
+        # the write on the host side (Permission denied); the guest's read-only
+        # mount is then restored, so containers keep a clear EROFS.
+        script = (
+            f"mount -o remount,rw {shlex.quote(root)} 2>/dev/null; touch {shlex.quote(target)}; "
+            f"status=$?; mount -o remount,ro {shlex.quote(root)}; exit $status"
+        )
+        code, _out, err = await self._run([*shell, "sudo", "sh", "-c", script], environ, COMMAND_TIMEOUT_SECONDS)
+        _require_unwritten(project_root / marker, "root in the VM")
+        if code == 0 or marker not in err or not any(
+            text in err for text in ("Permission denied", "Read-only file system")
+        ):
+            raise DockerUnavailable(f"the root read-only probe did not run as expected: {tail(err)}")
+        await self._check_shares(shell, environ, root)
+        closed = await self._host_loopback_closed(shell, environ)
+        if status.closes_host_loopback and not closed:
+            raise DockerUnavailable(
+                "Lima was told to close host loopback (hostLoopback: false), but the VM still reached it"
+            )
+        await self._no_guest_port_forwarding(shell, environ)
+        return closed
+
+    async def _check_shares(self, shell: list[str], environ: dict[str, str], root: str) -> None:
         code, out, _err = await self._run(
             [*shell, "findmnt", "-rn", "-t", "virtiofs,9p,fuse.sshfs", "-o", "TARGET,FSTYPE,OPTIONS"],
             environ, COMMAND_TIMEOUT_SECONDS,
@@ -459,21 +497,6 @@ class DockerController:
             or "ro" not in rows[0][2].split(",")
         ):
             raise DockerUnavailable(f"the VM must share only the project, read-only; it shares {out.strip()[:500]!r}")
-        marker = f".delibra-ro-probe-{secrets.token_hex(8)}"
-        script = f"mount -o remount,rw {shlex.quote(root)} 2>/dev/null; touch {shlex.quote(root + '/' + marker)}"
-        code, _out, err = await self._run([*shell, "sudo", "sh", "-c", script], environ, COMMAND_TIMEOUT_SECONDS)
-        if (project_root / marker).exists():
-            (project_root / marker).unlink()
-            raise DockerUnavailable("root in the VM could write the project share")
-        if code == 0 or "Read-only file system" not in err:
-            raise DockerUnavailable(f"the read-only probe did not run as expected: {tail(err)}")
-        closed = await self._host_loopback_closed(shell, environ)
-        if status.closes_host_loopback and not closed:
-            raise DockerUnavailable(
-                "Lima was told to close host loopback (hostLoopback: false), but the VM still reached it"
-            )
-        await self._no_guest_port_forwarding(shell, environ)
-        return closed
 
     async def _host_loopback_closed(self, shell: list[str], environ: dict[str, str]) -> bool:
         hits: list[int] = []
