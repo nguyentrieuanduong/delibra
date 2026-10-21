@@ -2251,7 +2251,8 @@ async def test_docker_build_turn_gets_the_socket_and_a_private_cli_config(tmp_pa
     assert spawn["tmp_entries"] == ["docker", "questions"]
     assert spawn["env"]["DOCKER_HOST"] == f"unix://{tmp_path / 'docker.sock'}"
     assert json.loads((temp / "docker" / "config.json").read_text()) == {
-        "cliPluginsExtraDirs": ["/Applications/Docker.app/Contents/Resources/cli-plugins"]
+        "auths": {"delibra.invalid": {}},
+        "cliPluginsExtraDirs": ["/Applications/Docker.app/Contents/Resources/cli-plugins"],
     }
 
 

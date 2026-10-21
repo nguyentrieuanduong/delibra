@@ -193,13 +193,20 @@ def find_host_docker_cli(
 
 
 def write_cli_config(config_dir: Path, plugin_dirs: tuple[Path, ...]) -> None:
-    """A private DOCKER_CONFIG: plugin dirs only, never a credential helper."""
+    """A private DOCKER_CONFIG: plugin dirs only, never a credential helper.
+
+    A config with no auth settings makes the Docker CLI pick the platform
+    helper (macOS Keychain, which the sandbox blocks; spike S3, 2026-10-21).
+    One entry under the reserved .invalid domain keeps credentials in this
+    file, so public pulls stay anonymous.
+    """
 
     config_dir.mkdir(mode=0o700)
-    (config_dir / "config.json").write_text(
-        json.dumps({"cliPluginsExtraDirs": [path.as_posix() for path in plugin_dirs]}) + "\n",
-        encoding="utf-8",
-    )
+    config = {
+        "auths": {"delibra.invalid": {}},
+        "cliPluginsExtraDirs": [path.as_posix() for path in plugin_dirs],
+    }
+    (config_dir / "config.json").write_text(json.dumps(config) + "\n", encoding="utf-8")
 
 
 def require_user_socket(path: Path) -> None:
