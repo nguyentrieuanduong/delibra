@@ -46,6 +46,12 @@
             Checked now; the run checks again when it starts.
           </p>
         {% endif %}
+        {% if build_docker %}
+          <p class="hint auto-build-docker-preview">
+            Docker: {% if build_docker.backend == 'local' %}local Docker, not isolated: containers can reach your files and 127.0.0.1, including Delibra.{% elif build_docker.host_loopback_closed %}a Lima VM, isolated from this machine's loopback.{% else %}a Lima VM; containers can reach this machine's 127.0.0.1, including Delibra (Lima 2.3 closes this).{% endif %}
+            Containers have unrestricted internet access.
+          </p>
+        {% endif %}
       </fieldset>
     {% endif %}
     <label class="auto-choice">

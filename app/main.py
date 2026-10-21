@@ -308,6 +308,11 @@ def create_app(
         auto_migration_issues = store.auto_migration_status().issues
         configured_turn_timeout = store.configured_turn_timeout_seconds()
         coding = store.coding_policy()
+        docker_lima = (
+            await request.app.state.docker_controller.lima_status()
+            if coding.docker.enabled
+            else None
+        )
         effective_turn_timeout = store.effective_turn_timeout_seconds(
             request.app.state.settings.run_timeout,
             maximum=request.app.state.settings.max_run_timeout,
@@ -336,6 +341,7 @@ def create_app(
                     coding.git_exclude if coding.git_exclude is not None else default_git_exclude()
                 ),
                 "coding_local": is_loopback_client(request),
+                "docker_lima": docker_lima,
                 "turn_timeout_seconds": effective_turn_timeout,
                 "configured_turn_timeout_seconds": configured_turn_timeout,
                 "turn_timeout_inherited": configured_turn_timeout is None,

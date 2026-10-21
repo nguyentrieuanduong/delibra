@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from app.agents.base import AgentEvent, Command, RunContext
 from app.auto import AutoManager
 from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
-from app.models import AutoBuildGit, AutoHandover
+from app.models import AutoBuildDocker, AutoBuildGit, AutoHandover
 from app.config import Settings
 from app.main import create_app
 from app.models import (
@@ -2209,6 +2209,21 @@ def test_build_status_shows_an_unverified_newer_cli(tmp_path: Path) -> None:
         page = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}")
 
     assert "Unverified newer CLI: codex CLI codex-cli 0.163.0 is newer than the spike-verified codex-cli 0.162.1" in page.text
+
+
+def test_build_status_labels_the_docker_backend(tmp_path: Path) -> None:
+    app, project, store, sessions = _finished_run(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        assert start_auto(client, project.id, [s.id for s in sessions]).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+        record.kind = "build"
+        record.docker = AutoBuildDocker("lima", "delibra-0123456789", "2.2.1", False, None, stop_failed=True)
+        store.save_auto_run(record)
+        page = client.get(f"/projects/{quote(project.name, safe='')}/auto-runs/{record.number}")
+
+    assert "Docker: Lima VM 2.2.1 · Not isolated: containers can reach this machine&#39;s 127.0.0.1, including Delibra" in page.text
+    assert "The Docker VM did not stop when this run ended" in page.text
+    assert "limactl stop --force delibra-0123456789" in page.text
 
 
 def test_discussion_status_has_no_build_markup(tmp_path: Path) -> None:
