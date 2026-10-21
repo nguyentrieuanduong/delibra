@@ -7,16 +7,28 @@ instances and _config overrides are never read or touched.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
+import secrets
+import shlex
 import shutil
+import socket
 import stat
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.agents.base import DockerAccess
+from app.coding import DockerPolicy
+from app.coding_env import server_environment
+from app.config import Settings
+from app.models import AutoBuildDocker
+from app.storage import atomic_write_text, ensure_owned_directory, utc_now
 
 LIMA_MIN_VERSION = (2, 2, 1)
 # networkOpts.hostLoopback (lima-vm/lima#5581) ships in the first stable 2.3.
@@ -31,6 +43,15 @@ SYSTEM_PLUGIN_DIRS = (
     Path("/usr/local/libexec/docker/cli-plugins"),
     Path("/usr/libexec/docker/cli-plugins"),
 )
+PREPARE_TIMEOUT_SECONDS = 1_800
+START_TIMEOUT_SECONDS = 180
+STOP_TIMEOUT_SECONDS = 60
+COMMAND_TIMEOUT_SECONDS = 30
+SOCKET_WAIT_SECONDS = 30
+FORWARD_SETTLE_SECONDS = 6.0
+LOGGER = logging.getLogger(__name__)
+
+Run = Callable[[list[str], dict[str, str], float], Awaitable[tuple[int, str, str]]]
 _LIMA_VERSION = re.compile(r"limactl version (\d+)\.(\d+)\.(\d+)")
 # Docker's signed apt repository, never `curl get.docker.com | sh`.
 SYSTEM_PROVISION = """#!/bin/bash
@@ -132,8 +153,8 @@ class HostDockerCli:
         roots.extend(path for path in self.plugin_dirs if path not in roots)
         return tuple(roots)
 
-    def access(self, socket: Path) -> DockerAccess:
-        return DockerAccess(socket=socket, cli_read_roots=self.read_roots, plugin_dirs=self.plugin_dirs)
+    def access(self, endpoint: Path) -> DockerAccess:
+        return DockerAccess(socket=endpoint, cli_read_roots=self.read_roots, plugin_dirs=self.plugin_dirs)
 
 
 def find_host_docker_cli(
@@ -188,3 +209,423 @@ def require_user_socket(path: Path) -> None:
         raise DockerUnavailable(f"{path} is unavailable: {exc.strerror}") from exc
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
         raise DockerUnavailable(f"{path} is not a socket owned by this user")
+
+
+async def run_command(argv: list[str], environ: dict[str, str], timeout: float) -> tuple[int, str, str]:
+    """Fixed argv, no shell; 124 on timeout, 127 when it cannot start."""
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv, env=environ, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as exc:
+        return 127, "", f"{argv[0]}: {exc.strerror}"
+    try:
+        out, err = await asyncio.wait_for(process.communicate(), timeout)
+    except asyncio.CancelledError:
+        process.kill()
+        await process.communicate()
+        raise
+    except TimeoutError:
+        process.kill()
+        await process.communicate()
+        return 124, "", f"{Path(argv[0]).name} {argv[1] if len(argv) > 1 else ''} timed out after {timeout:g} s"
+    return process.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
+@dataclass(frozen=True)
+class LimaStatus:
+    executable: str | None
+    version: tuple[int, int, int] | None
+    reason: str | None  # None: available
+
+    @property
+    def available(self) -> bool:
+        return self.reason is None
+
+    @property
+    def closes_host_loopback(self) -> bool:
+        return self.version is not None and self.version >= LIMA_HOST_LOOPBACK_VERSION
+
+    @property
+    def version_text(self) -> str | None:
+        return dotted(self.version) if self.version is not None else None
+
+
+def _failed(message: str, *, instance: str | None = None) -> DockerPolicy:
+    return DockerPolicy(
+        enabled=True, status="error", error=tail(message), lima_instance=instance, updated_at=utc_now()
+    )
+
+
+def _is_socket(path: Path) -> bool:
+    try:
+        return stat.S_ISSOCK(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _free_loopback_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+async def _connects(host: str, port: int) -> bool:
+    try:
+        _reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 3)
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    return True
+
+
+def _unescape_findmnt(value: str) -> str:
+    return re.sub(r"\\x([0-9a-fA-F]{2})", lambda match: chr(int(match.group(1), 16)), value)
+
+
+class DockerController:
+    """Owns Delibra's Lima instances and checks the local Docker endpoint."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        run: Run = run_command,
+        environ: Callable[[], dict[str, str]] = server_environment,
+        forward_settle_seconds: float = FORWARD_SETTLE_SECONDS,
+    ) -> None:
+        self.settings = settings
+        self._run = run
+        self._environ = environ
+        self._settle = forward_settle_seconds
+        # Instances a build run holds; startup recovery must not stop them.
+        self._running: set[str] = set()
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    @property
+    def lima_home(self) -> Path:
+        return self.settings.home / "lima"
+
+    def _instance_lock(self, instance: str) -> asyncio.Lock:
+        return self._locks.setdefault(instance, asyncio.Lock())
+
+    def _lima_environ(self) -> dict[str, str]:
+        self.settings.home.mkdir(parents=True, exist_ok=True)
+        ensure_owned_directory(self.lima_home, self.settings.home)
+        os.chmod(self.lima_home, 0o700)
+        environ = self._environ()
+        environ["LIMA_HOME"] = str(self.lima_home)
+        return environ
+
+    async def _limactl(self, status: LimaStatus, args: list[str], timeout: float) -> tuple[int, str, str]:
+        assert status.executable is not None
+        return await self._run([status.executable, *args], self._lima_environ(), timeout)
+
+    async def lima_status(self) -> LimaStatus:
+        environ = self._lima_environ()
+        executable = shutil.which("limactl", path=environ.get("PATH"))
+        if executable is None:
+            return LimaStatus(None, None, "limactl is not on PATH")
+        code, out, err = await self._run([executable, "--version"], environ, COMMAND_TIMEOUT_SECONDS)
+        version = parse_lima_version(out or err) if code == 0 else None
+        if version is None:
+            return LimaStatus(executable, None, f"no stable Lima version in {(out or err).strip()[:200]!r}")
+        if version < LIMA_MIN_VERSION:
+            return LimaStatus(executable, version, f"Lima {dotted(version)} is older than 2.2.1")
+        code, out, _err = await self._run([executable, "info"], environ, COMMAND_TIMEOUT_SECONDS)
+        try:
+            vm_types = json.loads(out).get("vmTypes", []) if code == 0 else []
+        except (ValueError, AttributeError):
+            vm_types = []
+        if "vz" not in vm_types:
+            return LimaStatus(executable, version, "Lima reports no vz VM type on this Mac")
+        longest = socket_path(self.lima_home, INSTANCE_PREFIX + "0" * 10)
+        if len(os.fsencode(longest)) > SUN_PATH_MAX:
+            return LimaStatus(executable, version, f"{longest} is too long for a socket; use a shorter DELIBRA_HOME")
+        return LimaStatus(executable, version, None)
+
+    async def _instance_state(self, status: LimaStatus, instance: str) -> str | None:
+        """Lima's status for the instance; None if absent, "Unknown" if unlisted."""
+
+        items = await self._instances(status)
+        if items is None:
+            return "Unknown"
+        for item in items:
+            if item.get("name") == instance:
+                return str(item.get("status"))
+        return None
+
+    async def _instances(self, status: LimaStatus) -> list[dict] | None:
+        """Delibra's instances; None when `limactl list` itself failed."""
+
+        code, out, _err = await self._limactl(status, ["list", "--json"], COMMAND_TIMEOUT_SECONDS)
+        if code != 0:
+            return None
+        items = []
+        for line in out.splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(item, dict) and str(item.get("name", "")).startswith(INSTANCE_PREFIX):
+                items.append(item)
+        return items
+
+    async def _create(self, status: LimaStatus, instance: str, project_root: Path) -> None:
+        config_dir = ensure_owned_directory(self.settings.home / "lima-config", self.settings.home)
+        config = config_dir / f"{instance}.yaml"
+        atomic_write_text(config, lima_config(project_root, close_host_loopback=status.closes_host_loopback))
+        code, _out, err = await self._limactl(
+            status, ["create", "--tty=false", "--name", instance, str(config)], PREPARE_TIMEOUT_SECONDS
+        )
+        if code != 0:
+            raise DockerUnavailable(f"limactl create failed: {tail(err)}")
+
+    async def _reshare(self, status: LimaStatus, instance: str, project_root: Path) -> None:
+        """Point the share at the project's current path (Rebind moves it)."""
+
+        if await self._instance_state(status, instance) in ("Running", "Unknown"):
+            if not await self._stop(status, instance):
+                raise DockerUnavailable(self._stop_failed(instance))
+        args = ["edit", "--tty=false", "--mount-only", project_root.as_posix()]
+        if status.closes_host_loopback:
+            args += ["--set", ".networkOpts.hostLoopback = false"]
+        code, _out, err = await self._limactl(status, [*args, instance], COMMAND_TIMEOUT_SECONDS)
+        if code != 0:
+            raise DockerUnavailable(f"limactl edit failed: {tail(err)}")
+
+    async def _start(self, status: LimaStatus, instance: str, timeout: float) -> None:
+        code, _out, err = await self._limactl(status, ["start", "--tty=false", instance], timeout)
+        self._running.add(instance)  # a half-started VM must still be stopped
+        if code != 0:
+            raise DockerUnavailable(f"limactl start {instance} failed: {tail(err)}")
+
+    def _stop_failed(self, instance: str) -> str:
+        return (
+            f"the Docker VM {instance} did not stop and may still be running; stop it with "
+            f"`LIMA_HOME={self.lima_home} limactl stop --force {instance}`"
+        )
+
+    async def _stop(self, status: LimaStatus, instance: str) -> bool:
+        """Stop a VM. True only once `limactl list` shows it is not running.
+
+        A VM that may still run stays in `_running`: prepare and delete then
+        refuse it, and shutdown's stop_all(include_held=True) retries it.
+        """
+
+        code, _out, err = await self._limactl(status, ["stop", "--tty=false", instance], STOP_TIMEOUT_SECONDS)
+        if code != 0:
+            code, _out, err = await self._limactl(
+                status, ["stop", "--tty=false", "--force", instance], STOP_TIMEOUT_SECONDS
+            )
+        if await self._instance_state(status, instance) in ("Running", "Unknown"):
+            self._running.add(instance)
+            LOGGER.error("Lima instance %s did not stop: %s", instance, tail(err))
+            return False
+        self._running.discard(instance)
+        return True
+
+    async def _docker_version(self, cli: HostDockerCli, endpoint: Path) -> str:
+        deadline = time.monotonic() + SOCKET_WAIT_SECONDS
+        while not _is_socket(endpoint):
+            if time.monotonic() > deadline:
+                raise DockerUnavailable(f"the Docker socket {endpoint} did not appear")
+            await asyncio.sleep(1)
+        code, out, err = await self._run(
+            [str(cli.executable), "--host", f"unix://{endpoint.as_posix()}", "version", "--format", "{{.Server.Version}}"],
+            self._environ(), COMMAND_TIMEOUT_SECONDS,
+        )
+        if code != 0 or not out.strip():
+            raise DockerUnavailable(f"docker version through {endpoint} failed: {tail(err)}")
+        return out.strip()[:100]
+
+    async def _isolation_probes(self, status: LimaStatus, instance: str, project_root: Path) -> bool:
+        """Design §4. Fails closed; returns whether host loopback is closed."""
+
+        assert status.executable is not None
+        shell = [status.executable, "shell", "--tty=false", "--workdir", "/", instance]
+        environ = self._lima_environ()
+        root = project_root.as_posix()
+        code, out, _err = await self._run(
+            [*shell, "findmnt", "-rn", "-t", "virtiofs,9p,fuse.sshfs", "-o", "TARGET,FSTYPE,OPTIONS"],
+            environ, COMMAND_TIMEOUT_SECONDS,
+        )
+        rows = [line.split(" ") for line in out.splitlines() if line.strip()]
+        if (
+            code != 0 or len(rows) != 1 or len(rows[0]) != 3
+            or _unescape_findmnt(rows[0][0]) != root or rows[0][1] != "virtiofs"
+            or "ro" not in rows[0][2].split(",")
+        ):
+            raise DockerUnavailable(f"the VM must share only the project, read-only; it shares {out.strip()[:500]!r}")
+        marker = f".delibra-ro-probe-{secrets.token_hex(8)}"
+        script = f"mount -o remount,rw {shlex.quote(root)} 2>/dev/null; touch {shlex.quote(root + '/' + marker)}"
+        code, _out, err = await self._run([*shell, "sudo", "sh", "-c", script], environ, COMMAND_TIMEOUT_SECONDS)
+        if (project_root / marker).exists():
+            (project_root / marker).unlink()
+            raise DockerUnavailable("root in the VM could write the project share")
+        if code == 0 or "Read-only file system" not in err:
+            raise DockerUnavailable(f"the read-only probe did not run as expected: {tail(err)}")
+        closed = await self._host_loopback_closed(shell, environ)
+        if status.closes_host_loopback and not closed:
+            raise DockerUnavailable(
+                "Lima was told to close host loopback (hostLoopback: false), but the VM still reached it"
+            )
+        await self._no_guest_port_forwarding(shell, environ)
+        return closed
+
+    async def _host_loopback_closed(self, shell: list[str], environ: dict[str, str]) -> bool:
+        hits: list[int] = []
+
+        async def accept(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            hits.append(1)
+            writer.close()
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            code, _out, err = await self._run(
+                [*shell, "curl", "-s", "-m", "5", "-o", "/dev/null", f"http://host.lima.internal:{port}/"],
+                environ, COMMAND_TIMEOUT_SECONDS,
+            )
+        finally:
+            server.close()
+            await server.wait_closed()
+        # A hit, or a curl exit that means a TCP connection was made (0 ok,
+        # 52 empty reply, 56 receive failure): the port is ours, so reached.
+        if hits or code in (0, 52, 56):
+            return False
+        if code in (7, 28):  # connection refused / timed out
+            return True
+        raise DockerUnavailable(f"the host-loopback probe did not run (curl exit {code}): {tail(err)}")
+
+    async def _no_guest_port_forwarding(self, shell: list[str], environ: dict[str, str]) -> None:
+        port = _free_loopback_port()
+        start = f"nohup python3 -m http.server {port} --bind 0.0.0.0 >/dev/null 2>&1 & echo $!"
+        code, out, err = await self._run([*shell, "sh", "-c", start], environ, COMMAND_TIMEOUT_SECONDS)
+        pid = out.strip()
+        if code != 0 or not pid.isdigit():
+            raise DockerUnavailable(f"the port-forwarding probe could not start a listener: {tail(err)}")
+        try:
+            await asyncio.sleep(self._settle)
+            code, _out, _err = await self._run(
+                [*shell, "curl", "-s", "-m", "3", "-o", "/dev/null", f"http://127.0.0.1:{port}/"],
+                environ, COMMAND_TIMEOUT_SECONDS,
+            )
+            if code != 0:
+                raise DockerUnavailable(f"the port-forwarding probe's listener is not serving (curl exit {code})")
+            if await _connects("127.0.0.1", port):
+                raise DockerUnavailable(f"a guest listener on port {port} was forwarded to this machine")
+        finally:
+            await self._run([*shell, "kill", pid], environ, COMMAND_TIMEOUT_SECONDS)
+
+    async def prepare_lima(self, project_id: str, project_root: Path) -> DockerPolicy:
+        """Create or re-share the VM, provision, probe, stop. Never raises."""
+
+        instance = instance_name(project_id)
+        status = await self.lima_status()
+        if not status.available:
+            return _failed(f"Lima is unavailable: {status.reason}")
+        try:
+            if ":" in project_root.as_posix():
+                raise DockerUnavailable("the project path contains ':', which limactl cannot mount")
+            cli = find_host_docker_cli(self._environ())
+            async with self._instance_lock(instance):
+                if instance in self._running:
+                    raise DockerUnavailable("the VM is in use by a build run, or did not stop")
+                if (self.lima_home / instance).is_dir():
+                    await self._reshare(status, instance, project_root)
+                else:
+                    await self._create(status, instance, project_root)
+                stopped = False
+                try:
+                    await self._start(status, instance, PREPARE_TIMEOUT_SECONDS)
+                    version = await self._docker_version(cli, socket_path(self.lima_home, instance))
+                    closed = await self._isolation_probes(status, instance, project_root)
+                finally:
+                    stopped = await self._stop(status, instance)
+                if not stopped:
+                    raise DockerUnavailable(self._stop_failed(instance))
+        except DockerUnavailable as exc:
+            return _failed(str(exc), instance=instance if (self.lima_home / instance).is_dir() else None)
+        return DockerPolicy(
+            enabled=True, backend="lima", status="ready", lima_instance=instance,
+            lima_version=status.version_text, host_loopback_closed=closed,
+            docker_version=version, updated_at=utc_now(),
+        )
+
+    async def acquire(
+        self, project_id: str, project_root: Path, policy: DockerPolicy
+    ) -> tuple[DockerAccess, AutoBuildDocker]:
+        """Bring the run's backend up and verify it (design §7, Acquire)."""
+
+        cli = find_host_docker_cli(self._environ())
+        if policy.backend == "local" and policy.local_endpoint is not None:
+            endpoint = Path(policy.local_endpoint)
+            require_user_socket(endpoint)
+            await self._docker_version(cli, endpoint)
+            return cli.access(endpoint), AutoBuildDocker(
+                backend="local", instance=None, lima_version=None,
+                host_loopback_closed=None, local_endpoint=endpoint.as_posix(),
+            )
+        if policy.backend != "lima" or policy.lima_instance is None:
+            raise DockerUnavailable("Docker is not prepared for this project")
+        instance = policy.lima_instance
+        status = await self.lima_status()
+        if not status.available:
+            raise DockerUnavailable(f"Lima is unavailable: {status.reason}")
+        async with self._instance_lock(instance):
+            if not (self.lima_home / instance).is_dir():
+                raise DockerUnavailable("the project's Lima VM is missing; press Retry Docker in Settings")
+            await self._reshare(status, instance, project_root)
+            endpoint = socket_path(self.lima_home, instance)
+            try:
+                await self._start(status, instance, START_TIMEOUT_SECONDS)
+                await self._docker_version(cli, endpoint)
+                closed = await self._isolation_probes(status, instance, project_root)
+            except BaseException:
+                await self._stop(status, instance)
+                raise
+        return cli.access(endpoint), AutoBuildDocker(
+            backend="lima", instance=instance, lima_version=status.version_text,
+            host_loopback_closed=closed, local_endpoint=None,
+        )
+
+    async def release(self, docker: AutoBuildDocker) -> bool:
+        """Stop the run's VM; False if it may still be running. Never raises.
+
+        Local Docker is never touched, so it reports True.
+        """
+
+        if docker.backend != "lima" or docker.instance is None:
+            return True
+        try:
+            status = await self.lima_status()
+            if status.executable is None:
+                LOGGER.error("limactl is gone; Lima instance %s may still be running", docker.instance)
+                return False
+            async with self._instance_lock(docker.instance):
+                return await self._stop(status, docker.instance)
+        except Exception:
+            LOGGER.exception("Could not stop Lima instance %s", docker.instance)
+            return False
+
+    async def stop_all(self, *, include_held: bool = False) -> None:
+        """Stop running Delibra VMs: at startup (unheld only) and shutdown (all)."""
+
+        if not self.lima_home.is_dir():
+            return
+        try:
+            status = await self.lima_status()
+            if status.executable is None:
+                return
+            for item in await self._instances(status) or []:
+                name = str(item["name"])
+                if item.get("status") != "Running":
+                    continue
+                async with self._instance_lock(name):
+                    if include_held or name not in self._running:
+                        await self._stop(status, name)
+        except Exception:
+            LOGGER.exception("Could not stop Delibra's Lima instances")
