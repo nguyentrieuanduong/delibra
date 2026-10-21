@@ -422,16 +422,14 @@ async def _prepare_docker(app, project_id: str, token: str) -> None:
         # `limactl create` may already have made a disk: keep it deletable.
         await _save_docker_result(
             app, project_id, token,
-            DockerPolicy(enabled=True, status="error",
-                         error="Docker preparation was cancelled; retry to continue",
-                         lima_instance=controller.existing_instance(project_id), updated_at=utc_now()),
+            DockerPolicy.failed("Docker preparation was cancelled; retry to continue",
+                                instance=controller.existing_instance(project_id), updated_at=utc_now()),
         )
         raise
     except Exception as exc:  # recorded for the user; never leave "preparing"
         LOGGER.exception("Docker preparation failed for project %s", project_id)
-        result = DockerPolicy(enabled=True, status="error",
-                              error=f"Docker preparation failed: {exc}",
-                              lima_instance=controller.existing_instance(project_id), updated_at=utc_now())
+        result = DockerPolicy.failed(f"Docker preparation failed: {exc}",
+                                     instance=controller.existing_instance(project_id), updated_at=utc_now())
     await _save_docker_result(app, project_id, token, result)
 
 
@@ -575,8 +573,8 @@ async def delete_docker_vm(request: Request, project_id: str):
         result = (
             replace(local, updated_at=utc_now())
             if local is not None
-            else DockerPolicy(status="error", error=f"Deleting the Docker VM failed: {exc}",
-                              lima_instance=instance, updated_at=utc_now())
+            else DockerPolicy.failed(f"Deleting the Docker VM failed: {exc}",
+                                     instance=instance, updated_at=utc_now(), enabled=False)
         )
     async with request.app.state.locks.registry_project_sessions(resolved):
         store = ProjectStore(request.app.state.registry.get(resolved))

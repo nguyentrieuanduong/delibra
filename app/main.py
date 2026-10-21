@@ -82,17 +82,14 @@ def _recover_interrupted_docker(store: ProjectStore, controller: DockerControlle
         return
     preparing = docker.status == "preparing"
     store.set_coding_docker(
-        DockerPolicy(
-            enabled=docker.enabled and preparing,
-            status="error",
-            error=(
-                "Docker preparation was interrupted; retry to continue"
-                if preparing
-                else "Docker VM deletion was interrupted; delete again to continue"
-            ),
+        DockerPolicy.failed(
+            "Docker preparation was interrupted; retry to continue"
+            if preparing
+            else "Docker VM deletion was interrupted; delete again to continue",
             # `limactl create` may have run: keep the disk deletable.
-            lima_instance=docker.lima_instance or controller.existing_instance(store.project.id),
+            instance=docker.lima_instance or controller.existing_instance(store.project.id),
             updated_at=utc_now(),
+            enabled=docker.enabled and preparing,
         )
     )
 
