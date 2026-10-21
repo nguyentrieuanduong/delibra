@@ -665,6 +665,40 @@ Known limits:
   includes, in the default list, directories such as `lib/`, `build/`, `dist`,
   `out` and `tmp/` at any depth. Delibra never edits `.gitignore`.
 
+### Docker in build runs
+
+Settings → Coding → **Docker for build runs** lets build agents run
+`docker` and `docker compose`. Delibra prefers a per-project
+[Lima](https://lima-vm.io) VM (stable Lima ≥ 2.2.1, `vmType: vz`) and
+needs the host Docker CLI with the compose plugin (Docker Desktop, or
+`brew install lima docker docker-compose docker-buildx`).
+
+- The VM lives in `$DELIBRA_HOME/lima`, never `~/.lima`; it shares only
+  the project, read-only (macOS enforces this even against root in the VM),
+  and forwards no ports to this machine. Docker inside it is rootless.
+- It runs only while a build run is active and stops when the run ends,
+  stops or pauses. Images and volumes persist until **Delete Docker VM**.
+  If a VM ever fails to stop, the run's status box says so and gives the
+  `limactl stop --force` command; Delibra retries at shutdown and startup.
+- Agents reach only that VM's socket: Claude's sandbox allows that one unix
+  socket, and Codex reaches it through its network proxy (with no hosts
+  listed, the proxy refuses every host). The Docker CLI gets a private
+  config, so it never calls the macOS Keychain. A provider joins a Docker
+  build run only at a version that passed spikes S3/S4
+  (`spike/spike_docker.py`), or a newer release of the same major.
+- When Lima is missing or fails, Settings offers **Use local Docker (not
+  isolated)** behind an acknowledgement. Delibra never switches a
+  Lima project to local Docker by itself.
+
+Residual risks (the UI repeats them):
+
+| Risk | Lima 2.2.x | Lima ≥ 2.3 | Local Docker |
+|---|---|---|---|
+| Containers reach this machine's 127.0.0.1, including Delibra (no authentication) | yes | no (probe-verified; Delibra must bind loopback only) | yes |
+| Containers reach the LAN and services bound to `*` | yes | yes | yes |
+| Container internet egress (the command allowlist does not apply) | unrestricted | unrestricted | unrestricted |
+| Container access to host files | project, read-only | project, read-only | anything Docker can mount (`/Users` by default) |
+
 ## Isolation and security boundary
 
 Delibra provides write isolation, not read confidentiality:
@@ -674,7 +708,9 @@ Delibra provides write isolation, not read confidentiality:
   project directories described above.
   Build turns (see "Coding mode and build runs") are the exception: they run from
   the project root, write the project except `.delibra/` and `.git/`, and get a
-  sandboxed shell with allowlisted command network.
+  sandboxed shell with allowlisted command network. With Docker on, their
+  containers run in a VM with the risks listed under "Docker in build runs":
+  on Lima 2.2.x and on local Docker, a container can reach Delibra's port.
 - Claude receives only Read/Write/Edit/Glob/Grep and native web tools under the
   verified safe command. Codex runs in `workspace-write`, with shell network disabled
   and native web search enabled.
