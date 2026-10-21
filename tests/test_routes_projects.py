@@ -1734,3 +1734,172 @@ def test_startup_marks_interrupted_docker_preparation_and_stops_stale_vms(tmp_pa
     docker = ProjectStore(project).coding_policy().docker
     assert (docker.status, docker.error) == ("error", "Docker preparation was interrupted; retry to continue")
     assert controller.stopped >= 1
+
+
+def docker_project(tmp_path, monkeypatch, controller: FakeDockerController):
+    return coding_project(tmp_path, monkeypatch, docker_controller=controller)
+
+
+def wait_docker(project, status: str, timeout: float = 5.0) -> DockerPolicy:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = ProjectStore(project).coding_policy().docker
+        if state.status == status:
+            return state
+        time.sleep(0.05)
+    raise AssertionError(f"docker never reached {status}")
+
+
+def enable_coding(client, prefix, project) -> None:
+    client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": "pypi.org"})
+    wait_env(project, "ready")
+
+
+def test_enabling_docker_prepares_the_lima_vm(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    app, project, project_dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        saved = client.post(f"{prefix}/coding/docker", data={"enabled": "true"}, follow_redirects=False)
+        state = wait_docker(project, "ready")
+        page = client.get(f"{prefix}/settings")
+
+    assert saved.status_code == 303
+    assert controller.prepared == [project_dir.resolve()]
+    assert (state.backend, state.lima_instance) == ("lima", "delibra-0123456789")
+
+
+def test_docker_needs_coding_enabled(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, FakeDockerController())
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+    assert response.status_code == 422
+    assert ProjectStore(project).coding_policy().docker.enabled is False
+
+
+@pytest.mark.parametrize("route", ["", "/retry", "/local", "/lima", "/delete"])
+def test_lan_client_cannot_change_docker(tmp_path, monkeypatch, route) -> None:
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, FakeDockerController())
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        response = client.post(f"{prefix}/coding/docker{route}", data={"enabled": "true", "acknowledge": "true"})
+    assert response.status_code == 403
+
+
+def test_local_docker_needs_lima_unavailable_and_an_acknowledgement(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "ready")
+        while_lima_works = client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
+        controller.lima_available = False
+        unacknowledged = client.post(f"{prefix}/coding/docker/local", data={})
+        adopted = client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"}, follow_redirects=False)
+
+    assert while_lima_works.status_code == 409
+    assert unacknowledged.status_code == 422
+    assert adopted.status_code == 303
+    docker = ProjectStore(project).coding_policy().docker
+    assert (docker.backend, docker.status, docker.lima_instance) == ("local", "ready", "delibra-0123456789")
+
+
+def test_saving_coding_settings_keeps_docker_state(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, FakeDockerController())
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        before = wait_docker(project, "ready")
+        client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": "github.com"})
+
+    assert ProjectStore(project).coding_policy().docker == before
+
+
+def test_deleting_the_vm_turns_docker_off(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "ready")
+        deleted = client.post(f"{prefix}/coding/docker/delete", follow_redirects=False)
+
+    assert deleted.status_code == 303
+    assert controller.deleted == ["delibra-0123456789"]
+    docker = ProjectStore(project).coding_policy().docker
+    assert (docker.enabled, docker.status, docker.lima_instance) == (False, "absent", None)
+
+
+def test_vm_deletion_runs_outside_the_project_lock(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    seen: dict[str, object] = {}
+
+    async def during_delete() -> None:
+        seen["status"] = ProjectStore(project).coding_policy().docker.status
+        # Deadlocks (and times out) if the route still held the project lock.
+        async with asyncio.timeout(2):
+            async with app.state.locks.registry_project_sessions(project.id):
+                seen["lock"] = True
+
+    controller.on_delete = during_delete
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "ready")
+        deleted = client.post(f"{prefix}/coding/docker/delete", follow_redirects=False)
+
+    assert deleted.status_code == 303
+    assert seen == {"status": "deleting", "lock": True}
+
+
+def test_local_adoption_loses_to_a_change_made_while_it_was_checked(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    controller.lima_available = False
+    controller.prepare_result = DockerPolicy(
+        enabled=True, status="error", error="boom", lima_instance="delibra-0123456789", updated_at="t"
+    )
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    lima_ready = DockerPolicy(
+        enabled=True, backend="lima", status="ready", lima_instance="delibra-0123456789",
+        lima_version="2.2.1", host_loopback_closed=False, updated_at="later",
+    )
+    # Stands in for a Retry that finished while adoption awaited docker version.
+    controller.on_adopt = lambda: ProjectStore(project).set_coding_docker(lima_ready)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "error")
+        response = client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
+
+    assert response.status_code == 409
+    assert ProjectStore(project).coding_policy().docker == lima_ready
+
+
+def test_cancelled_preparation_keeps_the_vm_deletable(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    controller.prepare_gate = asyncio.Event()  # never set: preparation hangs
+    controller.instance = "delibra-0123456789"  # limactl create already ran
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "preparing")
+    # Leaving the client shuts the app down, which cancels the preparation.
+
+    docker = ProjectStore(project).coding_policy().docker
+    assert (docker.status, docker.lima_instance) == ("error", "delibra-0123456789")
+    assert "cancelled" in (docker.error or "")
+
+
+def test_docker_routes_require_inactive_auto(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, FakeDockerController())
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+
+        def active(_self) -> None:
+            raise ConflictError("an Auto run is active")
+
+        monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+        response = client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+    assert response.status_code == 409
