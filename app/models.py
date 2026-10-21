@@ -387,6 +387,53 @@ class AutoBuildGit:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class AutoBuildDocker:
+    """The Docker backend a build run uses, and whether it is isolated (design §8)."""
+
+    backend: str
+    instance: str | None
+    lima_version: str | None
+    host_loopback_closed: bool | None
+    local_endpoint: str | None
+    # The VM may still be running after the run ended (design §7 failure path).
+    stop_failed: bool = False
+
+    @property
+    def isolated(self) -> bool:
+        return self.backend == "lima" and self.host_loopback_closed is True
+
+    @property
+    def isolation_gap(self) -> str | None:
+        if self.isolated:
+            return None
+        if self.backend == "local":
+            return "local Docker: containers can reach this machine's files and 127.0.0.1"
+        if self.host_loopback_closed is None:
+            return "isolation has not been probed yet"
+        return "containers can reach this machine's 127.0.0.1, including Delibra"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AutoBuildDocker":
+        backend = _strict_str(data, "backend")
+        if backend not in {"lima", "local"}:
+            raise ValueError("Auto Docker backend is invalid")
+        closed = data.get("host_loopback_closed")
+        if closed is not None and type(closed) is not bool:
+            raise TypeError("host_loopback_closed must be a boolean")
+        return cls(
+            backend=backend,
+            instance=_optional_strict_str(data, "instance"),
+            lima_version=_optional_strict_str(data, "lima_version"),
+            host_loopback_closed=closed,
+            local_endpoint=_optional_strict_str(data, "local_endpoint"),
+            stop_failed=_strict_bool(data, "stop_failed") if "stop_failed" in data else False,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 AUTO_KINDS = frozenset({"discussion", "build"})
 
 
