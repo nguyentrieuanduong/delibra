@@ -320,6 +320,8 @@ class DockerController:
         self._settle = forward_settle_seconds
         # Instances a build run holds; startup recovery must not stop them.
         self._running: set[str] = set()
+        # The run that last verified each instance; only it may stop it (design §7).
+        self._owners: dict[str, str] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     @property
@@ -608,7 +610,7 @@ class DockerController:
         )
 
     async def acquire(
-        self, project_id: str, project_root: Path, policy: DockerPolicy
+        self, project_id: str, project_root: Path, policy: DockerPolicy, *, owner: str
     ) -> tuple[DockerAccess, AutoBuildDocker]:
         """Bring the run's backend up and verify it (design §7, Acquire)."""
 
@@ -639,15 +641,17 @@ class DockerController:
             except BaseException:
                 await self._stop(status, instance)
                 raise
+            self._owners[instance] = owner
         return cli.access(endpoint), AutoBuildDocker(
             backend="lima", instance=instance, lima_version=status.version_text,
             host_loopback_closed=closed, local_endpoint=None,
         )
 
-    async def release(self, docker: AutoBuildDocker) -> bool:
+    async def release(self, docker: AutoBuildDocker, *, owner: str) -> bool:
         """Stop the run's VM; False if it may still be running. Never raises.
 
-        Local Docker is never touched, so it reports True.
+        Local Docker is never touched, and a VM a newer run has acquired
+        since is not this run's to stop: both report True.
         """
 
         if docker.backend != "lima" or docker.instance is None:
@@ -658,7 +662,12 @@ class DockerController:
                 LOGGER.error("limactl is gone; Lima instance %s may still be running", docker.instance)
                 return False
             async with self._instance_lock(docker.instance):
-                return await self._stop(status, docker.instance)
+                if self._owners.get(docker.instance) != owner:
+                    return True
+                stopped = await self._stop(status, docker.instance)
+                if stopped:
+                    self._owners.pop(docker.instance, None)
+                return stopped
         except Exception:
             LOGGER.exception("Could not stop Lima instance %s", docker.instance)
             return False

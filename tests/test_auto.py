@@ -5824,12 +5824,14 @@ class FakeDocker:
         self.acquire_error = acquire_error
         self.stop_ok = True
         self.events: list[str] = []
+        self.owners: list[str] = []
 
     async def backend_refusal(self, policy):
         return self.refusal
 
-    async def acquire(self, project_id, project_root, policy):
+    async def acquire(self, project_id, project_root, policy, *, owner):
         self.events.append("acquire")
+        self.owners.append(owner)
         if self.acquire_error is not None:
             raise DockerUnavailable(self.acquire_error)
         return DockerAccess(socket=project_root / "fake-docker.sock"), AutoBuildDocker(
@@ -5837,8 +5839,9 @@ class FakeDocker:
             host_loopback_closed=False, local_endpoint=None,
         )
 
-    async def release(self, docker):
+    async def release(self, docker, *, owner):
         self.events.append("release")
+        self.owners.append(owner)
         return self.stop_ok
 
     async def stop_all(self, *, include_held: bool = False):
@@ -5927,6 +5930,24 @@ async def test_docker_vm_starts_once_per_run_and_stops_at_the_end(tmp_path, monk
     assert all(call["docker"] is not None for call in factory.calls)
     assert "Docker is available" in str(factory.calls[0]["prompt"])
     assert terminal.docker is not None and terminal.docker.host_loopback_closed is False
+
+
+@pytest.mark.asyncio
+async def test_a_docker_run_acquires_and_releases_the_vm_as_its_own_owner(tmp_path, monkeypatch) -> None:
+    docker = FakeDocker()
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")], docker=docker
+    )
+    enable_docker(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    for _ in range(300):
+        if docker.events[-1:] == ["release"]:
+            break
+        await asyncio.sleep(0.01)
+
+    assert docker.owners == [created.id, created.id]
 
 
 @pytest.mark.asyncio
