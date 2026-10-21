@@ -152,6 +152,19 @@ def judge_container_loopback(*, hits: int, stderr: str, control_ok: bool, gating
     return f"INCONCLUSIVE (probe did not run as expected: {stderr.strip()[:200]!r})"
 
 
+def judge_container_survival(*, started: bool, released: bool, left_rc: int | None, left: str) -> str:
+    """No container survives a run: needs a started control, a release that
+    really stopped the VM, and a container listing after the next acquire."""
+
+    if not started:
+        return "INCONCLUSIVE (control container did not start)"
+    if not released:
+        return "FAIL (release did not stop the VM)"
+    if left_rc != 0:
+        return f"INCONCLUSIVE (docker ps failed, rc {left_rc})"
+    return "PASS" if not left.strip() else f"FAIL (left {left.strip()[:100]!r})"
+
+
 def render(target: str, versions: dict[str, str], rows: dict[str, str], notes: list[str]) -> str:
     gating = {k: v for k, v in rows.items() if not v.startswith("RECORDED")}
     verdict = (
@@ -251,6 +264,19 @@ async def lima_spike(tree: Path, rows: dict[str, str], versions: dict[str, str],
         finally:
             if published.stdout.strip():
                 docker(endpoint, "rm", "-f", published.stdout.strip())
+        persistent = docker(endpoint, "run", "-d", "--restart=always", IMAGE, "sleep", "600")
+        released, left = False, None
+        if persistent.returncode == 0:
+            released = await controller.release(state, owner="spike")  # True only once limactl shows it stopped
+            if released:
+                access, state = await controller.acquire("spike-project", project, policy, owner="spike")
+                left = docker(access.socket, "ps", "--all", "--quiet")
+        rows["no_container_survives_a_run"] = judge_container_survival(
+            started=persistent.returncode == 0,
+            released=released,
+            left_rc=left.returncode if left is not None else None,
+            left=left.stdout if left is not None else "",
+        )
     finally:
         await controller.release(state, owner="spike")
 
