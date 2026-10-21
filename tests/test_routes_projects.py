@@ -1767,6 +1767,7 @@ def test_enabling_docker_prepares_the_lima_vm(tmp_path, monkeypatch) -> None:
     assert saved.status_code == 303
     assert controller.prepared == [project_dir.resolve()]
     assert (state.backend, state.lima_instance) == ("lima", "delibra-0123456789")
+    assert "Docker: ready · Lima VM 2.2.1 · Not isolated" in page.text
 
 
 def test_docker_needs_coding_enabled(tmp_path, monkeypatch) -> None:
@@ -1903,3 +1904,21 @@ def test_docker_routes_require_inactive_auto(tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
         response = client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
     assert response.status_code == 409
+
+
+def test_settings_offer_local_docker_only_with_its_risks_when_lima_failed(tmp_path, monkeypatch) -> None:
+    controller = FakeDockerController()
+    controller.lima_available = False
+    controller.prepare_result = DockerPolicy(enabled=True, status="error",
+                                             error="Lima is unavailable: limactl is not on PATH", updated_at="t")
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        enable_coding(client, prefix, project)
+        client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
+        wait_docker(project, "error")
+        page = client.get(f"{prefix}/settings").text
+
+    assert "Lima is unavailable: limactl is not on PATH" in page
+    assert "coding/docker/local" in page
+    assert "~/.ssh" in page and "127.0.0.1" in page
+    assert 'name="acknowledge"' in page

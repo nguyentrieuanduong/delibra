@@ -99,6 +99,40 @@
         <button type="submit"{% if not coding_local %} disabled{% endif %}>Retry environment</button>
       </form>
     {% endif %}
+    <h3 id="docker-heading">Docker for build runs</h3>
+    <form method="post" action="{{ project_url(project.name, '/coding/docker') }}">
+      <label class="auto-choice">
+        <input type="checkbox" name="enabled" value="true"{% if coding.docker.enabled %} checked{% endif %}>
+        Let build agents use Docker (a Lima VM per project)
+      </label>
+      <button type="submit" data-disable-during-auto{% if auto_active or not coding_local or not coding.enabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save Docker setting</button>
+    </form>
+    {% set docker = coding.docker %}
+    <p class="coding-docker-status">Docker: {{ docker.status }}{% if docker.backend == 'lima' %} · Lima VM{% if docker.lima_version %} {{ docker.lima_version }}{% endif %} · {% if docker.host_loopback_closed %}Isolated{% else %}Not isolated: containers can reach this machine's 127.0.0.1, including Delibra{% endif %}{% elif docker.backend == 'local' %} · local Docker ({{ docker.local_endpoint }}) · Not isolated{% endif %}</p>
+    <p class="hint">Containers see the project read-only and have unrestricted internet access; the command allowlist does not apply to them. Preparation downloads an Ubuntu image and Docker over this machine's network.</p>
+    {% if docker.status == 'error' %}
+      <pre class="coding-docker-error">{{ docker.error }}</pre>
+      <form method="post" action="{{ project_url(project.name, '/coding/docker/retry') }}">
+        <button type="submit"{% if not coding_local %} disabled{% endif %}>Retry Docker</button>
+      </form>
+    {% endif %}
+    {% if docker.enabled and docker.backend != 'local' and (docker.status == 'error' or (docker_lima and not docker_lima.available)) %}
+      <form method="post" action="{{ project_url(project.name, '/coding/docker/local') }}" class="coding-docker-local">
+        <p class="warning">Local Docker is not isolated. Any container the agents start can bind-mount your files (for example ~/.ssh, or write ~/.zshrc), reach this machine's 127.0.0.1 including Delibra, and reach your network. Use it only if you accept that.</p>
+        <label class="auto-choice"><input type="checkbox" name="acknowledge" value="true"> I understand; use local Docker for this project</label>
+        <button type="submit"{% if not coding_local %} disabled{% endif %}>Use local Docker (not isolated)</button>
+      </form>
+    {% endif %}
+    {% if docker.backend == 'local' and docker_lima and docker_lima.available %}
+      <form method="post" action="{{ project_url(project.name, '/coding/docker/lima') }}">
+        <button type="submit"{% if not coding_local %} disabled{% endif %}>Switch to a Lima VM (isolated)</button>
+      </form>
+    {% endif %}
+    {% if docker.lima_instance %}
+      <form method="post" action="{{ project_url(project.name, '/coding/docker/delete') }}" onsubmit="return confirm('Delete this project\'s Docker VM? Its images, volumes and caches are lost.')">
+        <button type="submit"{% if not coding_local or auto_active %} disabled{% endif %}>Delete Docker VM</button>
+      </form>
+    {% endif %}
   </section>
   <section aria-labelledby="turn-timeout-heading">
     <h2 id="turn-timeout-heading">Default message turn time limit</h2>

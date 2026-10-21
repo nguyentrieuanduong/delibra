@@ -40,6 +40,12 @@
       {% if auto.git.enabled %}Commits on {{ auto.git.branch }}{% else %}Commits off: {{ auto.git.reason }}{% endif %}
     </p>
   {% endif %}
+  {% if auto.kind == 'build' and auto.docker %}
+    <p class="auto-build-docker">Docker: {% if auto.docker.backend == 'lima' %}Lima VM{% if auto.docker.lima_version %} {{ auto.docker.lima_version }}{% endif %}{% else %}local Docker{% endif %} · {% if auto.docker.isolated %}Isolated{% else %}Not isolated: {{ auto.docker.isolation_gap }}{% endif %}</p>
+    {% if auto.docker.stop_failed %}
+      <p class="warning auto-build-docker-stop">The Docker VM did not stop when this run ended; its containers may still be running. Delibra retries at shutdown and startup. To stop it now: <code>LIMA_HOME=$DELIBRA_HOME/lima limactl stop --force {{ auto.docker.instance }}</code></p>
+    {% endif %}
+  {% endif %}
   {% if auto.kind == 'build' %}{% for note in auto.cli_notes %}
     <p class="hint auto-build-cli">Unverified newer CLI: {{ note }}</p>
   {% endfor %}{% endif %}

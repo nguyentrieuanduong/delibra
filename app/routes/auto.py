@@ -494,6 +494,7 @@ def projected_auto_setup_context(
             and coding.enabled
             and coding.env.status == "ready"
         ),
+        "build_docker": coding.docker if coding.docker.enabled else None,
     }
 
 
