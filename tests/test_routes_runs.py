@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import re
 import sys
 from urllib.parse import quote
 
@@ -154,7 +155,10 @@ def test_post_run_stream_reconnect_late_done_and_final_fragment(tmp_path: Path) 
         assert 'sse-swap="reset"' in started.text
 
         base_page = client.get(base)
-        assert '<script src="/static/app.js" defer></script>' in base_page.text
+        assert re.search(
+            r'<script src="/static/app\.js\?v=[0-9a-f]{12}" defer></script>',
+            base_page.text,
+        )
 
         busy = client.post(f"{base}/run", data={"prompt": "Another"})
         assert busy.status_code == 409

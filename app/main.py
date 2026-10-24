@@ -44,7 +44,7 @@ from app.storage import (
     StorageError,
     utc_now,
 )
-from app.urls import project_url
+from app.urls import project_url, static_url
 from app.usage import UsageMonitor
 from app.views import project_card
 
@@ -119,6 +119,7 @@ def create_app(
     templates = Jinja2Templates(directory=APP_ROOT / "templates")
     templates.env.filters["md"] = render_markdown
     templates.env.globals["project_url"] = project_url
+    templates.env.globals["static_url"] = static_url
     templates.env.globals["build_capable"] = build_capable
     templates.env.globals["cli_newer_than_verified"] = cli_newer_than_verified
     # The exact command a user can paste when a VM did not stop.
