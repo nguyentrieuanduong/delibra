@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
@@ -681,6 +682,75 @@ def test_chat_uses_compact_composer_and_wider_agent_rail(
         ".workspace-agents :is(input, select, textarea, button) { font: inherit; }"
         in css.text
     )
+
+
+class _ConversationChildren(HTMLParser):
+    """Collect the direct children of the conversation workspace section."""
+
+    _VOID = {"input", "br", "hr", "img", "meta", "link", "source", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.depth: int | None = None
+        self.children: list[tuple[str, dict[str, str | None]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if self.depth is None:
+            if "workspace-conversation" in (attributes.get("class") or "").split():
+                self.depth = 0
+            return
+        if self.depth == 0:
+            self.children.append((tag, attributes))
+        if tag not in self._VOID:
+            self.depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.depth is None or tag in self._VOID:
+            return
+        if self.depth == 0:
+            self.depth = None
+            return
+        self.depth -= 1
+
+
+def test_conversation_rows_give_the_timeline_the_flexible_track(
+    tmp_path: Path,
+) -> None:
+    alpha = session("a" * 32, "Alpha", agent="claude")
+    app, project, _ = setup_project(tmp_path, [alpha])
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+        css = client.get("/static/app.css")
+
+    parser = _ConversationChildren()
+    parser.feed(response.text)
+    children = [
+        (tag, attrs) for tag, attrs in parser.children if attrs.get("type") != "hidden"
+    ]
+    rule = re.search(r"\.workspace-conversation \{(?P<body>[^}]*)\}", css.text)
+    assert rule is not None
+    rows = re.search(r"grid-template-rows: (?P<tracks>[^;]+);", rule["body"])
+    assert rows is not None
+    tracks = re.findall(r"minmax\([^)]*\)|\S+", rows["tracks"])
+    assert children[-1][1].get("id") == "chat-timeline"
+    assert len(tracks) == len(children)
+    assert tracks[-1] == "minmax(0, 1fr)"
+    assert (
+        ".questions-list { list-style: none; margin: 0; padding: 0; "
+        "max-height: 40vh; overflow: auto; }" in css.text
+    )
+    # A row gap would also surround the empty Auto setup and error rows, so
+    # only the panel, and the error line while it has text, add space.
+    panel = re.search(r"\.questions-panel \{(?P<body>[^}]*)\}", css.text)
+    errors = re.search(r"\.chat-errors \{(?P<body>[^}]*)\}", css.text)
+    assert panel is not None and errors is not None
+    assert "gap: 0;" in rule["body"]
+    assert "margin: .75rem 0 1.25rem;" in panel["body"]
+    assert "min-height" not in errors["body"]
+    assert ".chat-errors:not(:empty) { margin-bottom: .75rem; }" in css.text
+    # :empty fails on whitespace, so the error line must render truly empty.
+    assert '<div id="chat-errors" class="chat-errors" aria-live="polite"></div>' in response.text
 
 
 def test_chat_topic_header_omits_provider_app_versions(

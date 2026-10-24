@@ -1,10 +1,10 @@
 {% set question_url = project_url(project.name, '/questions/' ~ question.id) %}
-<li id="question-{{ question.id }}" class="question question-{{ question.status }}">
-  <p class="question-meta">
+{% set question_meta %}
     <strong>{{ question.id }}</strong> · {{ question.asked_by_name }}{% if question.auto_run %} · Auto {{ question.auto_run }}{% endif %}{% if question.cycle %} · cycle {{ question.cycle }}{% endif %}
     · <span class="question-status">{{ question.status }}</span>{% if question.duplicate_of %} · duplicate of {{ question.duplicate_of }}{% endif %}
     {% if question.blocking %}<span class="question-badge">blocking</span>{% endif %}
-  </p>
+{% endset %}
+{% set question_body %}
   <p class="question-text">{{ question.question }}</p>
   {% if question.assumption %}<p class="question-assumption">Assuming: {{ question.assumption }}</p>{% endif %}
   {% if question.status in ("open", "answered") %}
@@ -37,6 +37,18 @@
           <li><time datetime="{{ revision.at }}">{{ revision.at }}</time> · revision {{ revision.revision }}: {% if revision.text is none %}<em>cleared</em>{% else %}{{ revision.text }}{% endif %}</li>
         {% endfor %}
       </ol>
+    </details>
+  {% endif %}
+{% endset %}
+<li id="question-{{ question.id }}" class="question question-{{ question.status }}">
+  {% if question.status == "open" %}
+    <p class="question-meta">{{ question_meta }}</p>
+    {{ question_body }}
+  {% else %}
+    {# Settled questions take one line until the user expands them. #}
+    <details class="question-collapsed">
+      <summary>{{ question_meta }}<span class="question-preview"> · {{ question.question }}</span></summary>
+      {{ question_body }}
     </details>
   {% endif %}
 </li>

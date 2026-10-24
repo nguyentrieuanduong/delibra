@@ -53,13 +53,13 @@
         {% endif %}
       </div>
       <div id="chat-errors" class="chat-errors" aria-live="polite">
-        {% if auto_migration_warning %}
+        {%- if auto_migration_warning %}
           <p>
             <strong>Auto migration is blocked.</strong>
             {{ auto_migration_warning }}
             <a href="{{ project_url(project.name, '/settings') }}">Retry in project settings.</a>
           </p>
-        {% endif %}
+        {% endif -%}
       </div>
       {% include "_timeline.html" %}
     </section>
