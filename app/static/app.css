@@ -90,9 +90,9 @@ textarea { min-height: 7rem; }
 .shared-context-actions form { margin: 0; }
 .workspace-conversation {
   display: grid;
-  gap: .75rem;
+  gap: 0;
   grid-area: conversation;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }
@@ -269,13 +269,17 @@ textarea { min-height: 7rem; }
 .agent-card.selected { border-color: #3b82c4; }
 .agent-preview { font-size: .9rem; overflow-wrap: anywhere; }
 .agent-preview.empty { opacity: .7; }
-.chat-errors { color: #c43b2f; min-height: 1.5rem; }
+.chat-errors { color: #c43b2f; }
+.chat-errors:not(:empty) { margin-bottom: .75rem; }
 @media (max-width: 720px) { .chat-layout { grid-template-columns: 1fr; } }
 
-.questions-panel { border: 1px solid #8885; border-radius: .5rem; margin: 1rem 0; padding: .5rem 1rem; }
-.questions-list { list-style: none; margin: 0; padding: 0; }
+.questions-panel { border: 1px solid #8885; border-radius: .5rem; margin: .75rem 0 1.25rem; min-width: 0; padding: .5rem 1rem; }
+.questions-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; overflow: auto; }
 .question { border-top: 1px solid #8885; padding: .75rem 0; }
 .question-dismissed, .question-duplicate { opacity: .6; }
 .question-badge { border: 1px solid #b47b20; border-radius: .25rem; color: #b47b20; font-size: .85em; margin-left: .25rem; padding: 0 .25rem; }
 .question-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
 .question-assumption { font-style: italic; }
+.question-collapsed > summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.question-collapsed[open] > summary { white-space: normal; }
+.question-collapsed[open] .question-preview { display: none; }

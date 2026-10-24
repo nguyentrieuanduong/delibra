@@ -1,6 +1,7 @@
 """Routes for the Chat page's Questions for you panel."""
 
 from pathlib import Path
+import re
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -183,3 +184,56 @@ def test_the_chat_page_includes_the_panel(tmp_path: Path) -> None:
 
     assert 'id="questions-panel"' in page.text
     assert "Visible on chat?" in page.text
+
+
+def test_only_open_questions_render_expanded(tmp_path: Path) -> None:
+    app, project, questions = questions_app(tmp_path)
+    ask(questions, "Still open?")
+    ask(questions, "Already answered?")
+    ask(questions, "Not relevant?")
+    url = f"{base(project)}/questions"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        answered = client.post(f"{url}/Q2/answer", data={"answer": "Yes"})
+        client.post(f"{url}/Q3/dismiss")
+        panel = client.get(url)
+
+    items = {
+        match["id"]: match["body"]
+        for match in re.finditer(
+            r'<li id="question-(?P<id>Q\d+)"[^>]*>(?P<body>.*?)</li>\s*(?=<li id="question-|</ol>)',
+            panel.text,
+            flags=re.DOTALL,
+        )
+    }
+    assert set(items) == {"Q1", "Q2", "Q3"}
+    assert "<details" not in items["Q1"].split('class="question-history"')[0]
+    assert 'name="answer"' in items["Q1"]
+    for question_id, status, text in (
+        ("Q2", "answered", "Already answered?"),
+        ("Q3", "dismissed", "Not relevant?"),
+    ):
+        collapsed = re.search(
+            r'<details class="question-collapsed">\s*<summary>(?P<summary>.*?)</summary>',
+            items[question_id],
+            flags=re.DOTALL,
+        )
+        assert collapsed is not None
+        assert question_id in collapsed["summary"]
+        assert status in collapsed["summary"]
+        assert text in collapsed["summary"]
+        assert re.search(r'<span class="question-preview"> · ', collapsed["summary"])
+    # Saving an answer swaps in the collapsed item, with the form still inside.
+    assert '<details class="question-collapsed">' in answered.text
+    assert answered.text.index('<details class="question-collapsed">') < answered.text.index(
+        'name="answer"'
+    )
+
+
+def test_a_long_collapsed_question_cannot_widen_the_conversation_column() -> None:
+    css = Path("app/static/app.css").read_text(encoding="utf-8")
+
+    panel = re.search(r"\.questions-panel \{(?P<body>[^}]*)\}", css)
+    assert panel is not None
+    # A nowrap summary's min-content would otherwise size the grid track.
+    assert "min-width: 0;" in panel["body"]
