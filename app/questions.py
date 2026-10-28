@@ -32,7 +32,6 @@ from app.storage import (
 
 
 QUESTIONS_DIR = "questions"
-OUTBOX_NAME = "outbox.json"
 QUESTION_MAX_CHARS = 2_000
 ASSUMPTION_MAX_CHARS = 2_000
 ANSWER_MAX_CHARS = 20_000
@@ -569,7 +568,7 @@ def _remove_entry(descriptor: int, name: str) -> None:
 
 
 def prepare_outbox(root: Path, extra_names: Sequence[str] = ()) -> Path:
-    """Prepare a previous agent's questions directory for this turn.
+    """Give this turn an empty question spool, dropping a previous turn's files.
 
     ``extra_names`` are other per-turn files the directory holds beside the
     outbox; a previous turn's copy of each is removed too.
@@ -590,19 +589,17 @@ def prepare_outbox(root: Path, extra_names: Sequence[str] = ()) -> Path:
             QUESTIONS_DIR, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=root_descriptor
         )
         try:
-            for name in (OUTBOX_NAME, SPOOL_NAME, *extra_names):
+            for name in (SPOOL_NAME, LEGACY_OUTBOX_NAME, *extra_names):
                 _remove_entry(descriptor, name)
             os.mkdir(SPOOL_NAME, mode=0o700, dir_fd=descriptor)
         finally:
             os.close(descriptor)
     finally:
         os.close(root_descriptor)
-    return root / QUESTIONS_DIR / OUTBOX_NAME
+    return root / QUESTIONS_DIR / SPOOL_NAME
 
 
-def _read_outbox(
-    descriptor: int, name: str = OUTBOX_NAME, limit: int = SPOOL_FILE_MAX_BYTES
-) -> bytes | None:
+def _read_outbox(descriptor: int, name: str, limit: int) -> bytes | None:
     try:
         file_descriptor = os.open(name, _OPEN_FLAGS, dir_fd=descriptor)
     except FileNotFoundError:
@@ -626,7 +623,7 @@ def _read_outbox(
 
 
 def take_outbox(
-    root: Path, *, name: str = OUTBOX_NAME, limit: int = SPOOL_FILE_MAX_BYTES
+    root: Path, *, name: str, limit: int = SPOOL_FILE_MAX_BYTES
 ) -> bytes | None:
     """Read and remove the agent's outbox; None when it wrote none.
 
@@ -647,7 +644,7 @@ def take_outbox(
             os.close(descriptor)
 
 
-def discard_outbox(root: Path, *, name: str = OUTBOX_NAME) -> None:
+def discard_outbox(root: Path, *, name: str) -> None:
     """Drop a failed or cancelled turn's outbox; it never reaches the store."""
 
     try:
@@ -710,16 +707,16 @@ def remove_spool_entry(spool_dir: Path, name: str) -> None:
 
 
 def questions_prompt(
-    view_path: Path, outbox_path: Path | None, *, pause_enabled: bool
+    view_path: Path, spool_dir: Path | None, *, pause_enabled: bool
 ) -> str:
-    """Read answers on every turn; ask only when an outbox is available."""
+    """Read answers on every turn; ask only when a spool is available."""
 
     read_view = (
         f" The user's questions and answers are in {view_path.as_posix()}; read it "
         "before deciding, and again before finishing if you asked or are waiting "
         "on anything. Treat its answers as user decisions."
     )
-    if outbox_path is None:
+    if spool_dir is None:
         return read_view
     pause = (
         "unless your turn ends the run by agreement or the cycle limit, the run "
@@ -729,15 +726,19 @@ def questions_prompt(
     )
     return (
         read_view
-        + " If you need something "
-        "only the user can decide (a preference, access, or a decision outside "
-        f"the material), write it to {outbox_path.as_posix()} as JSON: "
-        '{"questions": [{"question": "...", "assumption": "...", "blocking": false}]} '
-        f"with at most {TURN_MAX_QUESTIONS} questions. State in assumption what "
-        "you will proceed on, then continue. Set blocking to true only if no "
-        f"reasonable assumption exists; {pause}. Do not ask what the material or "
-        "another participant can answer. An open question for the user is not by "
-        "itself a reason to write Not converged."
+        + " If you need something only the user can decide (a preference, "
+        "access, or a decision outside the material), write it as a new JSON "
+        f"file in {spool_dir.as_posix()}/ named like q1.json, q2.json (letters, "
+        "digits, - and _ only): "
+        '{"questions": [{"question": "...", "assumption": "...", "blocking": false}]}. '
+        "Prefer one question per file; put several in one file only when they "
+        "belong together. Never edit, rename or reuse a file: Delibra reads and "
+        "removes each one as soon as it is complete, and the user sees it within "
+        f"seconds. Ask at most {TURN_MAX_QUESTIONS} questions per turn. State in "
+        "assumption what you will proceed on, then continue. Set blocking to true "
+        f"only if no reasonable assumption exists; {pause}. Do not ask what the "
+        "material or another participant can answer. An open question for the "
+        "user is not by itself a reason to write Not converged."
     )
 
 
