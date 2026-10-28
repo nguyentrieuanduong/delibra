@@ -738,7 +738,7 @@ def test_conversation_rows_give_the_timeline_the_flexible_track(
     assert tracks[-1] == "minmax(0, 1fr)"
     assert (
         ".questions-list { list-style: none; margin: 0; padding: 0; "
-        "max-height: 40vh; overflow: auto; }" in css.text
+        "max-height: 24vh; overflow: auto; }" in css.text
     )
     # A row gap would also surround the empty Auto setup and error rows, so
     # only the panel, and the error line while it has text, add space.
