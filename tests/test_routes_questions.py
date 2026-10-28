@@ -59,6 +59,19 @@ def test_the_panel_lists_questions_escaped_with_their_badges(tmp_path: Path) -> 
     assert "(1 open)" in panel.text
 
 
+def test_the_panel_labels_questions_from_failed_or_stopped_turns(tmp_path: Path) -> None:
+    app, project, questions = questions_app(tmp_path)
+    ask(questions, "Kept?")
+    ask(questions, "Fine?")
+    questions.set_turn_outcome(["Q1"], "failed")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        panel = client.get(f"{base(project)}/questions")
+
+    assert '<span id="question-Q1-outcome" class="question-outcome">From failed turn</span>' in panel.text
+    assert '<span id="question-Q2-outcome" class="question-outcome"></span>' in panel.text
+
+
 def test_answering_rerenders_only_the_question_and_updates_the_view(tmp_path: Path) -> None:
     app, project, questions = questions_app(tmp_path)
     ask(questions, "Which database?")

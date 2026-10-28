@@ -1389,8 +1389,10 @@ def test_live_preparation_uses_timeline_message_and_timeout_scopes(
     assert status.text.count(
         f'sse-connect="/projects/{quote(project.name, safe='')}/auto-runs/{active.number}/stream"'
     ) == 1
-    # Status, timeline, and the Questions for you append.
-    assert status.text.count('hx-trigger="sse:status, sse:reset"') == 3
+    # Status, timeline, and the Questions for you append. A live question
+    # refreshes the status and the append, never the streaming timeline.
+    assert status.text.count('hx-trigger="sse:status, sse:reset"') == 1
+    assert status.text.count('hx-trigger="sse:status, sse:reset, sse:questions"') == 2
 
 
 def test_discussion_places_current_timeout_in_timeline_not_auto_status(
@@ -2096,6 +2098,43 @@ def test_a_terminal_auto_run_refreshes_participant_cards_out_of_band(
         )
     assert 'data-auto-active="false"' in fragment.text
     # The full page render must not carry OOB attributes.
+    assert "hx-swap-oob" not in page.text
+
+
+def test_the_status_partial_relabels_its_runs_questions_out_of_band(
+    tmp_path: Path,
+) -> None:
+    # A question already on screen gets its outcome label from the status
+    # swap itself; the full page never carries OOB spans.
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=["I agree with the plan."],
+    )
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(client, project.id, [item.id for item in sessions])
+        assert started.status_code == 202
+        terminal = wait_for_auto(store, terminal=True)
+        questions = QuestionStore(store.root, 96 * 1024)
+        for run in (terminal.number, terminal.number + 1):
+            questions.add(
+                [ProposedQuestion(f"Run {run}?", "", False)],
+                asked_by=sessions[0].id,
+                asked_by_name=sessions[0].name,
+                auto_run=run,
+                cycle=1,
+                round_n=1,
+            )
+        questions.set_turn_outcome(["Q1", "Q2"], "stopped")
+        fragment = client.get(f"/projects/{project.id}/auto-runs/{terminal.number}")
+        page = client.get(f"/projects/{project.id}/chat")
+
+    assert re.search(
+        r'<span id="question-Q1-outcome" class="question-outcome" '
+        r'hx-swap-oob="true">From stopped turn</span>',
+        fragment.text,
+    )
+    # Q2 belongs to another run.
+    assert 'id="question-Q2-outcome"' not in fragment.text
     assert "hx-swap-oob" not in page.text
 
 

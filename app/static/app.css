@@ -312,6 +312,8 @@ textarea { min-height: 7rem; }
 .question-meta { margin-top: 0; }
 .question-dismissed, .question-duplicate { opacity: .6; }
 .question-badge { border: 1px solid #b47b20; border-radius: .25rem; color: #b47b20; font-size: .85em; margin-left: .25rem; padding: 0 .25rem; }
+.question-outcome { color: #c43b2f; font-weight: 600; }
+.question-outcome:not(:empty) { margin-left: .25rem; }
 .question-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
 /* Compact: no paragraph or form margins inside a question, and "Duplicate of"
    on the action line instead of stacked above its box and button. */

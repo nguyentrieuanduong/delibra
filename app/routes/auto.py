@@ -399,6 +399,7 @@ def auto_status_context(
     store = ProjectStore(project)
     material = _auto_material_context(request, store, record)
     notes = auto_notes_context(store, record)
+    run_questions = _run_questions(request, store, record)
     current_participant = (
         record.participants[record.next_participant]
         if record.status in ACTIVE_AUTO_STATUSES
@@ -440,7 +441,14 @@ def auto_status_context(
             else []
         ),
         "run_open_questions": sum(
-            1 for question in _run_questions(request, store, record) if question.status == "open"
+            1 for question in run_questions if question.status == "open"
+        ),
+        # OOB labels for questions already on screen; partial responses only,
+        # like auto_agent_cards, so the full page never carries OOB spans.
+        "auto_question_outcomes": (
+            [question for question in run_questions if question.turn_outcome]
+            if refresh_agent_cards
+            else []
         ),
     }
 
