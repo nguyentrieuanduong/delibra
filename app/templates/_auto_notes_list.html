@@ -1,0 +1,24 @@
+<div id="auto-notes-list" class="auto-notes-list" data-notes-revision="{{ notes_revision }}"{% if notes_oob|default(false) %} hx-swap-oob="outerHTML"{% endif %}>
+  {% if notes %}
+    <ul>
+      {% for note in notes %}
+        <li class="auto-note {{ note.status }}">
+          <p class="auto-note-meta">
+            {{ note.id }} · {{ note.status }}{% if note.status == 'pending' %} · delivered to {{ note_counts[note.id] }}/{{ note_participants }}{% endif %}{% if note_marked[note.id] %} · marked read by {{ note_marked[note.id]|join(', ') }}{% endif %}
+          </p>
+          <pre class="auto-note-text">{{ note.text }}</pre>
+          {% if note.status == 'pending' %}
+            <form
+              method="post"
+              action="{{ project_url(project.name, '/auto-notes/' ~ note.id ~ '/delete') }}"
+              hx-post="{{ project_url(project.name, '/auto-notes/' ~ note.id ~ '/delete') }}"
+              hx-swap="none"
+            >
+              <button type="submit" aria-label="Delete {{ note.id }}">Delete</button>
+            </form>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</div>

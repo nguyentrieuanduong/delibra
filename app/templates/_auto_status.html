@@ -13,6 +13,11 @@
 {% for agent_view in auto_agent_cards|default([]) %}
   {% include "_agent_card_oob.html" %}
 {% endfor %}
+{% if auto_notes|default(none) is not none %}
+  {% with notes=auto_notes.notes, note_counts=auto_notes.note_counts, note_marked=auto_notes.note_marked, note_participants=auto_notes.note_participants, notes_revision=auto_notes.notes_revision, notes_oob=true %}
+    {% include "_auto_notes_list.html" %}
+  {% endwith %}
+{% endif %}
 <section
   id="auto-status"
   {# A quota pause keeps its terminal status but never the failure tier. #}
@@ -20,6 +25,7 @@
   data-auto-id="{{ auto.id }}"
   data-auto-active="{{ 'true' if auto_active else 'false' }}"
   data-auto-stop-after-turn="{{ 'true' if auto.stop_after_turn else 'false' }}"
+  data-auto-notes-open="{{ 'true' if auto_notes_open|default(false) else 'false' }}"
 >
   <div class="auto-status-heading">
     <h2><strong>Auto {{ auto.number }} · {{ auto.status }}</strong></h2>
@@ -29,6 +35,15 @@
       {% include "_auto_resume_form.html" %}
     {% endif %}
   </div>
+  {% if undelivered_notes|default([]) %}
+    <div class="auto-undelivered-notes notice" role="status">
+      <p>
+        <strong>Notes not delivered:</strong>
+        {% for item in undelivered_notes %}{{ item.id }}{% if item.missing %} (not yet to {{ item.missing|join(', ') }}){% endif %}{% if not loop.last %}; {% endif %}{% endfor %}.
+      </p>
+      <p>Continue Auto delivers them; starting a new Auto run marks them undelivered.</p>
+    </div>
+  {% endif %}
   <p>
     {% if auto.kind == 'build' %}Build · {% endif %}{{ 'All agree' if auto.agreement_policy == 'all_agree' else 'First agree, after everyone speaks once' }}
     · up to {{ auto.max_cycles }} cycle{{ '' if auto.max_cycles == 1 else 's' }}

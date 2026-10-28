@@ -389,6 +389,51 @@ function syncComposerAvailability(documentRoot) {
   return blocked;
 }
 
+function syncAutoNotesAvailability(documentRoot) {
+  if (!documentRoot || typeof documentRoot.querySelector !== "function") {
+    return false;
+  }
+  const status = documentRoot.querySelector("#auto-status");
+  const open = Boolean(status && status.dataset.autoNotesOpen === "true");
+  documentRoot.querySelectorAll("[data-auto-notes-input]").forEach(function (control) {
+    control.disabled = !open;
+  });
+  return open;
+}
+
+function resetAutoNotesForm(source, detail) {
+  const form =
+    source && typeof source.closest === "function"
+      ? source.closest("[data-auto-notes-form]")
+      : null;
+  if (!form || !detail || !detail.successful) {
+    return false;
+  }
+  form.reset();
+  return true;
+}
+
+// Every notes list arrives out-of-band. A status update rendered before a
+// note was posted can land after the post's response; its older list must
+// not replace the newer one.
+function skipStaleNotesSwap(detail) {
+  if (!detail || !detail.target || detail.target.id !== "auto-notes-list" || !detail.fragment) {
+    return false;
+  }
+  const element = detail.fragment.dataset
+    ? detail.fragment
+    : detail.fragment.firstElementChild;
+  // Number("") is 0, so an absent attribute must stay NaN, not become 0.
+  const revision = (value) => (value ? Number(value) : NaN);
+  const incoming = revision(element && element.dataset ? element.dataset.notesRevision : "");
+  const shown = revision(detail.target.dataset ? detail.target.dataset.notesRevision : "");
+  if (!Number.isFinite(incoming) || !Number.isFinite(shown) || incoming >= shown) {
+    return false;
+  }
+  detail.shouldSwap = false;
+  return true;
+}
+
 function setTimeoutFormPending(form, pending) {
   if (!form || typeof form.querySelectorAll !== "function") {
     return false;
@@ -443,6 +488,7 @@ function initializeDynamicPresentation(root) {
   // Runs second and unconditionally: it owns [data-composer-send] outright,
   // so it is not fighting the marker bookkeeping above.
   syncComposerAvailability(documentRoot);
+  syncAutoNotesAvailability(documentRoot);
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -463,13 +509,16 @@ if (typeof module !== "undefined" && module.exports) {
     removeConversationEmptyState,
     resetFileReader,
     renderChatError,
+    resetAutoNotesForm,
     restoreAutoStopDisclosure,
     restoreConversationScroll,
     setTimeoutFormPending,
     shouldClearChatError,
+    skipStaleNotesSwap,
     syncAutoOrderControls,
     syncConversationDisclosure,
     syncAutoDisabledControls,
+    syncAutoNotesAvailability,
     syncComposerAvailability,
     updateTimeoutCountdown,
   };
@@ -643,6 +692,10 @@ if (typeof document !== "undefined") {
     focusDialog.addEventListener("close", restoreFocusDialogTrigger);
   }
 
+  document.addEventListener("htmx:oobBeforeSwap", function (event) {
+    skipStaleNotesSwap(event.detail);
+  });
+
   document.addEventListener("htmx:afterRequest", function (event) {
     const source = (event.detail && event.detail.elt) || event.target;
     const timeoutForm =
@@ -654,6 +707,7 @@ if (typeof document !== "undefined") {
     }
     const region = document.getElementById("chat-errors");
     const detail = event.detail;
+    resetAutoNotesForm(source, detail);
     const requestPath =
       (detail && detail.pathInfo && detail.pathInfo.requestPath) ||
       (detail && detail.requestConfig && detail.requestConfig.path) ||

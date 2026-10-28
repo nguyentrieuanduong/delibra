@@ -15,6 +15,13 @@
       <h2>Start Auto discussion</h2>
       <button type="button" data-auto-setup-close>Close</button>
     </div>
+    {% if pending_notes|default([]) %}
+      <p class="notice auto-setup-pending-notes" role="status">
+        Auto {{ pending_notes_run }} still has notes its agents have not all received:
+        {{ pending_notes|map(attribute='id')|join(', ') }}. Starting a new run marks them
+        undelivered; close this and use Continue Auto on Auto {{ pending_notes_run }} to deliver them.
+      </p>
+    {% endif %}
     <label>Topic
       <textarea name="topic" maxlength="100000" required>{{ topic }}</textarea>
     </label>

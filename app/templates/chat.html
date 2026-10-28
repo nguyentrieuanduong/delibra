@@ -25,11 +25,16 @@
       aria-label="Conversation workspace"
     >
       <div class="conversation-top" data-conversation-top>
-        {% include "_composer.html" %}
+        <div class="conversation-input">
+          {% include "_composer.html" %}
+          {% with notes=notes_box.notes, note_counts=notes_box.note_counts, note_marked=notes_box.note_marked, note_participants=notes_box.note_participants, notes_revision=notes_box.notes_revision, notes_open=notes_box.notes_open, note_max=notes_box.note_max %}
+            {% include "_auto_notes.html" %}
+          {% endwith %}
+        </div>
         <aside id="auto-panel" aria-label="Auto status and history">
           <div id="auto-status-host">
             {% if auto_status %}
-              {% with project=auto_status.project, auto=auto_status.auto, auto_active=auto_status.auto_active, topic=auto_status.topic, preparations=auto_status.preparations, preparing_number=auto_status.preparing_number, hidden_preparation_key=auto_status.hidden_preparation_key, current_participant=auto_status.current_participant, auto_usage=auto_status.auto_usage, clear_auto_setup=auto_status.clear_auto_setup, auto_history_oob_runs=auto_status.auto_history_oob_runs, auto_history_status_oob=auto_status.auto_history_status_oob, auto_resumable=auto_status.auto_resumable, quota_resume=auto_status.quota_resume, resume_cycle=auto_status.resume_cycle, resume_max_additional_cycles=auto_status.resume_max_additional_cycles, resume_turn_timeout_seconds=auto_status.resume_turn_timeout_seconds, max_turn_timeout_seconds=auto_status.max_turn_timeout_seconds, resume_pause_on_blocking=auto_status.resume_pause_on_blocking, resume_blocking_questions=auto_status.resume_blocking_questions, run_open_questions=auto_status.run_open_questions %}
+              {% with project=auto_status.project, auto=auto_status.auto, auto_active=auto_status.auto_active, topic=auto_status.topic, preparations=auto_status.preparations, preparing_number=auto_status.preparing_number, hidden_preparation_key=auto_status.hidden_preparation_key, current_participant=auto_status.current_participant, auto_usage=auto_status.auto_usage, clear_auto_setup=auto_status.clear_auto_setup, auto_history_oob_runs=auto_status.auto_history_oob_runs, auto_history_status_oob=auto_status.auto_history_status_oob, auto_resumable=auto_status.auto_resumable, quota_resume=auto_status.quota_resume, resume_cycle=auto_status.resume_cycle, resume_max_additional_cycles=auto_status.resume_max_additional_cycles, resume_turn_timeout_seconds=auto_status.resume_turn_timeout_seconds, max_turn_timeout_seconds=auto_status.max_turn_timeout_seconds, resume_pause_on_blocking=auto_status.resume_pause_on_blocking, resume_blocking_questions=auto_status.resume_blocking_questions, run_open_questions=auto_status.run_open_questions, auto_notes_open=auto_status.auto_notes_open, undelivered_notes=auto_status.undelivered_notes %}
                 {% include "_auto_status.html" %}
               {% endwith %}
             {% endif %}
@@ -47,7 +52,7 @@
       {% endwith %}
       <div id="auto-setup-host">
         {% if auto_setup %}
-          {% with project=auto_setup.project, sessions=auto_setup.sessions, topic=auto_setup.topic, topic_source=auto_setup.topic_source, turn_timeout_seconds=auto_setup.turn_timeout_seconds, max_turn_timeout_seconds=auto_setup.max_turn_timeout_seconds, context_interval=auto_setup.context_interval, context_threshold_percent=auto_setup.context_threshold_percent, stateless_history_limit=auto_setup.stateless_history_limit, build_available=auto_setup.build_available, build_git=auto_setup.build_git %}
+          {% with project=auto_setup.project, sessions=auto_setup.sessions, topic=auto_setup.topic, topic_source=auto_setup.topic_source, turn_timeout_seconds=auto_setup.turn_timeout_seconds, max_turn_timeout_seconds=auto_setup.max_turn_timeout_seconds, context_interval=auto_setup.context_interval, context_threshold_percent=auto_setup.context_threshold_percent, stateless_history_limit=auto_setup.stateless_history_limit, build_available=auto_setup.build_available, build_git=auto_setup.build_git, pending_notes=auto_setup.pending_notes, pending_notes_run=auto_setup.pending_notes_run %}
             {% include "_auto_setup.html" %}
           {% endwith %}
         {% endif %}
