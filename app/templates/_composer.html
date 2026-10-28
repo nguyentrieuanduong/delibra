@@ -10,13 +10,19 @@
 >
   {% if selected_session %}
     <input type="hidden" name="session_id" value="{{ selected_session.id }}">
-    <p class="composer-agent-meta">
-      Sending as {{ selected_session.name }} · {{ selected_session.agent }} · {{ selected_session.model }} · {{ selected_session.effort }}
-    </p>
   {% endif %}
-  <label>Message
-    <textarea name="prompt" maxlength="100000" required data-composer-send{% if not selected_session or auto_active or selected_session.status == 'running' %} disabled{% endif %}></textarea>
-  </label>
+  <div class="composer-field">
+    {# One line: the box's name, then who it sends as, which describes it. #}
+    <div class="composer-heading">
+      <label for="chat-composer-prompt">Message</label>
+      {% if selected_session %}
+        <span id="composer-agent" class="composer-agent-meta">
+          sending as {{ selected_session.name }} · {{ selected_session.agent }} · {{ selected_session.model }} · {{ selected_session.effort }}
+        </span>
+      {% endif %}
+    </div>
+    <textarea name="prompt" id="chat-composer-prompt" maxlength="100000" required data-composer-send{% if selected_session %} aria-describedby="composer-agent"{% endif %}{% if not selected_session or auto_active or selected_session.status == 'running' %} disabled{% endif %}></textarea>
+  </div>
   <div class="composer-actions">
     <button
       type="submit"

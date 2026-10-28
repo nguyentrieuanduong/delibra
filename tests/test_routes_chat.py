@@ -1971,3 +1971,17 @@ def test_starting_a_run_marks_its_agent_busy_out_of_band(
     # The session page has no sidebar; its run response must stay unchanged.
     assert session_run.status_code == 202
     assert "hx-swap-oob" not in session_run.text
+
+
+def test_the_composer_names_the_box_message_and_describes_the_agent(tmp_path: Path) -> None:
+    alpha = session("a" * 32, "Alpha", agent="claude")
+    app, project, _ = setup_project(tmp_path, [alpha])
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
+
+    textarea = re.search(r'<textarea name="prompt"[^>]*>', page.text)
+    assert textarea is not None
+    assert 'id="chat-composer-prompt"' in textarea[0]
+    assert 'aria-describedby="composer-agent"' in textarea[0]
+    assert '<label for="chat-composer-prompt">Message</label>' in page.text
+    assert re.search(r'id="composer-agent"[^>]*>\s*sending as Alpha · claude', page.text)

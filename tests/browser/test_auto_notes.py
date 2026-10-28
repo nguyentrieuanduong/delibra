@@ -136,8 +136,14 @@ def test_the_notes_box_sits_under_the_composer_beside_the_auto_status(
             return new Set(Array.from(range.getClientRects(), (line) => Math.round(line.top))).size;
           };
           return {
-            metaToMessage: rect("#chat-composer label").top - rect(".composer-agent-meta").bottom,
-            metaFromTop: rect(".composer-agent-meta").top - top.top,
+            messageFromTop: rect("#chat-composer label").top - top.top,
+            agentAfterMessage: rect(".composer-agent-meta").left - rect("#chat-composer label").right,
+            agentOffLine: Math.abs(
+              (rect(".composer-agent-meta").top + rect(".composer-agent-meta").bottom) / 2
+              - (rect("#chat-composer label").top + rect("#chat-composer label").bottom) / 2
+            ),
+            agentSize: getComputedStyle(document.querySelector(".composer-agent-meta")).fontSize,
+            messageToBox: rect("#chat-composer textarea").top - rect("#chat-composer label").bottom,
             gapAbove: notes.top - composer.bottom,
             leftOfPanel: panel.left - notes.right,
             sameColumn: Math.abs(notes.left - composer.left),
@@ -162,9 +168,13 @@ def test_the_notes_box_sits_under_the_composer_beside_the_auto_status(
     # Like the message box: the left column under the composer, one .75rem
     # (12px) gap, with the Auto status to its right spanning both.
     assert 0 <= box["gapAbove"] <= 12.5, box
-    # "Sending as ..." starts at the row top, one form gap above Message.
-    assert box["metaToMessage"] <= 12.5, box
-    assert box["metaFromTop"] <= 0.5, box
+    # "Message" and the small "sending as ..." share the first line, at the
+    # row top, just above the box.
+    assert box["messageFromTop"] <= 0.5, box
+    assert box["agentAfterMessage"] >= 0, box
+    assert box["agentOffLine"] <= 4, box
+    assert box["agentSize"] == "12px", box
+    assert 0 <= box["messageToBox"] <= 4.5, box
     assert box["leftOfPanel"] >= 0, box
     assert box["sameColumn"] <= 0.5, box
     assert box["panelSpansBoth"] >= -0.5, box
