@@ -54,6 +54,16 @@ from app.models import (
     SessionConfig,
     auto_trigger_key,
 )
+from app.notes import (
+    MARKS_MAX_BYTES,
+    MARKS_NAME,
+    VIEW_NAME as NOTES_VIEW_NAME,
+    NoteCredit,
+    NoteStore,
+    NoteView,
+    notes_prompt,
+    parse_marks,
+)
 from app.questions import (
     OUTBOX_NAME,
     QUESTIONS_DIR,
@@ -668,6 +678,7 @@ class AutoManager:
             topic_bytes = topic.encode("utf-8")
             auto_id = uuid4().hex
             number = store.reserve_auto_run_number()
+            NoteStore(store.root).abandon_before(number)
             record = AutoRunRecord(
                 id=auto_id,
                 project_id=project.id,
@@ -2164,6 +2175,7 @@ class AutoManager:
         participant = record.participants[record.next_participant]
         outbox_root = self._outbox_root(store, record, participant.session_id)
         view: QuestionView | None = None
+        notes_view: NoteView | None = None
         unavailable: str | None = None
         key = None
         try:
@@ -2179,6 +2191,12 @@ class AutoManager:
                     view, view_path, outbox_path, unavailable = self._prepare_questions_locked(
                         store, current, participant.session_id,
                         participant.agent, outbox_root
+                    )
+                    notes_view, notes_path, notes_live = self._prepare_notes_locked(
+                        store, current, view_path
+                    )
+                    marks_path = (
+                        outbox_path.with_name(MARKS_NAME) if outbox_path is not None else None
                     )
                     round_n = store.allocate_round(participant.session_id)
                     staged = Path("inputs") / f"round-{round_n:02d}" / "auto-context.md"
@@ -2228,7 +2246,7 @@ class AutoManager:
                             )
                         ) + questions_prompt(
                             view_path, outbox_path, pause_enabled=current.pause_on_blocking_questions
-                        ),
+                        ) + notes_prompt(notes_path, live=notes_live, marks_path=marks_path),
                         build=current.kind == "build",
                         docker=lease[0] if lease is not None else None,
                         initial_timeout_seconds=current.future_turn_timeout_seconds,
@@ -2257,6 +2275,7 @@ class AutoManager:
             current = store.load_auto_run(record.id)
             if current.stop_requested:
                 discard_outbox(outbox_root)
+                discard_outbox(outbox_root, name=MARKS_NAME)
                 self._transition_terminal_locked(
                     store,
                     current,
@@ -2265,6 +2284,7 @@ class AutoManager:
                 )
             elif result.status != "complete":
                 discard_outbox(outbox_root)
+                discard_outbox(outbox_root, name=MARKS_NAME)
                 outcome = self._classify_turn_failure(
                     store,
                     current,
@@ -2290,6 +2310,11 @@ class AutoManager:
                 asked, question_warning = self._harvest_questions_locked(
                     store, current, participant, result.n, outbox_root
                 )
+                marked, marks_warning = self._harvest_note_marks(outbox_root)
+                assert notes_view is not None
+                credit, note_warning = self._deliver_notes_locked(
+                    store, current, participant.session_id, notes_view.seen, marked
+                )
                 assert view is not None
                 current.discussion.append(
                     AutoTurn(
@@ -2301,12 +2326,23 @@ class AutoManager:
                         output_sha256=digest,
                         verdict=result.auto.verdict or "continue",
                         warning="; ".join(
-                            item for item in (build_warning, unavailable, question_warning) if item
+                            item
+                            for item in (
+                                build_warning,
+                                unavailable,
+                                question_warning,
+                                marks_warning,
+                                note_warning,
+                            )
+                            if item
                         ) or None,
                         timeout=deepcopy(result.timeout),
                         questions_sha256=view.sha256,
                         questions_seen=list(view.seen) or None,
                         asked=[question.id for question in asked] or None,
+                        notes_sha256=notes_view.sha256,
+                        notes_seen=list(notes_view.seen) or None,
+                        notes_marked=list(credit.marked) or None,
                     )
                 )
                 current.active_key = None
@@ -2794,7 +2830,7 @@ class AutoManager:
                     "expressed in a Claude permission rule"
                 )
             return view, questions.view_path, outbox_dir / OUTBOX_NAME, None
-        outbox_path = prepare_outbox(outbox_root)
+        outbox_path = prepare_outbox(outbox_root, extra_names=(MARKS_NAME,))
         if first_unsafe_writable_root_character(str(store.project_path)) is None:
             return view, questions.view_path, outbox_path, None
         # Claude cannot read .delibra here (RunManager omits the project read
@@ -2805,6 +2841,60 @@ class AutoManager:
         copy = outbox_path.with_name(VIEW_COPY_NAME)
         atomic_write_bytes(copy, view.data)
         return view, copy, outbox_path, None
+
+    def _prepare_notes_locked(
+        self, store: ProjectStore, record: AutoRunRecord, questions_view_path: Path
+    ) -> tuple[NoteView, Path, bool]:
+        """Refresh the notes view and put it where this turn reads questions.
+
+        Returns the view, the path to name, and whether that path is the live
+        view (notes posted mid-turn appear in it). A turn that reads a
+        turn-start copy of the questions view gets a turn-start copy of the
+        notes beside it, for the same reason.
+        """
+
+        notes = NoteStore(store.root)
+        view = notes.refresh_view(record.number)
+        if questions_view_path.parent == store.root:
+            return view, notes.view_path, True
+        copy = questions_view_path.with_name(NOTES_VIEW_NAME)
+        atomic_write_bytes(copy, view.data)
+        return view, copy, False
+
+    @staticmethod
+    def _harvest_note_marks(outbox_root: Path) -> tuple[list[str], str | None]:
+        """Take a completed turn's read marks; an invalid file only warns."""
+
+        try:
+            data = take_outbox(outbox_root, name=MARKS_NAME, limit=MARKS_MAX_BYTES)
+            return (parse_marks(data) if data is not None else []), None
+        except (OutboxError, OSError) as exc:
+            return [], f"note read marks ignored: {exc}"
+
+    def _deliver_notes_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        session_id: str | None,
+        seen: Sequence[str],
+        marked: Sequence[str] = (),
+    ) -> tuple[NoteCredit, str | None]:
+        """Credit a completed turn's notes and settle the rest; never fail the turn."""
+
+        required = {
+            record.participants[position].session_id
+            for position in self._available_positions(record)
+        }
+        try:
+            credit = NoteStore(store.root).record_delivery(
+                record.number, session_id, seen, required, marked=marked
+            )
+        except StorageError:
+            LOGGER.exception("Auto run %s could not record note delivery", record.id)
+            return NoteCredit(), "notes store unavailable; this turn's note delivery was not recorded"
+        if credit.unknown:
+            return credit, f"note read marks named unknown notes: {', '.join(credit.unknown)}"
+        return credit, None
 
     def _harvest_questions_locked(
         self,
@@ -2934,6 +3024,9 @@ class AutoManager:
         record.unavailable.append(
             AutoUnavailable(failed.session_id, reason, round_n, utc_now())
         )
+        # Notes the remaining participants all have now count as delivered;
+        # a failure is logged and leaves them pending.
+        self._deliver_notes_locked(store, record, None, ())
         record.active_key = None
         record.active_timeout = None
         available = self._available_positions(record)

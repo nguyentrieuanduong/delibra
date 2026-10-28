@@ -681,6 +681,12 @@ class AutoTurn:
     questions_sha256: str | None = None
     questions_seen: list[str] | None = None
     asked: list[str] | None = None
+    # User notes: the view digest and note ids at turn start. Absent on
+    # every turn before the feature.
+    notes_sha256: str | None = None
+    notes_seen: list[str] | None = None
+    # The pending notes this turn's read marks credited.
+    notes_marked: list[str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoTurn":
@@ -703,6 +709,9 @@ class AutoTurn:
             questions_sha256=_optional_strict_str(data, "questions_sha256"),
             questions_seen=_optional_str_list(data, "questions_seen"),
             asked=_optional_str_list(data, "asked"),
+            notes_sha256=_optional_strict_str(data, "notes_sha256"),
+            notes_seen=_optional_str_list(data, "notes_seen"),
+            notes_marked=_optional_str_list(data, "notes_marked"),
         )
 
     def to_dict(self) -> dict[str, Any]:

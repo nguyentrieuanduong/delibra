@@ -560,3 +560,34 @@ def test_outbox_rule_expressible_rejects_paths_a_permission_rule_cannot_name() -
     assert outbox_rule_expressible(Path("/home/.delibra/build-tmp/a/questions"))
     assert not outbox_rule_expressible(Path("/home/de,libra/build-tmp/a/questions"))
     assert not outbox_rule_expressible(Path("/home/x[1]/questions"))
+
+
+def test_prepare_outbox_also_clears_extra_files(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    marks = path.with_name("notes-read.json")
+    marks.write_text("{}", encoding="utf-8")
+    path.write_text("{}", encoding="utf-8")
+    prepare_outbox(tmp_path, extra_names=("notes-read.json",))
+    assert not path.exists()
+    assert not marks.exists()
+
+
+def test_take_outbox_reads_a_named_file_within_its_own_limit(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    marks = path.with_name("notes-read.json")
+    marks.write_bytes(b"x" * 10)
+    path.write_text('{"questions": []}', encoding="utf-8")
+    assert take_outbox(tmp_path, name="notes-read.json", limit=4) == b"xxxxx"
+    assert not marks.exists()
+    # The questions outbox is untouched.
+    assert path.read_text(encoding="utf-8") == '{"questions": []}'
+
+
+def test_discard_outbox_removes_only_the_named_file(tmp_path: Path) -> None:
+    path = prepare_outbox(tmp_path)
+    marks = path.with_name("notes-read.json")
+    marks.write_text("{}", encoding="utf-8")
+    path.write_text("{}", encoding="utf-8")
+    discard_outbox(tmp_path, name="notes-read.json")
+    assert not marks.exists()
+    assert path.exists()

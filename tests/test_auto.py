@@ -62,6 +62,7 @@ from app.models import (
     SourceDescriptor,
     TimeoutRecord,
 )
+from app.notes import NoteStore
 from app.questions import ProposedQuestion, QuestionStore
 from app.runner import RunManager
 from app.storage import (
@@ -466,6 +467,7 @@ class PlannedOutput:
     # rather than a category injected straight onto the record.
     failure_mode: str | None = None
     outbox: str | None = None
+    notes_read: str | None = None
 
 
 class RecordingAutoAdapter:
@@ -484,12 +486,16 @@ class RecordingAutoAdapter:
             if context.staged_source is not None
             else b""
         )
+        outbox_root = (
+            context.coding.temp_dir if context.coding is not None else context.workspace
+        )
         if self.output.outbox is not None:
-            outbox_root = (
-                context.coding.temp_dir if context.coding is not None else context.workspace
-            )
             (outbox_root / "questions" / "outbox.json").write_text(
                 self.output.outbox, encoding="utf-8"
+            )
+        if self.output.notes_read is not None:
+            (outbox_root / "questions" / "notes-read.json").write_text(
+                self.output.notes_read, encoding="utf-8"
             )
         verdict_line = ""
         if self.output.decision is not None:
@@ -6044,3 +6050,233 @@ async def test_shutdown_stops_every_delibra_vm(tmp_path, monkeypatch) -> None:
     await manager.shutdown()
 
     assert docker.events == ["stop_all"]
+
+
+async def _start_two_cycles(manager, project_id, session_ids):
+    return await manager.create(
+        project_id,
+        topic="Notes topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=2,
+        preparation_enabled=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_note_is_delivered_once_every_participant_started_a_turn_with_it(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", delay=0.3),
+            PlannedOutput("Beta"),
+            PlannedOutput("Alpha 2"),
+            PlannedOutput("Beta 2"),
+        ],
+    )
+    notes = NoteStore(store.root)
+    created = await _start_two_cycles(manager, project_id, session_ids)
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    notes.add("Prefer SQLite", auto_run=created.number)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    first, second, third, fourth = terminal.discussion
+    # Posted while the first turn ran, so that turn's view never held it.
+    assert first.notes_seen is None
+    assert second.notes_seen == ["N1"]
+    assert third.notes_seen == ["N1"]
+    assert fourth.notes_seen is None
+    [note] = notes.load().notes
+    assert note.status == "delivered"
+    assert note.delivered_to == [session_ids[1], session_ids[0]]
+    assert json.loads(notes.view_path.read_bytes())["notes"] == []
+    assert fourth.notes_sha256 == sha256(notes.view_path.read_bytes()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_every_discussion_turn_names_the_notes_view(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+
+    await _one_cycle(manager, project_id, session_ids)
+
+    for call, session_id in zip(factory.calls, session_ids):
+        prompt = str(call["prompt"])
+        assert (store.root / "notes.json").as_posix() in prompt
+        assert (store.workspace_dir(session_id) / "questions" / "notes-read.json").as_posix() in prompt
+        assert "at any time, including while you are working" in prompt
+        assert "overrides the topic where they conflict" in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_build_turn_reads_the_notes_view_in_delibra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+    enable_build(store, monkeypatch)
+    created = await start_build(
+        manager, project_id, session_ids, policy="all_agree", max_cycles=1
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # Same directory and read rule as questions.json (spike/FINDINGS.md:610-638).
+    prompt = str(factory.calls[0]["prompt"])
+    assert (store.root / "notes.json").as_posix() in prompt
+    assert "at any time, including while you are working" in prompt
+    marks = manager.settings.build_tmp_root / session_ids[0] / "questions" / "notes-read.json"
+    assert marks.as_posix() in prompt
+
+
+@pytest.mark.asyncio
+async def test_an_unsafe_project_path_reads_a_turn_start_notes_copy(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha", delay=0.3), PlannedOutput("Beta")],
+        project_dir_name="pro,ject",
+    )
+    created = await manager.create(
+        project_id,
+        topic="Notes topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    NoteStore(store.root).add("Prefer SQLite", auto_run=created.number)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    copy = store.workspace_dir(session_ids[1]) / "questions" / "notes.json"
+    prompt = str(factory.calls[1]["prompt"])
+    assert copy.as_posix() in prompt
+    assert (store.root / "notes.json").as_posix() not in prompt
+    assert "reach your next one" in prompt
+    assert b"Prefer SQLite" in copy.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_marks_the_previous_runs_pending_notes_undelivered(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("A1"), PlannedOutput("B1"), PlannedOutput("A2"), PlannedOutput("B2")],
+    )
+    notes = NoteStore(store.root)
+    first, _ = await _one_cycle(manager, project_id, session_ids)
+    notes.add("Left over", auto_run=first.number)
+
+    _, second = await _one_cycle(manager, project_id, session_ids)
+
+    assert [note.status for note in notes.load().notes] == ["undelivered"]
+    assert all(turn.notes_seen is None for turn in second.discussion)
+
+
+@pytest.mark.asyncio
+async def test_losing_a_participant_delivers_what_the_others_received(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("A1", "continue", delay=0.3),
+            PlannedOutput("B1", "continue"),
+            PlannedOutput("quota", failure_mode="quota-stderr"),
+            PlannedOutput("B2", "agree"),
+        ],
+    )
+    enable_build(store, monkeypatch)
+    notes = NoteStore(store.root)
+    created = await start_build(manager, project_id, session_ids, max_cycles=2)
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    notes.add("Prefer SQLite", auto_run=created.number)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert [item.session_id for item in terminal.unavailable] == [session_ids[0]]
+    [note] = notes.load().notes
+    assert (note.status, note.delivered_to) == ("delivered", [session_ids[1]])
+    # Settled at the hand-over, before B's second turn started.
+    assert terminal.discussion[-1].notes_seen is None
+
+
+@pytest.mark.asyncio
+async def test_a_read_mark_credits_a_note_read_mid_turn(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", delay=0.3, notes_read='{"read": ["N1"]}'),
+            PlannedOutput("Beta"),
+        ],
+    )
+    notes = NoteStore(store.root)
+    created = await manager.create(
+        project_id,
+        topic="Notes topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    notes.add("Prefer SQLite", auto_run=created.number)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    first, second = terminal.discussion
+    assert (first.notes_seen, first.notes_marked) == (None, ["N1"])
+    assert second.notes_seen == ["N1"]
+    [note] = notes.load().notes
+    assert note.status == "delivered"
+    assert note.delivered_to == session_ids
+    assert note.marked_by == [session_ids[0]]
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "notes-read.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_bad_or_unknown_read_marks_warn_and_keep_turn_start_credit(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", delay=0.3, notes_read='{"read": ["N7"]}'),
+            PlannedOutput("Beta", notes_read='{"read": "N1"}'),
+        ],
+    )
+    notes = NoteStore(store.root)
+    created = await manager.create(
+        project_id,
+        topic="Notes topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    notes.add("Prefer SQLite", auto_run=created.number)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    first, second = terminal.discussion
+    assert "note read marks named unknown notes: N7" in (first.warning or "")
+    assert "note read marks ignored" in (second.warning or "")
+    [note] = notes.load().notes
+    assert (note.status, note.delivered_to, note.marked_by) == (
+        "pending", [session_ids[1]], [],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_discards_its_read_marks(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("unused", provider_error=True, notes_read='{"read": ["N1"]}')],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    assert terminal.status == "error"
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "notes-read.json").exists()
