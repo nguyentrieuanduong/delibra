@@ -202,6 +202,15 @@ textarea { min-height: 7rem; }
 .auto-stop .hint { max-width: 20rem; }
 .auto-stop.pending { display: grid; gap: .35rem; justify-items: end; }
 .auto-stop.pending form { margin: 0; }
+/* Continue Auto reads like a table: each setting's text, then its control in
+   one shared column. Opened, it wraps below the title instead of squeezing it. */
+.auto-status-heading { flex-wrap: wrap; }
+.auto-resume[open] { flex-basis: 100%; }
+.auto-resume form { grid-template-columns: minmax(0, 1fr) auto; }
+.auto-resume form > * { grid-column: 1 / -1; }
+.auto-resume form > label { align-items: center; display: grid; grid-template-columns: subgrid; }
+.auto-resume form > label input[type="number"] { width: 6rem; }
+.auto-resume form > label input[type="checkbox"] { margin: 0; }
 .auto-preparation { border-style: dashed; }
 .auto-history-list { display: grid; gap: .35rem; list-style: none; padding: 0; }
 .auto-history-list button { display: grid; text-align: left; width: 100%; }
