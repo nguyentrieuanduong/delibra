@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
+import time
 
 import pytest
 
-from app.live_questions import SCAN_READS, STORE_UNAVAILABLE, LiveQuestions
+from app.live_questions import (
+    LIVE_UNAVAILABLE,
+    SCAN_READS,
+    STORE_UNAVAILABLE,
+    LiveQuestions,
+    watch_spool,
+)
 from app.questions import (
     QUESTIONS_DIR,
     SPOOL_NAME,
@@ -223,3 +231,72 @@ def test_mark_outcome_labels_every_question_of_the_turn(tmp_path: Path) -> None:
     assert [question.turn_outcome for question in harvest.store.load().questions] == [
         "failed", "failed",
     ]
+
+
+async def _watching(harvest: LiveQuestions):
+    found: list[float] = []
+
+    async def run() -> None:
+        if harvest.harvest(final=False):
+            found.append(time.monotonic())
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(watch_spool(harvest, run, stop))
+    return found, stop, task
+
+
+@pytest.mark.asyncio
+async def test_watch_spool_saves_a_file_within_seconds_and_stops_promptly(
+    tmp_path: Path,
+) -> None:
+    harvest = live(tmp_path)
+    found, stop, task = await _watching(harvest)
+    await asyncio.sleep(1.5)
+
+    written = time.monotonic()
+    write(harvest, "q1.json", ask("Live?"))
+    for _ in range(100):
+        if found:
+            break
+        await asyncio.sleep(0.05)
+
+    assert found and found[0] - written < 2.0
+    assert [question.question for question in harvest.asked] == ["Live?"]
+    stop.set()
+    stopping = time.monotonic()
+    await asyncio.wait_for(task, timeout=6)
+    assert time.monotonic() - stopping < 1.0
+
+
+@pytest.mark.asyncio
+async def test_watch_spool_catches_a_file_written_before_the_watch_registered(
+    tmp_path: Path,
+) -> None:
+    harvest = live(tmp_path)
+    found, stop, task = await _watching(harvest)
+    # No sleep: the file may land before awatch registers. The one-off
+    # rescan finds it.
+    write(harvest, "q1.json", ask("Early?"))
+    for _ in range(60):
+        if harvest.asked:
+            break
+        await asyncio.sleep(0.05)
+    stop.set()
+    await asyncio.wait_for(task, timeout=6)
+    assert [question.question for question in harvest.asked] == ["Early?"]
+
+
+@pytest.mark.asyncio
+async def test_a_watch_failure_warns_and_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harvest = live(tmp_path)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("no watches left")
+
+    monkeypatch.setattr("app.live_questions.awatch", broken)
+    found, stop, task = await _watching(harvest)
+    await asyncio.wait_for(task, timeout=6)
+
+    assert harvest.warnings == [LIVE_UNAVAILABLE]
