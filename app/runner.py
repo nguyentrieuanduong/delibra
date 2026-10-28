@@ -35,7 +35,7 @@ from app.coding_env import developer_tools_dir
 from app.docker_backend import write_cli_config
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
-from app.questions import QUESTIONS_DIR
+from app.questions import QUESTIONS_DIR, SPOOL_NAME
 from app.models import (
     AutoQuotaOverride,
     AutoRoundDescriptor,
@@ -1254,8 +1254,9 @@ class RunManager:
             os.replace(temp_dir, discarded)
             self._discard_tree(discarded)
         temp_dir.mkdir(mode=0o700)
-        # The agent's questions outbox; AutoManager harvests it after the turn.
+        # The agent's questions spool; AutoManager harvests it as files land.
         (temp_dir / QUESTIONS_DIR).mkdir(mode=0o700)
+        (temp_dir / QUESTIONS_DIR / SPOOL_NAME).mkdir(mode=0o700)
         if docker is not None:
             write_cli_config(temp_dir / "docker", docker.plugin_dirs)
         tools = await self.developer_tools()

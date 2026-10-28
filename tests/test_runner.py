@@ -2214,6 +2214,7 @@ async def test_build_turn_runs_from_the_project_root_with_coding_context(tmp_pat
     # Only the questions outbox directory the runner creates (Auto questions).
     assert spawn["tmp_entries"] == ["questions"]
     assert (stale / "questions").stat().st_mode & 0o777 == 0o700
+    assert (stale / "questions" / "outbox").stat().st_mode & 0o777 == 0o700
     assert spawn["tmp_mode"] == 0o700
     # Amendment A1: git and pip must work with HOME unreadable.
     assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
