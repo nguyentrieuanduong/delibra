@@ -454,6 +454,46 @@ def test_auto_setup_uses_durable_prefill_stable_agents_and_no_topic_query(
     assert "?topic=" not in chat.text
 
 
+def test_auto_setup_lets_the_user_order_agents(tmp_path: Path) -> None:
+    app, _, project, _store, sessions, _ = auto_route_app(tmp_path)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        setup = client.get(f"/projects/{quote(project.name, safe='')}/auto/setup")
+
+    assert setup.status_code == 200
+    assert "Checked agents speak from top to bottom." in setup.text
+    assert "data-auto-order>" in setup.text
+    assert setup.text.count("data-auto-order-item") == len(sessions)
+    buttons = re.findall(r"<button[^>]*data-auto-order-move=[^>]*>", setup.text)
+    assert len(buttons) == 2 * len(sessions)
+    assert all('type="button"' in tag for tag in buttons)
+    # alpha renders first and Beta last: only the outer ends are disabled.
+    assert 'aria-label="Move alpha up"' in buttons[0] and "disabled" in buttons[0]
+    assert 'aria-label="Move alpha down"' in buttons[1]
+    assert "disabled" not in buttons[1]
+    assert 'aria-label="Move Beta up"' in buttons[2]
+    assert "disabled" not in buttons[2]
+    assert 'aria-label="Move Beta down"' in buttons[3] and "disabled" in buttons[3]
+
+
+def test_auto_run_keeps_the_submitted_speaking_order(tmp_path: Path) -> None:
+    app, _, project, store, sessions, _ = auto_route_app(
+        tmp_path,
+        outputs=["CONVERGED", "CONVERGED"],
+    )
+    by_name = {session.name: session.id for session in sessions}
+    # The reverse of the name order the setup dialog renders.
+    order = [by_name["Beta"], by_name["alpha"]]
+
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(client, quote(project.name, safe=""), order)
+        assert started.status_code == 202
+        record = wait_for_auto(store, terminal=True)
+
+    assert [item.session_id for item in record.participants] == order
+    assert [turn.session_id for turn in record.discussion] == order
+
+
 def test_project_turn_timeout_prefills_new_auto_runs(tmp_path: Path) -> None:
     app, settings, project, store, _sessions, _factory = auto_route_app(tmp_path)
     store.set_turn_timeout_seconds(7, maximum=settings.max_run_timeout)

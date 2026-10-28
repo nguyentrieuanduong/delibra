@@ -167,6 +167,9 @@ textarea { min-height: 7rem; }
 .auto-setup-dialog::backdrop { background: #0009; }
 .auto-setup-dialog fieldset { display: grid; gap: .35rem; }
 .auto-setup-dialog .auto-choice { align-items: center; display: flex; gap: .35rem; }
+.auto-setup-dialog .auto-order { display: grid; gap: .35rem; margin: 0; padding-left: 1.5rem; }
+.auto-setup-dialog .auto-order-item { align-items: center; display: flex; gap: .35rem; }
+.auto-setup-dialog .auto-order-item .auto-choice { flex: 1; }
 .auto-status {
   border: 1px solid #3b82c488;
   border-radius: .5rem;
