@@ -513,14 +513,20 @@ finished process.
 
 ## Auto questions
 
-An Auto agent that needs something only you can decide writes it to its own
-outbox, `questions/outbox.json`: in its workspace on discussion turns, in its
-build temp directory on build turns. The turn prompt names the path and the
-format, `{"questions": [{"question": "...", "assumption": "...", "blocking": false}]}`,
-at most 25 questions and 192 KiB. After a completed turn Delibra validates
-the outbox, moves its questions into the project store, and deletes it; an
-invalid outbox only adds a warning to that turn, and a failed or cancelled
-turn's outbox is discarded.
+An Auto agent that needs something only you can decide writes it as a new
+JSON file in its question spool, `questions/outbox/`: in its workspace on
+discussion turns, in its build temp directory on build turns. File names
+use letters, digits, `-` and `_` and end in `.json`; each file holds
+`{"questions": [{"question": "...", "assumption": "...", "blocking": false}]}`,
+preferably one question, at most 512 KiB, and a turn may ask at most 64
+questions. Delibra watches the spool (watchfiles: FSEvents on macOS,
+inotify on Linux), saves each complete file to the project store, removes
+it, and the Questions panel opens to show it within seconds, while the turn
+still runs. At turn end Delibra reads every file left. An invalid file, or one
+that would pass 64 questions, is dropped with a warning on that turn.
+Questions from a failed or stopped turn stay, labelled in red
+"From failed turn" or "From stopped turn", and never pause the run. If the
+watch cannot start, the turn says so and its questions arrive at turn end.
 
 The store is `.delibra/questions-history.json`, written only by Delibra.
 Auto agents read `.delibra/questions.json`: open and answered questions,
@@ -531,7 +537,7 @@ permission rules cannot express (`,*?[]!#\` or a control character): on such
 a project path, discussion turns read a copy taken at turn start in their
 workspace, so answers saved during a turn reach the next one; and when the
 build temp directory (under `DELIBRA_HOME`) has such a path, Claude build
-turns are not offered an outbox, and each such turn records the warning
+turns are not offered a spool, and each such turn records the warning
 `question outbox unavailable: the build temp path cannot be expressed in a Claude permission rule`.
 Each turn records the view's digest and question revisions at turn start.
 When the view exceeds `DELIBRA_AUTO_QUESTIONS_LIMIT`, the oldest answered
