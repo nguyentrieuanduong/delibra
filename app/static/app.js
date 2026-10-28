@@ -475,6 +475,21 @@ function initializeTimeoutCountdown(controls) {
   const intervalId = setInterval(tick, 1000);
 }
 
+function openQuestionsPanelForNew(list, responseText) {
+  // A live question can land while the panel is collapsed (it starts that
+  // way when nothing is open); open it so the question is seen within
+  // seconds, not only counted in the summary.
+  if (!list || list.id !== "questions-list" || !/<li id="question-Q\d+"/.test(responseText || "")) {
+    return false;
+  }
+  const panel = list.closest("#questions-panel");
+  if (!panel || panel.open) {
+    return false;
+  }
+  panel.open = true;
+  return true;
+}
+
 function initializeDynamicPresentation(root) {
   timeoutControlsWithin(root).forEach(initializeTimeoutCountdown);
   if (root && typeof root.matches === "function" && root.matches('[data-topic-source="composer"]')) {
@@ -506,6 +521,7 @@ if (typeof module !== "undefined" && module.exports) {
     isDialogBackdropClick,
     moveAutoOrderItem,
     openFocusDialog,
+    openQuestionsPanelForNew,
     removeConversationEmptyState,
     resetFileReader,
     renderChatError,
@@ -614,6 +630,7 @@ if (typeof document !== "undefined") {
       return;
     }
     initializeDynamicPresentation(event.target);
+    openQuestionsPanelForNew(target, detail.xhr ? detail.xhr.responseText : "");
     const timeline = conversationTimelineForSwap(target, event.target);
     if (timeline) {
       removeConversationEmptyState(timeline);

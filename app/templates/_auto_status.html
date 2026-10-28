@@ -13,6 +13,9 @@
 {% for agent_view in auto_agent_cards|default([]) %}
   {% include "_agent_card_oob.html" %}
 {% endfor %}
+{% for question in auto_question_outcomes|default([]) %}
+  <span id="question-{{ question.id }}-outcome" class="question-outcome" hx-swap-oob="true">From {{ question.turn_outcome }} turn</span>
+{% endfor %}
 {% if auto_notes|default(none) is not none %}
   {% with notes=auto_notes.notes, note_counts=auto_notes.note_counts, note_marked=auto_notes.note_marked, note_participants=auto_notes.note_participants, notes_revision=auto_notes.notes_revision, notes_oob=true %}
     {% include "_auto_notes_list.html" %}
@@ -152,7 +155,7 @@
       <span
         hidden
         hx-get="{{ project_url(project.name, '/auto-runs/' ~ auto.number) }}"
-        hx-trigger="sse:status, sse:reset"
+        hx-trigger="sse:status, sse:reset, sse:questions"
         hx-target="#auto-status"
         hx-swap="outerHTML"
       ></span>
@@ -166,7 +169,7 @@
       <span
         hidden
         hx-get="{{ project_url(project.name, '/questions/new') }}"
-        hx-trigger="sse:status, sse:reset"
+        hx-trigger="sse:status, sse:reset, sse:questions"
         hx-include="#questions-cursor"
         hx-target="#questions-list"
         hx-swap="afterbegin"

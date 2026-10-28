@@ -3,6 +3,7 @@
     <strong>{{ question.id }}</strong> · {{ question.asked_by_name }}{% if question.auto_run %} · Auto {{ question.auto_run }}{% endif %}{% if question.cycle %} · cycle {{ question.cycle }}{% endif %}
     · <span class="question-status">{{ question.status }}</span>{% if question.duplicate_of %} · duplicate of {{ question.duplicate_of }}{% endif %}
     {% if question.blocking %}<span class="question-badge">blocking</span>{% endif %}
+    <span id="question-{{ question.id }}-outcome" class="question-outcome">{% if question.turn_outcome %}From {{ question.turn_outcome }} turn{% endif %}</span>
 {% endset %}
 {% set question_body %}
   <p class="question-text">{{ question.question }}</p>
