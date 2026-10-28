@@ -131,7 +131,9 @@ textarea { min-height: 7rem; }
 /* The composer's column: the message box, then the notes box under it. */
 .conversation-input { display: grid; gap: .75rem; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 #chat-composer { margin: 0; }
-#chat-composer .composer-agent-meta { margin: 0; }
+#chat-composer .composer-field { display: grid; gap: .25rem; }
+#chat-composer .composer-heading { align-items: baseline; display: flex; gap: .5rem; min-width: 0; }
+#chat-composer .composer-agent-meta { font-size: .75rem; opacity: .7; overflow-wrap: anywhere; }
 #chat-composer textarea { min-height: 3rem; }
 .composer-actions, .auto-status-heading, .auto-setup-heading {
   align-items: center;
