@@ -10,7 +10,7 @@
   {% if question.status in ("open", "answered") %}
     <form method="post" action="{{ question_url }}/answer" hx-post="{{ question_url }}/answer" hx-target="#question-{{ question.id }}" hx-swap="outerHTML">
       <label>Answer
-        <textarea name="answer" rows="3" maxlength="{{ answer_max }}" required>{{ question.answer or '' }}</textarea>
+        <textarea name="answer" rows="2" maxlength="{{ answer_max }}" required>{{ question.answer or '' }}</textarea>
       </label>
       <button type="submit">{% if question.answer %}Update answer{% else %}Save answer{% endif %}</button>
     </form>

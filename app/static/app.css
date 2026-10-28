@@ -305,12 +305,21 @@ textarea { min-height: 7rem; }
 @media (max-width: 720px) { .chat-layout { grid-template-columns: 1fr; } }
 
 .questions-panel { border: 1px solid #8885; border-radius: .5rem; margin: .75rem 0 1.25rem; min-width: 0; padding: .5rem 1rem; }
-.questions-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; overflow: auto; }
+.questions-list { list-style: none; margin: 0; padding: 0; max-height: 24vh; overflow: auto; }
 .question { border-top: 1px solid #8885; padding: .75rem 0; }
+.question-meta { margin-top: 0; }
 .question-dismissed, .question-duplicate { opacity: .6; }
 .question-badge { border: 1px solid #b47b20; border-radius: .25rem; color: #b47b20; font-size: .85em; margin-left: .25rem; padding: 0 .25rem; }
-.question-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
+.question-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
+/* Compact: no paragraph or form margins inside a question, and "Duplicate of"
+   on the action line instead of stacked above its box and button. */
+.question p, .question form { margin: 0 0 .35rem; }
+.question form { gap: .25rem; }
+.question-actions form { align-items: center; display: flex; gap: .35rem; margin: 0; }
+.question-actions label { align-items: center; display: flex; gap: .35rem; }
 .question-assumption { font-style: italic; }
+/* Two lines tall; the global textarea minimum would make it 7rem. */
+.question textarea { min-height: 0; }
 .question-collapsed > summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .question-collapsed[open] > summary { white-space: normal; }
 .question-collapsed[open] .question-preview { display: none; }
