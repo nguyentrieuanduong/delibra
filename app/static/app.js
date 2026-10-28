@@ -256,7 +256,7 @@ function updateTimeoutCountdown(controls, nowMilliseconds) {
 }
 
 function copyAutoComposerTopic(setup) {
-  if (!setup || setup.dataset.topicSource !== "composer") {
+  if (!setup || !setup.dataset) {
     return false;
   }
   const topic = setup.querySelector('textarea[name="topic"]');
@@ -264,6 +264,11 @@ function copyAutoComposerTopic(setup) {
     '#chat-composer textarea[name="prompt"]'
   );
   if (!topic || !composer) {
+    return false;
+  }
+  // Unsent text is what the user is about to discuss, so it wins over the
+  // durable fallback; an empty composer leaves that fallback alone.
+  if (setup.dataset.topicSource !== "composer" && !composer.value.trim()) {
     return false;
   }
   topic.value = composer.value;
@@ -492,11 +497,11 @@ function openQuestionsPanelForNew(list, responseText) {
 
 function initializeDynamicPresentation(root) {
   timeoutControlsWithin(root).forEach(initializeTimeoutCountdown);
-  if (root && typeof root.matches === "function" && root.matches('[data-topic-source="composer"]')) {
+  if (root && typeof root.matches === "function" && root.matches("[data-auto-setup-dialog]")) {
     copyAutoComposerTopic(root);
   }
   if (root && typeof root.querySelectorAll === "function") {
-    root.querySelectorAll('[data-topic-source="composer"]').forEach(copyAutoComposerTopic);
+    root.querySelectorAll("[data-auto-setup-dialog]").forEach(copyAutoComposerTopic);
   }
   const documentRoot = root && root.ownerDocument ? root.ownerDocument : root;
   syncAutoDisabledControls(documentRoot);
