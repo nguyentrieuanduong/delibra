@@ -136,6 +136,38 @@ test("copies a composer topic into an opted-in Auto setup using values only", fu
   assert.equal(topic.value, composer.value);
 });
 
+function setupWith(source, composerValue, topicValue) {
+  const topic = { value: topicValue };
+  return {
+    topic,
+    setup: {
+      dataset: { topicSource: source },
+      ownerDocument: {
+        querySelector(selector) {
+          assert.equal(selector, '#chat-composer textarea[name="prompt"]');
+          return { value: composerValue };
+        },
+      },
+      querySelector(selector) {
+        assert.equal(selector, 'textarea[name="topic"]');
+        return topic;
+      },
+    },
+  };
+}
+
+test("unsent composer text replaces a durable topic", function () {
+  const { setup, topic } = setupWith("durable", "Plan the roadmap", "Earliest prompt");
+  assert.equal(copyAutoComposerTopic(setup), true);
+  assert.equal(topic.value, "Plan the roadmap");
+});
+
+test("an empty composer keeps the durable topic", function () {
+  const { setup, topic } = setupWith("durable", "  \n ", "Earliest prompt");
+  assert.equal(copyAutoComposerTopic(setup), false);
+  assert.equal(topic.value, "Earliest prompt");
+});
+
 test("the composer is blocked by Auto, by no selection, or by a busy agent", function () {
   const sessionId = "a".repeat(32);
   const textarea = { disabled: false, dataset: {} };

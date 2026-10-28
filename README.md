@@ -260,11 +260,11 @@ preparation; otherwise the card keeps its persisted output and omits **Focus**.
 If the persisted preparation copy itself is no longer readable, the card reports
 that its output is unavailable without exposing a storage path.
 
-The persistent **Auto** button beside **Send** opens project-level Auto setup. Before
-the first round, the browser copies the unsent composer text directly into the
-editable topic field; it is never added to the setup URL. Once a conversation
-exists, setup prefers its earliest direct user prompt, falling back to the earliest
-recorded Auto topic. Agents are listed in case-insensitive name order and are all
+The persistent **Auto** button beside **Send** opens project-level Auto setup.
+Unsent composer text is copied directly into the editable topic field, and is
+never added to the setup URL. With an empty composer, setup prefers the
+conversation's earliest direct user prompt, falling back to the earliest recorded
+Auto topic. Agents are listed in case-insensitive name order and are all
 selected by default; **↑**/**↓** reorder them, and checked agents speak from top
 to bottom in every cycle. Select at least two unique agents, choose **All agree** or
 **First agree**, and set **Maximum discussion cycles** from 1 through 20 (default
