@@ -30,7 +30,7 @@ from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
 from app.docker_backend import DockerController, DockerStopFailed, DockerUnavailable
 from app.health import probe_build_version
-from app.live_questions import LiveQuestions
+from app.live_questions import LiveQuestions, watch_spool
 from app.agents.base import DockerAccess
 from app.agents.errors import is_retryable
 from app.models import (
@@ -480,7 +480,7 @@ class CompactionPlan:
 @dataclass(frozen=True)
 class AutoStatusEvent:
     event_id: int
-    kind: Literal["status", "reset"]
+    kind: Literal["status", "reset", "questions"]
     auto_id: str
     status: str
 
@@ -1110,6 +1110,11 @@ class AutoManager:
 
     def publish_current_status(self, project_id: str, auto_id: str) -> AutoStatusEvent:
         return self._publish_status(self.get(project_id, auto_id))
+
+    def publish_questions(self, project_id: str, auto_id: str) -> AutoStatusEvent:
+        """Tell the browser a live turn saved questions; the status is unchanged."""
+
+        return self._publish_status(self.get(project_id, auto_id), kind="questions")
 
     def _build_baseline(
         self,
@@ -2284,7 +2289,11 @@ class AutoManager:
         # key is live; otherwise the next automatic status event occurs only
         # after this round finishes and the timeline can never render it live.
         self.publish_current_status(record.project_id, record.id)
-        result = await self.runner.wait(key)
+        watch = self._start_question_watch(record, participant.session_id, live)
+        try:
+            result = await self.runner.wait(key)
+        finally:
+            await self._stop_question_watch(watch)
         outcome: Literal["done", "retry"] = "done"
         async with self.locks.project_sessions(record.project_id, [participant.session_id]):
             current = store.load_auto_run(record.id)
@@ -2889,6 +2898,34 @@ class AutoManager:
         except (OutboxError, OSError) as exc:
             return [], f"note read marks ignored: {exc}"
 
+    def _start_question_watch(
+        self, record: AutoRunRecord, session_id: str, live: LiveQuestions | None
+    ) -> tuple[asyncio.Event, asyncio.Task[None]] | None:
+        if live is None:
+            return None
+        stop = asyncio.Event()
+
+        async def harvest() -> None:
+            async with self.locks.project_sessions(record.project_id, [session_id]):
+                added = live.harvest(final=False)
+            if added:
+                self.publish_questions(record.project_id, record.id)
+
+        return stop, asyncio.create_task(watch_spool(live, harvest, stop))
+
+    @staticmethod
+    async def _stop_question_watch(
+        watch: tuple[asyncio.Event, asyncio.Task[None]] | None,
+    ) -> None:
+        # A harvest is synchronous inside the lock, so cancelling never
+        # interrupts one halfway; the turn-end harvest reads the rest.
+        if watch is None:
+            return
+        stop, task = watch
+        stop.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     def _deliver_notes_locked(
         self,
         store: ProjectStore,
@@ -3316,12 +3353,14 @@ class AutoManager:
         self._publish_status(record)
         return record
 
-    def _publish_status(self, record: AutoRunRecord) -> AutoStatusEvent:
+    def _publish_status(
+        self, record: AutoRunRecord, kind: Literal["status", "questions"] = "status"
+    ) -> AutoStatusEvent:
         key = (record.project_id, record.id)
         state = self._events.setdefault(key, _AutoEventState())
         event = AutoStatusEvent(
             state.next_event_id,
-            "status",
+            kind,
             record.id,
             record.status,
         )

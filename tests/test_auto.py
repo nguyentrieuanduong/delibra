@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -5627,6 +5628,100 @@ async def test_a_turn_saves_every_spool_file_in_order_up_to_64(tmp_path: Path) -
     assert terminal.discussion[0].asked == [question.id for question in saved]
     assert terminal.discussion[0].warning == (
         "question file c.json ignored: the turn would pass 64 questions"
+    )
+
+
+async def _wait_for_questions(store: ProjectStore, limit: int, count: int, seconds: float):
+    questions = QuestionStore(store.root, limit)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        saved = questions.load().questions
+        if len(saved) >= count:
+            return saved
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"fewer than {count} questions after {seconds}s")
+
+
+@pytest.mark.asyncio
+async def test_a_question_written_mid_turn_is_saved_and_announced_before_the_turn_ends(
+    tmp_path: Path,
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused", sleep=True)]
+    )
+    created = await manager.create(
+        project_id,
+        topic="Questions topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    key = await wait_for_active_auto_key(manager, project_id, created.id)
+    spool = store.workspace_dir(session_ids[0]) / "questions" / "outbox"
+
+    written = time.monotonic()
+    (spool / "q1.json").write_text(_outbox({"question": "Live?"}), encoding="utf-8")
+    [question] = await _wait_for_questions(
+        store, manager.settings.auto_questions_view_limit, 1, 5
+    )
+
+    assert time.monotonic() - written < 5
+    assert (question.question, question.round, question.turn_outcome) == (
+        "Live?", key.round_n, None,
+    )
+    assert manager.get(project_id, created.id).active_key == key
+    kinds = [event.kind for event in manager._events[(project_id, created.id)].replay]
+    assert "questions" in kinds
+    await manager.stop(project_id, created.id)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    assert QuestionStore(
+        store.root, manager.settings.auto_questions_view_limit
+    ).load().find("Q1").turn_outcome == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_a_build_turn_question_is_saved_mid_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("unused", sleep=True)]
+    )
+    enable_build(store, monkeypatch)
+    created = await start_build(
+        manager, project_id, session_ids, policy="all_agree", max_cycles=1
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    spool = manager.settings.build_tmp_root / session_ids[0] / "questions" / "outbox"
+
+    (spool / "q1.json").write_text(_outbox({"question": "Build live?"}), encoding="utf-8")
+    [question] = await _wait_for_questions(
+        store, manager.settings.auto_questions_view_limit, 1, 5
+    )
+
+    assert question.question == "Build live?"
+    await manager.stop(project_id, created.id)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_watch_warns_and_questions_still_arrive_at_turn_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args, **kwargs):
+        raise RuntimeError("no watches left")
+
+    monkeypatch.setattr("app.live_questions.awatch", broken)
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha", outbox=_outbox({"question": "Late?"})), PlannedOutput("Beta")],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    assert terminal.discussion[0].asked == ["Q1"]
+    assert "live questions unavailable; questions arrive at turn end" in (
+        terminal.discussion[0].warning or ""
     )
 
 
