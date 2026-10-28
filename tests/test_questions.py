@@ -20,6 +20,7 @@ from app.questions import (
     QuestionBook,
     QuestionStore,
     QuestionsViewWriteError,
+    TURN_OUTCOMES,
     discard_outbox,
     outbox_rule_expressible,
     parse_outbox,
@@ -413,6 +414,51 @@ def test_a_corrupt_history_without_a_backup_is_a_storage_error(tmp_path: Path) -
 
     with pytest.raises(StorageError, match="questions history is invalid"):
         questions.load()
+
+
+def test_turn_outcome_round_trips_and_stays_absent_by_default(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    first, second = questions.add(
+        [ProposedQuestion("A?", "", False), ProposedQuestion("B?", "", False)],
+        asked_by="s",
+        asked_by_name="Alpha",
+        auto_run=1,
+        cycle=1,
+        round_n=2,
+    )
+    assert first.turn_outcome is None
+    assert "turn_outcome" not in first.to_dict()
+
+    # Q99 does not exist (deleted, say): it is skipped, not an error.
+    questions.set_turn_outcome([first.id, "Q99"], "stopped")
+
+    loaded = questions.load()
+    assert loaded.find("Q1").turn_outcome == "stopped"
+    assert loaded.find("Q2").turn_outcome is None
+    history = json.loads(questions.history_path.read_text(encoding="utf-8"))
+    assert history["questions"][0]["turn_outcome"] == "stopped"
+    assert "turn_outcome" not in history["questions"][1]
+    view = json.loads(questions.view_path.read_text(encoding="utf-8"))
+    assert all("turn_outcome" not in entry for entry in view["questions"])
+    assert TURN_OUTCOMES == {"failed", "stopped"}
+
+
+def test_turn_outcome_rejects_unknown_values(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    [question] = questions.add(
+        [ProposedQuestion("A?", "", False)],
+        asked_by="s",
+        asked_by_name="Alpha",
+        auto_run=1,
+        cycle=1,
+        round_n=2,
+    )
+    with pytest.raises(ValueError, match="turn outcome is invalid"):
+        questions.set_turn_outcome([question.id], "crashed")
+    data = question.to_dict()
+    data["turn_outcome"] = "crashed"
+    with pytest.raises(ValueError, match="turn outcome is invalid"):
+        Question.from_dict(data)
 
 
 def test_prepare_outbox_creates_the_directory_and_removes_a_stale_outbox(tmp_path: Path) -> None:

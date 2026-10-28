@@ -110,6 +110,7 @@ HISTORY_FORMAT = "delibra-questions/1"
 VIEW_FORMAT = "delibra-questions-view/1"
 QUESTION_STATUSES = frozenset({"open", "answered", "dismissed", "duplicate"})
 VISIBLE_STATUSES = frozenset({"open", "answered"})
+TURN_OUTCOMES = frozenset({"failed", "stopped"})
 
 
 def _text(data: dict[str, Any], key: str) -> str:
@@ -183,6 +184,8 @@ class Question:
     status: str = "open"
     duplicate_of: str | None = None
     answers: list[AnswerRevision] = field(default_factory=list)
+    # How the turn that asked this ended, when it did not complete.
+    turn_outcome: str | None = None
 
     @property
     def number(self) -> int:
@@ -215,15 +218,18 @@ class Question:
             status=_text(data, "status"),
             duplicate_of=_optional_text(data, "duplicate_of"),
             answers=[AnswerRevision.from_dict(item) for item in _list(data, "answers")],
+            turn_outcome=_optional_text(data, "turn_outcome"),
         )
         if not QUESTION_ID.fullmatch(question.id):
             raise ValueError("question id is invalid")
         if question.status not in QUESTION_STATUSES:
             raise ValueError("question status is invalid")
+        if question.turn_outcome is not None and question.turn_outcome not in TURN_OUTCOMES:
+            raise ValueError("question turn outcome is invalid")
         return question
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "id": self.id,
             "asked_by": self.asked_by,
             "asked_by_name": self.asked_by_name,
@@ -238,6 +244,10 @@ class Question:
             "duplicate_of": self.duplicate_of,
             "answers": [item.to_dict() for item in self.answers],
         }
+        # Written only when set, so existing histories stay byte-identical.
+        if self.turn_outcome is not None:
+            data["turn_outcome"] = self.turn_outcome
+        return data
 
 
 class QuestionsViewWriteError(StorageError):
@@ -427,6 +437,21 @@ class QuestionStore:
             except StorageError as exc:
                 raise QuestionsViewWriteError(added) from exc
         return added
+
+    def set_turn_outcome(self, question_ids: Sequence[str], outcome: str) -> None:
+        """Label questions from a failed or stopped turn; missing ids are skipped."""
+
+        if outcome not in TURN_OUTCOMES:
+            raise ValueError("question turn outcome is invalid")
+        book = self.load()
+        wanted = set(question_ids)
+        changed = False
+        for question in book.questions:
+            if question.id in wanted and question.turn_outcome != outcome:
+                question.turn_outcome = outcome
+                changed = True
+        if changed:
+            self._save(book)
 
     @staticmethod
     def _require_visible(question: Question, action: str) -> None:
