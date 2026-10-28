@@ -33,14 +33,19 @@ from app.storage import (
 
 QUESTIONS_DIR = "questions"
 OUTBOX_NAME = "outbox.json"
-OUTBOX_MAX_BYTES = 192 * 1024
-OUTBOX_MAX_QUESTIONS = 25
 QUESTION_MAX_CHARS = 2_000
 ASSUMPTION_MAX_CHARS = 2_000
 ANSWER_MAX_CHARS = 20_000
 QUESTION_ID = re.compile(r"Q[1-9][0-9]{0,8}")
 _OUTBOX_KEYS = frozenset({"question", "assumption", "blocking"})
 VIEW_COPY_NAME = "questions.json"
+# Live questions: one JSON file per question (or batch) in this directory.
+SPOOL_NAME = "outbox"
+SPOOL_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json")
+SPOOL_FILE_MAX_BYTES = 512 * 1024
+TURN_MAX_QUESTIONS = 64
+# The single-file outbox this spool replaced; removed at turn start, never read.
+LEGACY_OUTBOX_NAME = "outbox.json"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -58,8 +63,8 @@ class ProposedQuestion:
 def parse_outbox(data: bytes) -> list[ProposedQuestion]:
     """Validate one agent's outbox, rejecting anything outside the schema."""
 
-    if len(data) > OUTBOX_MAX_BYTES:
-        raise OutboxError(f"outbox is larger than {OUTBOX_MAX_BYTES} bytes")
+    if len(data) > SPOOL_FILE_MAX_BYTES:
+        raise OutboxError(f"outbox is larger than {SPOOL_FILE_MAX_BYTES} bytes")
     try:
         payload = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
@@ -69,8 +74,8 @@ def parse_outbox(data: bytes) -> list[ProposedQuestion]:
     items = payload["questions"]
     if not isinstance(items, list):
         raise OutboxError('"questions" must be a list')
-    if len(items) > OUTBOX_MAX_QUESTIONS:
-        raise OutboxError(f"outbox has more than {OUTBOX_MAX_QUESTIONS} questions")
+    if len(items) > TURN_MAX_QUESTIONS:
+        raise OutboxError(f"outbox has more than {TURN_MAX_QUESTIONS} questions")
     return [_proposal(index, item) for index, item in enumerate(items, start=1)]
 
 
@@ -585,8 +590,9 @@ def prepare_outbox(root: Path, extra_names: Sequence[str] = ()) -> Path:
             QUESTIONS_DIR, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=root_descriptor
         )
         try:
-            for name in (OUTBOX_NAME, *extra_names):
+            for name in (OUTBOX_NAME, SPOOL_NAME, *extra_names):
                 _remove_entry(descriptor, name)
+            os.mkdir(SPOOL_NAME, mode=0o700, dir_fd=descriptor)
         finally:
             os.close(descriptor)
     finally:
@@ -595,7 +601,7 @@ def prepare_outbox(root: Path, extra_names: Sequence[str] = ()) -> Path:
 
 
 def _read_outbox(
-    descriptor: int, name: str = OUTBOX_NAME, limit: int = OUTBOX_MAX_BYTES
+    descriptor: int, name: str = OUTBOX_NAME, limit: int = SPOOL_FILE_MAX_BYTES
 ) -> bytes | None:
     try:
         file_descriptor = os.open(name, _OPEN_FLAGS, dir_fd=descriptor)
@@ -620,7 +626,7 @@ def _read_outbox(
 
 
 def take_outbox(
-    root: Path, *, name: str = OUTBOX_NAME, limit: int = OUTBOX_MAX_BYTES
+    root: Path, *, name: str = OUTBOX_NAME, limit: int = SPOOL_FILE_MAX_BYTES
 ) -> bytes | None:
     """Read and remove the agent's outbox; None when it wrote none.
 
@@ -650,6 +656,59 @@ def discard_outbox(root: Path, *, name: str = OUTBOX_NAME) -> None:
         LOGGER.warning("could not discard the questions outbox under %s", root, exc_info=True)
 
 
+@dataclass(frozen=True)
+class SpoolEntry:
+    name: str
+    # A regular file with a spool name: the only entries Delibra reads.
+    valid: bool
+    # (size, mtime_ns): a half-written file is re-read only once this changes.
+    signature: tuple[int, int]
+
+
+def scan_spool(spool_dir: Path) -> list[SpoolEntry]:
+    """List every spool entry, oldest first, without following symlinks."""
+
+    descriptor = _open_directory(spool_dir)
+    try:
+        entries: list[SpoolEntry] = []
+        with os.scandir(descriptor) as items:
+            for item in items:
+                try:
+                    info = item.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                entries.append(
+                    SpoolEntry(
+                        item.name,
+                        stat.S_ISREG(info.st_mode)
+                        and SPOOL_FILE.fullmatch(item.name) is not None,
+                        (info.st_size, info.st_mtime_ns),
+                    )
+                )
+    finally:
+        os.close(descriptor)
+    entries.sort(key=lambda entry: (entry.signature[1], entry.name))
+    return entries
+
+
+def read_spool_file(spool_dir: Path, name: str) -> bytes | None:
+    """Read one spool file, one byte past the limit; None when it is gone."""
+
+    descriptor = _open_directory(spool_dir)
+    try:
+        return _read_outbox(descriptor, name, SPOOL_FILE_MAX_BYTES)
+    finally:
+        os.close(descriptor)
+
+
+def remove_spool_entry(spool_dir: Path, name: str) -> None:
+    descriptor = _open_directory(spool_dir)
+    try:
+        _remove_entry(descriptor, name)
+    finally:
+        os.close(descriptor)
+
+
 def questions_prompt(
     view_path: Path, outbox_path: Path | None, *, pause_enabled: bool
 ) -> str:
@@ -674,7 +733,7 @@ def questions_prompt(
         "only the user can decide (a preference, access, or a decision outside "
         f"the material), write it to {outbox_path.as_posix()} as JSON: "
         '{"questions": [{"question": "...", "assumption": "...", "blocking": false}]} '
-        f"with at most {OUTBOX_MAX_QUESTIONS} questions. State in assumption what "
+        f"with at most {TURN_MAX_QUESTIONS} questions. State in assumption what "
         "you will proceed on, then continue. Set blocking to true only if no "
         f"reasonable assumption exists; {pause}. Do not ask what the material or "
         "another participant can answer. An open question for the user is not by "

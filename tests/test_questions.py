@@ -10,10 +10,11 @@ import stat
 import pytest
 
 from app.questions import (
-    OUTBOX_MAX_BYTES,
-    OUTBOX_MAX_QUESTIONS,
     OUTBOX_NAME,
     QUESTIONS_DIR,
+    SPOOL_FILE_MAX_BYTES,
+    SPOOL_NAME,
+    TURN_MAX_QUESTIONS,
     OutboxError,
     ProposedQuestion,
     Question,
@@ -26,7 +27,10 @@ from app.questions import (
     parse_outbox,
     prepare_outbox,
     questions_prompt,
+    read_spool_file,
+    remove_spool_entry,
     render_view,
+    scan_spool,
     take_outbox,
 )
 from app.storage import ConflictError, NotFoundError, StorageError
@@ -76,12 +80,13 @@ def test_parse_outbox_rejects_anything_outside_the_schema(data: bytes, message: 
 
 
 def test_parse_outbox_enforces_the_question_and_size_limits() -> None:
-    with pytest.raises(OutboxError, match="more than 25 questions"):
-        parse_outbox(outbox(*({"question": "q"} for _ in range(OUTBOX_MAX_QUESTIONS + 1))))
+    with pytest.raises(OutboxError, match="more than 64 questions"):
+        parse_outbox(outbox(*({"question": "q"} for _ in range(TURN_MAX_QUESTIONS + 1))))
+    parse_outbox(outbox(*({"question": "q"} for _ in range(TURN_MAX_QUESTIONS))))
     with pytest.raises(OutboxError, match="question 1 needs 1 to 2000"):
         parse_outbox(outbox({"question": "x" * 2001}))
-    with pytest.raises(OutboxError, match="larger than 196608 bytes"):
-        parse_outbox(b" " * (OUTBOX_MAX_BYTES + 1))
+    with pytest.raises(OutboxError, match="larger than 524288 bytes"):
+        parse_outbox(b" " * (SPOOL_FILE_MAX_BYTES + 1))
 
 
 _FUZZ_VALUES: tuple[object, ...] = (
@@ -103,7 +108,12 @@ def _fuzz_payload(rng: random.Random) -> bytes:
         return bytes(rng.randrange(256) for _ in range(rng.randint(0, 40)))
     if roll < 0.25:
         return json.dumps(rng.choice(_FUZZ_VALUES)).encode("utf-8")
-    items = [_fuzz_item(rng) for _ in range(rng.randint(0, OUTBOX_MAX_QUESTIONS + 2))]
+    # Mostly short lists, which can be valid; sometimes lists around the limit.
+    if rng.random() < 0.9:
+        count = rng.randint(0, 27)
+    else:
+        count = rng.randint(TURN_MAX_QUESTIONS - 1, TURN_MAX_QUESTIONS + 2)
+    items = [_fuzz_item(rng) for _ in range(count)]
     payload: dict[str, object] = {"questions": items}
     if rng.random() < 0.1:
         payload["extra"] = 1
@@ -118,7 +128,7 @@ def _expected_valid(data: bytes) -> list[ProposedQuestion] | None:
     if not isinstance(payload, dict) or set(payload) != {"questions"}:
         return None
     items = payload["questions"]
-    if not isinstance(items, list) or len(items) > OUTBOX_MAX_QUESTIONS:
+    if not isinstance(items, list) or len(items) > TURN_MAX_QUESTIONS:
         return None
     parsed: list[ProposedQuestion] = []
     for item in items:
@@ -559,9 +569,9 @@ def test_take_outbox_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
 
 def test_take_outbox_bounds_the_read_one_byte_past_the_limit(tmp_path: Path) -> None:
     path = prepare_outbox(tmp_path)
-    path.write_bytes(b" " * (OUTBOX_MAX_BYTES + 10))
+    path.write_bytes(b" " * (SPOOL_FILE_MAX_BYTES + 10))
 
-    assert len(take_outbox(tmp_path)) == OUTBOX_MAX_BYTES + 1
+    assert len(take_outbox(tmp_path)) == SPOOL_FILE_MAX_BYTES + 1
 
 
 def test_discard_outbox_removes_a_directory_planted_as_the_outbox(tmp_path: Path) -> None:
@@ -584,7 +594,7 @@ def test_questions_prompt_names_both_paths_and_the_pause_behaviour() -> None:
     for prompt in (pausing, unattended):
         assert "/p/.delibra/questions.json" in prompt
         assert "/w/questions/outbox.json" in prompt
-        assert "at most 25 questions" in prompt
+        assert "at most 64 questions" in prompt
         assert "not by itself a reason to write Not converged" in prompt
     assert "unless your turn ends the run by agreement or the cycle limit" in pausing
     assert "the run then pauses for the user after your turn" in pausing
@@ -637,3 +647,95 @@ def test_discard_outbox_removes_only_the_named_file(tmp_path: Path) -> None:
     discard_outbox(tmp_path, name="notes-read.json")
     assert not marks.exists()
     assert path.exists()
+
+
+def test_prepare_outbox_gives_each_turn_an_empty_spool(tmp_path: Path) -> None:
+    prepare_outbox(tmp_path)
+    spool = tmp_path / QUESTIONS_DIR / SPOOL_NAME
+    (spool / "q1.json").write_text("{}", encoding="utf-8")
+    (spool / "nested").mkdir()
+
+    prepare_outbox(tmp_path)
+
+    assert spool.is_dir()
+    assert list(spool.iterdir()) == []
+    assert stat.S_IMODE(spool.stat().st_mode) == 0o700
+
+
+def test_prepare_outbox_replaces_a_spool_symlink_without_touching_its_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "keep.json").write_text("keep", encoding="utf-8")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    prepare_outbox(root)
+    spool = root / QUESTIONS_DIR / SPOOL_NAME
+    spool.rmdir()
+    spool.symlink_to(target)
+
+    prepare_outbox(root)
+
+    assert spool.is_dir() and not spool.is_symlink()
+    assert (target / "keep.json").read_text(encoding="utf-8") == "keep"
+
+
+def test_scan_spool_lists_oldest_first_and_flags_what_it_may_read(tmp_path: Path) -> None:
+    prepare_outbox(tmp_path)
+    spool = tmp_path / QUESTIONS_DIR / SPOOL_NAME
+    (spool / "b.json").write_text("{}", encoding="utf-8")
+    (spool / "a.json").write_text("{}", encoding="utf-8")
+    os.utime(spool / "b.json", ns=(1_000, 1_000))
+    os.utime(spool / "a.json", ns=(2_000, 2_000))
+    (spool / ".a.json.tmp").write_text("{}", encoding="utf-8")
+    (spool / "bad name.json").write_text("{}", encoding="utf-8")
+    (spool / "dir.json").mkdir()
+    os.mkfifo(spool / "fifo.json")
+    (spool / "link.json").symlink_to(tmp_path / "elsewhere.json")
+
+    entries = scan_spool(spool)
+
+    valid = [entry.name for entry in entries if entry.valid]
+    assert valid == ["b.json", "a.json"]
+    assert {entry.name for entry in entries if not entry.valid} == {
+        ".a.json.tmp", "bad name.json", "dir.json", "fifo.json", "link.json",
+    }
+    assert entries[0].signature == (2, 1_000)
+
+
+def test_scan_spool_refuses_a_symlinked_spool(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (tmp_path / "spool").symlink_to(target)
+
+    with pytest.raises(OutboxError, match="not a real directory"):
+        scan_spool(tmp_path / "spool")
+
+
+def test_read_spool_file_bounds_the_read_and_refuses_non_regular_files(
+    tmp_path: Path,
+) -> None:
+    prepare_outbox(tmp_path)
+    spool = tmp_path / QUESTIONS_DIR / SPOOL_NAME
+    (spool / "big.json").write_bytes(b" " * (SPOOL_FILE_MAX_BYTES + 10))
+    os.mkfifo(spool / "fifo.json")
+
+    assert len(read_spool_file(spool, "big.json")) == SPOOL_FILE_MAX_BYTES + 1
+    assert read_spool_file(spool, "gone.json") is None
+    with pytest.raises(OutboxError, match="not a regular file"):
+        read_spool_file(spool, "fifo.json")
+
+
+def test_remove_spool_entry_removes_files_and_directories(tmp_path: Path) -> None:
+    prepare_outbox(tmp_path)
+    spool = tmp_path / QUESTIONS_DIR / SPOOL_NAME
+    (spool / "q1.json").write_text("{}", encoding="utf-8")
+    (spool / "dir.json").mkdir()
+    (spool / "dir.json" / "inner").write_text("x", encoding="utf-8")
+
+    remove_spool_entry(spool, "q1.json")
+    remove_spool_entry(spool, "dir.json")
+    remove_spool_entry(spool, "absent.json")
+
+    assert list(spool.iterdir()) == []
