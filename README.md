@@ -264,8 +264,9 @@ The persistent **Auto** button beside **Send** opens project-level Auto setup. B
 the first round, the browser copies the unsent composer text directly into the
 editable topic field; it is never added to the setup URL. Once a conversation
 exists, setup prefers its earliest direct user prompt, falling back to the earliest
-recorded Auto topic. Agents are shown in case-insensitive name order and are all
-selected by default. Select at least two unique agents, choose **All agree** or
+recorded Auto topic. Agents are listed in case-insensitive name order and are all
+selected by default; **↑**/**↓** reorder them, and checked agents speak from top
+to bottom in every cycle. Select at least two unique agents, choose **All agree** or
 **First agree**, and set **Maximum discussion cycles** from 1 through 20 (default
 3). The agreement-policy default is **First agree**.
 

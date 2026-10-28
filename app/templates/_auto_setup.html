@@ -20,14 +20,23 @@
     </label>
     <fieldset>
       <legend>Agents · speaking order</legend>
-      {% for session in sessions %}
-        <label class="auto-choice">
-          <input type="checkbox" name="participant_id" value="{{ session.id }}" checked>
-          {{ session.name }} · {{ session.agent }} · {{ session.model }}
-        </label>
+      {% if sessions %}
+        <p class="hint">Checked agents speak from top to bottom.</p>
+        <ol class="auto-order" data-auto-order>
+          {% for session in sessions %}
+            <li class="auto-order-item" data-auto-order-item>
+              <label class="auto-choice">
+                <input type="checkbox" name="participant_id" value="{{ session.id }}" checked>
+                {{ session.name }} · {{ session.agent }} · {{ session.model }}
+              </label>
+              <button type="button" data-auto-order-move="up" aria-label="Move {{ session.name }} up"{% if loop.first %} disabled{% endif %}>↑</button>
+              <button type="button" data-auto-order-move="down" aria-label="Move {{ session.name }} down"{% if loop.last %} disabled{% endif %}>↓</button>
+            </li>
+          {% endfor %}
+        </ol>
       {% else %}
         <p>No agents are available.</p>
-      {% endfor %}
+      {% endif %}
     </fieldset>
     {% if build_available %}
       <fieldset>

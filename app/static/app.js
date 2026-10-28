@@ -287,6 +287,49 @@ function closeAutoSetup(control) {
   return true;
 }
 
+function syncAutoOrderControls(list) {
+  const items = Array.from(list.children);
+  items.forEach(function (item, index) {
+    const up = item.querySelector('[data-auto-order-move="up"]');
+    const down = item.querySelector('[data-auto-order-move="down"]');
+    if (up) {
+      up.disabled = index === 0;
+    }
+    if (down) {
+      down.disabled = index === items.length - 1;
+    }
+  });
+}
+
+function moveAutoOrderItem(control) {
+  if (!control || typeof control.closest !== "function") {
+    return false;
+  }
+  const item = control.closest("[data-auto-order-item]");
+  const list = item ? item.parentElement : null;
+  if (!list) {
+    return false;
+  }
+  const direction = control.dataset.autoOrderMove;
+  // Move the neighbour, not the item: detaching the focused row blurs it.
+  if (direction === "up" && item.previousElementSibling) {
+    list.insertBefore(item.previousElementSibling, item.nextElementSibling);
+  } else if (direction === "down" && item.nextElementSibling) {
+    list.insertBefore(item.nextElementSibling, item);
+  } else {
+    return false;
+  }
+  syncAutoOrderControls(list);
+  const opposite = direction === "up" ? "down" : "up";
+  const target = control.disabled
+    ? item.querySelector(`[data-auto-order-move="${opposite}"]`)
+    : control;
+  if (target && typeof target.focus === "function") {
+    target.focus();
+  }
+  return true;
+}
+
 function focusAutoHistoryView(target) {
   if (
     !target ||
@@ -415,6 +458,7 @@ if (typeof module !== "undefined" && module.exports) {
     formatRemainingSeconds,
     handleFocusDialogCancel,
     isDialogBackdropClick,
+    moveAutoOrderItem,
     openFocusDialog,
     removeConversationEmptyState,
     resetFileReader,
@@ -423,6 +467,7 @@ if (typeof module !== "undefined" && module.exports) {
     restoreConversationScroll,
     setTimeoutFormPending,
     shouldClearChatError,
+    syncAutoOrderControls,
     syncConversationDisclosure,
     syncAutoDisabledControls,
     syncComposerAvailability,
@@ -558,6 +603,14 @@ if (typeof document !== "undefined") {
         : null;
     if (autoCloseControl) {
       closeAutoSetup(autoCloseControl);
+      return;
+    }
+    const autoOrderControl =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest("[data-auto-order-move]")
+        : null;
+    if (autoOrderControl) {
+      moveAutoOrderItem(autoOrderControl);
       return;
     }
     const fileCloseControl =
