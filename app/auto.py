@@ -30,6 +30,7 @@ from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
 from app.docker_backend import DockerController, DockerStopFailed, DockerUnavailable
 from app.health import probe_build_version
+from app.live_questions import LiveQuestions
 from app.agents.base import DockerAccess
 from app.agents.errors import is_retryable
 from app.models import (
@@ -65,17 +66,15 @@ from app.notes import (
     parse_marks,
 )
 from app.questions import (
-    OUTBOX_NAME,
     QUESTIONS_DIR,
+    SPOOL_NAME,
     VIEW_COPY_NAME,
     OutboxError,
     Question,
     QuestionStore,
     QuestionView,
-    QuestionsViewWriteError,
     discard_outbox,
     outbox_rule_expressible,
-    parse_outbox,
     prepare_outbox,
     questions_prompt,
     take_outbox,
@@ -2177,6 +2176,8 @@ class AutoManager:
         view: QuestionView | None = None
         notes_view: NoteView | None = None
         unavailable: str | None = None
+        turn_cycle: int | None = None
+        spool_dir: Path | None = None
         key = None
         try:
             async with self.locks.registry_project_sessions(
@@ -2188,15 +2189,16 @@ class AutoManager:
                     terminal = current
                 else:
                     # Before the round exists, so a failure here orphans nothing.
-                    view, view_path, outbox_path, unavailable = self._prepare_questions_locked(
+                    view, view_path, spool_dir, unavailable = self._prepare_questions_locked(
                         store, current, participant.session_id,
                         participant.agent, outbox_root
                     )
+                    turn_cycle = current.current_cycle
                     notes_view, notes_path, notes_live = self._prepare_notes_locked(
                         store, current, view_path
                     )
                     marks_path = (
-                        outbox_path.with_name(MARKS_NAME) if outbox_path is not None else None
+                        spool_dir.with_name(MARKS_NAME) if spool_dir is not None else None
                     )
                     round_n = store.allocate_round(participant.session_id)
                     staged = Path("inputs") / f"round-{round_n:02d}" / "auto-context.md"
@@ -2245,7 +2247,7 @@ class AutoManager:
                                 "do not use Converged or Hội tụ in those final three lines."
                             )
                         ) + questions_prompt(
-                            view_path, outbox_path, pause_enabled=current.pause_on_blocking_questions
+                            view_path, spool_dir, pause_enabled=current.pause_on_blocking_questions
                         ) + notes_prompt(notes_path, live=notes_live, marks_path=marks_path),
                         build=current.kind == "build",
                         docker=lease[0] if lease is not None else None,
@@ -2265,6 +2267,19 @@ class AutoManager:
             self._publish_status(terminal)
             return "done"
         assert key is not None
+        live = (
+            LiveQuestions(
+                QuestionStore(store.root, self.settings.auto_questions_view_limit),
+                spool_dir,
+                asked_by=participant.session_id,
+                asked_by_name=participant.name,
+                auto_run=record.number,
+                cycle=turn_cycle,
+                round_n=key.round_n,
+            )
+            if spool_dir is not None
+            else None
+        )
         # Persisting active_key does not refresh the browser. Publish while the
         # key is live; otherwise the next automatic status event occurs only
         # after this round finishes and the timeline can never render it live.
@@ -2273,9 +2288,13 @@ class AutoManager:
         outcome: Literal["done", "retry"] = "done"
         async with self.locks.project_sessions(record.project_id, [participant.session_id]):
             current = store.load_auto_run(record.id)
+            # Every outcome keeps what the agent asked (user decision 4-5).
+            if live is not None:
+                live.harvest(final=True)
             if current.stop_requested:
-                discard_outbox(outbox_root)
                 discard_outbox(outbox_root, name=MARKS_NAME)
+                if live is not None:
+                    live.mark_outcome("stopped")
                 self._transition_terminal_locked(
                     store,
                     current,
@@ -2283,8 +2302,9 @@ class AutoManager:
                     "stopped by user",
                 )
             elif result.status != "complete":
-                discard_outbox(outbox_root)
                 discard_outbox(outbox_root, name=MARKS_NAME)
+                if live is not None:
+                    live.mark_outcome("failed")
                 outcome = self._classify_turn_failure(
                     store,
                     current,
@@ -2307,9 +2327,7 @@ class AutoManager:
                     if current.kind == "build"
                     else None
                 )
-                asked, question_warning = self._harvest_questions_locked(
-                    store, current, participant, result.n, outbox_root
-                )
+                asked = live.asked if live is not None else []
                 marked, marks_warning = self._harvest_note_marks(outbox_root)
                 assert notes_view is not None
                 credit, note_warning = self._deliver_notes_locked(
@@ -2330,7 +2348,7 @@ class AutoManager:
                             for item in (
                                 build_warning,
                                 unavailable,
-                                question_warning,
+                                *(live.warnings if live is not None else ()),
                                 marks_warning,
                                 note_warning,
                             )
@@ -2816,7 +2834,7 @@ class AutoManager:
     ) -> tuple[QuestionView, Path, Path | None, str | None]:
         """Refresh the view and name the paths this turn's prompt carries.
 
-        Returns the view, the view path to name, the outbox path (None when
+        Returns the view, the view path to name, the spool directory (None when
         this turn cannot be given one) and a turn warning.
         """
 
@@ -2829,18 +2847,18 @@ class AutoManager:
                     "question outbox unavailable: the build temp path cannot be "
                     "expressed in a Claude permission rule"
                 )
-            return view, questions.view_path, outbox_dir / OUTBOX_NAME, None
-        outbox_path = prepare_outbox(outbox_root, extra_names=(MARKS_NAME,))
+            return view, questions.view_path, outbox_dir / SPOOL_NAME, None
+        spool_dir = prepare_outbox(outbox_root, extra_names=(MARKS_NAME,))
         if first_unsafe_writable_root_character(str(store.project_path)) is None:
-            return view, questions.view_path, outbox_path, None
+            return view, questions.view_path, spool_dir, None
         # Claude cannot read .delibra here (RunManager omits the project read
         # rule) and no provider's read from such a path is measured, so every
         # provider gets the same turn-start copy. Refreshing it mid-turn would
         # mean writing where the agent can plant a symlink; answers saved
         # during this turn reach the next one.
-        copy = outbox_path.with_name(VIEW_COPY_NAME)
+        copy = spool_dir.with_name(VIEW_COPY_NAME)
         atomic_write_bytes(copy, view.data)
-        return view, copy, outbox_path, None
+        return view, copy, spool_dir, None
 
     def _prepare_notes_locked(
         self, store: ProjectStore, record: AutoRunRecord, questions_view_path: Path
@@ -2895,44 +2913,6 @@ class AutoManager:
         if credit.unknown:
             return credit, f"note read marks named unknown notes: {', '.join(credit.unknown)}"
         return credit, None
-
-    def _harvest_questions_locked(
-        self,
-        store: ProjectStore,
-        record: AutoRunRecord,
-        participant: AutoParticipant,
-        round_n: int,
-        outbox_root: Path,
-    ) -> tuple[list[Question], str | None]:
-        """Move a completed turn's outbox into the store; never fail the turn."""
-
-        try:
-            data = take_outbox(outbox_root)
-            proposals = parse_outbox(data) if data is not None else []
-        except (OutboxError, OSError) as exc:
-            return [], f"questions outbox ignored: {exc}"
-        if not proposals:
-            return [], None
-        try:
-            added = QuestionStore(store.root, self.settings.auto_questions_view_limit).add(
-                proposals,
-                asked_by=participant.session_id,
-                asked_by_name=participant.name,
-                auto_run=record.number,
-                cycle=record.current_cycle,
-                round_n=round_n,
-            )
-        except QuestionsViewWriteError as exc:
-            LOGGER.warning(
-                "Auto run %s saved questions but could not update their view",
-                record.id,
-                exc_info=True,
-            )
-            return list(exc.saved), "questions saved, but the agent view could not be updated"
-        except StorageError:
-            LOGGER.exception("Auto run %s could not save its questions", record.id)
-            return [], "questions store unavailable; this turn's questions were not saved"
-        return added, None
 
     def _pause_for_blocking_questions_locked(
         self,

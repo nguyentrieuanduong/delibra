@@ -468,6 +468,7 @@ class PlannedOutput:
     failure_mode: str | None = None
     outbox: str | None = None
     notes_read: str | None = None
+    spool: tuple[tuple[str, str], ...] = ()
 
 
 class RecordingAutoAdapter:
@@ -490,8 +491,12 @@ class RecordingAutoAdapter:
             context.coding.temp_dir if context.coding is not None else context.workspace
         )
         if self.output.outbox is not None:
-            (outbox_root / "questions" / "outbox.json").write_text(
+            (outbox_root / "questions" / "outbox" / "q1.json").write_text(
                 self.output.outbox, encoding="utf-8"
+            )
+        for name, text in self.output.spool:
+            (outbox_root / "questions" / "outbox" / name).write_text(
+                text, encoding="utf-8"
             )
         if self.output.notes_read is not None:
             (outbox_root / "questions" / "notes-read.json").write_text(
@@ -5458,7 +5463,7 @@ async def test_a_completed_turn_harvests_its_outbox_into_the_project_store(
     assert question.round == terminal.discussion[0].round_n
     assert terminal.discussion[0].asked == ["Q1"]
     assert terminal.discussion[1].asked is None
-    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox.json").exists()
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox" / "q1.json").exists()
     # The second speaker started after the harvest, so its view held Q1.
     assert terminal.discussion[1].questions_seen == ["Q1@0"]
 
@@ -5484,9 +5489,9 @@ async def test_a_completed_build_turn_harvests_its_temp_outbox(
     assert question.question == "Deploy where?"
     assert terminal.discussion[0].asked == [question.id]
     assert terminal.discussion[1].questions_seen == [f"{question.id}@0"]
-    temp_outbox = manager.settings.build_tmp_root / session_ids[0] / "questions" / "outbox.json"
-    assert temp_outbox.as_posix() in str(factory.calls[0]["prompt"])
-    assert not temp_outbox.exists()
+    spool = manager.settings.build_tmp_root / session_ids[0] / "questions" / "outbox"
+    assert f"{spool.as_posix()}/" in str(factory.calls[0]["prompt"])
+    assert not (spool / "q1.json").exists()
 
 
 @pytest.mark.asyncio
@@ -5500,7 +5505,7 @@ async def test_every_discussion_turn_names_the_view_and_its_own_outbox(tmp_path:
     for call, session_id in zip(factory.calls, session_ids):
         prompt = str(call["prompt"])
         assert (store.root / "questions.json").as_posix() in prompt
-        assert (store.workspace_dir(session_id) / "questions" / "outbox.json").as_posix() in prompt
+        assert f"{(store.workspace_dir(session_id) / 'questions' / 'outbox').as_posix()}/" in prompt
         assert "the run then pauses for the user after your turn" in prompt
 
 
@@ -5541,25 +5546,88 @@ async def test_an_invalid_outbox_warns_on_the_turn_and_harvests_nothing(tmp_path
 
     assert terminal.status == "limit_reached"
     assert terminal.discussion[0].warning == (
-        "questions outbox ignored: question 1 has unknown keys: extra"
+        "question file q1.json ignored: question 1 has unknown keys: extra"
     )
     assert QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions == []
-    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox.json").exists()
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox" / "q1.json").exists()
 
 
 @pytest.mark.asyncio
-async def test_a_failed_turn_discards_its_outbox(tmp_path: Path) -> None:
+async def test_a_failed_turn_keeps_its_questions_labelled_failed(tmp_path: Path) -> None:
     manager, _, project_id, session_ids, store = auto_manager_fixture(
         tmp_path,
-        [PlannedOutput("unused", provider_error=True, outbox=_outbox({"question": "Lost?"}))],
+        [PlannedOutput("unused", provider_error=True, outbox=_outbox({"question": "Kept?"}))],
     )
 
     _, terminal = await _one_cycle(manager, project_id, session_ids)
 
     assert terminal.status == "error"
-    assert terminal.discussion == []
-    assert QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions == []
-    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox.json").exists()
+    [question] = QuestionStore(
+        store.root, manager.settings.auto_questions_view_limit
+    ).load().questions
+    assert (question.question, question.turn_outcome) == ("Kept?", "failed")
+    assert not (store.workspace_dir(session_ids[0]) / "questions" / "outbox" / "q1.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_turn_keeps_its_questions_labelled_stopped(tmp_path: Path) -> None:
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput(
+                "unused",
+                sleep=True,
+                outbox=_outbox({"question": "Stopped?", "blocking": True}),
+            )
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Questions topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    await manager.stop(project_id, created.id)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "stopped by user"
+    [question] = QuestionStore(
+        store.root, manager.settings.auto_questions_view_limit
+    ).load().questions
+    assert (question.question, question.turn_outcome) == ("Stopped?", "stopped")
+
+
+@pytest.mark.asyncio
+async def test_a_turn_saves_every_spool_file_in_order_up_to_64(tmp_path: Path) -> None:
+    many = json.dumps({"questions": [{"question": f"q{index}?"} for index in range(63)]})
+    manager, _, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput(
+                "Alpha",
+                spool=(
+                    ("a.json", _outbox({"question": "One?"})),
+                    ("b.json", many),
+                    ("c.json", _outbox({"question": "Over?"})),
+                ),
+            ),
+            PlannedOutput("Beta"),
+        ],
+    )
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    saved = QuestionStore(store.root, manager.settings.auto_questions_view_limit).load().questions
+    assert len(saved) == 64
+    assert saved[0].question == "One?"
+    assert terminal.discussion[0].asked == [question.id for question in saved]
+    assert terminal.discussion[0].warning == (
+        "question file c.json ignored: the turn would pass 64 questions"
+    )
 
 
 @pytest.mark.asyncio
@@ -5631,7 +5699,7 @@ def test_a_claude_build_turn_gets_no_outbox_when_its_rule_is_inexpressible(
         "question outbox unavailable: the build temp path cannot be expressed in a "
         "Claude permission rule"
     )
-    assert (codex_outbox, codex_warning) == (unsafe_root / "questions" / "outbox.json", None)
+    assert (codex_outbox, codex_warning) == (unsafe_root / "questions" / "outbox", None)
 
 
 @pytest.mark.asyncio
