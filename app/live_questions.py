@@ -6,10 +6,14 @@ project lock: from the spool watcher mid-turn, and once more at turn end.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from hashlib import sha256
 import logging
 from pathlib import Path
+
+from watchfiles import awatch
 
 from app.questions import (
     SPOOL_FILE_MAX_BYTES,
@@ -33,6 +37,10 @@ STORE_UNAVAILABLE = "questions store unavailable; some questions were not saved"
 VIEW_STALE = "questions saved, but the agent view could not be updated"
 # Files read per mid-turn harvest; the next event or the turn end reads the rest.
 SCAN_READS = 64
+WATCH_STEP_MS = 50
+# A file written between the first harvest and the watch's registration
+# raises no event; one rescan this long after the start finds it.
+REGISTRATION_RESCAN_SECONDS = 1.0
 
 
 @dataclass
@@ -161,3 +169,37 @@ class LiveQuestions:
             remove_spool_entry(self.spool_dir, name)
         except (OutboxError, OSError):
             LOGGER.warning("could not remove question file %s", name, exc_info=True)
+
+
+async def watch_spool(
+    live: LiveQuestions,
+    harvest: Callable[[], Awaitable[None]],
+    stop: asyncio.Event,
+) -> None:
+    """Harvest now, once more after registration, and on every spool change.
+
+    Events only say "look now": each harvest rescans the whole directory,
+    so a coalesced or missed event loses nothing the turn end won't find.
+    """
+
+    async def rescan() -> None:
+        await asyncio.sleep(REGISTRATION_RESCAN_SECONDS)
+        await harvest()
+
+    await harvest()
+    late = asyncio.create_task(rescan())
+    try:
+        async for _changes in awatch(
+            live.spool_dir,
+            stop_event=stop,
+            step=WATCH_STEP_MS,
+            recursive=False,
+            watch_filter=None,
+        ):
+            await harvest()
+    except Exception:
+        LOGGER.warning("live questions watch failed for %s", live.spool_dir, exc_info=True)
+        live.warn(LIVE_UNAVAILABLE)
+    finally:
+        late.cancel()
+        await asyncio.gather(late, return_exceptions=True)
