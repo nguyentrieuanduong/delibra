@@ -538,8 +538,12 @@ def _remove_entry(descriptor: int, name: str) -> None:
             os.close(opened)
 
 
-def prepare_outbox(root: Path) -> Path:
-    """Prepare a previous agent's questions directory for this turn."""
+def prepare_outbox(root: Path, extra_names: Sequence[str] = ()) -> Path:
+    """Prepare a previous agent's questions directory for this turn.
+
+    ``extra_names`` are other per-turn files the directory holds beside the
+    outbox; a previous turn's copy of each is removed too.
+    """
     root_descriptor = _open_directory(root)
     try:
         try:
@@ -556,7 +560,8 @@ def prepare_outbox(root: Path) -> Path:
             QUESTIONS_DIR, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=root_descriptor
         )
         try:
-            _remove_entry(descriptor, OUTBOX_NAME)
+            for name in (OUTBOX_NAME, *extra_names):
+                _remove_entry(descriptor, name)
         finally:
             os.close(descriptor)
     finally:
@@ -564,9 +569,11 @@ def prepare_outbox(root: Path) -> Path:
     return root / QUESTIONS_DIR / OUTBOX_NAME
 
 
-def _read_outbox(descriptor: int) -> bytes | None:
+def _read_outbox(
+    descriptor: int, name: str = OUTBOX_NAME, limit: int = OUTBOX_MAX_BYTES
+) -> bytes | None:
     try:
-        file_descriptor = os.open(OUTBOX_NAME, _OPEN_FLAGS, dir_fd=descriptor)
+        file_descriptor = os.open(name, _OPEN_FLAGS, dir_fd=descriptor)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -575,7 +582,7 @@ def _read_outbox(descriptor: int) -> bytes | None:
         if not stat.S_ISREG(os.fstat(file_descriptor).st_mode):
             raise OutboxError("outbox is not a regular file")
         chunks: list[bytes] = []
-        remaining = OUTBOX_MAX_BYTES + 1
+        remaining = limit + 1
         while remaining > 0:
             chunk = os.read(file_descriptor, min(remaining, 64 * 1024))
             if not chunk:
@@ -587,7 +594,9 @@ def _read_outbox(descriptor: int) -> bytes | None:
         os.close(file_descriptor)
 
 
-def take_outbox(root: Path) -> bytes | None:
+def take_outbox(
+    root: Path, *, name: str = OUTBOX_NAME, limit: int = OUTBOX_MAX_BYTES
+) -> bytes | None:
     """Read and remove the agent's outbox; None when it wrote none.
 
     The read stops one byte past the limit, so parse_outbox rejects an
@@ -599,19 +608,19 @@ def take_outbox(root: Path) -> bytes | None:
     except FileNotFoundError:
         return None
     try:
-        return _read_outbox(descriptor)
+        return _read_outbox(descriptor, name, limit)
     finally:
         try:
-            _remove_entry(descriptor, OUTBOX_NAME)
+            _remove_entry(descriptor, name)
         finally:
             os.close(descriptor)
 
 
-def discard_outbox(root: Path) -> None:
+def discard_outbox(root: Path, *, name: str = OUTBOX_NAME) -> None:
     """Drop a failed or cancelled turn's outbox; it never reaches the store."""
 
     try:
-        take_outbox(root)
+        take_outbox(root, name=name)
     except (OutboxError, OSError):
         LOGGER.warning("could not discard the questions outbox under %s", root, exc_info=True)
 
