@@ -128,7 +128,10 @@ textarea { min-height: 7rem; }
 }
 #auto-panel .auto-preparation-heading h4 { margin: 0; }
 #auto-history-view { min-width: 0; }
+/* The composer's column: the message box, then the notes box under it. */
+.conversation-input { display: grid; gap: .75rem; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 #chat-composer { margin: 0; }
+#chat-composer .composer-agent-meta { margin: 0; }
 #chat-composer textarea { min-height: 3rem; }
 .composer-actions, .auto-status-heading, .auto-setup-heading {
   align-items: center;
@@ -170,6 +173,20 @@ textarea { min-height: 7rem; }
 .auto-setup-dialog .auto-order { display: grid; gap: .35rem; margin: 0; padding-left: 1.5rem; }
 .auto-setup-dialog .auto-order-item { align-items: center; display: flex; gap: .35rem; }
 .auto-setup-dialog .auto-order-item .auto-choice { flex: 1; }
+/* "Note", a one-line box and Send on one row; the small hint on the next. */
+.auto-notes form {
+  align-items: center;
+  gap: .15rem .5rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 0;
+}
+.auto-notes textarea { box-sizing: border-box; min-height: 0; resize: vertical; }
+.auto-notes .hint { font-size: .75rem; grid-column: 1 / -1; margin: 0; opacity: .7; }
+.auto-notes-list ul { list-style: none; margin: .5rem 0 0; max-height: 30vh; overflow: auto; padding: 0; }
+.auto-note-meta, .auto-note form { margin: 0; }
+.auto-note form { justify-items: start; }
+.auto-note-text { margin: .25rem 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.auto-note.delivered, .auto-note.deleted, .auto-note.undelivered { opacity: .7; }
 .auto-status {
   border: 1px solid #3b82c488;
   border-radius: .5rem;

@@ -553,6 +553,42 @@ limit, that outcome stands and Continue Auto still lists the questions. When off
 agents are told the run will not pause and continue on their assumptions.
 Preparation and compaction turns neither see nor ask questions.
 
+## Notes to Auto agents
+
+Under the message box, beside the Auto status, the one-line **Note** box sends
+guidance to the latest Auto
+run while it is preparing, discussing or stopped (a blocking-question pause is
+`stopped`). Notes are stored in `.delibra/notes-history.json`; agents read the
+run's pending notes from `.delibra/notes.json` (or a turn-start copy beside
+their questions copy on a project path Claude rules cannot express). A note
+is in the live view as soon as you post it, including while a turn runs; the
+prompt tells agents you can add notes at any time and to read the file at the
+start of the turn, before significant decisions, and before finishing. A
+turn-start copy cannot change mid-turn, so its prompt says mid-turn notes
+reach the next turn. Agents treat notes as user direction that overrides the
+topic where they conflict. When a turn has a questions outbox, the agent is
+also asked to list the notes it read in `questions/notes-read.json`
+(`{"read": ["N1"]}`) beside it; a completed turn credits a note it saw at
+turn start or marked read, so a note read mid-turn counts at once. Marks
+are the agent's own claim; an invalid file or unknown ID adds a turn
+warning, and the list shows who marked each note.
+
+A run that converges, reaches its cycle limit or fails while a note is
+still pending keeps that outcome. The note stays pending: the run's status
+lists it with the agents that have not received it, and **Continue Auto**
+delivers it. Before a new run would mark such notes undelivered, the Auto
+setup dialog warns and names them. A note sent just after a run ended is
+refused with "Auto N has ended (...); continue it before sending a note",
+and the box keeps your text. Build agents have a shell and notes override the
+topic, so only this machine (a loopback client) may post a note to a build
+run, as with starting or continuing one. Each turn records
+the notes its view held at turn start. A note leaves the view once every
+available participant has completed a turn that started while it was there;
+a note posted mid-turn counts only from the next turn. Delete removes a
+pending note from the view at once. Delivered and deleted notes stay in the
+history, and starting a new run marks the previous run's pending notes
+undelivered. Preparation and compaction turns do not read notes.
+
 ## Coding mode and build runs
 
 Each project has a **Coding** setting on its Settings page. It is off by default,

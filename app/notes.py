@@ -127,6 +127,17 @@ class NoteBook:
                 return note
         raise NotFoundError(f"note {note_id} not found")
 
+    @property
+    def revision(self) -> int:
+        """Grows with every change to any note and never shrinks, so two
+        renderings of the list can be ordered: ids issued, deliveries, marks
+        and closures each add one."""
+
+        return self.next_id + sum(
+            len(note.delivered_to) + len(note.marked_by) + (note.status != "pending")
+            for note in self.notes
+        )
+
     def pending(self, auto_run: int) -> list[Note]:
         return [
             note

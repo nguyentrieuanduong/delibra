@@ -31,7 +31,7 @@ from app.questions import QuestionStore
 from app.security import is_loopback_client, require_loopback_client, validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
 from app.urls import project_url
-from app.views import agent_views, auto_run_usage
+from app.views import agent_views, auto_notes_context, auto_run_usage, undelivered_notes
 
 
 router = APIRouter()
@@ -398,6 +398,7 @@ def auto_status_context(
     project = request_project(request, project_id)
     store = ProjectStore(project)
     material = _auto_material_context(request, store, record)
+    notes = auto_notes_context(store, record)
     current_participant = (
         record.participants[record.next_participant]
         if record.status in ACTIVE_AUTO_STATUSES
@@ -430,6 +431,13 @@ def auto_status_context(
         "auto_history_status_oob": refresh_history_status,
         "auto_agent_cards": (
             _participant_cards(store, record) if refresh_agent_cards else []
+        ),
+        "auto_notes_open": notes["notes_open"],
+        "auto_notes": notes,
+        "undelivered_notes": (
+            undelivered_notes(store, record)
+            if record.status in TERMINAL_AUTO_STATUSES
+            else []
         ),
         "run_open_questions": sum(
             1 for question in _run_questions(request, store, record) if question.status == "open"
@@ -469,11 +477,17 @@ def projected_auto_setup_context(
     sessions: list[SessionConfig],
     auto_records: Iterable[AutoRunRecord],
 ) -> dict:
+    auto_records = list(auto_records)
     ordered_sessions = sorted(
         sessions,
         key=lambda item: (item.name.casefold(), item.id),
     )
     topic = _durable_topic(request, store, auto_records)
+    latest = max(
+        (record for record in auto_records if record.number is not None),
+        key=lambda record: record.number,
+        default=None,
+    )
     settings = request.app.state.settings
     coding = store.coding_policy()
     return {
@@ -495,6 +509,8 @@ def projected_auto_setup_context(
             and coding.env.status == "ready"
         ),
         "build_docker": coding.docker if coding.docker.enabled else None,
+        "pending_notes": undelivered_notes(store, latest),
+        "pending_notes_run": latest.number if latest is not None else None,
     }
 
 

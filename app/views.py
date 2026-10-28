@@ -7,12 +7,15 @@ from typing import Any
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import (
+    AutoParticipant,
+    AutoRunRecord,
     Project,
     RoundRecord,
     SessionConfig,
     TurnUsage,
     total_turn_usage,
 )
+from app.notes import NOTE_MAX_CHARS, NoteStore
 from app.storage import (
     NotFoundError,
     ProjectStore,
@@ -276,3 +279,69 @@ def agent_views(
             }
         )
     return views
+
+
+# A blocking question pauses a run as "stopped"; Continue Auto resumes it.
+NOTE_RUN_STATUSES = frozenset({"preparing", "discussing", "stopped"})
+
+
+def accepts_notes(record: AutoRunRecord | None) -> bool:
+    return (
+        record is not None
+        and record.number is not None
+        and record.status in NOTE_RUN_STATUSES
+    )
+
+
+def _available_participants(record: AutoRunRecord) -> list[AutoParticipant]:
+    gone = {item.session_id for item in record.unavailable}
+    return [item for item in record.participants if item.session_id not in gone]
+
+
+def auto_notes_context(store: ProjectStore, record: AutoRunRecord | None) -> dict[str, Any]:
+    """The notes box and list for the run the Auto panel shows."""
+
+    book = NoteStore(store.root).load()
+    names: dict[str, str] = {}
+    if record is None or record.number is None:
+        notes, available = [], set()
+    else:
+        names = {item.session_id: item.name for item in record.participants}
+        available = {item.session_id for item in _available_participants(record)}
+        notes = sorted(
+            (note for note in book.notes if note.auto_run == record.number),
+            key=lambda note: note.number,
+            reverse=True,
+        )
+    return {
+        "notes": notes,
+        "note_counts": {note.id: len(available.intersection(note.delivered_to)) for note in notes},
+        "note_marked": {
+            note.id: [names.get(session_id, session_id) for session_id in note.marked_by]
+            for note in notes
+        },
+        "note_participants": len(available),
+        "notes_revision": book.revision,
+        "notes_open": accepts_notes(record),
+        "note_max": NOTE_MAX_CHARS,
+    }
+
+
+def undelivered_notes(store: ProjectStore, record: AutoRunRecord | None) -> list[dict[str, Any]]:
+    """The run's pending notes and the available participants each still lacks."""
+
+    if record is None or record.number is None:
+        return []
+    waiting = _available_participants(record)
+    pending = sorted(
+        NoteStore(store.root).load().pending(record.number), key=lambda note: note.number
+    )
+    return [
+        {
+            "id": note.id,
+            "missing": [
+                item.name for item in waiting if item.session_id not in note.delivered_to
+            ],
+        }
+        for note in pending
+    ]

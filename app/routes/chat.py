@@ -22,6 +22,7 @@ from app.storage import ProjectStore, validate_id
 from app.urls import project_url
 from app.views import (
     agent_views,
+    auto_notes_context,
     conversation_round_views,
     effort_levels,
     round_views,
@@ -182,6 +183,7 @@ async def chat_page(
             "auto_active": auto_active,
             "auto_setup": setup_context,
             "questions_panel": questions_panel_context(request, project),
+            "notes_box": auto_notes_context(store, auto_record),
             "auto_migration_warning": auto_projection.warning,
             "health": request.app.state.health,
             **usage_badge_context(request),

@@ -1,0 +1,16 @@
+<section id="auto-notes" class="auto-notes" aria-label="Notes to Auto agents">
+  <form
+    data-auto-notes-form
+    method="post"
+    action="{{ project_url(project.name, '/auto-notes') }}"
+    hx-post="{{ project_url(project.name, '/auto-notes') }}"
+    hx-swap="none"
+  >
+    <label for="auto-note-text">Note</label>
+    {# One row tall, but a textarea, so a pasted multi-line note keeps its lines. #}
+    <textarea id="auto-note-text" name="text" rows="1" maxlength="{{ note_max }}" required aria-describedby="auto-note-hint" data-auto-notes-input{% if not notes_open %} disabled{% endif %}></textarea>
+    <button type="submit" aria-label="Send note to agents" data-auto-notes-input{% if not notes_open %} disabled{% endif %}>Send</button>
+    <p id="auto-note-hint" class="hint">Agents read notes each turn while Auto runs or is paused.</p>
+  </form>
+  {% include "_auto_notes_list.html" %}
+</section>

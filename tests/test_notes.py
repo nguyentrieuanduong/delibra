@@ -259,3 +259,29 @@ def test_parse_marks_generated_inputs_parse_or_raise_only_outbox_error() -> None
             valid += 1
             assert parse_marks(data) == expected
     assert valid > 50
+
+
+def test_the_revision_grows_with_every_change_and_only_then(tmp_path: Path) -> None:
+    notes = NoteStore(tmp_path)
+    seen = [notes.load().revision]
+
+    def changed() -> None:
+        revision = notes.load().revision
+        assert revision > seen[-1]
+        seen.append(revision)
+
+    notes.add("first", auto_run=1)
+    changed()
+    notes.add("second", auto_run=1)
+    changed()
+    notes.record_delivery(1, "a", ["N1"], {"a", "b"})
+    changed()
+    notes.record_delivery(1, "b", [], {"a", "b"}, marked=["N1"])
+    changed()  # credit, mark and retirement
+    notes.record_delivery(1, None, [], {"a", "b"})
+    assert notes.load().revision == seen[-1]  # nothing changed
+    notes.delete("N2")
+    changed()
+    notes.add("third", auto_run=1)
+    notes.abandon_before(2)
+    changed()
