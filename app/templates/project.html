@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import effort_options %}
 {% block title %}{{ project.name }} · Delibra{% endblock %}
+{% block body_class %}settings-page{% endblock %}
 {% block content %}
   <p><a href="/">Projects</a> · <a href="{{ project_url(project.name, '/chat') }}">Chat</a></p>
   <h1>{{ project.name }}</h1>
