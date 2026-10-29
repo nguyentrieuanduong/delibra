@@ -300,3 +300,25 @@ async def test_a_watch_failure_warns_and_returns(
     await asyncio.wait_for(task, timeout=6)
 
     assert harvest.warnings == [LIVE_UNAVAILABLE]
+
+
+def test_a_symlinked_questions_directory_is_never_followed(tmp_path: Path) -> None:
+    # The agent can replace its questions/ directory mid-turn; the spool
+    # must not resolve through it to someone else's "outbox" directory.
+    harvest = live(tmp_path)
+    victim = tmp_path / "victim"
+    (victim / SPOOL_NAME).mkdir(parents=True)
+    (victim / SPOOL_NAME / "q1.json").write_text(ask("Secret?"), encoding="utf-8")
+    (victim / SPOOL_NAME / "keep.txt").write_text("keep", encoding="utf-8")
+    questions_dir = harvest.spool_dir.parent
+    harvest.spool_dir.rmdir()
+    questions_dir.rmdir()
+    questions_dir.symlink_to(victim)
+
+    assert harvest.harvest(final=True) == []
+
+    assert harvest.warnings[0].startswith("questions outbox unreadable:")
+    assert sorted(path.name for path in (victim / SPOOL_NAME).iterdir()) == [
+        "keep.txt", "q1.json",
+    ]
+    assert harvest.store.load().questions == []
