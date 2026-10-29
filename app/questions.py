@@ -1,8 +1,9 @@
 """Project-wide questions Auto agents ask the user, and the user's answers.
 
-Agents never write the store. Each writes only its own outbox, which Delibra
-harvests after a completed turn. ``questions-history.json`` is the source of
-truth; ``questions.json`` is the view agents read, regenerated on every write.
+Agents never write the store. Each writes only its own question spool, which
+Delibra harvests as files land and once more at turn end (app/live_questions.py).
+``questions-history.json`` is the source of truth; ``questions.json`` is the
+view agents read, regenerated on every write.
 """
 
 from __future__ import annotations
@@ -636,9 +637,9 @@ def _read_outbox(descriptor: int, name: str, limit: int) -> bytes | None:
 def take_outbox(
     root: Path, *, name: str, limit: int = SPOOL_FILE_MAX_BYTES
 ) -> bytes | None:
-    """Read and remove the agent's outbox; None when it wrote none.
+    """Read and remove one per-turn file beside the spool; None when absent.
 
-    The read stops one byte past the limit, so parse_outbox rejects an
+    The read stops one byte past the limit, so the file's parser rejects an
     oversized file without Delibra ever holding more than that.
     """
 
@@ -656,7 +657,7 @@ def take_outbox(
 
 
 def discard_outbox(root: Path, *, name: str) -> None:
-    """Drop a failed or cancelled turn's outbox; it never reaches the store."""
+    """Drop a failed or cancelled turn's per-turn file unread."""
 
     try:
         take_outbox(root, name=name)
@@ -673,10 +674,28 @@ class SpoolEntry:
     signature: tuple[int, int]
 
 
+def _open_spool(spool_dir: Path) -> int:
+    """Open the spool without following a symlink at it or at questions/.
+
+    The agent can replace either directory mid-turn; O_NOFOLLOW on the full
+    path guards only the last component.
+    """
+
+    parent = _open_directory(spool_dir.parent)
+    try:
+        return os.open(spool_dir.name, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=parent)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise OutboxError("questions directory is not a real directory") from exc
+    finally:
+        os.close(parent)
+
+
 def scan_spool(spool_dir: Path) -> list[SpoolEntry]:
     """List every spool entry, oldest first, without following symlinks."""
 
-    descriptor = _open_directory(spool_dir)
+    descriptor = _open_spool(spool_dir)
     try:
         entries: list[SpoolEntry] = []
         with os.scandir(descriptor) as items:
@@ -702,7 +721,7 @@ def scan_spool(spool_dir: Path) -> list[SpoolEntry]:
 def read_spool_file(spool_dir: Path, name: str) -> bytes | None:
     """Read one spool file, one byte past the limit; None when it is gone."""
 
-    descriptor = _open_directory(spool_dir)
+    descriptor = _open_spool(spool_dir)
     try:
         return _read_outbox(descriptor, name, SPOOL_FILE_MAX_BYTES)
     finally:
@@ -710,7 +729,7 @@ def read_spool_file(spool_dir: Path, name: str) -> bytes | None:
 
 
 def remove_spool_entry(spool_dir: Path, name: str) -> None:
-    descriptor = _open_directory(spool_dir)
+    descriptor = _open_spool(spool_dir)
     try:
         _remove_entry(descriptor, name)
     finally:
