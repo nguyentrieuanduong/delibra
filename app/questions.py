@@ -493,6 +493,17 @@ class QuestionStore:
 
         return self._change(question_id, change)
 
+    def dismiss_all(self) -> int:
+        """Dismiss every open and answered question; history and answers stay."""
+
+        book = self.load()
+        visible = [item for item in book.questions if item.status in VISIBLE_STATUSES]
+        for question in visible:
+            question.status = "dismissed"
+        if visible:
+            self._save(book)
+        return len(visible)
+
     def mark_duplicate(self, question_id: str, original_id: str) -> Question:
         def change(book: QuestionBook, question: Question) -> None:
             self._require_visible(question, "mark")
