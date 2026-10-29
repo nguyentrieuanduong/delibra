@@ -25,7 +25,9 @@ from app.coding import (
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
+from app.notes import NoteStore
 from app.project_routing import request_project
+from app.questions import QuestionStore
 from app.security import (
     require_loopback_client,
     validate_field,
@@ -43,6 +45,7 @@ from app.urls import project_url
 
 
 router = APIRouter()
+RESET_SCOPES = frozenset({"questions", "notes", "context", "all"})
 
 
 def _project_path(value: str) -> Path:
@@ -231,6 +234,37 @@ async def retry_auto_migration(request: Request, project_id: str):
         project_url(project.name, "/settings"),
         status_code=303,
     )
+
+
+@router.post("/projects/{project_id}/reset")
+async def reset_project(request: Request, project_id: str, scope: str = Form(...)):
+    """Start a new phase: clear questions, notes, agent context, or all three."""
+
+    if scope not in RESET_SCOPES:
+        raise StorageError("unknown reset scope")
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    session_ids = [session.id for session in ProjectStore(project).list_sessions()]
+    async with request.app.state.locks.registry_project_sessions(
+        resolved_project_id, session_ids
+    ):
+        _reject_in_memory_work(request, resolved_project_id)
+        project = request.app.state.registry.get(resolved_project_id)
+        store = ProjectStore(project)
+        store.require_auto_inactive()
+        if sorted(session.id for session in store.list_sessions()) != sorted(session_ids):
+            raise ConflictError("agents changed while clearing; try again")
+        # Context first: it has the strictest checks (every agent idle), so a
+        # refusal happens before any store is written.
+        if scope in {"context", "all"}:
+            request.app.state.manager.clear_contexts_locked(store, resolved_project_id)
+        if scope in {"questions", "all"}:
+            QuestionStore(
+                store.root, request.app.state.settings.auto_questions_view_limit
+            ).dismiss_all()
+        if scope in {"notes", "all"}:
+            NoteStore(store.root).clear()
+    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
 
 @router.post("/projects/{project_id}/pass-prompt")

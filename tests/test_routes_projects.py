@@ -19,7 +19,9 @@ from app.coding import DEFAULT_NETWORK_ALLOWLIST, CodingEnvState, DockerPolicy
 from app.config import Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
+from app.notes import NoteStore
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
+from app.questions import ProposedQuestion, QuestionStore
 from app.storage import (
     ConflictError,
     LockCoordinator,
@@ -2015,3 +2017,92 @@ def test_settings_offer_local_docker_only_with_its_risks_when_lima_failed(tmp_pa
     assert "coding/docker/local" in page
     assert "~/.ssh" in page and "127.0.0.1" in page
     assert 'name="acknowledge"' in page
+
+
+def _reset_project(tmp_path: Path, settings):
+    project_dir = tmp_path / "reset"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Reset", project_dir)
+    store = ProjectStore(project)
+    for index, name in enumerate(("Alpha", "Beta")):
+        store.create_session(
+            SessionConfig(
+                id=str(index + 1) * 32,
+                name=name,
+                agent="fake",
+                model="success",
+                effort="low",
+                role_instructions="",
+                cli_session_id=f"native-{index}",
+                status="idle",
+                created_at="2026-07-19T00:00:00Z",
+                rounds=[],
+            )
+        )
+    questions = QuestionStore(store.root, settings.auto_questions_view_limit)
+    questions.add(
+        [ProposedQuestion("Old?", "", False)],
+        asked_by="1" * 32, asked_by_name="Alpha", auto_run=1, cycle=1, round_n=1,
+    )
+    NoteStore(store.root).add("Old note", auto_run=1)
+    return project, store, questions
+
+
+@pytest.mark.parametrize(
+    ("scope", "dismissed", "notes_left", "cleared"),
+    [
+        ("questions", True, 1, False),
+        ("notes", False, 0, False),
+        ("context", False, 1, True),
+        ("all", True, 0, True),
+    ],
+)
+def test_reset_clears_exactly_its_scope(
+    tmp_path: Path, scope: str, dismissed: bool, notes_left: int, cleared: bool
+) -> None:
+    app, settings = project_app(tmp_path)
+    project, store, questions = _reset_project(tmp_path, settings)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{prefix}/settings")
+        response = client.post(f"{prefix}/reset", data={"scope": scope}, follow_redirects=False)
+
+    assert "Start new phase" in page.text
+    assert response.status_code == 303
+    assert response.headers["location"].endswith("/settings")
+    assert (questions.load().find("Q1").status == "dismissed") is dismissed
+    assert len(NoteStore(store.root).load().notes) == notes_left
+    for session in store.list_sessions():
+        assert (session.cli_session_id is None) is cleared
+
+
+def test_reset_is_refused_whole_while_auto_is_active(
+    tmp_path: Path, reserve_auto_run
+) -> None:
+    app, settings = project_app(tmp_path)
+    project, store, questions = _reset_project(tmp_path, settings)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        reserve_auto_run(store, auto_id="f" * 32)
+        page = client.get(f"{prefix}/settings")
+        response = client.post(f"{prefix}/reset", data={"scope": "all"})
+
+    assert response.status_code == 409
+    assert questions.load().find("Q1").status == "open"
+    assert len(NoteStore(store.root).load().notes) == 1
+    assert all(session.cli_session_id for session in store.list_sessions())
+    assert re.search(r"<button[^>]*disabled[^>]*>Start new phase</button>", page.text)
+
+
+def test_reset_rejects_an_unknown_scope(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project, _, _ = _reset_project(tmp_path, settings)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/reset", data={"scope": "everything"}
+        )
+
+    assert response.status_code == 422

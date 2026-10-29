@@ -290,14 +290,34 @@ class RunManager:
             store = ProjectStore(self.registry.get(project_id))
             store.require_auto_inactive()
             config = self._require_quiescent(store, project_id, session_id)
-            config.context_baseline_round = store.allocate_round(session_id) - 1
-            config.context_summary = None
-            # The native session is what would otherwise re-supply the context
-            # just retired, and the observation describes a window that is gone.
-            config.cli_session_id = None
-            config.context_observation = None
-            store.save_session(config)
+            self._retire_context(store, config)
             return config
+
+    def clear_contexts_locked(self, store: ProjectStore, project_id: str) -> int:
+        """Clear context for every agent, or none: all are checked first.
+
+        The caller holds registry_project_sessions over the project and
+        every one of its sessions.
+        """
+
+        store.require_auto_inactive()
+        configs = [
+            self._require_quiescent(store, project_id, session.id)
+            for session in store.list_sessions()
+        ]
+        for config in configs:
+            self._retire_context(store, config)
+        return len(configs)
+
+    @staticmethod
+    def _retire_context(store: ProjectStore, config: SessionConfig) -> None:
+        config.context_baseline_round = store.allocate_round(config.id) - 1
+        config.context_summary = None
+        # The native session is what would otherwise re-supply the context
+        # just retired, and the observation describes a window that is gone.
+        config.cli_session_id = None
+        config.context_observation = None
+        store.save_session(config)
 
     async def compact(self, project_id: str, session_id: str) -> RunKey:
         """Replace this session's unretired rounds with one summary of them."""

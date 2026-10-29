@@ -22,6 +22,7 @@ from app.storage import (
     StorageError,
     atomic_write_bytes,
     atomic_write_json,
+    atomic_write_json_recovery_pair,
     load_json_recover,
     utc_now,
 )
@@ -271,6 +272,17 @@ class NoteStore:
         note.close("deleted", utc_now())
         self._save(book, note.auto_run)
         return note
+
+    def clear(self) -> int:
+        """Delete every note; ids are never reused (turn records cite them)."""
+
+        book = self.load()
+        count = len(book.notes)
+        book.notes = []
+        # Replace the backup too, or recovery could resurrect the notes.
+        atomic_write_json_recovery_pair(self.history_path, book.to_dict())
+        atomic_write_bytes(self.view_path, render_view(book, 0).data)
+        return count
 
     def record_delivery(
         self,

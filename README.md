@@ -418,6 +418,12 @@ nothing. Both operations require the session idle and no Auto running, and the
 next Auto run honours them: cleared rounds do not return to `baseline.md`, and a
 compacted session contributes its summary instead of the rounds it replaced.
 
+**New phase** on the Manage page clears earlier work in one place:
+**Dismiss all questions** dismisses every open and answered question (restorable,
+answers kept), **Delete all notes** deletes the notes history, **Clear all
+context** runs Clear context for every agent, and **Start new phase** does all
+three. Each is refused, changing nothing, while Auto runs or any agent is busy.
+
 **Continue Auto** resumes a finished run in place, from any of the five terminal
 states (`stopped`, `interrupted`, `error`, `limit_reached`, `converged`). It is
 offered when no Auto is active anywhere in the project. The cursor is

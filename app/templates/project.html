@@ -163,6 +163,26 @@
       <button type="submit">Save turn time limit</button>
     </form>
   </section>
+  <section aria-labelledby="phase-reset-heading">
+    <h2 id="phase-reset-heading">New phase</h2>
+    <p class="hint">
+      Stop agents receiving earlier work. Questions are dismissed (restorable,
+      answers kept); notes are deleted; agent context is cleared as by
+      <strong>Clear context</strong>. Needs no Auto run active and every agent idle.
+    </p>
+    {% set reset_url = project_url(project.name, '/reset') %}
+    {% for scope, label, warning in [
+      ("questions", "Dismiss all questions", "Dismiss every open and answered question? You can restore each one later."),
+      ("notes", "Delete all notes", "Delete every note? This cannot be undone."),
+      ("context", "Clear all context", "Clear every agent's context? Their rounds stay in history."),
+      ("all", "Start new phase", "Start a new phase: dismiss all questions, delete all notes (cannot be undone) and clear every agent's context?"),
+    ] %}
+      <form method="post" action="{{ reset_url }}" onsubmit="return confirm({{ warning|tojson|forceescape }})">
+        <input type="hidden" name="scope" value="{{ scope }}">
+        <button type="submit" {% if auto_active %}disabled{% endif %}>{{ label }}</button>
+      </form>
+    {% endfor %}
+  </section>
   <h2>Sessions</h2>
   <details>
     <summary>Create session</summary>

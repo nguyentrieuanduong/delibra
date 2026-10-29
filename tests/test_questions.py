@@ -726,3 +726,22 @@ def test_remove_spool_entry_removes_files_and_directories(tmp_path: Path) -> Non
     remove_spool_entry(spool, "absent.json")
 
     assert list(spool.iterdir()) == []
+
+
+def test_dismiss_all_hides_every_visible_question_and_keeps_history(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    questions.add(
+        [ProposedQuestion(text, "", False) for text in ("A?", "B?", "C?")],
+        asked_by="s", asked_by_name="Alpha", auto_run=1, cycle=1, round_n=1,
+    )
+    questions.answer("Q2", "Yes")
+    questions.mark_duplicate("Q3", "Q1")
+
+    assert questions.dismiss_all() == 2
+
+    book = questions.load()
+    assert [item.status for item in book.questions] == ["dismissed", "dismissed", "duplicate"]
+    assert book.find("Q2").answer == "Yes"
+    assert json.loads(questions.view_path.read_text(encoding="utf-8"))["questions"] == []
+    assert questions.restore("Q2").status == "answered"
+    assert questions.dismiss_all() == 1

@@ -285,3 +285,18 @@ def test_the_revision_grows_with_every_change_and_only_then(tmp_path: Path) -> N
     notes.add("third", auto_run=1)
     notes.abandon_before(2)
     changed()
+
+
+def test_clear_deletes_every_note_but_never_reuses_an_id(tmp_path: Path) -> None:
+    notes = NoteStore(tmp_path)
+    notes.add("First", auto_run=1)
+    notes.add("Second", auto_run=2)
+
+    assert notes.clear() == 2
+
+    assert notes.load().notes == []
+    # The recovery backup must not resurrect the cleared notes
+    # (atomic_write_json_recovery_pair rewrote it with the cleared book).
+    notes.history_path.write_text("{corrupt", encoding="utf-8")
+    assert notes.load().notes == []
+    assert notes.add("Third", auto_run=3).id == "N3"
