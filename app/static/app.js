@@ -275,6 +275,43 @@ function copyAutoComposerTopic(setup) {
   return true;
 }
 
+function autoSetupPlacement(anchor, width, viewportWidth, viewportHeight) {
+  // Top-left at the Message box, kept inside the viewport: never above the
+  // top edge, never starting below half the height, never past the right.
+  const margin = 8;
+  const top = Math.min(Math.max(anchor.top, margin), Math.max(margin, viewportHeight / 2));
+  const left = Math.max(margin, Math.min(anchor.left, viewportWidth - width - margin));
+  return { top: top, left: left, maxHeight: viewportHeight - top - margin };
+}
+
+function openAutoSetup(dialog) {
+  // A modal sits in the top layer with a backdrop; `open` in the markup made
+  // it a page-flow box that ran off the bottom of long pages.
+  if (!dialog || dialog.open || typeof dialog.showModal !== "function") {
+    return false;
+  }
+  dialog.addEventListener("close", function () {
+    dialog.remove();
+  });
+  dialog.showModal();
+  const doc = dialog.ownerDocument;
+  const view = doc && doc.defaultView;
+  const composer = doc && doc.getElementById("chat-composer");
+  if (view && composer) {
+    // Set before the next paint, so the dialog never shows centred first.
+    const place = autoSetupPlacement(
+      composer.getBoundingClientRect(),
+      dialog.getBoundingClientRect().width,
+      view.innerWidth,
+      view.innerHeight
+    );
+    dialog.style.setProperty("--auto-setup-top", place.top + "px");
+    dialog.style.setProperty("--auto-setup-left", place.left + "px");
+    dialog.style.setProperty("--auto-setup-max-height", place.maxHeight + "px");
+  }
+  return true;
+}
+
 function closeAutoSetup(control) {
   if (!control || typeof control.closest !== "function") {
     return false;
@@ -503,6 +540,12 @@ function initializeDynamicPresentation(root) {
   if (root && typeof root.querySelectorAll === "function") {
     root.querySelectorAll("[data-auto-setup-dialog]").forEach(copyAutoComposerTopic);
   }
+  if (root && typeof root.matches === "function" && root.matches("[data-auto-setup-dialog]")) {
+    openAutoSetup(root);
+  }
+  if (root && typeof root.querySelectorAll === "function") {
+    root.querySelectorAll("[data-auto-setup-dialog]").forEach(openAutoSetup);
+  }
   const documentRoot = root && root.ownerDocument ? root.ownerDocument : root;
   syncAutoDisabledControls(documentRoot);
   // Runs second and unconditionally: it owns [data-composer-send] outright,
@@ -513,6 +556,7 @@ function initializeDynamicPresentation(root) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    autoSetupPlacement,
     captureAutoStopDisclosure,
     chatErrorMessage,
     captureConversationScroll,
@@ -525,6 +569,7 @@ if (typeof module !== "undefined" && module.exports) {
     handleFocusDialogCancel,
     isDialogBackdropClick,
     moveAutoOrderItem,
+    openAutoSetup,
     openFocusDialog,
     openQuestionsPanelForNew,
     removeConversationEmptyState,

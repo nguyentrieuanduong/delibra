@@ -170,6 +170,13 @@ textarea { min-height: 7rem; }
   width: min(90vw, 42rem);
 }
 .auto-setup-dialog::backdrop { background: #0009; }
+/* At the Message box (openAutoSetup sets the variables); centred without them. */
+.auto-setup-dialog:modal {
+  margin: var(--auto-setup-top, 1rem) auto auto var(--auto-setup-left, auto);
+  max-height: var(--auto-setup-max-height, 85vh);
+  /* The cap includes padding and border, so the box ends inside the viewport. */
+  box-sizing: border-box;
+}
 .auto-setup-dialog fieldset { display: grid; gap: .35rem; }
 .auto-setup-dialog .auto-choice { align-items: center; display: flex; gap: .35rem; }
 /* Settings checkboxes sit on their text's line, not above it. */

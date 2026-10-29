@@ -3,9 +3,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  autoSetupPlacement,
   closeAutoSetup,
   copyAutoComposerTopic,
   formatRemainingSeconds,
+  openAutoSetup,
   setTimeoutFormPending,
   syncAutoDisabledControls,
   syncComposerAvailability,
@@ -211,4 +213,50 @@ test("the composer is blocked by Auto, by no selection, or by a busy agent", fun
   composer.dataset.sessionId = "";
   assert.equal(syncComposerAvailability(documentRoot), true);
   assert.equal(textarea.disabled, true);
+});
+
+test("opens the Auto setup dialog as a modal once and removes it on close", function () {
+  const listeners = {};
+  let modalCalls = 0;
+  let removed = false;
+  const dialog = {
+    open: false,
+    dataset: {},
+    showModal() {
+      modalCalls += 1;
+      this.open = true;
+    },
+    addEventListener(name, handler) {
+      listeners[name] = handler;
+    },
+    remove() {
+      removed = true;
+    },
+  };
+
+  assert.equal(openAutoSetup(dialog), true);
+  assert.equal(openAutoSetup(dialog), false);
+  assert.equal(modalCalls, 1);
+  listeners.close();
+  assert.equal(removed, true);
+});
+
+test("places the Auto setup dialog at the Message box", function () {
+  assert.deepEqual(autoSetupPlacement({ top: 50, left: 257 }, 672, 1400, 900), {
+    top: 50,
+    left: 257,
+    maxHeight: 842,
+  });
+});
+
+test("keeps the Auto setup dialog inside the viewport", function () {
+  // Too far right to fit: slide left. Scrolled above the top: pin to the edge.
+  assert.deepEqual(autoSetupPlacement({ top: -200, left: 900 }, 672, 1400, 900), {
+    top: 8,
+    left: 720,
+    maxHeight: 884,
+  });
+  // Low on the page: never start below half the viewport.
+  assert.equal(autoSetupPlacement({ top: 800, left: 0 }, 672, 1400, 900).top, 450);
+  assert.equal(autoSetupPlacement({ top: 50, left: -40 }, 672, 1400, 900).left, 8);
 });
