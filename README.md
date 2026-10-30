@@ -45,6 +45,15 @@ Run exactly one local worker, without reload:
 envs/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
+Add [graphify](https://github.com/Graphify-Labs/graphify) to support agents:
+
+```sh
+envs/bin/python -m pip install graphifyy
+# or `conda activate ./envs` then `conda install graphifyy`
+graphify install --project --platform claude
+graphify install --project --platform codex
+```
+
 ### Reaching Delibra from another machine
 
 Delibra has **no authentication**. It registers directories and runs Claude Code

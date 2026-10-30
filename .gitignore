@@ -447,10 +447,12 @@ envs/
 # AI assisted
 AGENTS.md
 .claude/
+.codex/
 .plan/
 .plans/
 docs/reviews/
 docs/specs/
+graphify-out/
 aidlc/
 .delibra/
 requirements.md
