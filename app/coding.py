@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.config import GuidancePreset, expand_home
+
 LOCAL_ONLY_SUFFIXES = (".local", ".lan", ".internal", ".home.arpa", ".localdomain")
 DEFAULT_NETWORK_ALLOWLIST = (
     "pypi.org",
@@ -50,8 +52,8 @@ class CodingPolicyError(ValueError):
     pass
 
 
-GUIDANCE_MAX_FILES = 8
-GUIDANCE_MAX_BYTES = 65_536
+GUIDANCE_MAX_FILES = 32
+GUIDANCE_MAX_BYTES = 262_144
 _CODE_CRAFT = "~/projects/code-craft/skills"
 # Implementation-oriented skills only: brainstorming, writing-plans and
 # executing-plans gate on user approval and would stall a build run.
@@ -67,31 +69,183 @@ CODE_CRAFT_SUGGESTED_GUIDANCE = tuple(
 )
 
 
+# O_NONBLOCK: opening a FIFO named like a guide must fail fast, not hang;
+# it changes nothing for regular files and directories.
+_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
+def open_without_symlinks(path: Path) -> int:
+    """Open an absolute path refusing a symlink in *any* component.
+
+    `O_NOFOLLOW` alone guards only the last component, so each component is
+    opened relative to its parent's descriptor. A link swapped into a parent
+    directory would otherwise bring files from outside the build sandbox into
+    every agent's prompt. Raises OSError; the caller closes the descriptor.
+    """
+
+    if not path.is_absolute() or ".." in path.parts:
+        raise OSError(f"{path} must be absolute without '..'")
+    descriptor = os.open("/", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, _OPEN_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def guidance_snapshot_size(files: list[tuple[str, int]]) -> int:
+    """The largest snapshot `read_guidance` can build from these (path, size) pairs.
+
+    Header, body and newline per file, one separator between files; the
+    snapshot only trims trailing whitespace, so it is never larger.
+    """
+
+    return sum(len(f"### {path}\n\n".encode()) + size + 1 for path, size in files) + max(
+        len(files) - 1, 0
+    )
+
+
 def normalize_guidance_paths(values: object) -> list[str]:
     if not isinstance(values, list) or any(type(item) is not str for item in values):
         raise CodingPolicyError("guidance files must be a list of paths")
     paths: list[str] = []
-    total = 0
+    sized: list[tuple[str, int]] = []
     for raw in values:
         value = raw.strip()
         path = Path(value)
         if not path.is_absolute() or path.suffix.lower() != ".md":
             raise CodingPolicyError(f"{raw!r} must be an absolute path to a .md file")
         try:
-            info = os.lstat(path)
+            descriptor = open_without_symlinks(path)
         except OSError as exc:
-            raise CodingPolicyError(f"{raw!r} does not exist") from exc
+            raise CodingPolicyError(
+                f"{raw!r} must be an existing regular file reached without symlinks"
+            ) from exc
+        try:
+            info = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
         if not stat.S_ISREG(info.st_mode):
-            raise CodingPolicyError(f"{raw!r} must be a regular file, not a link")
+            raise CodingPolicyError(f"{raw!r} must be a regular file")
         if value in paths:
             raise CodingPolicyError(f"{raw!r} is listed twice")
-        total += info.st_size
         paths.append(value)
+        sized.append((value, info.st_size))
     if len(paths) > GUIDANCE_MAX_FILES:
         raise CodingPolicyError(f"at most {GUIDANCE_MAX_FILES} guidance files")
-    if total > GUIDANCE_MAX_BYTES:
-        raise CodingPolicyError(f"guidance files exceed {GUIDANCE_MAX_BYTES} bytes")
+    if guidance_snapshot_size(sized) > GUIDANCE_MAX_BYTES:
+        raise CodingPolicyError(
+            f"guidance files exceed {GUIDANCE_MAX_BYTES} bytes including file headers"
+        )
     return paths
+
+
+# Work bounds for one preset expansion: entries read (charged before
+# anything is kept) and directory depth (= open descriptors).
+GUIDANCE_SCAN_MAX_ENTRIES = 10_000
+GUIDANCE_SCAN_MAX_DEPTH = 32
+
+
+class GuidancePresetError(CodingPolicyError):
+    pass
+
+
+def _refuse_large(name: str, reason: str) -> GuidancePresetError:
+    return GuidancePresetError(
+        f"{name} {reason}; point it at a smaller directory; guidance was not changed"
+    )
+
+
+def _scan(
+    descriptor: int,
+    where: str,
+    recursive: bool,
+    budget: list[int],
+    depth: int,
+    name: str,
+    found: list[tuple[str, int]],
+) -> None:
+    """Collect `*.md` regular files under an open directory, lazily.
+
+    Entries are charged against the budget one by one as `scandir` yields
+    them, so a directory with millions of entries costs at most the budget.
+    Sub-directories are opened relative to this descriptor with
+    `O_NOFOLLOW` after the listing ends; at most `depth` descriptors are open.
+    """
+
+    files: list[tuple[str, int]] = []
+    children: list[str] = []
+    with os.scandir(descriptor) as iterator:
+        for entry in iterator:
+            budget[0] -= 1
+            if budget[0] < 0:
+                raise _refuse_large(
+                    name, f"has more than {GUIDANCE_SCAN_MAX_ENTRIES} directory entries to scan"
+                )
+            if entry.name.startswith(".") or entry.is_symlink():
+                continue
+            if entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".md"):
+                files.append(
+                    (f"{where}/{entry.name}", entry.stat(follow_symlinks=False).st_size)
+                )
+            elif recursive and entry.is_dir(follow_symlinks=False):
+                children.append(entry.name)
+    found.extend(sorted(files))
+    if children and depth >= GUIDANCE_SCAN_MAX_DEPTH:
+        raise _refuse_large(name, f"nests deeper than {GUIDANCE_SCAN_MAX_DEPTH} directories")
+    for child in sorted(children):
+        try:
+            opened = os.open(child, _OPEN_FLAGS | getattr(os, "O_DIRECTORY", 0), dir_fd=descriptor)
+        except OSError:
+            continue
+        try:
+            _scan(opened, f"{where}/{child}", recursive, budget, depth + 1, name, found)
+        finally:
+            os.close(opened)
+
+
+def expand_guidance_preset(preset: GuidancePreset) -> list[str]:
+    """The preset's Markdown files now: entries in order, each directory sorted.
+
+    No symlink is followed at any depth (including above the entry) and
+    dot-names are skipped, so a preset cannot pull in `.git` or a file a link
+    leads to.
+    """
+
+    budget = [GUIDANCE_SCAN_MAX_ENTRIES]
+    found: list[tuple[str, int]] = []
+    for entry in preset.paths:
+        path = expand_home(entry)
+        try:
+            descriptor = open_without_symlinks(path)
+        except OSError:
+            continue
+        try:
+            info = os.fstat(descriptor)
+            if stat.S_ISREG(info.st_mode) and path.suffix.lower() == ".md":
+                found.append((str(path), info.st_size))
+            elif stat.S_ISDIR(info.st_mode):
+                _scan(descriptor, str(path), preset.include_subdirectories, budget, 1, preset.name, found)
+        finally:
+            os.close(descriptor)
+    files = list(dict.fromkeys(found))
+    if not files:
+        raise GuidancePresetError(
+            f"None of the {preset.name} guidance files exist (looked in "
+            f"{preset.paths[0]} and {len(preset.paths) - 1} more); guidance was not changed"
+        )
+    total = guidance_snapshot_size(files)
+    if len(files) > GUIDANCE_MAX_FILES or total > GUIDANCE_MAX_BYTES:
+        raise GuidancePresetError(
+            f"{preset.name} expands to {len(files)} files and {total} bytes including file "
+            f"headers; the limit is {GUIDANCE_MAX_FILES} files and {GUIDANCE_MAX_BYTES} bytes; "
+            "guidance was not changed"
+        )
+    return [path for path, _size in files]
 
 
 GIT_EXCLUDE_MAX_LINES = 2_000
@@ -130,7 +284,7 @@ def read_guidance(paths: list[str]) -> bytes:
     parts: list[bytes] = []
     for path in paths:
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = open_without_symlinks(Path(path))
             with os.fdopen(fd, "rb") as source:
                 if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
                     raise CodingPolicyError(f"{path!r} is not a regular file")

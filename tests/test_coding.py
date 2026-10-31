@@ -1,3 +1,4 @@
+import os
 import random
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from app.coding import (
     DOCKER_VERIFIED_VERSIONS,
     CODE_CRAFT_SUGGESTED_GUIDANCE,
     GUIDANCE_MAX_BYTES,
+    GUIDANCE_MAX_FILES,
+    GuidancePresetError,
     DEFAULT_NETWORK_ALLOWLIST,
     CodingPolicy,
     CodingPolicyError,
@@ -16,6 +19,8 @@ from app.coding import (
     cli_newer_than_verified,
     cli_version_compatible,
     docker_capable,
+    expand_guidance_preset,
+    guidance_snapshot_size,
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
@@ -24,6 +29,7 @@ from app.coding import (
     read_guidance,
     version_at_least,
 )
+from app.config import GuidancePreset
 from app.storage import ProjectStore, RegistryStore
 
 
@@ -187,12 +193,45 @@ def test_read_guidance_labels_each_file(tmp_path) -> None:
     assert text.index(f"### {first}") < text.index("Alpha rules") < text.index(f"### {second}")
 
 
-def test_guidance_snapshot_includes_headings_in_size_limit(tmp_path) -> None:
+def test_a_list_accepted_on_save_is_accepted_at_run_start(tmp_path) -> None:
+    guide = tmp_path / "large.md"
+    header = len(f"### {guide}\n\n".encode())
+    guide.write_bytes(b"x" * (GUIDANCE_MAX_BYTES - header - 1))
+
+    assert guidance_snapshot_size([(str(guide), guide.stat().st_size)]) == GUIDANCE_MAX_BYTES
+    assert normalize_guidance_paths([str(guide)]) == [str(guide)]
+    assert len(read_guidance([str(guide)])) == GUIDANCE_MAX_BYTES
+
+
+def test_a_list_over_the_snapshot_size_is_refused_on_save(tmp_path) -> None:
     guide = tmp_path / "large.md"
     guide.write_bytes(b"x" * GUIDANCE_MAX_BYTES)
-    assert normalize_guidance_paths([str(guide)]) == [str(guide)]
+
+    with pytest.raises(CodingPolicyError, match="including file headers"):
+        normalize_guidance_paths([str(guide)])
+
+
+def test_a_symlinked_parent_directory_is_refused_everywhere(tmp_path) -> None:
+    real = tmp_path / "real" / "skills"
+    real.mkdir(parents=True)
+    (real / "a.md").write_text("# A\n")
+    os.symlink(tmp_path / "real", tmp_path / "link")
+    # The link is a parent, not the last component: plain O_NOFOLLOW misses it.
+    through_link = str(tmp_path / "link" / "skills" / "a.md")
+
+    with pytest.raises(CodingPolicyError, match="without symlinks"):
+        normalize_guidance_paths([through_link])
     with pytest.raises(CodingPolicyError):
-        read_guidance([str(guide)])
+        read_guidance([through_link])
+    with pytest.raises(GuidancePresetError, match="None of the s guidance files"):
+        expand_guidance_preset(GuidancePreset("s", (str(tmp_path / "link" / "skills"),), True))
+
+
+def test_a_parent_reference_is_refused(tmp_path) -> None:
+    (tmp_path / "a.md").write_text("# A\n")
+
+    with pytest.raises(CodingPolicyError, match="without symlinks"):
+        normalize_guidance_paths([f"{tmp_path}/x/../a.md"])
 
 
 def test_code_craft_suggestions_skip_approval_gated_skills() -> None:
@@ -302,3 +341,131 @@ def test_version_at_least_accepts_newer_majors_but_not_downgrades_or_prereleases
     assert not version_at_least("29.9.2", "29.9.1")
     assert not version_at_least("29.9.2", "30.0.0-rc.1")
     assert not version_at_least("29.9.2", None)
+
+
+def _skill_tree(root: Path) -> Path:
+    (root / "sub" / "deep").mkdir(parents=True)
+    (root / ".git").mkdir()
+    (root / "a.md").write_text("# A\n")
+    (root / "b.txt").write_text("b\n")
+    (root / ".hidden.md").write_text("# H\n")
+    (root / "sub" / "c.md").write_text("# C\n")
+    (root / "sub" / "deep" / "d.MD").write_text("# D\n")
+    (root / ".git" / "e.md").write_text("# E\n")
+    os.symlink(root / "a.md", root / "link.md")
+    os.symlink(root / "sub", root / "linkdir")
+    return root
+
+
+def test_a_directory_preset_takes_top_level_markdown_only(tmp_path) -> None:
+    root = _skill_tree(tmp_path / "skills")
+
+    assert expand_guidance_preset(GuidancePreset("s", (str(root),))) == [str(root / "a.md")]
+
+
+def test_a_recursive_preset_walks_subdirectories_but_not_links_or_dot_names(tmp_path) -> None:
+    root = _skill_tree(tmp_path / "skills")
+
+    assert expand_guidance_preset(GuidancePreset("s", (str(root),), True)) == [
+        str(root / "a.md"),
+        str(root / "sub" / "c.md"),
+        str(root / "sub" / "deep" / "d.MD"),
+    ]
+
+
+def test_preset_entries_keep_their_order_and_drop_duplicates(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = _skill_tree(tmp_path / "skills")
+    preset = GuidancePreset("s", ("~/skills/sub/c.md", "~/skills", "/missing/x.md"), True)
+
+    assert expand_guidance_preset(preset) == [
+        str(root / "sub" / "c.md"),
+        str(root / "a.md"),
+        str(root / "sub" / "deep" / "d.MD"),
+    ]
+
+
+def test_a_preset_with_nothing_found_is_refused(tmp_path) -> None:
+    preset = GuidancePreset("s", (str(tmp_path / "gone"), str(tmp_path / "x.md")))
+
+    with pytest.raises(GuidancePresetError) as caught:
+        expand_guidance_preset(preset)
+
+    assert str(caught.value) == (
+        f"None of the s guidance files exist (looked in {tmp_path / 'gone'} and 1 more); "
+        "guidance was not changed"
+    )
+
+
+def test_a_preset_over_the_file_limit_is_refused_with_counts(tmp_path) -> None:
+    for index in range(GUIDANCE_MAX_FILES + 1):
+        (tmp_path / f"{index:02}.md").write_text("x")
+
+    with pytest.raises(
+        GuidancePresetError,
+        match=(
+            r"^s expands to 33 files and \d+ bytes including file headers; the limit is "
+            r"32 files and 262144 bytes; guidance was not changed$"
+        ),
+    ):
+        expand_guidance_preset(GuidancePreset("s", (str(tmp_path),)))
+
+
+def test_a_preset_over_the_byte_limit_is_refused(tmp_path) -> None:
+    (tmp_path / "big.md").write_bytes(b"x" * GUIDANCE_MAX_BYTES)
+
+    with pytest.raises(GuidancePresetError, match="expands to 1 files and"):
+        expand_guidance_preset(GuidancePreset("s", (str(tmp_path),)))
+
+
+def test_a_preset_scan_stops_at_the_entry_budget_before_listing_more(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("app.coding.GUIDANCE_SCAN_MAX_ENTRIES", 3)
+    for index in range(50):
+        (tmp_path / f"{index}.txt").write_text("x")
+    seen: list[str] = []
+    real_scandir = os.scandir
+
+    class Counting:
+        def __init__(self, target):
+            self.inner = real_scandir(target)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.inner.close()
+
+        def __iter__(self):
+            for entry in self.inner:
+                seen.append(entry.name)
+                yield entry
+
+    monkeypatch.setattr("app.coding.os.scandir", Counting)
+
+    with pytest.raises(GuidancePresetError) as caught:
+        expand_guidance_preset(GuidancePreset("s", (str(tmp_path),)))
+
+    assert str(caught.value) == (
+        "s has more than 3 directory entries to scan; point it at a smaller directory; "
+        "guidance was not changed"
+    )
+    assert len(seen) == 4
+
+
+def test_a_preset_scan_stops_at_the_depth_limit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.coding.GUIDANCE_SCAN_MAX_DEPTH", 2)
+    (tmp_path / "1" / "2" / "3").mkdir(parents=True)
+
+    with pytest.raises(GuidancePresetError) as caught:
+        expand_guidance_preset(GuidancePreset("s", (str(tmp_path),), True))
+
+    assert str(caught.value) == (
+        "s nests deeper than 2 directories; point it at a smaller directory; "
+        "guidance was not changed"
+    )
+
+
+def test_guidance_limits_allow_32_files_and_256_kib() -> None:
+    assert (GUIDANCE_MAX_FILES, GUIDANCE_MAX_BYTES) == (32, 262_144)
