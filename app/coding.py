@@ -54,19 +54,6 @@ class CodingPolicyError(ValueError):
 
 GUIDANCE_MAX_FILES = 32
 GUIDANCE_MAX_BYTES = 262_144
-_CODE_CRAFT = "~/projects/code-craft/skills"
-# Implementation-oriented skills only: brainstorming, writing-plans and
-# executing-plans gate on user approval and would stall a build run.
-CODE_CRAFT_SUGGESTED_GUIDANCE = tuple(
-    f"{_CODE_CRAFT}/{name}/SKILL.md"
-    for name in (
-        "test-driven-development",
-        "coding-standards",
-        "security-baseline",
-        "systematic-debugging",
-        "verification-before-completion",
-    )
-)
 
 
 # O_NONBLOCK: opening a FIFO named like a guide must fail fast, not hang;

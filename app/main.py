@@ -359,6 +359,7 @@ def create_app(
                     coding.git_exclude if coding.git_exclude is not None else default_git_exclude()
                 ),
                 "coding_local": is_loopback_client(request),
+                "guidance_presets": request.app.state.settings.guidance_presets,
                 "docker_lima": docker_lima,
                 "turn_timeout_seconds": effective_turn_timeout,
                 "configured_turn_timeout_seconds": configured_turn_timeout,

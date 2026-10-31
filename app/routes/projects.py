@@ -12,11 +12,11 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app.coding import (
-    CODE_CRAFT_SUGGESTED_GUIDANCE,
     CodingEnvState,
     CodingPolicy,
     CodingPolicyError,
     DockerPolicy,
+    expand_guidance_preset,
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
@@ -332,22 +332,33 @@ async def save_coding(
         )
     except TimeoutError:
         warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
+    # Expanded before the lock, off the event loop: a directory walk must not
+    # hold the project's sessions.
+    preset_guidance: list[str] | None = None
+    if guidance_preset:
+        preset = next(
+            (
+                item
+                for item in request.app.state.settings.guidance_presets
+                if item.name == guidance_preset
+            ),
+            None,
+        )
+        if preset is None:
+            raise StorageError(
+                f"Unknown guidance preset {guidance_preset!r}; guidance was not changed"
+            )
+        try:
+            preset_guidance = await asyncio.to_thread(expand_guidance_preset, preset)
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
     async with request.app.state.locks.registry_project_sessions(resolved_project_id):
         _reject_in_memory_work(request, resolved_project_id)
         project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
-        if guidance_preset == "code-craft":
-            guidance = [path for path in CODE_CRAFT_SUGGESTED_GUIDANCE if Path(path).is_file()]
-            if not guidance:
-                # Refuse instead of saving an empty list: that would clear the
-                # configured guidance while looking like a success.
-                raise StorageError(
-                    "None of the code-craft skill files exist (looked for "
-                    f"{CODE_CRAFT_SUGGESTED_GUIDANCE[0]} and "
-                    f"{len(CODE_CRAFT_SUGGESTED_GUIDANCE) - 1} more); "
-                    "guidance was not changed"
-                )
+        if preset_guidance is not None:
+            guidance = preset_guidance
         else:
             guidance = guidance_files.splitlines() if guidance_files.strip() else []
         current = store.coding_policy()

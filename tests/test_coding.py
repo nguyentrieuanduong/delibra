@@ -7,7 +7,6 @@ import pytest
 from app.coding import (
     BUILD_VERIFIED_VERSIONS,
     DOCKER_VERIFIED_VERSIONS,
-    CODE_CRAFT_SUGGESTED_GUIDANCE,
     GUIDANCE_MAX_BYTES,
     GUIDANCE_MAX_FILES,
     GuidancePresetError,
@@ -232,14 +231,6 @@ def test_a_parent_reference_is_refused(tmp_path) -> None:
 
     with pytest.raises(CodingPolicyError, match="without symlinks"):
         normalize_guidance_paths([f"{tmp_path}/x/../a.md"])
-
-
-def test_code_craft_suggestions_skip_approval_gated_skills() -> None:
-    names = {path.split("/skills/")[1].split("/")[0] for path in CODE_CRAFT_SUGGESTED_GUIDANCE}
-    assert names == {
-        "test-driven-development", "coding-standards", "security-baseline",
-        "systematic-debugging", "verification-before-completion",
-    }
 
 
 def test_git_exclude_defaults_to_delibras_list_and_round_trips() -> None:

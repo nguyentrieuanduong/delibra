@@ -87,8 +87,11 @@
         <textarea name="guidance_files" maxlength="65536">{{ coding.guidance_files|join('\n') }}</textarea>
       </label>
       <p class="hint">Markdown files every build agent reads, snapshotted at run start. Nothing is executed. One absolute path per line.</p>
+      {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
       <button type="submit" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save coding settings</button>
-      <button type="submit" name="guidance_preset" value="code-craft" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Use code-craft skills</button>
+      {% for preset in guidance_presets %}
+      <button type="submit" name="guidance_preset" value="{{ preset.name }}" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Use {{ preset.name }} guidance</button>
+      {% endfor %}
     </form>
     <p class="coding-env-status">Environment: {{ coding.env.status }}{% if coding.env.tool %} · {{ coding.env.tool }}{% endif %}{% if coding.env.python %} · Python {{ coding.env.python }}{% endif %}</p>
     {% if coding.env.python and not coding.env.python.startswith('3.12') %}

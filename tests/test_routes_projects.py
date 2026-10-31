@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
 from app.coding import DEFAULT_NETWORK_ALLOWLIST, CodingEnvState, DockerPolicy
-from app.config import Settings
+from app.config import GuidancePreset, Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
 from app.notes import NoteStore
@@ -49,8 +49,10 @@ class SleepingAdapter:
         return ""
 
 
-def project_app(tmp_path: Path, docker_controller=None):
-    settings = Settings(home=tmp_path / "home", run_timeout=2)
+def project_app(tmp_path: Path, docker_controller=None, guidance_presets=()):
+    settings = Settings(
+        home=tmp_path / "home", run_timeout=2, guidance_presets=guidance_presets
+    )
     return create_app(
         settings_override=settings,
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
@@ -1346,8 +1348,15 @@ VENV_STUB = (
 )
 
 
-def coding_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, docker_controller=None):
-    app, settings = project_app(tmp_path, docker_controller=docker_controller)
+def coding_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    docker_controller=None,
+    guidance_presets=(),
+):
+    app, settings = project_app(
+        tmp_path, docker_controller=docker_controller, guidance_presets=guidance_presets
+    )
     project_dir = tmp_path / "coded"
     project_dir.mkdir()
     project = RegistryStore(settings.home).register("Coded", project_dir)
@@ -1518,35 +1527,39 @@ def test_guidance_files_are_saved_from_the_textarea(tmp_path, monkeypatch) -> No
     assert str(guide) in page.text
 
 
-def test_code_craft_preset_keeps_only_existing_files(tmp_path, monkeypatch) -> None:
-    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
-    present = tmp_path / "present.md"
-    present.write_text("# Present\n")
-    monkeypatch.setattr(
-        "app.routes.projects.CODE_CRAFT_SUGGESTED_GUIDANCE",
-        (str(present), str(tmp_path / "absent.md")),
+def test_guidance_preset_saves_its_expanded_files(tmp_path, monkeypatch) -> None:
+    skills = tmp_path / "skills"
+    (skills / "sub").mkdir(parents=True)
+    (skills / "a.md").write_text("# A\n")
+    (skills / "sub" / "b.md").write_text("# B\n")
+    app, project, _dir, prefix = coding_project(
+        tmp_path,
+        monkeypatch,
+        guidance_presets=(GuidancePreset("suite", (str(skills),), True),),
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
             f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_preset": "code-craft"},
+            data={"network_allowlist": "pypi.org", "guidance_preset": "suite"},
             follow_redirects=False,
         )
 
     assert saved.status_code == 303
-    assert ProjectStore(project).coding_policy().guidance_files == [str(present)]
+    assert ProjectStore(project).coding_policy().guidance_files == [
+        str(skills / "a.md"), str(skills / "sub" / "b.md"),
+    ]
 
 
-def test_code_craft_preset_without_files_is_refused_and_keeps_guidance(
+def test_guidance_preset_without_files_is_refused_and_keeps_guidance(
     tmp_path, monkeypatch
 ) -> None:
-    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     guide = tmp_path / "guide.md"
     guide.write_text("# Guide\n")
     absent = tmp_path / "absent.md"
-    monkeypatch.setattr(
-        "app.routes.projects.CODE_CRAFT_SUGGESTED_GUIDANCE",
-        (str(absent), str(tmp_path / "also-absent.md")),
+    app, project, _dir, prefix = coding_project(
+        tmp_path,
+        monkeypatch,
+        guidance_presets=(GuidancePreset("suite", (str(absent), str(tmp_path / "gone"))),),
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
@@ -1556,17 +1569,36 @@ def test_code_craft_preset_without_files_is_refused_and_keeps_guidance(
         )
         response = client.post(
             f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "guidance_preset": "code-craft"},
+            data={"network_allowlist": "example.org", "guidance_preset": "suite"},
         )
 
     assert response.status_code == 422
     assert response.json()["detail"] == (
-        f"None of the code-craft skill files exist (looked for {absent} and 1 more); "
+        f"None of the suite guidance files exist (looked in {absent} and 1 more); "
         "guidance was not changed"
     )
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_files == [str(guide)]
     assert policy.network_allowlist == ["pypi.org"]
+
+
+def test_unknown_guidance_preset_is_refused(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(
+        tmp_path, monkeypatch, guidance_presets=(GuidancePreset("suite", ("/opt/a.md",)),)
+    )
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "example.org", "guidance_preset": "code-craft"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Unknown guidance preset 'code-craft'; guidance was not changed"
+    )
+    assert ProjectStore(project).coding_policy().network_allowlist == list(
+        DEFAULT_NETWORK_ALLOWLIST
+    )
 
 
 def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
@@ -1584,11 +1616,37 @@ def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
     assert policy.enabled is False
 
 
-def test_code_craft_preset_button_follows_the_auto_disable(tmp_path, monkeypatch) -> None:
-    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+def test_each_guidance_preset_gets_a_button_in_config_order(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(
+        tmp_path,
+        monkeypatch,
+        guidance_presets=(
+            GuidancePreset("zeta", ("/opt/z.md",)),
+            GuidancePreset("a<b", ("/opt/a.md",)),
+        ),
+    )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get(f"{prefix}/settings").text
-    assert 'name="guidance_preset" value="code-craft" data-disable-during-auto' in page
+
+    zeta = page.index('name="guidance_preset" value="zeta" data-disable-during-auto')
+    escaped = page.index('name="guidance_preset" value="a&lt;b" data-disable-during-auto')
+    assert zeta < escaped
+    assert ">Use zeta guidance</button>" in page
+    assert "Add guidance presets in" not in page
+    assert "code-craft" not in page
+
+
+def test_no_guidance_presets_links_to_global_settings(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        local = client.get(f"{prefix}/settings").text
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan = client.get(f"{prefix}/settings").text
+
+    assert 'name="guidance_preset"' not in local
+    assert 'Add guidance presets in <a href="/settings">Settings</a>.' in local
+    assert 'href="/settings"' not in lan
+    assert "Guidance presets are set on this machine's Settings page." in lan
 
 
 def test_enabling_coding_in_a_git_project_adds_local_excludes(tmp_path, monkeypatch) -> None:
