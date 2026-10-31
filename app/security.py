@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from http import HTTPStatus
 import ipaddress
 from typing import Any, Awaitable, Callable
@@ -203,51 +204,69 @@ async def _plain_response(send: Send, status: int, text: str) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+@dataclass(frozen=True)
+class AccessPolicy:
+    """Allowed hosts and clients, parsed once so requests only compare."""
+
+    allow_any_host: bool
+    allowed_authorities: frozenset[tuple[str, int | None]]
+    allowed_host_networks: tuple[Network, ...]
+    allow_any_client: bool
+    allowed_client_networks: tuple[Network, ...]
+    restrict_clients: bool
+
+    @classmethod
+    def build(
+        cls, allowed_hosts: tuple[str, ...], allowed_clients: tuple[str, ...]
+    ) -> "AccessPolicy":
+        normalized = [normalize_allowed_host(item) for item in allowed_hosts]
+        clients = [normalize_allowed_client(item) for item in allowed_clients]
+        allow_any_client = WILDCARD_HOST in clients
+        return cls(
+            allow_any_host=WILDCARD_HOST in normalized,
+            allowed_authorities=frozenset(
+                authority
+                for authority in (
+                    _parse_authority(item) for item in normalized if item != WILDCARD_HOST
+                )
+                if authority is not None
+            ),
+            allowed_host_networks=tuple(
+                network
+                for network in (parse_network(item) for item in normalized)
+                if network is not None
+            ),
+            allow_any_client=allow_any_client,
+            allowed_client_networks=tuple(
+                network
+                for network in (
+                    parse_network(item) for item in clients if item != WILDCARD_HOST
+                )
+                if network is not None
+            ),
+            # Naming no client at all is what every install did before peer
+            # filtering existed: the bind address is the access control, and this
+            # check stays off until an operator turns it on.
+            restrict_clients=bool(clients) and not allow_any_client,
+        )
+
+
+class AccessHolder:
+    """The live access policy. Global settings replaces `policy` in one
+    assignment; each request reads it once, so it sees one whole policy."""
+
+    def __init__(self, policy: AccessPolicy) -> None:
+        self.policy = policy
+
+
 class LocalSecurityMiddleware:
-    def __init__(
-        self,
-        app,
-        *,
-        body_limit: int,
-        allowed_hosts: tuple[str, ...] = (),
-        allowed_clients: tuple[str, ...] = (),
-    ) -> None:
+    def __init__(self, app, *, body_limit: int, access: AccessHolder) -> None:
         self.app = app
         self.body_limit = body_limit
-        normalized = [normalize_allowed_host(item) for item in allowed_hosts]
-        self.allow_any_host = WILDCARD_HOST in normalized
-        # Parsed once, so every request compares tuples rather than re-splitting
-        # strings whose canonical form was already settled at startup.
-        self.allowed_authorities = frozenset(
-            authority
-            for authority in (
-                _parse_authority(item)
-                for item in normalized
-                if item != WILDCARD_HOST
-            )
-            if authority is not None
-        )
-        self.allowed_host_networks = tuple(
-            network
-            for network in (parse_network(item) for item in normalized)
-            if network is not None
-        )
-        clients = [normalize_allowed_client(item) for item in allowed_clients]
-        self.allow_any_client = WILDCARD_HOST in clients
-        self.allowed_client_networks = tuple(
-            network
-            for network in (
-                parse_network(item) for item in clients if item != WILDCARD_HOST
-            )
-            if network is not None
-        )
-        # Naming no client at all is what every install did before peer
-        # filtering existed: the bind address is the access control, and this
-        # check stays off until an operator turns it on.
-        self.restrict_clients = bool(clients) and not self.allow_any_client
+        self.access = access
 
-    def _client_allowed(self, scope: Scope) -> bool:
-        if not self.restrict_clients:
+    def _client_allowed(self, policy: AccessPolicy, scope: Scope) -> bool:
+        if not policy.restrict_clients:
             return True
         client = scope.get("client")
         peer = client[0] if client else None
@@ -256,9 +275,9 @@ class LocalSecurityMiddleware:
             return True
         # A transport with no IP peer cannot be shown to be inside the range, so
         # a configured restriction fails closed rather than waving it through.
-        return _within(address, self.allowed_client_networks)
+        return _within(address, policy.allowed_client_networks)
 
-    def _host_allowed(self, value: str) -> bool:
+    def _host_allowed(self, policy: AccessPolicy, value: str) -> bool:
         parsed = _parse_authority(value)
         if parsed is None:
             return False
@@ -266,31 +285,32 @@ class LocalSecurityMiddleware:
         address = _address(hostname)
         if hostname == LOCALHOST or _is_loopback(address):
             return True
-        if self.allow_any_host:
+        if policy.allow_any_host:
             return True
         # A portless entry matches any port; a ported one binds that port only.
-        if (hostname, port) in self.allowed_authorities or (
+        if (hostname, port) in policy.allowed_authorities or (
             hostname,
             None,
-        ) in self.allowed_authorities:
+        ) in policy.allowed_authorities:
             return True
         # A range matches the literal a browser sent, never a name that would
         # resolve into it: this check reads the header and resolves nothing.
-        return _within(address, self.allowed_host_networks)
+        return _within(address, policy.allowed_host_networks)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
 
+        policy = self.access.policy
         # Before the Host check, so a peer outside the range learns nothing
         # about which Host values this server is configured to answer to.
-        if not self._client_allowed(scope):
+        if not self._client_allowed(policy, scope):
             await _plain_response(send, HTTPStatus.FORBIDDEN, "Forbidden Client")
             return
 
         host = _header(scope, b"host")
-        if host is None or not self._host_allowed(host):
+        if host is None or not self._host_allowed(policy, host):
             await _plain_response(send, HTTPStatus.FORBIDDEN, "Forbidden Host")
             return
 

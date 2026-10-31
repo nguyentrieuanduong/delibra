@@ -33,7 +33,12 @@ from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
 from app.routes.usage import router as usage_router
 from app.runner import AdapterFactory, RunManager
-from app.security import LocalSecurityMiddleware, is_loopback_client
+from app.security import (
+    AccessHolder,
+    AccessPolicy,
+    LocalSecurityMiddleware,
+    is_loopback_client,
+)
 from app.storage import (
     ConflictError,
     LockCoordinator,
@@ -232,14 +237,18 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan)
     app.add_middleware(CanonicalProjectMiddleware)
+    access = AccessHolder(
+        AccessPolicy.build(app_settings.allowed_hosts, app_settings.allowed_clients)
+    )
     app.add_middleware(
         LocalSecurityMiddleware,
         body_limit=app_settings.request_body_limit,
-        allowed_hosts=app_settings.allowed_hosts,
-        allowed_clients=app_settings.allowed_clients,
+        access=access,
     )
     app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
     app.state.settings = app_settings
+    app.state.access = access
+    app.state.global_settings_lock = asyncio.Lock()
     app.state.registry = None
     app.state.locks = None
     app.state.manager = None

@@ -13,7 +13,12 @@ from app.config import Settings
 from app.main import create_app
 from app.models import SessionConfig
 from app.runner import RunManager
-from app.security import is_loopback_client, require_loopback_client, validate_field
+from app.security import (
+    AccessPolicy,
+    is_loopback_client,
+    require_loopback_client,
+    validate_field,
+)
 from app.storage import LockCoordinator, ProjectStore, RegistryStore, StorageError
 
 
@@ -451,3 +456,28 @@ def test_other_peers_are_refused(peer) -> None:
     with pytest.raises(HTTPException) as raised:
         require_loopback_client(request_from(peer))
     assert raised.value.status_code == 403
+
+
+def test_swapping_the_access_policy_applies_to_the_next_request(tmp_path) -> None:
+    client = app_client(
+        tmp_path, allowed_clients=("192.168.1.0/24",), peer=("10.0.0.5", 5000)
+    )
+
+    with client:
+        before = client.get("/", headers={"host": "localhost"})
+        client.app.state.access.policy = AccessPolicy.build((), ("10.0.0.0/8",))
+        after = client.get("/", headers={"host": "localhost"})
+
+    assert before.status_code == 403
+    assert before.text == "Forbidden Client"
+    assert after.status_code == 200
+
+
+def test_an_access_policy_reads_no_file_per_request(tmp_path, monkeypatch) -> None:
+    client = app_client(tmp_path)
+    with client:
+        monkeypatch.setattr(
+            "app.config.read_config_file",
+            lambda home: (_ for _ in ()).throw(AssertionError("config.json read per request")),
+        )
+        assert client.get("/", headers={"host": "localhost"}).status_code == 200
