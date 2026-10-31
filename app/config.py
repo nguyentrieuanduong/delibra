@@ -10,6 +10,84 @@ from pathlib import Path
 
 MIB = 1024 * 1024
 CONFIG_FILENAME = "config.json"
+GUIDANCE_PRESET_MAX = 32
+GUIDANCE_PRESET_PATHS_MAX = 32
+GUIDANCE_PRESET_NAME_MAX = 40
+
+
+@dataclass(frozen=True)
+class GuidancePreset:
+    """A named set of guidance paths, kept as written (``~/`` unexpanded)."""
+
+    name: str
+    paths: tuple[str, ...]
+    include_subdirectories: bool = False
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "paths": list(self.paths),
+            "include_subdirectories": self.include_subdirectories,
+        }
+
+
+def expand_home(entry: str) -> Path:
+    """A preset path made absolute; a leading ``~/`` is this user's home."""
+
+    return Path.home() / entry[2:] if entry.startswith("~/") else Path(entry)
+
+
+def _has_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def parse_guidance_presets(raw: object) -> tuple[GuidancePreset, ...]:
+    """Validate ``guidance_presets`` as config.json stores it.
+
+    Files are not required to exist: that is checked when a preset is
+    applied, so a skill folder on an unmounted disk cannot stop Delibra.
+    """
+
+    if not isinstance(raw, dict):
+        raise ValueError("guidance_presets must map a name to a preset object")
+    if len(raw) > GUIDANCE_PRESET_MAX:
+        raise ValueError(f"guidance_presets allows at most {GUIDANCE_PRESET_MAX} presets")
+    presets: list[GuidancePreset] = []
+    for name, body in raw.items():
+        if (
+            not name
+            or name != name.strip()
+            or len(name) > GUIDANCE_PRESET_NAME_MAX
+            or _has_control(name)
+        ):
+            raise ValueError(
+                f"guidance preset name {name!r} must be 1-{GUIDANCE_PRESET_NAME_MAX} "
+                "printable characters without surrounding spaces"
+            )
+        if not isinstance(body, dict) or set(body) - {"paths", "include_subdirectories"}:
+            raise ValueError(
+                f"guidance preset {name!r} must be an object with paths and include_subdirectories"
+            )
+        recursive = body.get("include_subdirectories", False)
+        if type(recursive) is not bool:
+            raise ValueError(f"guidance preset {name!r} include_subdirectories must be true or false")
+        entries = body.get("paths")
+        if not isinstance(entries, list) or not entries or any(type(item) is not str for item in entries):
+            raise ValueError(f"guidance preset {name!r} must list at least one path")
+        if len(entries) > GUIDANCE_PRESET_PATHS_MAX:
+            raise ValueError(
+                f"guidance preset {name!r} lists more than {GUIDANCE_PRESET_PATHS_MAX} paths"
+            )
+        paths: list[str] = []
+        for entry in entries:
+            if not (entry.startswith("/") or entry.startswith("~/")) or _has_control(entry):
+                raise ValueError(
+                    f"guidance preset {name!r}: {entry!r} must be an absolute or ~/ path"
+                )
+            if entry in paths:
+                raise ValueError(f"guidance preset {name!r} lists {entry!r} twice")
+            paths.append(entry)
+        presets.append(GuidancePreset(name, tuple(paths), recursive))
+    return tuple(presets)
 
 
 def _integer(
@@ -30,8 +108,8 @@ def _integer(
     return value
 
 
-def _config_file_list(home: Path, key: str) -> list[str]:
-    """Read one string list from ``<home>/config.json``, if that file exists.
+def read_config_file(home: Path) -> dict:
+    """``<home>/config.json`` as an object; empty when the file is absent.
 
     Every failure raises rather than falling back to the restrictive default: an
     access rule that silently ignores what an operator wrote is the one
@@ -40,19 +118,45 @@ def _config_file_list(home: Path, key: str) -> list[str]:
 
     path = home / CONFIG_FILENAME
     if not path.is_file():
-        return []
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"{path} is not readable JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object")
-    entries = data.get(key, [])
+    return data
+
+
+def write_config_file(home: Path, data: dict) -> None:
+    """Replace ``<home>/config.json`` atomically, mode 0600, keys in the given order."""
+
+    # Imported here: storage imports this module, and config stays the leaf.
+    from app.storage import atomic_write_bytes
+
+    encoded = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    atomic_write_bytes(home / CONFIG_FILENAME, encoded)
+
+
+def _config_file_list(home: Path, key: str) -> list[str]:
+    """Read one string list from ``<home>/config.json``, if that file exists."""
+
+    entries = read_config_file(home).get(key, [])
     if not isinstance(entries, list) or any(
         type(item) is not str for item in entries
     ):
-        raise ValueError(f"{path} {key} must be a list of strings")
+        raise ValueError(f"{home / CONFIG_FILENAME} {key} must be a list of strings")
     return entries
+
+
+def _guidance_presets(home: Path) -> tuple[GuidancePreset, ...]:
+    data = read_config_file(home)
+    if "guidance_presets" not in data:
+        return ()
+    try:
+        return parse_guidance_presets(data["guidance_presets"])
+    except ValueError as exc:
+        raise ValueError(f"{home / CONFIG_FILENAME} {exc}") from exc
 
 
 def _access_list(home: Path, *, variable: str, key: str) -> list[str]:
@@ -111,6 +215,8 @@ class Settings:
     # Non-loopback peer addresses and CIDR ranges permitted to connect. Loopback
     # is always accepted. Empty leaves non-loopback access to the bind address.
     allowed_clients: tuple[str, ...] = ()
+    # Named guidance sets for Settings -> Coding; config.json or the Settings page only.
+    guidance_presets: tuple[GuidancePreset, ...] = ()
     file_view_limit: int = 512 * 1024
     auto_resume_drain_seconds: int = 30
     auto_turn_retries: int = 2
@@ -244,6 +350,7 @@ class Settings:
             home=home,
             allowed_hosts=_allowed_hosts(home),
             allowed_clients=_allowed_clients(home),
+            guidance_presets=_guidance_presets(home),
             run_timeout=_integer("DELIBRA_RUN_TIMEOUT", 900),
             max_run_timeout=_integer("DELIBRA_MAX_RUN_TIMEOUT", 14_400),
             stdout_line_limit=_integer("DELIBRA_STDOUT_LINE_LIMIT", 12 * MIB),

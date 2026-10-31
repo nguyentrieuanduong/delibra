@@ -1,10 +1,19 @@
 import json
+import os
+import random
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
-from app.config import Settings
+from app.config import (
+    GuidancePreset,
+    Settings,
+    expand_home,
+    parse_guidance_presets,
+    read_config_file,
+    write_config_file,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -362,3 +371,143 @@ def test_an_unusable_client_entry_refuses_to_start(
 
     with pytest.raises(ValueError, match="allowed client"):
         Settings.from_env()
+
+
+def _write_presets(tmp_path: Path, presets: object) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.json").write_text(
+        json.dumps({"guidance_presets": presets}), encoding="utf-8"
+    )
+    return home
+
+
+def test_guidance_presets_load_in_config_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = _write_presets(
+        tmp_path,
+        {
+            "zeta": {"paths": ["~/skills", "/opt/b.MD"], "include_subdirectories": True},
+            "alpha": {"paths": ["/opt/c.md"]},
+        },
+    )
+    monkeypatch.setenv("DELIBRA_HOME", str(home))
+
+    assert Settings.from_env().guidance_presets == (
+        GuidancePreset("zeta", ("~/skills", "/opt/b.MD"), True),
+        GuidancePreset("alpha", ("/opt/c.md",), False),
+    )
+
+
+def test_guidance_presets_default_to_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DELIBRA_HOME", str(tmp_path / "absent"))
+
+    assert Settings.from_env().guidance_presets == ()
+
+
+def test_expand_home_uses_this_users_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert expand_home("~/skills/a.md") == tmp_path / "skills" / "a.md"
+    assert expand_home("/opt/a.md") == Path("/opt/a.md")
+
+
+@pytest.mark.parametrize(
+    "presets",
+    [
+        ["/a.md"],
+        {"": {"paths": ["/a.md"]}},
+        {" x": {"paths": ["/a.md"]}},
+        {"x" * 41: {"paths": ["/a.md"]}},
+        {"bad\nname": {"paths": ["/a.md"]}},
+        {"x": ["/a.md"]},
+        {"x": {"paths": []}},
+        {"x": {"paths": "/a.md"}},
+        {"x": {"paths": [1]}},
+        {"x": {"paths": ["relative.md"]}},
+        {"x": {"paths": ["~other/a.md"]}},
+        {"x": {"paths": ["/a\n.md"]}},
+        {"x": {"paths": ["/a.md", "/a.md"]}},
+        {"x": {"paths": [f"/{index}.md" for index in range(33)]}},
+        {"x": {"paths": ["/a.md"], "include_subdirectories": "yes"}},
+        {"x": {"paths": ["/a.md"], "unknown": 1}},
+        {f"p{index}": {"paths": ["/a.md"]} for index in range(33)},
+    ],
+)
+def test_malformed_guidance_presets_refuse_to_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, presets: object
+) -> None:
+    monkeypatch.setenv("DELIBRA_HOME", str(_write_presets(tmp_path, presets)))
+
+    with pytest.raises(ValueError, match="guidance"):
+        Settings.from_env()
+
+
+def _random_json(rng: random.Random, depth: int = 0) -> object:
+    choices = [
+        lambda: None,
+        lambda: rng.choice([True, False]),
+        lambda: rng.randint(-3, 40),
+        lambda: rng.choice(["", " a", "/a.md", "~/s", "~x", "x\n", "a" * 41, "\x7f", "ok"]),
+    ]
+    if depth < 3:
+        choices += [
+            lambda: [_random_json(rng, depth + 1) for _ in range(rng.randint(0, 4))],
+            lambda: {
+                rng.choice(["paths", "include_subdirectories", "x", "", "/a.md"]): _random_json(
+                    rng, depth + 1
+                )
+                for _ in range(rng.randint(0, 3))
+            },
+        ]
+    return rng.choice(choices)()
+
+
+def test_generated_guidance_presets_parse_or_raise_value_error() -> None:
+    rng = random.Random(20261031)
+    parsed = 0
+    for _ in range(3000):
+        raw = _random_json(rng)
+        if rng.random() < 0.6:
+            raw = {
+                rng.choice(["a", "b", "", " c", "Dương"]): {
+                    "paths": [
+                        rng.choice(["/a.md", "~/s", "/b/", "~/c.md", "rel", "/x\ty"])
+                        for _ in range(rng.randint(0, 3))
+                    ],
+                    **(
+                        {"include_subdirectories": rng.choice([True, False, 1, "true"])}
+                        if rng.random() < 0.7
+                        else {}
+                    ),
+                }
+                for _ in range(rng.randint(1, 3))
+            }
+        try:
+            presets = parse_guidance_presets(raw)
+        except ValueError:
+            continue
+        parsed += bool(presets)
+        for preset in presets:
+            assert preset.name and preset.name == preset.name.strip()
+            assert 1 <= len(preset.paths) <= 32
+            assert all(path.startswith(("/", "~/")) for path in preset.paths)
+            assert type(preset.include_subdirectories) is bool
+    assert parsed > 50
+
+
+def test_config_file_round_trips_in_order_with_private_mode(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    data = {"zeta": 1, "allowed_hosts": ["my-mac.local"], "alpha": "Dương"}
+
+    write_config_file(home, data)
+
+    assert list(read_config_file(home)) == ["zeta", "allowed_hosts", "alpha"]
+    assert read_config_file(home) == data
+    assert "Dương" in (home / "config.json").read_text(encoding="utf-8")
+    assert os.stat(home / "config.json").st_mode & 0o777 == 0o600
