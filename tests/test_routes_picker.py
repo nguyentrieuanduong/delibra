@@ -10,6 +10,7 @@ import pytest
 
 from app.config import Settings
 from app.main import create_app
+from app.storage import RegistryStore
 
 LOCAL = ("127.0.0.1", 5000)
 LAN = ("192.168.1.20", 5000)
@@ -162,3 +163,64 @@ def test_path_picker_javascript_contract_runs_under_node() -> None:
         timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def project_with_folders(tmp_path: Path):
+    app, settings = make_app(tmp_path)
+    project_dir = tmp_path / "proj"
+    (project_dir / "src" / "app").mkdir(parents=True)
+    (project_dir / ".cache").mkdir()
+    (project_dir / "README.md").write_text("x")
+    project = RegistryStore(settings.home).register("Proj", project_dir)
+    return app, project
+
+
+def test_project_mode_lists_project_folders_for_any_client(tmp_path) -> None:
+    app, _project = project_with_folders(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        top = client.get("/projects/Proj/browse").text
+        inner = client.get("/projects/Proj/browse", params={"path": "src"}).text
+        hidden = client.get("/projects/Proj/browse", params={"hidden": "1"}).text
+        outside = client.get("/projects/Proj/browse", params={"path": "../x"})
+
+    assert 'data-picker-value="src"' in top
+    assert "README.md" not in top
+    assert ".cache" not in top
+    assert 'data-picker-value=".cache"' in hidden
+    assert 'data-picker-value="src/app"' in inner
+    assert ">Proj</button>" in inner
+    assert ">src</button>" in inner
+    assert "data-path-picker-add" in inner
+    assert outside.status_code == 422
+
+
+def test_browse_buttons_follow_who_may_browse(tmp_path) -> None:
+    app, _project = project_with_folders(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        index = client.get("/").text
+        settings_page = client.get("/projects/Proj/settings").text
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan_index = client.get("/").text
+        lan_settings = client.get("/projects/Proj/settings").text
+
+    assert 'data-picker-url="/browse?mode=folder" data-picker-target="register-path"' in index
+    assert 'data-picker-target="rebind-path-0"' in index
+    assert "/browse?mode=folder&amp;fallback=" in index
+    assert 'id="path-picker"' in index
+    assert (
+        'data-picker-url="/browse?mode=guidance" data-picker-target="coding-guidance-files"'
+    ) in settings_page
+    assert (
+        'data-picker-url="/projects/Proj/browse" data-picker-target="project-writable-roots"'
+    ) in settings_page
+    assert 'data-picker-target="new-session-writable-roots"' in settings_page
+    assert (
+        'data-picker-url="/browse?mode=guidance" data-picker-target="coding-guidance-skills"'
+    ) in settings_page
+    assert 'id="path-picker"' in settings_page
+    assert 'data-picker-target="register-path"' not in lan_index
+    assert 'data-picker-target="rebind-path-0"' not in lan_index
+    assert 'id="path-picker"' not in lan_index
+    assert 'data-picker-target="coding-guidance-files"' not in lan_settings
+    assert 'data-picker-target="coding-guidance-skills"' not in lan_settings
+    assert 'data-picker-target="project-writable-roots"' in lan_settings

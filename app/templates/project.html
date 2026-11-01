@@ -3,6 +3,7 @@
 {% block title %}{{ project.name }} · Delibra{% endblock %}
 {% block body_class %}settings-page{% endblock %}
 {% block content %}
+  {% from "_path_picker_macros.html" import browse_button %}
   <p><a href="/">Projects</a> · <a href="{{ project_url(project.name, '/chat') }}">Chat</a></p>
   <h1>{{ project.name }}</h1>
   <p><code>{{ project.path }}</code></p>
@@ -53,6 +54,7 @@
       <label>Project writable roots
         <textarea id="project-writable-roots" name="writable_roots" maxlength="65536">{{ writable_roots|join('\n') }}</textarea>
       </label>
+      {{ browse_button(project_url(project.name, "/browse"), "project-writable-roots") }}
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Save writable roots</button>
     </form>
   </section>
@@ -84,12 +86,14 @@
         <p class="hint">Allowed by your choice: build agents may connect there. Claude's sandbox permits private addresses for listed hosts; Codex's refuses them.</p>
       {% endif %}
       <label>Build guidance files
-        <textarea name="guidance_files" maxlength="65536">{{ coding.guidance_files|join('\n') }}</textarea>
+        <textarea id="coding-guidance-files" name="guidance_files" maxlength="65536">{{ coding.guidance_files|join('\n') }}</textarea>
       </label>
+      {% if coding_local %}{{ browse_button("/browse?mode=guidance", "coding-guidance-files") }}{% endif %}
       <p class="hint">Markdown files every build agent reads, snapshotted at run start. Nothing is executed. One absolute path per line.</p>
       <label>Skills agents can read
         <textarea id="coding-guidance-skills" name="guidance_skills" maxlength="262144">{{ coding.guidance_skills|join('\n') }}</textarea>
       </label>
+      {% if coding_local %}{{ browse_button("/browse?mode=guidance", "coding-guidance-skills") }}{% endif %}
       <p class="hint">Markdown files copied read-only into each build run for agents to read when they need them (a skill's SKILL.md with its references/ files). At most 512 files and 4 MB. One absolute path per line.</p>
       {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
       <button type="submit" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save coding settings</button>
@@ -216,8 +220,9 @@
         <textarea name="role_instructions" maxlength="20000"></textarea>
       </label>
       <label>Additional writable roots
-        <textarea name="writable_roots" maxlength="65536"></textarea>
+        <textarea id="new-session-writable-roots" name="writable_roots" maxlength="65536"></textarea>
       </label>
+      {{ browse_button(project_url(project.name, "/browse"), "new-session-writable-roots") }}
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create session</button>
     </form>
   </details>
@@ -256,8 +261,9 @@
                 <p>Role instructions are fixed after the first round.</p>
               {% endif %}
               <label>Additional writable roots
-                <textarea name="writable_roots" maxlength="65536">{{ session.writable_roots|join('\n') }}</textarea>
+                <textarea id="session-writable-roots-{{ session.id }}" name="writable_roots" maxlength="65536">{{ session.writable_roots|join('\n') }}</textarea>
               </label>
+              {{ browse_button(project_url(project.name, "/browse"), "session-writable-roots-" ~ session.id) }}
               <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
             </form>
           </details>
@@ -287,4 +293,5 @@
   {% else %}
     <p>No sessions yet.</p>
   {% endif %}
+  {% include "_path_picker_dialog.html" %}
 {% endblock %}

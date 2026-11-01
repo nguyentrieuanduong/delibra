@@ -18,7 +18,10 @@ from app.path_picker import (
     list_machine_directory,
     picker_start,
 )
+from app.project_routing import request_project
 from app.security import is_loopback_client
+from app.storage import ProjectFileDisplayError, ProjectFileSecurityError, list_project_directory
+from app.urls import project_url
 
 router = APIRouter()
 
@@ -100,5 +103,65 @@ async def browse_machine(
                 if listing and listing.truncated
                 else None
             ),
+        },
+    )
+
+
+@router.get("/projects/{project_id}/browse", response_class=HTMLResponse)
+async def browse_project(
+    request: Request,
+    project_id: str,
+    path: str = Query(""),
+    hidden: bool = Query(False),
+):
+    # Same audience as the project's Files browser: any allowed client. The
+    # listing stays inside the project and follows no symlink.
+    project = request_project(request, project_id)
+
+    def url(relative: str, show: bool) -> str:
+        return project_url(project.name, "/browse") + "?" + urlencode(
+            {"path": relative, "hidden": "1" if show else "0"}
+        )
+
+    try:
+        entries = await asyncio.to_thread(list_project_directory, Path(project.path), path)
+    except ProjectFileSecurityError as exc:
+        raise HTTPException(status_code=422, detail="invalid project file path") from exc
+    except ProjectFileDisplayError:
+        entries, error = [], "This directory cannot be displayed."
+    else:
+        error = None
+    parts = [part for part in path.split("/") if part not in ("", ".")]
+    current = "/".join(parts)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_path_picker.html",
+        context={
+            "mode": "project",
+            "error": error,
+            "home_url": url("", hidden),
+            "home_label": project.name,
+            "crumbs": [{"label": project.name, "url": url("", hidden), "separator": False}]
+            + [
+                {"label": part, "url": url("/".join(parts[: index + 1]), hidden), "separator": True}
+                for index, part in enumerate(parts)
+            ],
+            "entries": [
+                {
+                    "name": entry.name,
+                    "kind": "directory",
+                    "kb": 0,
+                    "value": entry.relative_path,
+                    "url": url(entry.relative_path, hidden),
+                    "tickable": True,
+                }
+                for entry in entries
+                if entry.kind == "directory" and (hidden or not entry.name.startswith("."))
+            ],
+            "hidden": hidden,
+            "hidden_url": url(current, not hidden),
+            "current_value": current,
+            "current_label": project.name,
+            "truncated_note": None,
         },
     )

@@ -295,3 +295,118 @@ def test_a_reopened_picker_never_shows_or_applies_an_earlier_listing(
     assert page.input_value("#preset-files-1") == "~/skills/a.md"
     assert page.input_value("#preset-files-0") == "~/skills/tdd/SKILL.md"
     assert page.evaluate("window.pickerSwaps") == [True, False, True]
+
+
+@pytest.mark.browser
+def test_browse_chooses_a_folder_to_register(
+    live_server: LiveServer, page: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "repos" / "new-project").mkdir(parents=True)
+    app = live_server(["success"], tmp_path)
+    page.goto(f"{app['base_url']}/")
+    page.click("summary:has-text('Register project')")
+
+    page.click("[data-picker-target='register-path']")
+    dialog = page.locator("#path-picker")
+    _open_folder(dialog, "repos/")
+    _open_folder(dialog, "new-project/")
+    dialog.get_by_role("button", name="Choose ~/repos/new-project").click()
+
+    assert page.input_value("#register-path") == str(tmp_path / "repos" / "new-project")
+    assert not dialog.is_visible()
+
+
+@pytest.mark.browser
+def test_browse_adds_markdown_to_coding_guidance(
+    live_server: LiveServer, page: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    guides = tmp_path / "guides"
+    guides.mkdir()
+    (guides / "a.md").write_text("# A\n")
+    (guides / "b.md").write_text("# B\n")
+    app = live_server(["success"], tmp_path)
+    page.goto(f"{app['base_url']}/projects/Verify/settings")
+
+    page.click("[data-picker-target='coding-guidance-files']")
+    dialog = page.locator("#path-picker")
+    _open_folder(dialog, "guides/")
+    dialog.locator(f"input[data-picker-value='{guides / 'a.md'}']").wait_for()
+    dialog.locator("[data-picker-select-all]").check()
+    dialog.locator("[data-path-picker-add]").click()
+
+    assert page.input_value("#coding-guidance-files") == f"{guides / 'a.md'}\n{guides / 'b.md'}"
+
+
+@pytest.mark.browser
+def test_browse_adds_project_folders_to_writable_roots(
+    live_server: LiveServer, page: Any, tmp_path: Path
+) -> None:
+    app = live_server(["success"], tmp_path)
+    (tmp_path / "project" / "src" / "app").mkdir(parents=True)
+    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    edit_target = f"session-writable-roots-{app['session_ids'][0]}"
+    assert page.locator(f"[data-picker-target='{edit_target}']").count() == 1
+
+    page.click("[data-picker-target='project-writable-roots']")
+    dialog = page.locator("#path-picker")
+    _open_folder(dialog, "src/")
+    dialog.locator("input[data-picker-value='src/app']").check()
+    dialog.locator("[data-path-picker-add]").click()
+
+    assert page.input_value("#project-writable-roots").splitlines()[-1] == "src/app"
+
+
+@pytest.mark.browser
+def test_a_listing_opened_for_one_field_never_fills_another(
+    live_server: LiveServer, page: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "guides").mkdir()
+    (tmp_path / "guides" / "a.md").write_text("# A\n")
+    app = live_server(["success"], tmp_path)
+    (tmp_path / "project" / "src").mkdir(parents=True)
+    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    guidance_before = page.input_value("#coding-guidance-files")
+    dialog = page.locator("#path-picker")
+
+    page.click("[data-picker-target='coding-guidance-files']")
+    dialog.locator("[data-path-picker-add]").wait_for()
+    dialog.get_by_role("button", name="Cancel").click()
+
+    pattern = re.compile(r"/projects/Verify/browse\?")
+    held = _held_listing(page, pattern)
+    page.click("[data-picker-target='project-writable-roots']")
+    _wait_until_held(page, held)
+    # The guidance listing's Add cannot reach the writable-roots field.
+    assert dialog.locator("[data-path-picker-add], [data-path-picker-choose]").count() == 0
+    held[0].continue_()
+    page.unroute(pattern)
+    dialog.locator("input[data-picker-value='src']").check()
+    dialog.locator("[data-path-picker-add]").click()
+
+    assert page.input_value("#project-writable-roots").splitlines()[-1] == "src"
+    assert page.input_value("#coding-guidance-files") == guidance_before
+
+
+@pytest.mark.browser
+def test_browse_adds_markdown_to_the_skills_box(
+    live_server: LiveServer, page: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    skill = tmp_path / "suite" / "tdd"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# TDD\n")
+    app = live_server(["success"], tmp_path)
+    page.goto(f"{app['base_url']}/projects/Verify/settings")
+
+    page.click("[data-picker-target='coding-guidance-skills']")
+    dialog = page.locator("#path-picker")
+    _open_folder(dialog, "suite/")
+    _open_folder(dialog, "tdd/")
+    dialog.locator(f"input[data-picker-value='{skill / 'SKILL.md'}']").check()
+    dialog.locator("[data-path-picker-add]").click()
+
+    assert page.input_value("#coding-guidance-skills") == str(skill / "SKILL.md")
+    assert page.input_value("#coding-guidance-files") == ""

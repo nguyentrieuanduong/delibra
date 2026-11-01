@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Projects · Delibra{% endblock %}
 {% block content %}
+  {% from "_path_picker_macros.html" import browse_button %}
   <h1>Projects</h1>
   <details>
     <summary>Register project</summary>
     <form method="post" action="/projects">
       <label>Name <input name="name" maxlength="200" required></label>
-      <label>Absolute directory path <input name="path" maxlength="4096" required></label>
+      <label>Absolute directory path <input id="register-path" name="path" maxlength="4096" required></label>
+      {% if is_loopback_client(request) %}{{ browse_button("/browse?mode=folder", "register-path") }}{% endif %}
       <button type="submit">Register project</button>
     </form>
     <p class="hint">
@@ -37,8 +39,9 @@
           {% endif %}
           <form method="post" action="{{ project_url(project.name, '/rebind') }}">
             <label>New absolute location
-              <input name="path" maxlength="4096" required>
+              <input id="rebind-path-{{ loop.index0 }}" name="path" maxlength="4096" required>
             </label>
+            {% if is_loopback_client(request) %}{{ browse_button("/browse?mode=folder&fallback=" ~ (project.path|string|urlencode), "rebind-path-" ~ loop.index0) }}{% endif %}
             <button type="submit">Rebind location</button>
           </form>
           <form method="post" action="{{ project_url(project.name, '/unregister') }}">
@@ -50,4 +53,5 @@
   {% else %}
     <p>No projects registered yet.</p>
   {% endif %}
+  {% if is_loopback_client(request) %}{% include "_path_picker_dialog.html" %}{% endif %}
 {% endblock %}
