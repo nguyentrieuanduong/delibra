@@ -153,6 +153,12 @@ deleting project data. Re-registering prefers the name carried by the project
 manifest and adds `-2`, `-3`, or the first free later suffix when that name is
 already registered.
 
+The project list shows 20 projects per page. **Search projects** filters by
+name or path, ignoring case and Vietnamese accents, half a second after you
+stop typing. **Sort** orders by last activity (the newest round or Auto-run
+change), registration time or name, in either direction. Search, sort and page
+are kept in the address bar, so a reload or bookmark returns to the same view.
+
 The registry keeps each project's canonical absolute location. If a project
 directory is moved, use **Rebind location** on the Projects page and select
 the moved directory. Delibra accepts the new location only when its existing
