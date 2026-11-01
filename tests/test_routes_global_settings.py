@@ -79,9 +79,16 @@ def test_the_page_shows_current_values_and_one_empty_preset(tmp_path, monkeypatc
     assert "preset_paths_" not in page
     assert "preset_subdirs_" not in page
     assert (
-        'data-picker-target="preset-files-0" data-picker-files-list="preset-files-list-0"'
+        'data-picker-target="preset-files-0" data-picker-files-list="preset-files-list-0" '
+        'data-picker-list="files" aria-controls="path-picker">Choose pasted files…</button>'
     ) in page
-    assert ">Choose files…</button>" in page
+    assert (
+        'data-picker-target="preset-skills-0" data-picker-files-list="preset-skills-list-0" '
+        'data-picker-list="skills" aria-controls="path-picker">Choose skills…</button>'
+    ) in page
+    assert '<div id="preset-skills-list-0" class="preset-files" aria-live="polite">' in page
+    assert page.count('<p class="preset-list-heading">Pasted every turn</p>') == 2
+    assert page.count('<p class="preset-list-heading">Agents can read</p>') == 2
     assert 'name="preset_name_1" value=""' in page
     assert "No files yet." in page
     assert 'name="preset_count" value="2"' in page
@@ -367,14 +374,14 @@ def test_remove_drops_one_file_and_the_row_view_is_read_only(tmp_path, monkeypat
 
     assert 'name="files" value="~/skills/sub/b.md"' in removed
     assert "<code>~/skills/a.md</code>" not in removed
-    assert """hx-vals='{"remove": "~/skills/sub/b.md", "view": "dialog"}'""" in removed
+    assert """hx-vals='{"list": "files", "remove": "~/skills/sub/b.md", "view": "dialog"}'""" in removed
     assert "1 file, " in removed
     assert "<code>~/skills/a.md</code> 2 KB" in row
     assert "picker-files-value" not in row
     assert "Remove" not in row
     assert "data-path-picker-use" not in row
     assert "No files yet." in empty
-    remove_all = """hx-vals='{"files": "", "view": "dialog"}'"""
+    remove_all = """hx-vals='{"files": "", "list": "files", "view": "dialog"}'"""
     assert remove_all in removed
     assert ">Remove all</button>" in removed
     assert remove_all not in empty
@@ -418,6 +425,8 @@ def test_an_add_over_the_limits_or_without_markdown_adds_nothing(tmp_path, monke
         {"files": "~/skills"},
         {"files": "\n".join(f"/{index}.md" for index in range(33))},
         {"view": "other"},
+        {"list": "other"},
+        {"list": "skills", "files": "\n".join(f"/{index}.md" for index in range(513))},
         {"add": "relative"},
     ],
 )
@@ -435,3 +444,37 @@ def test_preset_files_are_for_this_machine_only(tmp_path) -> None:
         response = preset_files(client, files="/opt/a.md")
 
     assert response.status_code == 403
+
+
+def test_the_skills_list_has_its_own_heading_limits_and_layout_check(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for suite in ("a", "b"):
+        (tmp_path / suite / "tdd").mkdir(parents=True)
+        (tmp_path / suite / "tdd" / "SKILL.md").write_text("x" * 3000)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        listed = preset_files(client, list="skills", files="~/a/tdd/SKILL.md").text
+        pasted = preset_files(client, files="~/a/tdd/SKILL.md").text
+        clash = preset_files(
+            client, list="skills", files="~/a/tdd/SKILL.md", add="~/b/tdd", subdirs="true"
+        ).text
+        monkeypatch.setattr("app.routes.settings.SKILLS_MAX_FILES", 1)
+        over = preset_files(client, list="skills", files="~/a/tdd/SKILL.md", add="~/b/tdd").text
+        row = preset_files(client, view="row", list="skills", files="~/a/tdd/SKILL.md").text
+
+    assert '<h3 class="picker-files-heading">Will include: agents can read</h3>' in listed
+    assert "1 file, 3 KB (limit 512 files, 4096 KB)." in listed
+    assert """hx-vals='{"list": "skills", "remove": "~/a/tdd/SKILL.md", "view": "dialog"}'""" in listed
+    assert """hx-vals='{"files": "", "list": "skills", "view": "dialog"}'""" in listed
+    assert '<h3 class="picker-files-heading">Will include: pasted every turn</h3>' in pasted
+    assert "with file headers (limit 32 files, 256 KB)." in pasted
+    assert (
+        f"Skill files {str(tmp_path / 'a' / 'tdd' / 'SKILL.md')!r} and "
+        f"{str(tmp_path / 'b' / 'tdd' / 'SKILL.md')!r} would both be copied as "
+        "'tdd/SKILL.md'; nothing was added"
+    ).replace("'", "&#39;") in clash
+    assert 'name="files" value="~/a/tdd/SKILL.md"' in clash
+    assert (
+        "Adding these makes 2 files and 6 KB; the limit is 1 files and 4096 KB; nothing was added"
+    ) in over
+    assert "(limit 512 files, 4096 KB)" in row and "Remove" not in row

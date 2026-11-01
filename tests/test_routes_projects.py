@@ -1616,6 +1616,21 @@ def test_skills_are_saved_from_the_coding_form_and_kept_without_it(tmp_path, mon
     assert policy.network_allowlist == ["example.org"]
 
 
+def test_the_coding_page_shows_the_skills_box(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    ProjectStore(project).set_build_skills(skills)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings").text
+
+    assert (
+        '<textarea id="coding-guidance-skills" name="guidance_skills" maxlength="262144">'
+        + "\n".join(skills)
+        + "</textarea>"
+    ) in page
+    assert "Markdown files copied read-only into each build run" in page
+
+
 def test_an_invalid_skill_list_is_refused_and_keeps_settings(tmp_path, monkeypatch) -> None:
     skills = _skill_files(tmp_path / "skills")
     clash = tmp_path / "other" / "tdd" / "SKILL.md"

@@ -127,6 +127,48 @@ def test_a_refused_save_keeps_the_chosen_files_and_marks_the_preset(
 
 
 @pytest.mark.browser
+def test_choose_skills_fills_the_second_list(
+    live_server: LiveServer, page: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _skills(tmp_path)
+    (tmp_path / "skills" / "tdd" / "references").mkdir()
+    (tmp_path / "skills" / "tdd" / "references" / "r.md").write_text("ref\n")
+    app = live_server(["success"], tmp_path)
+    page.goto(f"{app['base_url']}/settings")
+    page.fill("input[name='preset_name_0']", "suite")
+    _set_preset_files(page, 0, "~/skills/a.md")
+
+    page.click("[data-picker-target='preset-skills-0']")
+    dialog = page.locator("#path-picker")
+    files = dialog.locator("#picker-files")
+    _settled(dialog, "picker-files").get_by_text("Will include: agents can read").wait_for()
+    _open_folder(dialog, "skills/")
+    dialog.locator("input[data-picker-value='~/skills/tdd']").check()
+    dialog.locator("input[data-picker-subdirs]").check()
+    dialog.locator("[data-picker-add-files]").click()
+    files.get_by_text("2 files,").wait_for()
+    assert files.locator("code").all_inner_texts() == [
+        "~/skills/tdd/SKILL.md",
+        "~/skills/tdd/references/r.md",
+    ]
+    assert "(limit 512 files, 4096 KB)" in files.inner_text()
+    _settled(dialog, "picker-files").locator("[data-path-picker-use]").click()
+
+    assert page.input_value("#preset-skills-0") == "~/skills/tdd/SKILL.md\n~/skills/tdd/references/r.md"
+    assert page.input_value("#preset-files-0") == "~/skills/a.md"
+    page.locator("#preset-skills-list-0").get_by_text("(limit 512 files, 4096 KB)").wait_for()
+    _save(page)
+    saved = json.loads((tmp_path / "home" / "config.json").read_text(encoding="utf-8"))
+    assert saved["guidance_presets"] == {
+        "suite": {
+            "files": ["~/skills/a.md"],
+            "skills": ["~/skills/tdd/SKILL.md", "~/skills/tdd/references/r.md"],
+        }
+    }
+
+
+@pytest.mark.browser
 def test_remove_all_empties_the_list_in_one_click(
     live_server: LiveServer, page: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

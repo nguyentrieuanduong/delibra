@@ -1,16 +1,16 @@
 {% set count = listing.files|length %}
 {% if listing.view == "dialog" %}
-  <h3 class="picker-files-heading">Will include</h3>
+  <h3 class="picker-files-heading">Will include: {{ listing.heading }}</h3>
   <input type="hidden" id="picker-files-value" name="files" value="{{ listing.files_value }}">
 {% endif %}
 {% if listing.message %}<p class="warning">{{ listing.message }}</p>{% endif %}
 {% if count %}
   <ul class="preset-file-list">
     {% for file in listing.files %}
-      <li><code>{{ file.path }}</code> {% if file.missing %}<span class="warning">missing</span>{% else %}{{ file.kb }} KB{% endif %}{% if listing.view == "dialog" %} <button type="button" class="link-button" hx-post="/settings/preset-files" hx-vals='{{ {"view": "dialog", "remove": file.path}|tojson }}' hx-include="#picker-files-value" hx-target="#picker-files" hx-swap="innerHTML" aria-label="Remove {{ file.path }}">Remove</button>{% endif %}</li>
+      <li><code>{{ file.path }}</code> {% if file.missing %}<span class="warning">missing</span>{% else %}{{ file.kb }} KB{% endif %}{% if listing.view == "dialog" %} <button type="button" class="link-button" hx-post="/settings/preset-files" hx-vals='{{ {"view": "dialog", "remove": file.path, "list": listing.list}|tojson }}' hx-include="#picker-files-value" hx-target="#picker-files" hx-swap="innerHTML" aria-label="Remove {{ file.path }}">Remove</button>{% endif %}</li>
     {% endfor %}
   </ul>
-  <p class="hint">{{ count }} file{{ "s" if count != 1 }}, {{ listing.total_kb }} KB with file headers (limit 32 files, 256 KB).{% if listing.view == "dialog" %} <button type="button" class="link-button" hx-post="/settings/preset-files" hx-vals='{{ {"view": "dialog", "files": ""}|tojson }}' hx-target="#picker-files" hx-swap="innerHTML">Remove all</button>{% endif %}</p>
+  <p class="hint">{{ count }} file{{ "s" if count != 1 }}, {{ listing.total_kb }} KB{% if listing.list == "files" %} with file headers{% endif %} ({{ listing.limit_text }}).{% if listing.view == "dialog" %} <button type="button" class="link-button" hx-post="/settings/preset-files" hx-vals='{{ {"view": "dialog", "files": "", "list": listing.list}|tojson }}' hx-target="#picker-files" hx-swap="innerHTML">Remove all</button>{% endif %}</p>
 {% else %}
   <p class="hint">No files yet.</p>
 {% endif %}

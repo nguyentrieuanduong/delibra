@@ -87,6 +87,10 @@
         <textarea name="guidance_files" maxlength="65536">{{ coding.guidance_files|join('\n') }}</textarea>
       </label>
       <p class="hint">Markdown files every build agent reads, snapshotted at run start. Nothing is executed. One absolute path per line.</p>
+      <label>Skills agents can read
+        <textarea id="coding-guidance-skills" name="guidance_skills" maxlength="262144">{{ coding.guidance_skills|join('\n') }}</textarea>
+      </label>
+      <p class="hint">Markdown files copied read-only into each build run for agents to read when they need them (a skill's SKILL.md with its references/ files). At most 512 files and 4 MB. One absolute path per line.</p>
       {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
       <button type="submit" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save coding settings</button>
       {% for preset in guidance_presets %}

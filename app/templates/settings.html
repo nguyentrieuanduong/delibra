@@ -23,7 +23,7 @@
     </section>
     <section aria-labelledby="presets-heading">
       <h2 id="presets-heading">Build guidance presets</h2>
-      <p class="hint">Each preset becomes a <strong>Use &lt;name&gt; guidance</strong> button in a project's Coding settings. <strong>Choose files…</strong> browses this machine's folders: tick <code>.md</code> files or folders and add them; a folder adds the <code>.md</code> files it holds at that moment. The preset keeps that fixed list and the Coding button copies it, so pick again after a skill gains files. Up to 32 presets; a preset and a project each take at most 32 files and 256 KB, added to every build turn.</p>
+      <p class="hint">Each preset becomes a <strong>Use &lt;name&gt; guidance</strong> button in a project's Coding settings that sets the project's two lists. <strong>Pasted every turn</strong>: files added to every build turn (at most 32 files and 256 KB). <strong>Agents can read</strong>: files copied read-only into each build run, listed with each skill's name and description, for agents to open when they need them (at most 512 files and 4 MB); for a skill suite, paste its router skill and put the rest here. <strong>Choose…</strong> browses this machine's folders: tick <code>.md</code> files or folders and add them; a folder adds the <code>.md</code> files it holds at that moment. A preset keeps fixed lists and the Coding button copies them, so pick again after a skill gains files. Up to 32 presets.</p>
       <p class="hint">Approval steps in guidance (for example brainstorming's design approval or writing-plans' plan approval) do not stop a build run: the other agents approve instead, and you are asked only if they have not agreed within 3 cycles.</p>
       <p class="warning">Leave out finishing-work and using-git-worktrees: they merge, push or work outside the project, and Delibra makes the build commits itself.</p>
       <input type="hidden" name="preset_count" value="{{ preset_rows|length }}">
@@ -32,12 +32,22 @@
           <legend>{{ row.name or "New preset" }}</legend>
           {% if row.error %}<p class="warning" role="alert">{{ row.error }}</p>{% endif %}
           <label>Name <input name="preset_name_{{ loop.index0 }}" value="{{ row.name }}" maxlength="40"></label>
-          <input type="hidden" id="preset-files-{{ loop.index0 }}" name="preset_files_{{ loop.index0 }}" value="{{ row.listing.files_value }}">
-          <input type="hidden" id="preset-skills-{{ loop.index0 }}" name="preset_skills_{{ loop.index0 }}" value="{{ row.skills_value }}">
-          <div id="preset-files-list-{{ loop.index0 }}" class="preset-files" aria-live="polite">
-            {% with listing=row.listing %}{% include "_preset_files.html" %}{% endwith %}
+          <div class="preset-list">
+            <p class="preset-list-heading">Pasted every turn</p>
+            <input type="hidden" id="preset-files-{{ loop.index0 }}" name="preset_files_{{ loop.index0 }}" value="{{ row.listing.files_value }}">
+            <div id="preset-files-list-{{ loop.index0 }}" class="preset-files" aria-live="polite">
+              {% with listing=row.listing %}{% include "_preset_files.html" %}{% endwith %}
+            </div>
+            {{ browse_button("/browse?mode=preset", "preset-files-" ~ loop.index0, files_list="preset-files-list-" ~ loop.index0, label="Choose pasted files…", list_name="files") }}
           </div>
-          {{ browse_button("/browse?mode=preset", "preset-files-" ~ loop.index0, files_list="preset-files-list-" ~ loop.index0, label="Choose files…") }}
+          <div class="preset-list">
+            <p class="preset-list-heading">Agents can read</p>
+            <input type="hidden" id="preset-skills-{{ loop.index0 }}" name="preset_skills_{{ loop.index0 }}" value="{{ row.skills_listing.files_value }}">
+            <div id="preset-skills-list-{{ loop.index0 }}" class="preset-files" aria-live="polite">
+              {% with listing=row.skills_listing %}{% include "_preset_files.html" %}{% endwith %}
+            </div>
+            {{ browse_button("/browse?mode=preset", "preset-skills-" ~ loop.index0, files_list="preset-skills-list-" ~ loop.index0, label="Choose skills…", list_name="skills") }}
+          </div>
           {% if row.name %}<label class="auto-choice"><input type="checkbox" name="preset_remove_{{ loop.index0 }}" value="true"{% if row.remove %} checked{% endif %}> Remove this preset</label>{% endif %}
         </fieldset>
       {% endfor %}

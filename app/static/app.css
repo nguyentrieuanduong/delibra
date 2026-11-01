@@ -347,6 +347,8 @@ textarea { min-height: 7rem; }
 .link-button { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
 .path-picker-open { justify-self: start; }
 .picker-files { border-top: 1px solid #8886; margin-top: .75rem; padding-top: .5rem; }
+.preset-list { margin: .5rem 0; }
+.preset-list-heading { font-weight: 600; margin: .25rem 0; }
 .picker-files-heading { font-size: 1rem; margin: 0 0 .25rem; }
 .preset-file-list { list-style: none; margin: .25rem 0; max-height: 30vh; overflow: auto; padding: 0; }
 .preset-file-list li { align-items: baseline; display: flex; flex-wrap: wrap; gap: .5rem; }

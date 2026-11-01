@@ -582,9 +582,12 @@ function openPathPicker(button, doc, htmxApi) {
   const headers = { [PICKER_SESSION_HEADER]: session };
   // A preset's fixed file list is edited below the listing in this dialog.
   const list = button.dataset.pickerFilesList || "";
+  // Which of a preset's lists: "files" (pasted every turn) or "skills".
+  const listName = button.dataset.pickerList || "files";
   dialog.dataset.pickerSession = session;
   dialog.dataset.pickerTarget = button.dataset.pickerTarget;
   dialog.dataset.pickerList = list;
+  dialog.dataset.pickerListName = listName;
   // Clicks inside the dialog inherit this, so they carry the session too.
   dialog.setAttribute("hx-headers", JSON.stringify(headers));
   body.innerHTML = PICKER_LOADING_HTML + (list ? "" : PICKER_CANCEL_HTML);
@@ -605,7 +608,7 @@ function openPathPicker(button, doc, htmxApi) {
       source: files,
       target: "#picker-files",
       swap: "innerHTML",
-      values: { view: "dialog", files: field.value },
+      values: { view: "dialog", files: field.value, list: listName },
       headers: headers,
     });
   }
@@ -644,6 +647,7 @@ function addPickedFiles(dialog, doc, htmxApi) {
       files: current.value,
       add: ticked.map((input) => input.dataset.pickerValue).join("\n"),
       subdirs: subdirs && subdirs.checked ? "true" : "false",
+      list: dialog.dataset.pickerListName || "files",
     },
     headers: { [PICKER_SESSION_HEADER]: dialog.dataset.pickerSession },
   });
@@ -688,7 +692,11 @@ function applyPathPicker(control, doc, htmxApi) {
           source: dialog,
           target: list,
           swap: "innerHTML",
-          values: { view: "row", files: field.value },
+          values: {
+            view: "row",
+            files: field.value,
+            list: dialog.dataset.pickerListName || "files",
+          },
         });
       }
     }

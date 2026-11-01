@@ -10,6 +10,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.coding import (
+    SKILLS_MAX_BYTES,
+    SKILLS_MAX_FILES,
+    CodingPolicyError,
     GUIDANCE_MAX_BYTES,
     GUIDANCE_MAX_FILES,
     GuidancePickError,
@@ -17,9 +20,11 @@ from app.coding import (
     guidance_file_size,
     guidance_snapshot_size,
     preset_guidance_lists,
+    skill_layout,
 )
 from app.config import (
     GUIDANCE_PRESET_FILES_MAX,
+    GUIDANCE_PRESET_SKILLS_MAX,
     GUIDANCE_PRESET_MAX,
     GuidancePreset,
     check_preset_file,
@@ -124,8 +129,30 @@ def _checked_presets(
     return parse_guidance_presets(kept)
 
 
+# A preset's two lists: pasted into every build turn, or copied for agents to read.
+_LISTS = {
+    "files": {
+        "heading": "pasted every turn",
+        "limit_text": f"limit {GUIDANCE_MAX_FILES} files, {GUIDANCE_MAX_BYTES // 1024} KB",
+        "max_entries": GUIDANCE_PRESET_FILES_MAX,
+    },
+    "skills": {
+        "heading": "agents can read",
+        "limit_text": f"limit {SKILLS_MAX_FILES} files, {SKILLS_MAX_BYTES // 1024} KB",
+        "max_entries": GUIDANCE_PRESET_SKILLS_MAX,
+    },
+}
+
+
+def _list_total(list_name: str, sized: list[tuple[str, int]]) -> int:
+    # Pasted files carry a header each in the prompt; copies are bytes only.
+    if list_name == "files":
+        return guidance_snapshot_size(sized)
+    return sum(size for _path, size in sized)
+
+
 def _file_listing(
-    entries: list[str], view: str, message: str | None = None
+    entries: list[str], view: str, message: str | None = None, list_name: str = "files"
 ) -> dict[str, object]:
     """A preset's list as shown, sizes read now; blocking (stats each file)."""
 
@@ -143,9 +170,12 @@ def _file_listing(
         sized.append((str(path), size or 0))
     return {
         "view": view,
+        "list": list_name,
+        "heading": _LISTS[list_name]["heading"],
+        "limit_text": _LISTS[list_name]["limit_text"],
         "files": files,
         "files_value": "\n".join(entries),
-        "total_kb": kilobytes(guidance_snapshot_size(sized)),
+        "total_kb": kilobytes(_list_total(list_name, sized)),
         "message": message,
     }
 
@@ -161,12 +191,12 @@ def _preset_rows(
             "remove": row.get("remove", False),
             "error": message if index == error_row else None,
             "listing": _file_listing(list(row["files"]), "row"),
-            "skills_value": "\n".join(row.get("skills", [])),
+            "skills_listing": _file_listing(list(row.get("skills", [])), "row", list_name="skills"),
         }
         for index, row in enumerate(rows)
     ]
     if len(shown) < GUIDANCE_PRESET_MAX and all(
-        row["name"] or row["listing"]["files"] or row["skills_value"] for row in shown
+        row["name"] or row["listing"]["files"] or row["skills_listing"]["files"] for row in shown
     ):
         shown.append(
             {
@@ -174,7 +204,7 @@ def _preset_rows(
                 "remove": False,
                 "error": None,
                 "listing": _file_listing([], "row"),
-                "skills_value": "",
+                "skills_listing": _file_listing([], "row", list_name="skills"),
             }
         )
     return shown
@@ -212,7 +242,7 @@ def _settings_page(
 
 
 def _with_picks(
-    entries: list[str], picks: list[str], subdirs: bool
+    entries: list[str], picks: list[str], subdirs: bool, list_name: str = "files"
 ) -> tuple[list[str], str | None]:
     """`entries` plus the ticked paths' files now, or unchanged with the
     reason; blocking (reads the ticked folders)."""
@@ -226,13 +256,21 @@ def _with_picks(
     added = [display_path(path) for path, _size in found]
     merged = entries + [entry for entry in dict.fromkeys(added) if entry not in entries]
     sized = [(str(expand_home(entry)), guidance_file_size(expand_home(entry)) or 0) for entry in merged]
-    total = guidance_snapshot_size(sized)
-    if len(merged) > GUIDANCE_MAX_FILES or total > GUIDANCE_MAX_BYTES:
+    total = _list_total(list_name, sized)
+    if list_name == "files":
+        max_files, max_bytes, headers = GUIDANCE_MAX_FILES, GUIDANCE_MAX_BYTES, " with file headers"
+    else:
+        max_files, max_bytes, headers = SKILLS_MAX_FILES, SKILLS_MAX_BYTES, ""
+    if len(merged) > max_files or total > max_bytes:
         return entries, (
-            f"Adding these makes {len(merged)} files and {kilobytes(total)} KB with file "
-            f"headers; the limit is {GUIDANCE_MAX_FILES} files and "
-            f"{GUIDANCE_MAX_BYTES // 1024} KB; nothing was added"
+            f"Adding these makes {len(merged)} files and {kilobytes(total)} KB{headers}; "
+            f"the limit is {max_files} files and {max_bytes // 1024} KB; nothing was added"
         )
+    if list_name == "skills":
+        try:
+            skill_layout([path for path, _size in sized])
+        except CodingPolicyError as exc:
+            return entries, f"{exc}; nothing was added"
     return merged, None
 
 
@@ -312,10 +350,14 @@ async def edit_preset_files(request: Request):
     view = str(form.get("view", ""))
     if view not in ("dialog", "row"):
         raise StorageError(f"unknown view {view!r}")
+    list_name = str(form.get("list", "files"))
+    if list_name not in _LISTS:
+        raise StorageError(f"unknown list {list_name!r}")
     entries = list(dict.fromkeys(_lines(form.get("files"))))
     picks = _lines(form.get("add"))
-    if len(entries) > GUIDANCE_PRESET_FILES_MAX:
-        raise StorageError(f"a preset lists at most {GUIDANCE_PRESET_FILES_MAX} files")
+    max_entries = _LISTS[list_name]["max_entries"]
+    if len(entries) > max_entries:
+        raise StorageError(f"a preset lists at most {max_entries} {list_name}")
     try:
         for entry in entries:
             check_preset_file(entry)
@@ -329,9 +371,9 @@ async def edit_preset_files(request: Request):
     message = None
     if picks:
         entries, message = await asyncio.to_thread(
-            _with_picks, entries, picks, form.get("subdirs") == "true"
+            _with_picks, entries, picks, form.get("subdirs") == "true", list_name
         )
-    listing = await asyncio.to_thread(_file_listing, entries, view, message)
+    listing = await asyncio.to_thread(_file_listing, entries, view, message, list_name)
     return request.app.state.templates.TemplateResponse(
         request=request, name="_preset_files.html", context={"listing": listing}
     )

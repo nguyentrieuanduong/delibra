@@ -17,7 +17,10 @@ function checkbox(value, checked = true) {
 
 // An open dialog for `field`; `ticked` are the listing's checkboxes,
 // `chosen` the Will include list's value, `list` the row's read-only list id.
-function fakeDocument(field, { ticked = [], subdirs = false, chosen = null, list = "" } = {}) {
+function fakeDocument(
+  field,
+  { ticked = [], subdirs = false, chosen = null, list = "", listName = "files" } = {}
+) {
   const events = [];
   const calls = [];
   const body = {
@@ -33,7 +36,7 @@ function fakeDocument(field, { ticked = [], subdirs = false, chosen = null, list
   };
   const dialog = {
     open: true,
-    dataset: { pickerTarget: field.id, pickerSession: "4", pickerList: list },
+    dataset: { pickerTarget: field.id, pickerSession: "4", pickerList: list, pickerListName: listName },
     close() {
       this.open = false;
     },
@@ -118,7 +121,8 @@ test("Add ticked to list posts the picks, clears the ticks and stays open", func
     ticked: ticks,
     subdirs: true,
     chosen: "~/a.md",
-    list: "preset-files-list-0",
+    list: "preset-skills-list-0",
+    listName: "skills",
   });
   assert.equal(applyPathPicker(control("[data-picker-add-files]"), t.doc, t.htmxApi), false);
   assert.deepEqual(t.calls, [
@@ -129,7 +133,13 @@ test("Add ticked to list posts the picks, clears the ticks and stays open", func
         source: t.elements["picker-files"],
         target: "#picker-files",
         swap: "innerHTML",
-        values: { view: "dialog", files: "~/a.md", add: "~/skills\n~/c.md", subdirs: "true" },
+        values: {
+          view: "dialog",
+          files: "~/a.md",
+          add: "~/skills\n~/c.md",
+          subdirs: "true",
+          list: "skills",
+        },
         headers: { "X-Delibra-Picker": "4" },
       },
     ],
@@ -155,7 +165,7 @@ test("Use these files copies the list into the row and refreshes its read-only v
         source: t.dialog,
         target: t.elements["preset-files-list-0"],
         swap: "innerHTML",
-        values: { view: "row", files: "~/a.md\n~/b.md" },
+        values: { view: "row", files: "~/a.md\n~/b.md", list: "files" },
       },
     ],
   ]);
@@ -192,10 +202,13 @@ function openingDocument() {
   return { body, calls, dialog, doc, files, htmxApi };
 }
 
-function opener(url, target, list) {
+function opener(url, target, list, listName) {
   const dataset = { pickerUrl: url, pickerTarget: target };
   if (list) {
     dataset.pickerFilesList = list;
+  }
+  if (listName) {
+    dataset.pickerList = listName;
   }
   return { dataset };
 }
@@ -208,6 +221,7 @@ test("opening for a preset clears both regions and loads the listing and the row
   assert.equal(dialog.dataset.pickerSession, "1");
   assert.equal(dialog.dataset.pickerTarget, "preset-files-0");
   assert.equal(dialog.dataset.pickerList, "preset-files-list-0");
+  assert.equal(dialog.dataset.pickerListName, "files");
   assert.equal(dialog.attributes["hx-headers"], '{"X-Delibra-Picker":"1"}');
   assert.match(body.innerHTML, /Loading…/);
   assert.doesNotMatch(body.innerHTML, /data-path-picker-|data-picker-add-files/);
@@ -229,7 +243,7 @@ test("opening for a preset clears both regions and loads the listing and the row
         source: files,
         target: "#picker-files",
         swap: "innerHTML",
-        values: { view: "dialog", files: "~/a.md\n~/b.md" },
+        values: { view: "dialog", files: "~/a.md\n~/b.md", list: "files" },
         headers,
       },
     ],
@@ -272,4 +286,19 @@ test("only the current opening's answers may be swapped in", function () {
   assert.equal(isStalePickerSwap(swap("1", "chat"), doc), false);
   dialog.open = false;
   assert.equal(isStalePickerSwap(swap("2"), doc), true);
+});
+
+test("opening the skills list asks for that list", function () {
+  const { calls, dialog, doc, htmxApi } = openingDocument();
+  openPathPicker(
+    opener("/browse?mode=preset", "preset-files-0", "preset-skills-list-0", "skills"),
+    doc,
+    htmxApi
+  );
+  assert.equal(dialog.dataset.pickerListName, "skills");
+  assert.deepEqual(calls[1][2].values, {
+    view: "dialog",
+    files: "~/a.md\n~/b.md",
+    list: "skills",
+  });
 });
