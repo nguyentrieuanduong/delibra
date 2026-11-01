@@ -127,7 +127,7 @@ and agent cards in the wider left rail, with the selected agent's information
 expanded and every unselected agent collapsed. A compact composer and merged
 conversation stay in the center, while project-file browsing/reading stays in the
 narrower right rail. Select an agent name to route the composer and highlight that
-card. Recorded rounds and opened files use the shared keyboard-accessible focus
+card; unsent text stays in the composer when you pick, create or edit an agent. Recorded rounds and opened files use the shared keyboard-accessible focus
 dialog. **Manage** opens project and agent settings. The footer starts in a checking
 state, then reports missing CLIs and version drift without delaying or preventing
 the rest of the UI from loading.

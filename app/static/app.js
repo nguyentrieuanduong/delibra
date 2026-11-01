@@ -476,6 +476,24 @@ function skipStaleNotesSwap(detail) {
   return true;
 }
 
+// Picking, creating or editing an agent re-renders the whole composer
+// out-of-band; the unsent message moves into the new box instead of being lost.
+function keepComposerText(detail) {
+  if (!detail || !detail.target || detail.target.id !== "chat-composer" || !detail.fragment) {
+    return false;
+  }
+  const current = detail.target.querySelector('textarea[name="prompt"]');
+  const element = detail.fragment.dataset
+    ? detail.fragment
+    : detail.fragment.firstElementChild;
+  const next = element && element.querySelector('textarea[name="prompt"]');
+  if (!current || !next || !current.value) {
+    return false;
+  }
+  next.value = current.value;
+  return true;
+}
+
 function setTimeoutFormPending(form, pending) {
   if (!form || typeof form.querySelectorAll !== "function") {
     return false;
@@ -781,6 +799,7 @@ if (typeof module !== "undefined" && module.exports) {
     handleFocusDialogCancel,
     isDialogBackdropClick,
     isStalePickerSwap,
+    keepComposerText,
     lastPathLine,
     moveAutoOrderItem,
     openAutoSetup,
@@ -1020,6 +1039,7 @@ if (typeof document !== "undefined") {
 
   document.addEventListener("htmx:oobBeforeSwap", function (event) {
     skipStaleNotesSwap(event.detail);
+    keepComposerText(event.detail);
   });
 
   document.addEventListener("htmx:historyRestore", function (event) {
