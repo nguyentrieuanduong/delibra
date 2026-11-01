@@ -1527,16 +1527,22 @@ def test_guidance_files_are_saved_from_the_textarea(tmp_path, monkeypatch) -> No
     assert str(guide) in page.text
 
 
-def test_guidance_preset_saves_its_expanded_files(tmp_path, monkeypatch) -> None:
+def test_guidance_preset_saves_its_files_without_reading_folders(tmp_path, monkeypatch) -> None:
     skills = tmp_path / "skills"
-    (skills / "sub").mkdir(parents=True)
+    skills.mkdir()
     (skills / "a.md").write_text("# A\n")
-    (skills / "sub" / "b.md").write_text("# B\n")
+    (skills / "b.md").write_text("# B\n")
+    (skills / "new.md").write_text("# added after the preset was saved\n")
     app, project, _dir, prefix = coding_project(
         tmp_path,
         monkeypatch,
-        guidance_presets=(GuidancePreset("suite", (str(skills),), True),),
+        guidance_presets=(GuidancePreset("suite", (str(skills / "b.md"), str(skills / "a.md"))),),
     )
+
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("the Coding button must not read a folder")
+
+    monkeypatch.setattr("app.coding._scan", no_scan)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
             f"{prefix}/coding",
@@ -1546,11 +1552,11 @@ def test_guidance_preset_saves_its_expanded_files(tmp_path, monkeypatch) -> None
 
     assert saved.status_code == 303
     assert ProjectStore(project).coding_policy().guidance_files == [
-        str(skills / "a.md"), str(skills / "sub" / "b.md"),
+        str(skills / "b.md"), str(skills / "a.md"),
     ]
 
 
-def test_guidance_preset_without_files_is_refused_and_keeps_guidance(
+def test_guidance_preset_with_a_missing_file_is_refused_and_keeps_guidance(
     tmp_path, monkeypatch
 ) -> None:
     guide = tmp_path / "guide.md"
@@ -1559,7 +1565,7 @@ def test_guidance_preset_without_files_is_refused_and_keeps_guidance(
     app, project, _dir, prefix = coding_project(
         tmp_path,
         monkeypatch,
-        guidance_presets=(GuidancePreset("suite", (str(absent), str(tmp_path / "gone"))),),
+        guidance_presets=(GuidancePreset("suite", (str(guide), str(absent))),),
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
@@ -1574,8 +1580,8 @@ def test_guidance_preset_without_files_is_refused_and_keeps_guidance(
 
     assert response.status_code == 422
     assert response.json()["detail"] == (
-        f"None of the suite guidance files exist (looked in {absent} and 1 more); "
-        "guidance was not changed"
+        f"Guidance preset 'suite': {str(absent)!r} must be an existing regular file reached "
+        "without symlinks; guidance was not changed"
     )
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_files == [str(guide)]

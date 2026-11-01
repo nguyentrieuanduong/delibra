@@ -388,15 +388,25 @@ def test_guidance_presets_load_in_config_order(
     home = _write_presets(
         tmp_path,
         {
-            "zeta": {"paths": ["~/skills", "/opt/b.MD"], "include_subdirectories": True},
-            "alpha": {"paths": ["/opt/c.md"]},
+            "zeta": {"files": ["~/skills/a.md", "/opt/b.MD"]},
+            "alpha": {"files": ["/opt/c.md"]},
         },
     )
     monkeypatch.setenv("DELIBRA_HOME", str(home))
 
     assert Settings.from_env().guidance_presets == (
-        GuidancePreset("zeta", ("~/skills", "/opt/b.MD"), True),
-        GuidancePreset("alpha", ("/opt/c.md",), False),
+        GuidancePreset("zeta", ("~/skills/a.md", "/opt/b.MD")),
+        GuidancePreset("alpha", ("/opt/c.md",)),
+    )
+    assert GuidancePreset("alpha", ("/opt/c.md",)).to_json() == {"files": ["/opt/c.md"]}
+
+
+def test_a_preset_entry_must_be_a_markdown_file() -> None:
+    with pytest.raises(ValueError) as caught:
+        parse_guidance_presets({"x": {"files": ["~/skills"]}})
+
+    assert str(caught.value) == (
+        "guidance preset 'x': '~/skills' must be an absolute or ~/ path to a .md file"
     )
 
 
@@ -421,22 +431,24 @@ def test_expand_home_uses_this_users_home(
     "presets",
     [
         ["/a.md"],
-        {"": {"paths": ["/a.md"]}},
-        {" x": {"paths": ["/a.md"]}},
-        {"x" * 41: {"paths": ["/a.md"]}},
-        {"bad\nname": {"paths": ["/a.md"]}},
+        {"": {"files": ["/a.md"]}},
+        {" x": {"files": ["/a.md"]}},
+        {"x" * 41: {"files": ["/a.md"]}},
+        {"bad\nname": {"files": ["/a.md"]}},
         {"x": ["/a.md"]},
-        {"x": {"paths": []}},
-        {"x": {"paths": "/a.md"}},
-        {"x": {"paths": [1]}},
-        {"x": {"paths": ["relative.md"]}},
-        {"x": {"paths": ["~other/a.md"]}},
-        {"x": {"paths": ["/a\n.md"]}},
-        {"x": {"paths": ["/a.md", "/a.md"]}},
-        {"x": {"paths": [f"/{index}.md" for index in range(33)]}},
-        {"x": {"paths": ["/a.md"], "include_subdirectories": "yes"}},
-        {"x": {"paths": ["/a.md"], "unknown": 1}},
-        {f"p{index}": {"paths": ["/a.md"]} for index in range(33)},
+        {"x": {"files": []}},
+        {"x": {"files": "/a.md"}},
+        {"x": {"files": [1]}},
+        {"x": {"files": ["relative.md"]}},
+        {"x": {"files": ["~other/a.md"]}},
+        {"x": {"files": ["/a\n.md"]}},
+        {"x": {"files": ["~/skills"]}},
+        {"x": {"files": ["/" + "a" * 4096 + ".md"]}},
+        {"x": {"files": ["/a.md", "/a.md"]}},
+        {"x": {"files": [f"/{index}.md" for index in range(33)]}},
+        {"x": {"paths": ["/a.md"]}},
+        {"x": {"files": ["/a.md"], "include_subdirectories": True}},
+        {f"p{index}": {"files": ["/a.md"]} for index in range(33)},
     ],
 )
 def test_malformed_guidance_presets_refuse_to_start(
@@ -459,7 +471,7 @@ def _random_json(rng: random.Random, depth: int = 0) -> object:
         choices += [
             lambda: [_random_json(rng, depth + 1) for _ in range(rng.randint(0, 4))],
             lambda: {
-                rng.choice(["paths", "include_subdirectories", "x", "", "/a.md"]): _random_json(
+                rng.choice(["files", "paths", "include_subdirectories", "x", "", "/a.md"]): _random_json(
                     rng, depth + 1
                 )
                 for _ in range(rng.randint(0, 3))
@@ -476,15 +488,11 @@ def test_generated_guidance_presets_parse_or_raise_value_error() -> None:
         if rng.random() < 0.6:
             raw = {
                 rng.choice(["a", "b", "", " c", "Dương"]): {
-                    "paths": [
-                        rng.choice(["/a.md", "~/s", "/b/", "~/c.md", "rel", "/x\ty"])
+                    "files": [
+                        rng.choice(["/a.md", "~/s", "/b/", "~/c.md", "rel", "/x\ty.md", "/d.MD", "~/e.md"])
                         for _ in range(rng.randint(0, 3))
                     ],
-                    **(
-                        {"include_subdirectories": rng.choice([True, False, 1, "true"])}
-                        if rng.random() < 0.7
-                        else {}
-                    ),
+                    **({"include_subdirectories": True} if rng.random() < 0.1 else {}),
                 }
                 for _ in range(rng.randint(1, 3))
             }
@@ -495,9 +503,11 @@ def test_generated_guidance_presets_parse_or_raise_value_error() -> None:
         parsed += bool(presets)
         for preset in presets:
             assert preset.name and preset.name == preset.name.strip()
-            assert 1 <= len(preset.paths) <= 32
-            assert all(path.startswith(("/", "~/")) for path in preset.paths)
-            assert type(preset.include_subdirectories) is bool
+            assert 1 <= len(preset.files) <= 32
+            assert all(
+                entry.startswith(("/", "~/")) and entry.lower().endswith(".md")
+                for entry in preset.files
+            )
     assert parsed > 50
 
 

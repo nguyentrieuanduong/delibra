@@ -11,23 +11,20 @@ from pathlib import Path
 MIB = 1024 * 1024
 CONFIG_FILENAME = "config.json"
 GUIDANCE_PRESET_MAX = 32
-GUIDANCE_PRESET_PATHS_MAX = 32
+GUIDANCE_PRESET_FILES_MAX = 32
 GUIDANCE_PRESET_NAME_MAX = 40
+PRESET_FILE_PATH_MAX = 4096
 
 
 @dataclass(frozen=True)
 class GuidancePreset:
-    """A named set of guidance paths, kept as written (``~/`` unexpanded)."""
+    """A named, fixed list of guidance files, kept as written (``~/`` unexpanded)."""
 
     name: str
-    paths: tuple[str, ...]
-    include_subdirectories: bool = False
+    files: tuple[str, ...]
 
     def to_json(self) -> dict[str, object]:
-        return {
-            "paths": list(self.paths),
-            "include_subdirectories": self.include_subdirectories,
-        }
+        return {"files": list(self.files)}
 
 
 def expand_home(entry: str) -> Path:
@@ -40,11 +37,26 @@ def _has_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+def check_preset_file(entry: object) -> str:
+    """One preset entry: an absolute or ``~/`` path to a ``.md`` file, as written."""
+
+    if (
+        type(entry) is not str
+        or not entry.startswith(("/", "~/"))
+        or not entry.lower().endswith(".md")
+        or len(entry) > PRESET_FILE_PATH_MAX
+        or _has_control(entry)
+    ):
+        raise ValueError(f"{entry!r} must be an absolute or ~/ path to a .md file")
+    return entry
+
+
 def parse_guidance_presets(raw: object) -> tuple[GuidancePreset, ...]:
     """Validate ``guidance_presets`` as config.json stores it.
 
     Files are not required to exist: that is checked when a preset is
-    applied, so a skill folder on an unmounted disk cannot stop Delibra.
+    saved or applied, so a skill folder on an unmounted disk cannot stop
+    Delibra.
     """
 
     if not isinstance(raw, dict):
@@ -63,30 +75,25 @@ def parse_guidance_presets(raw: object) -> tuple[GuidancePreset, ...]:
                 f"guidance preset name {name!r} must be 1-{GUIDANCE_PRESET_NAME_MAX} "
                 "printable characters without surrounding spaces"
             )
-        if not isinstance(body, dict) or set(body) - {"paths", "include_subdirectories"}:
+        if not isinstance(body, dict) or set(body) != {"files"}:
+            raise ValueError(f"guidance preset {name!r} must be an object with only a files list")
+        entries = body["files"]
+        if not isinstance(entries, list) or not entries:
+            raise ValueError(f"guidance preset {name!r} must list at least one file")
+        if len(entries) > GUIDANCE_PRESET_FILES_MAX:
             raise ValueError(
-                f"guidance preset {name!r} must be an object with paths and include_subdirectories"
+                f"guidance preset {name!r} lists more than {GUIDANCE_PRESET_FILES_MAX} files"
             )
-        recursive = body.get("include_subdirectories", False)
-        if type(recursive) is not bool:
-            raise ValueError(f"guidance preset {name!r} include_subdirectories must be true or false")
-        entries = body.get("paths")
-        if not isinstance(entries, list) or not entries or any(type(item) is not str for item in entries):
-            raise ValueError(f"guidance preset {name!r} must list at least one path")
-        if len(entries) > GUIDANCE_PRESET_PATHS_MAX:
-            raise ValueError(
-                f"guidance preset {name!r} lists more than {GUIDANCE_PRESET_PATHS_MAX} paths"
-            )
-        paths: list[str] = []
+        files: list[str] = []
         for entry in entries:
-            if not (entry.startswith("/") or entry.startswith("~/")) or _has_control(entry):
-                raise ValueError(
-                    f"guidance preset {name!r}: {entry!r} must be an absolute or ~/ path"
-                )
-            if entry in paths:
+            try:
+                check_preset_file(entry)
+            except ValueError as exc:
+                raise ValueError(f"guidance preset {name!r}: {exc}") from None
+            if entry in files:
                 raise ValueError(f"guidance preset {name!r} lists {entry!r} twice")
-            paths.append(entry)
-        presets.append(GuidancePreset(name, tuple(paths), recursive))
+            files.append(entry)
+        presets.append(GuidancePreset(name, tuple(files)))
     return tuple(presets)
 
 

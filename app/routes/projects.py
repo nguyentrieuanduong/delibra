@@ -16,10 +16,10 @@ from app.coding import (
     CodingPolicy,
     CodingPolicyError,
     DockerPolicy,
-    expand_guidance_preset,
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
+    preset_guidance_files,
     private_resolution_warnings,
 )
 from app.build_git import default_git_exclude, ensure_local_excludes
@@ -332,8 +332,8 @@ async def save_coding(
         )
     except TimeoutError:
         warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
-    # Expanded before the lock, off the event loop: a directory walk must not
-    # hold the project's sessions.
+    # Checked before the lock, off the event loop: each file is opened one
+    # component at a time, which must not hold the project's sessions.
     preset_guidance: list[str] | None = None
     if guidance_preset:
         preset = next(
@@ -349,9 +349,9 @@ async def save_coding(
                 f"Unknown guidance preset {guidance_preset!r}; guidance was not changed"
             )
         try:
-            preset_guidance = await asyncio.to_thread(expand_guidance_preset, preset)
+            preset_guidance = await asyncio.to_thread(preset_guidance_files, preset)
         except CodingPolicyError as exc:
-            raise StorageError(str(exc)) from exc
+            raise StorageError(f"{exc}; guidance was not changed") from exc
     async with request.app.state.locks.registry_project_sessions(resolved_project_id):
         _reject_in_memory_work(request, resolved_project_id)
         project = request.app.state.registry.get(resolved_project_id)

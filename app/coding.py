@@ -131,19 +131,19 @@ def normalize_guidance_paths(values: object) -> list[str]:
     return paths
 
 
-# Work bounds for one preset expansion: entries read (charged before
+# Work bounds for one Add in the preset pop-up: entries read (charged before
 # anything is kept) and directory depth (= open descriptors).
 GUIDANCE_SCAN_MAX_ENTRIES = 10_000
 GUIDANCE_SCAN_MAX_DEPTH = 32
 
 
-class GuidancePresetError(CodingPolicyError):
+class GuidancePickError(CodingPolicyError):
     pass
 
 
-def _refuse_large(name: str, reason: str) -> GuidancePresetError:
-    return GuidancePresetError(
-        f"{name} {reason}; point it at a smaller directory; guidance was not changed"
+def _refuse_large(reason: str) -> GuidancePickError:
+    return GuidancePickError(
+        f"The ticked folders {reason}; tick a smaller folder; nothing was added"
     )
 
 
@@ -153,7 +153,6 @@ def _scan(
     recursive: bool,
     budget: list[int],
     depth: int,
-    name: str,
     found: list[tuple[str, int]],
 ) -> None:
     """Collect `*.md` regular files under an open directory, lazily.
@@ -171,7 +170,7 @@ def _scan(
             budget[0] -= 1
             if budget[0] < 0:
                 raise _refuse_large(
-                    name, f"has more than {GUIDANCE_SCAN_MAX_ENTRIES} directory entries to scan"
+                    f"have more than {GUIDANCE_SCAN_MAX_ENTRIES} directory entries"
                 )
             if entry.name.startswith(".") or entry.is_symlink():
                 continue
@@ -183,29 +182,32 @@ def _scan(
                 children.append(entry.name)
     found.extend(sorted(files))
     if children and depth >= GUIDANCE_SCAN_MAX_DEPTH:
-        raise _refuse_large(name, f"nests deeper than {GUIDANCE_SCAN_MAX_DEPTH} directories")
+        raise _refuse_large(f"nest deeper than {GUIDANCE_SCAN_MAX_DEPTH} directories")
     for child in sorted(children):
         try:
             opened = os.open(child, _OPEN_FLAGS | getattr(os, "O_DIRECTORY", 0), dir_fd=descriptor)
         except OSError:
             continue
         try:
-            _scan(opened, f"{where}/{child}", recursive, budget, depth + 1, name, found)
+            _scan(opened, f"{where}/{child}", recursive, budget, depth + 1, found)
         finally:
             os.close(opened)
 
 
-def expand_guidance_preset(preset: GuidancePreset) -> list[str]:
-    """The preset's Markdown files now: entries in order, each directory sorted.
+def expand_guidance_picks(
+    entries: Iterable[str], include_subdirectories: bool
+) -> list[tuple[str, int]]:
+    """Ticked paths as Markdown files now, with sizes: a file as itself, a
+    folder as its sorted `*.md` files (then its sub-folders', when asked).
 
-    No symlink is followed at any depth (including above the entry) and
-    dot-names are skipped, so a preset cannot pull in `.git` or a file a link
-    leads to.
+    Missing entries are skipped. No symlink is followed at any depth
+    (including above the entry) and dot-names inside a folder are skipped,
+    so a pick cannot pull in `.git` or a file a link leads to.
     """
 
     budget = [GUIDANCE_SCAN_MAX_ENTRIES]
     found: list[tuple[str, int]] = []
-    for entry in preset.paths:
+    for entry in entries:
         path = expand_home(entry)
         try:
             descriptor = open_without_symlinks(path)
@@ -216,23 +218,38 @@ def expand_guidance_preset(preset: GuidancePreset) -> list[str]:
             if stat.S_ISREG(info.st_mode) and path.suffix.lower() == ".md":
                 found.append((str(path), info.st_size))
             elif stat.S_ISDIR(info.st_mode):
-                _scan(descriptor, str(path), preset.include_subdirectories, budget, 1, preset.name, found)
+                _scan(descriptor, str(path), include_subdirectories, budget, 1, found)
         finally:
             os.close(descriptor)
-    files = list(dict.fromkeys(found))
-    if not files:
-        raise GuidancePresetError(
-            f"None of the {preset.name} guidance files exist (looked in "
-            f"{preset.paths[0]} and {len(preset.paths) - 1} more); guidance was not changed"
-        )
-    total = guidance_snapshot_size(files)
-    if len(files) > GUIDANCE_MAX_FILES or total > GUIDANCE_MAX_BYTES:
-        raise GuidancePresetError(
-            f"{preset.name} expands to {len(files)} files and {total} bytes including file "
-            f"headers; the limit is {GUIDANCE_MAX_FILES} files and {GUIDANCE_MAX_BYTES} bytes; "
-            "guidance was not changed"
-        )
-    return [path for path, _size in files]
+    return list(dict.fromkeys(found))
+
+
+def guidance_file_size(path: Path) -> int | None:
+    """Size of a regular file reached without symlinks; None otherwise."""
+
+    try:
+        descriptor = open_without_symlinks(path)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    return info.st_size if stat.S_ISREG(info.st_mode) else None
+
+
+class GuidancePresetError(CodingPolicyError):
+    pass
+
+
+def preset_guidance_files(preset: GuidancePreset) -> list[str]:
+    """The preset's saved files as absolute paths, checked the way the Coding
+    page's Save checks guidance files. No folder is read."""
+
+    try:
+        return normalize_guidance_paths([str(expand_home(entry)) for entry in preset.files])
+    except CodingPolicyError as exc:
+        raise GuidancePresetError(f"Guidance preset {preset.name!r}: {exc}") from exc
 
 
 GIT_EXCLUDE_MAX_LINES = 2_000
