@@ -112,6 +112,15 @@ than silently falling back to the restrictive default.
   WAN/any-network setting, which gives up DNS-rebinding protection entirely.
   Use a named entry or a range unless you genuinely cannot.
 
+The **Settings** page (header link, this machine only) edits both lists and the
+build guidance presets, writes `config.json`, and applies the change to the
+next request without a restart. A list whose environment variable is set is
+shown read-only. Hand edits to `config.json` still need a restart.
+
+On this machine, build guidance files, skills agents can read, Register and
+Rebind have a **Browse…** button that lists this machine's folders;
+writable-roots fields browse the project's own folders from any allowed client.
+
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
 Claude or Codex agent, and submit a prompt. The project chat keeps project context
 and agent cards in the wider left rail, with the selected agent's information
@@ -639,10 +648,31 @@ Turning it on does three things:
   Codex's hosted search stay available for research and can reach any public
   host. A prompt-injected agent could therefore send project content to an
   arbitrary site through a research tool.
-- **Build guidance files.** These are optional Markdown files every build agent
-  reads, for example the code-craft skills (**Use code-craft skills**). They are
-  snapshotted when a run starts, and nothing in them is executed. No plugins,
-  skills or hooks load in build turns.
+- **Build guidance files and skills.** Two optional lists of Markdown files,
+  one absolute path per line; nothing in them is executed and no plugins,
+  skills or hooks load in build turns. **Build guidance files** (at most 32
+  files and 256 KB) are pasted into every build turn, so they cost tokens on
+  every turn. **Skills agents can read** (at most 512 files and 4 MB) are
+  copied read-only into the run (`.delibra/auto-runs/<n>/skills/`, never
+  committed) with an index of each skill's name, path and description; agents
+  read a skill when they need it, and a skill's `references/` files sit beside
+  its `SKILL.md`. For a skill suite with a router skill, paste the router (for
+  code-craft, `using-code-craft/SKILL.md`) and list the rest as skills. Both
+  lists are snapshotted when a run starts. Approval steps in them (for example
+  "wait for the user to approve the design") are taken by the other agents;
+  you are asked, as a blocking question, only if they have not agreed within
+  3 cycles. Leave out finishing-work and using-git-worktrees: they merge,
+  push or work outside the project, and Delibra makes the build commits.
+  Presets made on **Settings** (header link, this machine only) add a **Use
+  <name> guidance** button that sets both lists. A preset holds fixed lists:
+  **Choose pasted files…** and **Choose skills…** browse this machine's
+  folders, where you tick files or folders and add them; a folder adds the
+  `.md` files it holds at that moment (with **Include sub-directories**,
+  those of its sub-folders too), skipping symlinks and names starting with
+  `.`. The button copies the lists after checking each file still exists; it
+  never looks in a folder again, so pick again after a skill gains files. A
+  path that passes through a symlink anywhere is refused (on macOS that means
+  `/private/tmp/...`, not `/tmp/...`).
 
 With coding on and the environment ready, the Auto dialog offers **Build**:
 agents take turns implementing the topic as a task. A build turn:
