@@ -32,6 +32,7 @@ from app.coding import (
     CodingPolicyError,
     DockerPolicy,
     normalize_guidance_paths,
+    normalize_skill_paths,
     normalize_network_allowlist,
 )
 from app.models import (
@@ -1645,6 +1646,21 @@ class RegistryStore:
         raise NotFoundError(f"project not found: {project_id}")
 
 
+SKILLS_DIRNAME = "skills"
+
+
+def _check_skill_destination(destination: str) -> None:
+    """A skill copy path stays inside the run's skills folder."""
+
+    parts = destination.split("/")
+    if (
+        not destination
+        or destination.startswith("/")
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise OwnershipError(f"Auto skill copy path is invalid: {destination!r}")
+
+
 class ProjectStore:
     def __init__(self, project: Project):
         validate_id(project.id, "project id")
@@ -1832,6 +1848,14 @@ class ProjectStore:
         policy = self.coding_policy()
         try:
             policy.guidance_files = normalize_guidance_paths(values)
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
+        return self._save_coding(policy)
+
+    def set_build_skills(self, values: object) -> CodingPolicy:
+        policy = self.coding_policy()
+        try:
+            policy.guidance_skills = normalize_skill_paths(values)
         except CodingPolicyError as exc:
             raise StorageError(str(exc)) from exc
         return self._save_coding(policy)
@@ -2271,6 +2295,11 @@ class ProjectStore:
     def auto_run_dir(self, auto_id: str) -> Path:
         return self._auto_location(auto_id).path
 
+    def skills_dir(self, auto_id: str) -> Path:
+        """The read-only copy of a build run's skills (agents cannot write .delibra)."""
+
+        return self.auto_run_dir(auto_id) / SKILLS_DIRNAME
+
     @staticmethod
     def _validate_auto_record(record: AutoRunRecord, project_id: str) -> None:
         validate_id(record.id, "Auto run id")
@@ -2289,7 +2318,9 @@ class ProjectStore:
             validate_id(session_id, "Auto participant id")
         if len(session_ids) != len(set(session_ids)):
             raise OwnershipError("Auto participants are duplicated")
-        for artifact in (record.topic, record.baseline, record.shared_context, record.guidance):
+        for artifact in (
+            record.topic, record.baseline, record.shared_context, record.guidance, record.skills
+        ):
             if artifact is not None and not SHA256_PATTERN.fullmatch(artifact.sha256):
                 raise OwnershipError("Auto artifact digest is invalid")
         for turn in record.discussion:
@@ -2388,8 +2419,20 @@ class ProjectStore:
         baseline: bytes,
         shared_context: bytes | None = None,
         guidance: bytes | None = None,
+        skills_index: bytes | None = None,
+        skill_files: list[tuple[str, bytes]] | None = None,
     ) -> AutoRunRecord:
         self._validate_auto_record(record, self.project.id)
+        if (record.skills is None) != (skills_index is None):
+            raise OwnershipError("Auto skills metadata does not match")
+        if (
+            record.skills is not None
+            and skills_index is not None
+            and sha256(skills_index).hexdigest() != record.skills.sha256
+        ):
+            raise OwnershipError("Auto skills digest does not match")
+        for relative, _contents in skill_files or []:
+            _check_skill_destination(relative)
         if (record.guidance is None) != (guidance is None):
             raise OwnershipError("Auto guidance metadata does not match")
         if (
@@ -2455,6 +2498,20 @@ class ProjectStore:
                     self._auto_artifact_path(temporary, record.guidance, "guidance.md"),
                     guidance,
                 )
+            if record.skills is not None and skills_index is not None:
+                atomic_write_bytes(
+                    self._auto_artifact_path(temporary, record.skills, "skills.md"),
+                    skills_index,
+                )
+                skills_root = temporary / SKILLS_DIRNAME
+                skills_root.mkdir(mode=0o700)
+                for relative, contents in skill_files or []:
+                    target = skills_root / relative
+                    for folder in reversed(target.parents):
+                        if folder.is_relative_to(skills_root) and folder != skills_root:
+                            folder.mkdir(mode=0o700, exist_ok=True)
+                    _assert_no_symlink_components(target, skills_root, allow_missing_leaf=True)
+                    atomic_write_bytes(target, contents)
             atomic_write_json(temporary / "config.json", record.to_dict())
             os.replace(temporary, destination)
             published = True
@@ -2519,7 +2576,9 @@ class ProjectStore:
     ) -> bytes:
         if maximum_bytes < 1:
             raise ValueError("Auto artifact limit must be positive")
-        if artifact.path not in {"topic.md", "baseline.md", "shared-context.md", "guidance.md"}:
+        if artifact.path not in {
+            "topic.md", "baseline.md", "shared-context.md", "guidance.md", "skills.md"
+        }:
             raise OwnershipError("Auto artifact path is invalid")
         if not SHA256_PATTERN.fullmatch(artifact.sha256):
             raise OwnershipError("Auto artifact digest is invalid")

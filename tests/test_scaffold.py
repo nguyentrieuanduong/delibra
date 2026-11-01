@@ -410,6 +410,24 @@ def test_a_preset_entry_must_be_a_markdown_file() -> None:
     )
 
 
+def test_a_preset_may_list_skills_to_read() -> None:
+    presets = parse_guidance_presets(
+        {
+            "x": {"files": ["/a.md"], "skills": ["~/s/b/SKILL.md", "/c.md"]},
+            "only-skills": {"skills": ["/d.md"]},
+        }
+    )
+
+    assert presets == (
+        GuidancePreset("x", ("/a.md",), ("~/s/b/SKILL.md", "/c.md")),
+        GuidancePreset("only-skills", (), ("/d.md",)),
+    )
+    assert presets[0].to_json() == {"files": ["/a.md"], "skills": ["~/s/b/SKILL.md", "/c.md"]}
+    assert presets[1].to_json() == {"files": [], "skills": ["/d.md"]}
+    assert GuidancePreset("y", ("/a.md",)).to_json() == {"files": ["/a.md"]}
+    assert parse_guidance_presets({"x": presets[0].to_json()}) == (presets[0],)
+
+
 def test_guidance_presets_default_to_none(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -448,6 +466,13 @@ def test_expand_home_uses_this_users_home(
         {"x": {"files": [f"/{index}.md" for index in range(33)]}},
         {"x": {"paths": ["/a.md"]}},
         {"x": {"files": ["/a.md"], "include_subdirectories": True}},
+        {"x": {"skills": []}},
+        {"x": {"files": [], "skills": []}},
+        {"x": {"files": ["/a.md"], "skills": "/b.md"}},
+        {"x": {"files": ["/a.md"], "skills": ["rel.md"]}},
+        {"x": {"files": ["/a.md"], "skills": ["/b.md", "/b.md"]}},
+        {"x": {"skills": [f"/{index}.md" for index in range(513)]}},
+        {"x": {"files": ["/a.md"], "other": []}},
         {f"p{index}": {"files": ["/a.md"]} for index in range(33)},
     ],
 )
@@ -503,7 +528,8 @@ def test_generated_guidance_presets_parse_or_raise_value_error() -> None:
         parsed += bool(presets)
         for preset in presets:
             assert preset.name and preset.name == preset.name.strip()
-            assert 1 <= len(preset.files) <= 32
+            assert 1 <= len(preset.files) + len(preset.skills)
+            assert len(preset.files) <= 32
             assert all(
                 entry.startswith(("/", "~/")) and entry.lower().endswith(".md")
                 for entry in preset.files

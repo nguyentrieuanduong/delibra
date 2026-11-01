@@ -16,7 +16,7 @@ from app.coding import (
     expand_guidance_picks,
     guidance_file_size,
     guidance_snapshot_size,
-    preset_guidance_files,
+    preset_guidance_lists,
 )
 from app.config import (
     GUIDANCE_PRESET_FILES_MAX,
@@ -64,7 +64,7 @@ def _sentence(text: str) -> str:
 
 
 def _form_rows(form) -> list[dict[str, object]]:
-    """The preset rows as submitted: name, files, Remove tick."""
+    """The preset rows as submitted: name, files, skills, Remove tick."""
 
     try:
         count = int(str(form.get("preset_count", "0")))
@@ -76,6 +76,7 @@ def _form_rows(form) -> list[dict[str, object]]:
         {
             "name": str(form.get(f"preset_name_{index}", "")).strip(),
             "files": _lines(form.get(f"preset_files_{index}", "")),
+            "skills": _lines(form.get(f"preset_skills_{index}", "")),
             "remove": form.get(f"preset_remove_{index}") == "true",
         }
         for index in range(count)
@@ -91,14 +92,14 @@ class _PresetRowError(ValueError):
 
 
 def _checked_presets(
-    rows: list[dict[str, object]], saved: dict[str, tuple[str, ...]]
+    rows: list[dict[str, object]], saved: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]
 ) -> tuple[GuidancePreset, ...]:
     """The kept rows as presets; blocking (opens new or changed files)."""
 
     used = [
         (index, row)
         for index, row in enumerate(rows)
-        if not row["remove"] and (row["name"] or row["files"])
+        if not row["remove"] and (row["name"] or row["files"] or row["skills"])
     ]
     # Names first: a repeated name is the mistake to report, not its files.
     seen: set[object] = set()
@@ -108,13 +109,15 @@ def _checked_presets(
         seen.add(row["name"])
     kept: dict[str, dict[str, object]] = {}
     for index, row in used:
-        name, files = row["name"], row["files"]
+        name = row["name"]
         try:
-            (preset,) = parse_guidance_presets({name: {"files": files}})
+            (preset,) = parse_guidance_presets(
+                {name: {"files": row["files"], "skills": row["skills"]}}
+            )
             # New or changed lists must hold real files now; an unchanged
             # stale one is left for the Coding button to report.
-            if saved.get(preset.name) != preset.files:
-                preset_guidance_files(preset)
+            if saved.get(preset.name) != (preset.files, preset.skills):
+                preset_guidance_lists(preset)
         except ValueError as exc:
             raise _PresetRowError(index, str(exc)) from exc
         kept[name] = preset.to_json()
@@ -158,18 +161,30 @@ def _preset_rows(
             "remove": row.get("remove", False),
             "error": message if index == error_row else None,
             "listing": _file_listing(list(row["files"]), "row"),
+            "skills_value": "\n".join(row.get("skills", [])),
         }
         for index, row in enumerate(rows)
     ]
-    if len(shown) < GUIDANCE_PRESET_MAX and all(row["name"] or row["listing"]["files"] for row in shown):
+    if len(shown) < GUIDANCE_PRESET_MAX and all(
+        row["name"] or row["listing"]["files"] or row["skills_value"] for row in shown
+    ):
         shown.append(
-            {"name": "", "remove": False, "error": None, "listing": _file_listing([], "row")}
+            {
+                "name": "",
+                "remove": False,
+                "error": None,
+                "listing": _file_listing([], "row"),
+                "skills_value": "",
+            }
         )
     return shown
 
 
 def _saved_rows(presets: tuple[GuidancePreset, ...]) -> list[dict[str, object]]:
-    return [{"name": preset.name, "files": list(preset.files)} for preset in presets]
+    return [
+        {"name": preset.name, "files": list(preset.files), "skills": list(preset.skills)}
+        for preset in presets
+    ]
 
 
 def _settings_page(
@@ -240,7 +255,9 @@ async def save_global_settings(request: Request):
         hosts_env = HOSTS_ENV in os.environ
         typed_clients = _lines(form.get("allowed_clients"))
         typed_hosts = _lines(form.get("allowed_hosts"))
-        saved = {preset.name: preset.files for preset in settings.guidance_presets}
+        saved = {
+            preset.name: (preset.files, preset.skills) for preset in settings.guidance_presets
+        }
         # Validate everything before writing: a rejected form changes neither
         # the file nor what the running server accepts.
         try:

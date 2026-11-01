@@ -1503,6 +1503,8 @@ class AutoRunRecord:
     git: AutoBuildGit | None = None
     # Snapshot of the project's guidance files at creation (build runs only).
     guidance: AutoArtifact | None = None
+    # Index of the skills copied into the run's skills/ folder (build runs only).
+    skills: AutoArtifact | None = None
     # Docker build runs only: the backend and its probed isolation (design §4).
     docker: AutoBuildDocker | None = None
     # Absent means on: every run that never turned it off keeps its shape.
@@ -1653,6 +1655,11 @@ class AutoRunRecord:
                 if data.get("guidance") is not None
                 else None
             ),
+            skills=(
+                AutoArtifact.from_dict(data["skills"])
+                if data.get("skills") is not None
+                else None
+            ),
             pause_on_blocking_questions=(
                 _strict_bool(data, "pause_on_blocking_questions")
                 if "pause_on_blocking_questions" in data
@@ -1734,6 +1741,8 @@ class AutoRunRecord:
             payload["handovers"] = [item.to_dict() for item in self.handovers]
             payload["git"] = self.git.to_dict() if self.git is not None else None
             payload["guidance"] = self.guidance.to_dict() if self.guidance is not None else None
+            if self.skills is not None:
+                payload["skills"] = self.skills.to_dict()
             if self.cli_notes:
                 payload["cli_notes"] = list(self.cli_notes)
             if self.docker is not None:

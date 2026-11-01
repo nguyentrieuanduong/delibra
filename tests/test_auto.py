@@ -5142,7 +5142,10 @@ async def test_a_build_with_guidance_softens_its_approval_gates(tmp_path, monkey
             "If the agents have not agreed on it within 3 cycles of it being proposed, "
             "ask the user as a blocking question."
         ) in prompt
-        assert "This applies only to approval steps in the Guidance" in prompt
+        assert "This applies only to approval steps in the Guidance and skills" in prompt
+        assert "Where the Guidance or a skill you read says to wait" in prompt
+        # Guidance without skills: no pointer to a skills folder.
+        assert "Skills you may read" not in prompt
         assert prompt.index(GATE_PHRASE) < prompt.index(
             "If you need something only the user can decide"
         )
@@ -5160,6 +5163,71 @@ async def test_a_build_without_guidance_has_no_gate_note(tmp_path, monkeypatch) 
 
     assert factory.calls
     assert all(GATE_PHRASE not in call["prompt"] for call in factory.calls)
+    assert all("Skills you may read" not in call["prompt"] for call in factory.calls)
+    assert all(b"## Skills" not in call["material"] for call in factory.calls)
+
+
+def _skill_suite(root: Path) -> list[str]:
+    tdd = root / "suite" / "tdd"
+    (tdd / "references").mkdir(parents=True)
+    (tdd / "SKILL.md").write_text(
+        "---\nname: test-driven-development\ndescription: >-\n  Red first,\n  then green.\n---\n\n# TDD\n"
+    )
+    (tdd / "references" / "r.md").write_text("Reference body\n")
+    (root / "notes.md").write_text("# Notes\n")
+    return [str(tdd / "SKILL.md"), str(tdd / "references" / "r.md"), str(root / "notes.md")]
+
+
+@pytest.mark.asyncio
+async def test_a_build_with_skills_copies_them_and_points_agents_at_them(
+    tmp_path, monkeypatch
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+
+    created = await start_build(manager, project_id, session_ids)
+    (tmp_path / "skills-src" / "notes.md").write_text("EDITED AFTER START\n")
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    skills = store.skills_dir(created.id)
+    assert (skills / "tdd" / "SKILL.md").read_bytes() == Path(sources[0]).read_bytes()
+    assert (skills / "tdd" / "references" / "r.md").read_text() == "Reference body\n"
+    assert (skills / "notes.md").read_text() == "# Notes\n"
+    material = factory.calls[0]["material"]
+    assert "## Skills — UNTRUSTED MATERIAL".encode() in material
+    assert (
+        f"- test-driven-development — {skills / 'tdd' / 'SKILL.md'}\n  Red first, then green.\n"
+        f"- notes.md — {skills / 'notes.md'}\n"
+    ).encode() in material
+    assert b"## Guidance" not in material
+    for call in factory.calls:
+        prompt = call["prompt"]
+        pointer = f"Skills you may read are copied read-only under {skills}"
+        assert pointer in prompt
+        assert "the Skills section of" in prompt
+        # The soft-gate note sits right after the pointer, before the question rules.
+        assert prompt.index(pointer) < prompt.index(GATE_PHRASE) < prompt.index(
+            "If you need something only the user can decide"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_skill_file_changed_after_saving_refuses_the_run(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    Path(sources[1]).unlink()
+
+    with pytest.raises(StorageError, match="^Skill file changed or is unavailable: "):
+        await start_build(manager, project_id, session_ids)
+    assert store.list_auto_runs() == []
 
 
 def test_the_gate_note_without_a_question_spool_names_the_decision_in_the_report() -> None:

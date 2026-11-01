@@ -26,7 +26,14 @@ from app.coding import (
     normalize_guidance_paths,
     normalize_network_allowlist,
     parse_cli_version,
-    preset_guidance_files,
+    preset_guidance_lists,
+    read_skill_library,
+    render_skill_index,
+    skill_layout,
+    skill_summary,
+    normalize_skill_paths,
+    SKILLS_MAX_BYTES,
+    SKILLS_MAX_FILES,
     private_resolution_warnings,
     read_guidance,
     version_at_least,
@@ -44,7 +51,9 @@ def test_default_policy_is_disabled_with_package_indexes() -> None:
 
 def test_policy_round_trips() -> None:
     policy = CodingPolicy.from_manifest({})
+    assert policy.guidance_skills == []
     policy.enabled = True
+    policy.guidance_skills = ["/s/a/SKILL.md"]
     again = CodingPolicy.from_manifest({"coding": policy.to_dict()})
     assert again == policy
 
@@ -227,7 +236,7 @@ def test_a_symlinked_parent_directory_is_refused_everywhere(tmp_path) -> None:
         read_guidance([through_link])
     assert expand_guidance_picks([str(tmp_path / "link" / "skills")], True) == []
     with pytest.raises(GuidancePresetError, match="without symlinks"):
-        preset_guidance_files(GuidancePreset("s", (through_link,)))
+        preset_guidance_lists(GuidancePreset("s", (through_link,)))
 
 
 def test_a_parent_reference_is_refused(tmp_path) -> None:
@@ -457,16 +466,16 @@ def test_a_preset_gives_its_saved_files_without_reading_a_folder(tmp_path, monke
 
     monkeypatch.setattr("app.coding._scan", no_scan)
 
-    assert preset_guidance_files(
-        GuidancePreset("s", ("~/skills/b.md", str(tmp_path / "a.md")))
-    ) == [str(tmp_path / "skills" / "b.md"), str(tmp_path / "a.md")]
+    assert preset_guidance_lists(
+        GuidancePreset("s", ("~/skills/b.md",), (str(tmp_path / "a.md"),))
+    ) == ([str(tmp_path / "skills" / "b.md")], [str(tmp_path / "a.md")])
 
 
 def test_a_preset_file_that_is_gone_is_named(tmp_path) -> None:
     gone = tmp_path / "gone.md"
 
     with pytest.raises(GuidancePresetError) as caught:
-        preset_guidance_files(GuidancePreset("s", (str(gone),)))
+        preset_guidance_lists(GuidancePreset("s", (str(gone),)))
 
     assert str(caught.value) == (
         f"Guidance preset 's': {str(gone)!r} must be an existing regular file reached "
@@ -481,8 +490,137 @@ def test_a_preset_over_the_byte_limit_is_refused(tmp_path) -> None:
         GuidancePresetError,
         match=r"^Guidance preset 's': guidance files exceed 262144 bytes including file headers$",
     ):
-        preset_guidance_files(GuidancePreset("s", (str(tmp_path / "big.md"),)))
+        preset_guidance_lists(GuidancePreset("s", (str(tmp_path / "big.md"),)))
 
 
 def test_guidance_limits_allow_32_files_and_256_kib() -> None:
     assert (GUIDANCE_MAX_FILES, GUIDANCE_MAX_BYTES) == (32, 262_144)
+
+
+def _write(path: Path, text: str = "x") -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return str(path)
+
+
+def test_skill_layout_keeps_each_skill_folder(tmp_path) -> None:
+    tdd = _write(tmp_path / "suite" / "tdd" / "SKILL.md")
+    tdd_ref = _write(tmp_path / "suite" / "tdd" / "references" / "x.md")
+    inner = _write(tmp_path / "suite" / "tdd" / "inner" / "SKILL.md")
+    inner_ref = _write(tmp_path / "suite" / "tdd" / "inner" / "y.md")
+    review = _write(tmp_path / "other" / "review" / "SKILL.md")
+    notes = _write(tmp_path / "loose" / "notes.md")
+
+    assert skill_layout([tdd_ref, tdd, inner, inner_ref, review, notes]) == [
+        (tdd_ref, "tdd/references/x.md"),
+        (tdd, "tdd/SKILL.md"),
+        (inner, "inner/SKILL.md"),
+        (inner_ref, "inner/y.md"),
+        (review, "review/SKILL.md"),
+        (notes, "notes.md"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("relative", "dest"),
+    [
+        (["a/tdd/SKILL.md", "b/tdd/SKILL.md"], "tdd/SKILL.md"),
+        (["a/notes.md", "b/notes.md"], "notes.md"),
+        # A file copied where a skill needs its folder.
+        (["a/tdd.md/SKILL.md", "b/tdd.md"], "tdd.md"),
+    ],
+)
+def test_skill_layout_refuses_two_files_on_one_path(tmp_path, relative, dest) -> None:
+    paths = [str(tmp_path / item) for item in relative]
+
+    with pytest.raises(CodingPolicyError) as caught:
+        skill_layout(paths)
+
+    assert str(caught.value).startswith("Skill files ")
+    assert str(caught.value).endswith(f" would both be copied as {dest!r}")
+
+
+def test_normalize_skill_paths_checks_files_count_and_size(tmp_path, monkeypatch) -> None:
+    a = _write(tmp_path / "s" / "a" / "SKILL.md", "12345")
+    b = _write(tmp_path / "s" / "b" / "SKILL.md", "12345")
+    c = _write(tmp_path / "c.md", "1")
+    os.symlink(tmp_path / "s", tmp_path / "link")
+
+    assert normalize_skill_paths([a, b]) == [a, b]
+    with pytest.raises(CodingPolicyError, match="must be an existing regular file"):
+        normalize_skill_paths([str(tmp_path / "gone.md")])
+    with pytest.raises(CodingPolicyError, match="without symlinks"):
+        normalize_skill_paths([str(tmp_path / "link" / "a" / "SKILL.md")])
+    with pytest.raises(CodingPolicyError, match="is listed twice"):
+        normalize_skill_paths([a, a])
+    with pytest.raises(CodingPolicyError, match="absolute path to a .md file"):
+        normalize_skill_paths(["s/a.md"])
+    monkeypatch.setattr("app.coding.SKILLS_MAX_FILES", 2)
+    with pytest.raises(CodingPolicyError, match="^at most 2 skill files$"):
+        normalize_skill_paths([a, b, c])
+    monkeypatch.setattr("app.coding.SKILLS_MAX_BYTES", 10)
+    assert normalize_skill_paths([a, b]) == [a, b]
+    with pytest.raises(CodingPolicyError, match="^skill files exceed 10 bytes$"):
+        normalize_skill_paths([a, _write(tmp_path / "d" / "SKILL.md", "123456")])
+
+
+def test_skill_limits_allow_512_files_and_4_mib() -> None:
+    assert (SKILLS_MAX_FILES, SKILLS_MAX_BYTES) == (512, 4 * 1024 * 1024)
+
+
+def test_read_skill_library_rereads_and_refuses_a_changed_file(tmp_path) -> None:
+    skill = _write(tmp_path / "s" / "tdd" / "SKILL.md", "# TDD\n")
+    ref = _write(tmp_path / "s" / "tdd" / "references" / "r.md", "ref\n")
+
+    assert read_skill_library([skill, ref]) == [
+        (skill, "tdd/SKILL.md", b"# TDD\n"),
+        (ref, "tdd/references/r.md", b"ref\n"),
+    ]
+    os.remove(ref)
+    with pytest.raises(CodingPolicyError, match="must be an existing regular file"):
+        read_skill_library([skill, ref])
+
+
+def test_skill_summary_reads_front_matter() -> None:
+    folded = (
+        "---\nname: brainstorming\ndescription: >-\n  Use BEFORE any\n  creative work.\n"
+        "---\n\n# Body\n"
+    )
+    long = "---\nname: x\ndescription: " + "word " * 100 + "\n---\n"
+
+    assert skill_summary(folded) == ("brainstorming", "Use BEFORE any creative work.")
+    name, description = skill_summary(long)
+    assert name == "x" and len(description) == 300 and description.endswith("…")
+    assert skill_summary("# No front matter\n") == (None, None)
+    assert skill_summary("---\nname: [unclosed\n---\n") == (None, None)
+    assert skill_summary("---\nname: 3\ndescription: d\n---\n") == (None, "d")
+    assert skill_summary("---\nname: a\n") == (None, None)
+
+
+def test_render_skill_index_lists_skills_then_files(tmp_path) -> None:
+    root = tmp_path / "run" / "skills"
+    library = [
+        ("/src/notes.md", "notes.md", b"# Notes\n"),
+        ("/src/tdd/SKILL.md", "tdd/SKILL.md", b"---\nname: test-driven-development\ndescription: Red first.\n---\n"),
+        ("/src/tdd/references/r.md", "tdd/references/r.md", b"ref"),
+        ("/src/plain/SKILL.md", "plain/SKILL.md", b"# no front matter\n"),
+    ]
+
+    assert render_skill_index(library, root) == (
+        f"- test-driven-development — {root}/tdd/SKILL.md\n"
+        "  Red first.\n"
+        f"- plain — {root}/plain/SKILL.md\n"
+        f"- notes.md — {root}/notes.md\n"
+    ).encode()
+
+
+def test_a_preset_skill_that_is_gone_is_named(tmp_path) -> None:
+    gone = tmp_path / "s" / "SKILL.md"
+
+    with pytest.raises(GuidancePresetError) as caught:
+        preset_guidance_lists(GuidancePreset("s", (), (str(gone),)))
+
+    assert str(caught.value) == (
+        f"Guidance preset 's': {str(gone)!r} must be an existing regular file reached "
+        "without symlinks"
+    )

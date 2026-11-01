@@ -19,7 +19,8 @@ from app.coding import (
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
-    preset_guidance_files,
+    normalize_skill_paths,
+    preset_guidance_lists,
     private_resolution_warnings,
 )
 from app.build_git import default_git_exclude, ensure_local_excludes
@@ -312,6 +313,7 @@ async def save_coding(
     enabled: bool = Form(False),
     network_allowlist: str = Form(""),
     guidance_files: str = Form(""),
+    guidance_skills: str | None = Form(None),
     guidance_preset: str = Form(""),
     git_exclude: str | None = Form(None),
     git_exclude_preset: str = Form(""),
@@ -334,7 +336,7 @@ async def save_coding(
         warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
     # Checked before the lock, off the event loop: each file is opened one
     # component at a time, which must not hold the project's sessions.
-    preset_guidance: list[str] | None = None
+    preset_guidance: tuple[list[str], list[str]] | None = None
     if guidance_preset:
         preset = next(
             (
@@ -349,7 +351,7 @@ async def save_coding(
                 f"Unknown guidance preset {guidance_preset!r}; guidance was not changed"
             )
         try:
-            preset_guidance = await asyncio.to_thread(preset_guidance_files, preset)
+            preset_guidance = await asyncio.to_thread(preset_guidance_lists, preset)
         except CodingPolicyError as exc:
             raise StorageError(f"{exc}; guidance was not changed") from exc
     async with request.app.state.locks.registry_project_sessions(resolved_project_id):
@@ -357,11 +359,17 @@ async def save_coding(
         project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
         store.require_auto_inactive()
+        current = store.coding_policy()
         if preset_guidance is not None:
-            guidance = preset_guidance
+            guidance, skills = preset_guidance
         else:
             guidance = guidance_files.splitlines() if guidance_files.strip() else []
-        current = store.coding_policy()
+            # A form without the box (older pages) keeps the saved skills.
+            skills = (
+                current.guidance_skills
+                if guidance_skills is None
+                else [line for line in guidance_skills.splitlines() if line.strip()]
+            )
         if git_exclude_preset == "default":
             exclude = None
         elif git_exclude is None:
@@ -380,6 +388,7 @@ async def save_coding(
                 env=current.env,
                 network_warnings=warnings,
                 guidance_files=normalize_guidance_paths(guidance),
+                guidance_skills=normalize_skill_paths(skills),
                 git_exclude=None if exclude is None else normalize_git_exclude(exclude),
                 docker=current.docker,
             )

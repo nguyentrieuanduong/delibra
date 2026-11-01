@@ -12,19 +12,25 @@ MIB = 1024 * 1024
 CONFIG_FILENAME = "config.json"
 GUIDANCE_PRESET_MAX = 32
 GUIDANCE_PRESET_FILES_MAX = 32
+GUIDANCE_PRESET_SKILLS_MAX = 512
 GUIDANCE_PRESET_NAME_MAX = 40
 PRESET_FILE_PATH_MAX = 4096
 
 
 @dataclass(frozen=True)
 class GuidancePreset:
-    """A named, fixed list of guidance files, kept as written (``~/`` unexpanded)."""
+    """Named, fixed lists kept as written (``~/`` unexpanded): ``files`` are
+    pasted into every build turn, ``skills`` are copied for agents to read."""
 
     name: str
     files: tuple[str, ...]
+    skills: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, object]:
-        return {"files": list(self.files)}
+        data: dict[str, object] = {"files": list(self.files)}
+        if self.skills:
+            data["skills"] = list(self.skills)
+        return data
 
 
 def expand_home(entry: str) -> Path:
@@ -51,6 +57,23 @@ def check_preset_file(entry: object) -> str:
     return entry
 
 
+def _preset_list(name: str, key: str, entries: object, limit: int) -> tuple[str, ...]:
+    if not isinstance(entries, list):
+        raise ValueError(f"guidance preset {name!r} {key} must be a list of paths")
+    if len(entries) > limit:
+        raise ValueError(f"guidance preset {name!r} lists more than {limit} {key}")
+    kept: list[str] = []
+    for entry in entries:
+        try:
+            check_preset_file(entry)
+        except ValueError as exc:
+            raise ValueError(f"guidance preset {name!r}: {exc}") from None
+        if entry in kept:
+            raise ValueError(f"guidance preset {name!r} lists {entry!r} twice")
+        kept.append(entry)
+    return tuple(kept)
+
+
 def parse_guidance_presets(raw: object) -> tuple[GuidancePreset, ...]:
     """Validate ``guidance_presets`` as config.json stores it.
 
@@ -75,25 +98,20 @@ def parse_guidance_presets(raw: object) -> tuple[GuidancePreset, ...]:
                 f"guidance preset name {name!r} must be 1-{GUIDANCE_PRESET_NAME_MAX} "
                 "printable characters without surrounding spaces"
             )
-        if not isinstance(body, dict) or set(body) != {"files"}:
-            raise ValueError(f"guidance preset {name!r} must be an object with only a files list")
-        entries = body["files"]
-        if not isinstance(entries, list) or not entries:
-            raise ValueError(f"guidance preset {name!r} must list at least one file")
-        if len(entries) > GUIDANCE_PRESET_FILES_MAX:
+        if not isinstance(body, dict) or not set(body) <= {"files", "skills"}:
             raise ValueError(
-                f"guidance preset {name!r} lists more than {GUIDANCE_PRESET_FILES_MAX} files"
+                f"guidance preset {name!r} must be an object with files and skills lists"
             )
-        files: list[str] = []
-        for entry in entries:
-            try:
-                check_preset_file(entry)
-            except ValueError as exc:
-                raise ValueError(f"guidance preset {name!r}: {exc}") from None
-            if entry in files:
-                raise ValueError(f"guidance preset {name!r} lists {entry!r} twice")
-            files.append(entry)
-        presets.append(GuidancePreset(name, tuple(files)))
+        lists = {
+            key: _preset_list(name, key, body.get(key, []), limit)
+            for key, limit in (
+                ("files", GUIDANCE_PRESET_FILES_MAX),
+                ("skills", GUIDANCE_PRESET_SKILLS_MAX),
+            )
+        }
+        if not lists["files"] and not lists["skills"]:
+            raise ValueError(f"guidance preset {name!r} must list at least one file")
+        presets.append(GuidancePreset(name, lists["files"], lists["skills"]))
     return tuple(presets)
 
 

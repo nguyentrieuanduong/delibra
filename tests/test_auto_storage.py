@@ -545,6 +545,62 @@ def test_auto_creation_publishes_complete_numeric_directory(
     )["runs"] == {record.id: 1}
 
 
+def test_a_build_run_stores_its_skill_copy_and_index(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.kind = "build"
+    index = b"- tdd \xe2\x80\x94 /x/tdd/SKILL.md\n"
+    record.skills = models.AutoArtifact("skills.md", sha256(index).hexdigest())
+    record.number = store.reserve_auto_run_number()
+    store.create_auto_run(
+        record,
+        topic=b"Original topic",
+        baseline=b"",
+        skills_index=index,
+        skill_files=[("tdd/SKILL.md", b"# TDD\n"), ("tdd/references/r.md", b"ref")],
+    )
+
+    skills = store.skills_dir(record.id)
+    assert skills == store.auto_runs_root / "1" / "skills"
+    assert (skills / "tdd" / "SKILL.md").read_bytes() == b"# TDD\n"
+    assert (skills / "tdd" / "references" / "r.md").read_bytes() == b"ref"
+    loaded = store.load_auto_run(record.id)
+    assert loaded.skills == record.skills
+    assert store.load_auto_artifact(record.id, loaded.skills, 1000) == index
+
+
+@pytest.mark.parametrize("destination", ["../escape.md", "/abs.md", "a//b.md", "a/./b.md", ""])
+def test_a_skill_copy_outside_its_folder_is_refused_before_publishing(
+    tmp_path: Path, destination: str
+) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.kind = "build"
+    record.skills = models.AutoArtifact("skills.md", sha256(b"i").hexdigest())
+    record.number = store.reserve_auto_run_number()
+
+    with pytest.raises(OwnershipError, match="skill copy path"):
+        store.create_auto_run(
+            record,
+            topic=b"Original topic",
+            baseline=b"",
+            skills_index=b"i",
+            skill_files=[(destination, b"x")],
+        )
+    assert not (store.auto_runs_root / "1").exists()
+    assert not (tmp_path / "escape.md").exists()
+
+
+def test_skills_metadata_must_match_the_index(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    record = auto_record_fixture(store.project.id)
+    record.kind = "build"
+    record.number = store.reserve_auto_run_number()
+
+    with pytest.raises(OwnershipError, match="Auto skills metadata does not match"):
+        store.create_auto_run(record, topic=b"Original topic", baseline=b"", skills_index=b"i")
+
+
 def test_interrupted_auto_publication_consumes_number_without_visible_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

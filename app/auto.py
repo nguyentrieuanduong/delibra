@@ -25,6 +25,8 @@ from app.coding import (
     cli_newer_than_verified,
     docker_capable,
     read_guidance,
+    read_skill_library,
+    render_skill_index,
 )
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
@@ -92,6 +94,7 @@ from app.storage import (
     OwnershipError,
     ProjectStore,
     RegistryStore,
+    SKILLS_DIRNAME,
     StorageError,
     atomic_write_bytes,
     first_unsafe_writable_root_character,
@@ -105,6 +108,8 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger(__name__)
+# The skills index: at most 512 entries of a name, a path and 300 characters.
+SKILLS_INDEX_MAX_BYTES = 1024 * 1024
 AUTO_STOP_MAX_ATTEMPTS = 100
 AUTO_STOP_RETRY_SECONDS = 0.01
 # Constant by design: 7e computes the post-compaction budget by rendering this
@@ -163,12 +168,24 @@ def guidance_gate_note(can_ask: bool) -> str:
         "best assumption."
     )
     return (
-        " Where the Guidance says to wait for the user's approval or decision "
-        "before going on (for example approving a design or a plan), the other "
-        "agents stand in for the user: state the proposal, and continue once "
-        "another agent agrees with it. If the agents have not agreed on it within "
-        f"3 cycles of it being proposed, {unresolved} This applies only to "
-        "approval steps in the Guidance; other questions follow the rules below."
+        " Where the Guidance or a skill you read says to wait for the user's "
+        "approval or decision before going on (for example approving a design or "
+        "a plan), the other agents stand in for the user: state the proposal, and "
+        "continue once another agent agrees with it. If the agents have not agreed "
+        f"on it within 3 cycles of it being proposed, {unresolved} This applies "
+        "only to approval steps in the Guidance and skills; other questions follow "
+        "the rules below."
+    )
+
+
+def skills_turn_note(skills_dir: Path, context: str) -> str:
+    """Where a build run's skills are; the index itself is untrusted material."""
+
+    return (
+        f" Skills you may read are copied read-only under {skills_dir.as_posix()}; "
+        f"the Skills section of {context} lists each one's name, path and "
+        "description. Read a skill's SKILL.md before acting when the Guidance, the "
+        "task or its description says it applies; its other files sit beside it."
     )
 
 
@@ -647,6 +664,7 @@ class AutoManager:
             if kind not in AUTO_KINDS:
                 raise StorageError("Auto kind is invalid")
             guidance_bytes = None
+            skill_library: list[tuple[str, str, bytes]] | None = None
             cli_notes: list[str] = []
             docker_state = None
             if kind == "build":
@@ -677,6 +695,16 @@ class AutoManager:
                         raise StorageError(
                             f"Guidance file changed or is unavailable: {exc}"
                         ) from exc
+                skill_paths = store.coding_policy().guidance_skills
+                if skill_paths:
+                    try:
+                        skill_library = await asyncio.to_thread(
+                            read_skill_library, skill_paths
+                        )
+                    except CodingPolicyError as exc:
+                        raise StorageError(
+                            f"Skill file changed or is unavailable: {exc}"
+                        ) from exc
             if any(session.status == "running" for session in sessions) or any(
                 self.runner.active_key(project_id, session.id) is not None
                 for session in sessions
@@ -705,6 +733,13 @@ class AutoManager:
             topic_bytes = topic.encode("utf-8")
             auto_id = uuid4().hex
             number = store.reserve_auto_run_number()
+            skills_index = (
+                render_skill_index(
+                    skill_library, store.auto_runs_root / str(number) / SKILLS_DIRNAME
+                )
+                if skill_library is not None
+                else None
+            )
             NoteStore(store.root).abandon_before(number)
             record = AutoRunRecord(
                 id=auto_id,
@@ -752,6 +787,11 @@ class AutoManager:
                     if guidance_bytes is not None
                     else None
                 ),
+                skills=(
+                    AutoArtifact("skills.md", sha256(skills_index).hexdigest())
+                    if skills_index is not None
+                    else None
+                ),
                 cli_notes=cli_notes,
                 docker=docker_state,
             )
@@ -761,6 +801,12 @@ class AutoManager:
                 baseline=baseline,
                 shared_context=shared_bytes,
                 guidance=guidance_bytes,
+                skills_index=skills_index,
+                skill_files=(
+                    [(destination, contents) for _source, destination, contents in skill_library]
+                    if skill_library is not None
+                    else None
+                ),
             )
             try:
                 store.publish_auto_reservation(auto_id)
@@ -2268,8 +2314,18 @@ class AutoManager:
                                     else ""
                                 )
                                 + (
+                                    skills_turn_note(
+                                        store.skills_dir(current.id),
+                                        (
+                                            store.workspace_dir(participant.session_id) / staged
+                                        ).as_posix(),
+                                    )
+                                    if current.skills is not None
+                                    else ""
+                                )
+                                + (
                                     guidance_gate_note(spool_dir is not None)
-                                    if current.guidance is not None
+                                    if current.guidance is not None or current.skills is not None
                                     else ""
                                 )
                             )
@@ -3213,6 +3269,11 @@ class AutoManager:
             if record.guidance is not None
             else b""
         )
+        if record.skills is not None:
+            before += _untrusted_section(
+                "Skills",
+                store.load_auto_artifact(record.id, record.skills, SKILLS_INDEX_MAX_BYTES),
+            )
         after = await self._handover_section(store, record)
         body = self._discussion_context(store, record, reserve=len(before) + len(after))
         return before + body + after

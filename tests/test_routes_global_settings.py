@@ -265,6 +265,42 @@ def test_a_ticked_remove_drops_the_preset(tmp_path) -> None:
     assert app.state.settings.guidance_presets == ()
 
 
+def test_a_preset_keeps_its_skills_list(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "skills" / "tdd").mkdir(parents=True)
+    (tmp_path / "skills" / "tdd" / "SKILL.md").write_text("# TDD\n")
+    (tmp_path / "router.md").write_text("# Router\n")
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            "/settings",
+            data=form(
+                preset_name_0="suite",
+                preset_files_0="~/router.md",
+                preset_skills_0="~/skills/tdd/SKILL.md",
+            ),
+            follow_redirects=False,
+        )
+        page = client.get("/settings").text
+        refused = client.post(
+            "/settings",
+            data=form(
+                preset_name_0="suite",
+                preset_files_0="~/router.md",
+                preset_skills_0="~/skills/tdd/SKILL.md\n~/skills/gone.md",
+            ),
+        )
+
+    assert saved.status_code == 303
+    assert config(tmp_path)["guidance_presets"] == {
+        "suite": {"files": ["~/router.md"], "skills": ["~/skills/tdd/SKILL.md"]}
+    }
+    assert 'name="preset_skills_0" value="~/skills/tdd/SKILL.md"' in page
+    assert refused.status_code == 422
+    assert "Guidance preset &#39;suite&#39;: &#39;" in refused.text
+    assert 'name="preset_skills_0" value="~/skills/tdd/SKILL.md\n~/skills/gone.md"' in refused.text
+
+
 def test_an_unchanged_preset_with_a_missing_file_does_not_block_saving(tmp_path) -> None:
     app = make_app(
         tmp_path, guidance_presets=(GuidancePreset("old", ("/opt/delibra-gone.md",)),)

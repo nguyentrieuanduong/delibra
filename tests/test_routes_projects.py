@@ -1588,6 +1588,87 @@ def test_guidance_preset_with_a_missing_file_is_refused_and_keeps_guidance(
     assert policy.network_allowlist == ["pypi.org"]
 
 
+def _skill_files(root: Path) -> list[str]:
+    (root / "tdd" / "references").mkdir(parents=True)
+    (root / "tdd" / "SKILL.md").write_text("# TDD\n")
+    (root / "tdd" / "references" / "r.md").write_text("ref\n")
+    return [str(root / "tdd" / "SKILL.md"), str(root / "tdd" / "references" / "r.md")]
+
+
+def test_skills_are_saved_from_the_coding_form_and_kept_without_it(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_skills": "\n".join(skills) + "\n\n"},
+            follow_redirects=False,
+        )
+        kept = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "example.org"},
+            follow_redirects=False,
+        )
+
+    assert saved.status_code == 303 and kept.status_code == 303
+    policy = ProjectStore(project).coding_policy()
+    assert policy.guidance_skills == skills
+    assert policy.network_allowlist == ["example.org"]
+
+
+def test_an_invalid_skill_list_is_refused_and_keeps_settings(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    clash = tmp_path / "other" / "tdd" / "SKILL.md"
+    clash.parent.mkdir(parents=True)
+    clash.write_text("# other\n")
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_skills": skills[0]},
+            follow_redirects=False,
+        )
+        response = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "example.org", "guidance_skills": f"{skills[0]}\n{clash}"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        f"Skill files {skills[0]!r} and {str(clash)!r} would both be copied as 'tdd/SKILL.md'"
+    )
+    policy = ProjectStore(project).coding_policy()
+    assert policy.guidance_skills == [skills[0]]
+    assert policy.network_allowlist == ["pypi.org"]
+
+
+def test_guidance_preset_sets_both_lists(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    router = tmp_path / "router.md"
+    router.write_text("# Router\n")
+    app, project, _dir, prefix = coding_project(
+        tmp_path,
+        monkeypatch,
+        guidance_presets=(GuidancePreset("suite", (str(router),), tuple(skills)),),
+    )
+
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("the Coding button must not read a folder")
+
+    monkeypatch.setattr("app.coding._scan", no_scan)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_preset": "suite", "guidance_skills": ""},
+            follow_redirects=False,
+        )
+
+    assert saved.status_code == 303
+    policy = ProjectStore(project).coding_policy()
+    assert policy.guidance_files == [str(router)]
+    assert policy.guidance_skills == skills
+
+
 def test_unknown_guidance_preset_is_refused(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(
         tmp_path, monkeypatch, guidance_presets=(GuidancePreset("suite", ("/opt/a.md",)),)

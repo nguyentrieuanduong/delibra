@@ -33,6 +33,7 @@
           {% if row.error %}<p class="warning" role="alert">{{ row.error }}</p>{% endif %}
           <label>Name <input name="preset_name_{{ loop.index0 }}" value="{{ row.name }}" maxlength="40"></label>
           <input type="hidden" id="preset-files-{{ loop.index0 }}" name="preset_files_{{ loop.index0 }}" value="{{ row.listing.files_value }}">
+          <input type="hidden" id="preset-skills-{{ loop.index0 }}" name="preset_skills_{{ loop.index0 }}" value="{{ row.skills_value }}">
           <div id="preset-files-list-{{ loop.index0 }}" class="preset-files" aria-live="polite">
             {% with listing=row.listing %}{% include "_preset_files.html" %}{% endwith %}
           </div>

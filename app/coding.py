@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from app.config import GuidancePreset, expand_home
 
 LOCAL_ONLY_SUFFIXES = (".local", ".lan", ".internal", ".home.arpa", ".localdomain")
@@ -96,32 +98,40 @@ def guidance_snapshot_size(files: list[tuple[str, int]]) -> int:
     )
 
 
+def _checked_markdown(raw: str, kept: list[str]) -> tuple[str, int]:
+    """One listed file: absolute `.md`, regular, reached without symlinks,
+    not already in `kept`; returns the path and its size."""
+
+    value = raw.strip()
+    path = Path(value)
+    if not path.is_absolute() or path.suffix.lower() != ".md":
+        raise CodingPolicyError(f"{raw!r} must be an absolute path to a .md file")
+    try:
+        descriptor = open_without_symlinks(path)
+    except OSError as exc:
+        raise CodingPolicyError(
+            f"{raw!r} must be an existing regular file reached without symlinks"
+        ) from exc
+    try:
+        info = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        raise CodingPolicyError(f"{raw!r} must be a regular file")
+    if value in kept:
+        raise CodingPolicyError(f"{raw!r} is listed twice")
+    return value, info.st_size
+
+
 def normalize_guidance_paths(values: object) -> list[str]:
     if not isinstance(values, list) or any(type(item) is not str for item in values):
         raise CodingPolicyError("guidance files must be a list of paths")
     paths: list[str] = []
     sized: list[tuple[str, int]] = []
     for raw in values:
-        value = raw.strip()
-        path = Path(value)
-        if not path.is_absolute() or path.suffix.lower() != ".md":
-            raise CodingPolicyError(f"{raw!r} must be an absolute path to a .md file")
-        try:
-            descriptor = open_without_symlinks(path)
-        except OSError as exc:
-            raise CodingPolicyError(
-                f"{raw!r} must be an existing regular file reached without symlinks"
-            ) from exc
-        try:
-            info = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise CodingPolicyError(f"{raw!r} must be a regular file")
-        if value in paths:
-            raise CodingPolicyError(f"{raw!r} is listed twice")
+        value, size = _checked_markdown(raw, paths)
         paths.append(value)
-        sized.append((value, info.st_size))
+        sized.append((value, size))
     if len(paths) > GUIDANCE_MAX_FILES:
         raise CodingPolicyError(f"at most {GUIDANCE_MAX_FILES} guidance files")
     if guidance_snapshot_size(sized) > GUIDANCE_MAX_BYTES:
@@ -242,12 +252,15 @@ class GuidancePresetError(CodingPolicyError):
     pass
 
 
-def preset_guidance_files(preset: GuidancePreset) -> list[str]:
-    """The preset's saved files as absolute paths, checked the way the Coding
-    page's Save checks guidance files. No folder is read."""
+def preset_guidance_lists(preset: GuidancePreset) -> tuple[list[str], list[str]]:
+    """The preset's saved files and skills as absolute paths, checked the way
+    the Coding page's Save checks them. No folder is read."""
 
     try:
-        return normalize_guidance_paths([str(expand_home(entry)) for entry in preset.files])
+        return (
+            normalize_guidance_paths([str(expand_home(entry)) for entry in preset.files]),
+            normalize_skill_paths([str(expand_home(entry)) for entry in preset.skills]),
+        )
     except CodingPolicyError as exc:
         raise GuidancePresetError(f"Guidance preset {preset.name!r}: {exc}") from exc
 
@@ -300,6 +313,143 @@ def read_guidance(paths: list[str]) -> bytes:
     if len(snapshot) > GUIDANCE_MAX_BYTES:
         raise CodingPolicyError(f"guidance snapshot exceeds {GUIDANCE_MAX_BYTES} bytes")
     return snapshot
+
+
+# Skills agents can read: copied into each build run, not pasted into turns.
+SKILLS_MAX_FILES = 512
+SKILLS_MAX_BYTES = 4 * 1024 * 1024
+SKILL_FILE = "SKILL.md"
+SKILL_DESCRIPTION_MAX = 300
+
+
+def skill_layout(paths: list[str]) -> list[tuple[str, str]]:
+    """Where each listed file is copied, relative to the run's skills folder.
+
+    A skill root is the folder of a listed `SKILL.md`; a file goes to
+    `<root folder name>/<path inside the root>` under its nearest root, so a
+    skill's `references/` links keep working. Other files go to the top
+    level by name. Two files on one path are refused, naming both.
+    """
+
+    roots = sorted(
+        {
+            Path(path).parent
+            for path in paths
+            if Path(path).name == SKILL_FILE and Path(path).parent.name
+        },
+        key=lambda root: len(root.parts),
+        reverse=True,
+    )
+    placed: list[tuple[str, str]] = []
+    for source in paths:
+        path = Path(source)
+        root = next((item for item in roots if path.is_relative_to(item)), None)
+        destination = (
+            f"{root.name}/{path.relative_to(root).as_posix()}" if root else path.name
+        )
+        placed.append((source, destination))
+    files: dict[str, str] = {}
+    folders: dict[str, str] = {}
+    for source, destination in placed:
+        if destination in files:
+            raise _layout_clash(files[destination], source, destination)
+        files[destination] = source
+        parts = destination.split("/")
+        for depth in range(1, len(parts)):
+            folders.setdefault("/".join(parts[:depth]), source)
+    for destination, source in files.items():
+        if destination in folders:
+            raise _layout_clash(folders[destination], source, destination)
+    return placed
+
+
+def _layout_clash(first: str, second: str, destination: str) -> CodingPolicyError:
+    return CodingPolicyError(
+        f"Skill files {first!r} and {second!r} would both be copied as {destination!r}"
+    )
+
+
+def normalize_skill_paths(values: object) -> list[str]:
+    if not isinstance(values, list) or any(type(item) is not str for item in values):
+        raise CodingPolicyError("skill files must be a list of paths")
+    paths: list[str] = []
+    total = 0
+    for raw in values:
+        value, size = _checked_markdown(raw, paths)
+        paths.append(value)
+        total += size
+    if len(paths) > SKILLS_MAX_FILES:
+        raise CodingPolicyError(f"at most {SKILLS_MAX_FILES} skill files")
+    if total > SKILLS_MAX_BYTES:
+        raise CodingPolicyError(f"skill files exceed {SKILLS_MAX_BYTES} bytes")
+    skill_layout(paths)
+    return paths
+
+
+def read_skill_library(paths: list[str]) -> list[tuple[str, str, bytes]]:
+    """(source, destination, contents) for each listed file, read now with the
+    same checks as on save; the whole copy stays within the byte limit."""
+
+    normalize_skill_paths(paths)
+    library: list[tuple[str, str, bytes]] = []
+    remaining = SKILLS_MAX_BYTES
+    for source, destination in skill_layout(paths):
+        try:
+            descriptor = open_without_symlinks(Path(source))
+            with os.fdopen(descriptor, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise CodingPolicyError(f"{source!r} is not a regular file")
+                body = handle.read(remaining + 1)
+        except OSError as exc:
+            raise CodingPolicyError(f"{source!r} changed or is unavailable") from exc
+        remaining -= len(body)
+        if remaining < 0:
+            raise CodingPolicyError(f"skill files exceed {SKILLS_MAX_BYTES} bytes")
+        library.append((source, destination, body))
+    return library
+
+
+def skill_summary(text: str) -> tuple[str | None, str | None]:
+    """A SKILL.md's front-matter name and one-line description, if any."""
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None, None
+    try:
+        end = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
+        data = yaml.safe_load("\n".join(lines[1:end]))
+    except (StopIteration, yaml.YAMLError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    name = data.get("name")
+    name = name.strip() if isinstance(name, str) and name.strip() and "\n" not in name.strip() else None
+    description = data.get("description")
+    if isinstance(description, str) and description.split():
+        description = " ".join(description.split())
+        if len(description) > SKILL_DESCRIPTION_MAX:
+            description = description[: SKILL_DESCRIPTION_MAX - 1] + "…"
+    else:
+        description = None
+    return name, description
+
+
+def render_skill_index(library: list[tuple[str, str, bytes]], root: Path) -> bytes:
+    """Each skill (name, path of its SKILL.md, description), then other
+    top-level files; a skill's other files are not listed."""
+
+    skills: list[str] = []
+    files: list[str] = []
+    for _source, destination, contents in library:
+        parts = destination.split("/")
+        if len(parts) == 2 and parts[1] == SKILL_FILE:
+            name, description = skill_summary(contents.decode("utf-8", "replace"))
+            skills.append(f"- {name or parts[0]} — {root / destination}\n")
+            if description:
+                skills.append(f"  {description}\n")
+        elif len(parts) == 1:
+            files.append(f"- {destination} — {root / destination}\n")
+    return "".join(skills + files).encode("utf-8")
 
 
 def normalize_network_allowlist(values: object) -> list[str]:
@@ -503,6 +653,7 @@ class CodingPolicy:
     env: CodingEnvState = field(default_factory=CodingEnvState)
     network_warnings: list[str] = field(default_factory=list)
     guidance_files: list[str] = field(default_factory=list)
+    guidance_skills: list[str] = field(default_factory=list)
     # None follows Delibra's default list (app/build_git_exclude.txt).
     git_exclude: list[str] | None = None
     docker: DockerPolicy = field(default_factory=DockerPolicy)
@@ -526,6 +677,11 @@ class CodingPolicy:
             type(item) is not str or not Path(item).is_absolute() for item in guidance
         ):
             raise CodingPolicyError("coding guidance files are invalid")
+        skills = data.get("guidance_skills", [])
+        if not isinstance(skills, list) or any(
+            type(item) is not str or not Path(item).is_absolute() for item in skills
+        ):
+            raise CodingPolicyError("coding skill files are invalid")
         return cls(
             enabled=data.get("enabled", False),
             network_allowlist=normalize_network_allowlist(
@@ -534,6 +690,7 @@ class CodingPolicy:
             env=CodingEnvState.from_dict(data.get("env", {})),
             network_warnings=list(warnings),
             guidance_files=list(guidance),
+            guidance_skills=list(skills),
             git_exclude=(
                 None
                 if data.get("git_exclude") is None
@@ -549,6 +706,7 @@ class CodingPolicy:
             "env": self.env.to_dict(),
             "network_warnings": list(self.network_warnings),
             "guidance_files": list(self.guidance_files),
+            "guidance_skills": list(self.guidance_skills),
             "git_exclude": None if self.git_exclude is None else list(self.git_exclude),
             "docker": self.docker.to_dict(),
         }
