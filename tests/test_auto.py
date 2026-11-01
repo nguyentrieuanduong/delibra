@@ -25,6 +25,7 @@ from app.auto import (
     AutoStatusEvent,
     ContextEntry,
     ResumeCursor,
+    guidance_gate_note,
     parse_auto_verdict,
     reconstruct_resume_cursor,
     render_compaction_context,
@@ -5117,6 +5118,61 @@ async def test_build_turn_context_includes_guidance_snapshot(tmp_path, monkeypat
     assert all(b"EDITED AFTER START" not in call["material"] for call in factory.calls)
 
 
+GATE_PHRASE = "the other agents stand in for the user"
+
+
+@pytest.mark.asyncio
+async def test_a_build_with_guidance_softens_its_approval_gates(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    guide = tmp_path / "guide.md"
+    guide.write_text("Do not write code until the user approves the design.\n")
+    enable_build(store, monkeypatch)
+    store.set_build_guidance([str(guide)])
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert factory.calls
+    for call in factory.calls:
+        prompt = call["prompt"]
+        assert GATE_PHRASE in prompt
+        assert (
+            "If the agents have not agreed on it within 3 cycles of it being proposed, "
+            "ask the user as a blocking question."
+        ) in prompt
+        assert "This applies only to approval steps in the Guidance" in prompt
+        assert prompt.index(GATE_PHRASE) < prompt.index(
+            "If you need something only the user can decide"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_build_without_guidance_has_no_gate_note(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    enable_build(store, monkeypatch)
+
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert factory.calls
+    assert all(GATE_PHRASE not in call["prompt"] for call in factory.calls)
+
+
+def test_the_gate_note_without_a_question_spool_names_the_decision_in_the_report() -> None:
+    note = guidance_gate_note(can_ask=False)
+
+    assert GATE_PHRASE in note
+    assert "blocking question" not in note
+    assert (
+        "If the agents have not agreed on it within 3 cycles of it being proposed, "
+        "say in your report that the user must decide, and continue on your best assumption."
+    ) in note
+
+
 @pytest.mark.asyncio
 async def test_discussion_context_has_no_guidance(tmp_path, monkeypatch) -> None:
     manager, factory, project_id, session_ids, store = auto_manager_fixture(
@@ -5133,6 +5189,7 @@ async def test_discussion_context_has_no_guidance(tmp_path, monkeypatch) -> None
     await wait_for_auto_terminal(manager, project_id, created.id)
 
     assert all(b"## Guidance" not in call["material"] for call in factory.calls)
+    assert all(GATE_PHRASE not in call["prompt"] for call in factory.calls)
 
 
 @pytest.mark.asyncio

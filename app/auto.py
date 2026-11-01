@@ -144,6 +144,34 @@ BUILD_TURN_PROMPT = (
     "write Not converged. Follow the Guidance section where it applies to this "
     "task; the task and the project's existing conventions take precedence."
 )
+
+
+def guidance_gate_note(can_ask: bool) -> str:
+    """Approval steps in guidance, for build turns that carry guidance.
+
+    Skills written for an interactive session wait for the user to approve a
+    design or plan; nobody answers inside an Auto run, so the other agents
+    approve instead and the user is asked only when they cannot agree
+    (user decision 2026-11-01). Delibra does not count the cycles: the
+    agents read them from the turn labels.
+    """
+
+    unresolved = (
+        "ask the user as a blocking question."
+        if can_ask
+        else "say in your report that the user must decide, and continue on your "
+        "best assumption."
+    )
+    return (
+        " Where the Guidance says to wait for the user's approval or decision "
+        "before going on (for example approving a design or a plan), the other "
+        "agents stand in for the user: state the proposal, and continue once "
+        "another agent agrees with it. If the agents have not agreed on it within "
+        f"3 cycles of it being proposed, {unresolved} This applies only to "
+        "approval steps in the Guidance; other questions follow the rules below."
+    )
+
+
 DOCKER_TURN_NOTES = {
     "lima": (
         " Docker is available: docker and docker compose reach this project's "
@@ -2237,6 +2265,11 @@ class AutoManager:
                                 + (
                                     DOCKER_TURN_NOTES[current.docker.backend]
                                     if current.docker is not None
+                                    else ""
+                                )
+                                + (
+                                    guidance_gate_note(spool_dir is not None)
+                                    if current.guidance is not None
                                     else ""
                                 )
                             )
