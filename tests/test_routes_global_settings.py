@@ -478,3 +478,35 @@ def test_the_skills_list_has_its_own_heading_limits_and_layout_check(tmp_path, m
         "Adding these makes 2 files and 6 KB; the limit is 1 files and 4096 KB; nothing was added"
     ) in over
     assert "(limit 512 files, 4096 KB)" in row and "Remove" not in row
+
+
+def test_a_failed_config_write_shows_the_page_and_changes_nothing(tmp_path, monkeypatch) -> None:
+    from app.routes import settings as settings_routes
+    from app.storage import StorageError
+
+    def full_disk(_home, _data) -> None:
+        raise StorageError("disk full")
+
+    monkeypatch.setattr(settings_routes, "write_config_file", full_disk)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post("/settings", data=form(allowed_hosts="my-mac.local"))
+
+    assert response.status_code == 422
+    assert ">my-mac.local</textarea>" in response.text
+    assert "<div hidden data-page-alert>Nothing was saved: Disk full</div>" in response.text
+    assert app.state.settings.allowed_hosts == ()
+
+
+@pytest.mark.parametrize("field", ["allowed_clients", "allowed_hosts"])
+def test_an_access_list_longer_than_the_box_allows_is_refused(tmp_path, field) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post("/settings", data=form(**{field: "a" * 65537}))
+
+    label = "Allowed clients" if field == "allowed_clients" else "Allowed hosts"
+    assert response.status_code == 422
+    assert (
+        f"<div hidden data-page-alert>Nothing was saved: {label} is longer than 65536 characters</div>"
+    ) in response.text
+    assert not (tmp_path / "home" / "config.json").exists()

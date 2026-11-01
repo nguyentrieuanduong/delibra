@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import unicodedata
 
 
 MIB = 1024 * 1024
@@ -39,8 +40,14 @@ def expand_home(entry: str) -> Path:
     return Path.home() / entry[2:] if entry.startswith("~/") else Path(entry)
 
 
+# Controls, format characters such as U+202E (which reverses how the rest of
+# a line is shown) and line separators; spaces stay, since real file names
+# use them (macOS screenshots put U+202F before "PM").
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
 def _has_control(value: str) -> bool:
-    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+    return any(unicodedata.category(character) in _INVISIBLE_CATEGORIES for character in value)
 
 
 def check_preset_file(entry: object) -> str:
@@ -92,7 +99,7 @@ def parse_guidance_presets(raw: object) -> tuple[GuidancePreset, ...]:
             not name
             or name != name.strip()
             or len(name) > GUIDANCE_PRESET_NAME_MAX
-            or _has_control(name)
+            or not name.isprintable()
         ):
             raise ValueError(
                 f"guidance preset name {name!r} must be 1-{GUIDANCE_PRESET_NAME_MAX} "

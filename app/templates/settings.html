@@ -11,12 +11,12 @@
     <section aria-labelledby="access-heading">
       <h2 id="access-heading">Network access</h2>
       <label>Allowed clients
-        <textarea name="allowed_clients" rows="4" maxlength="65536"{% if clients_from_env %} disabled{% endif %}>{{ allowed_clients|join('\n') }}</textarea>
+        <textarea name="allowed_clients" rows="4" maxlength="{{ access_field_max }}"{% if clients_from_env %} disabled{% endif %}>{{ allowed_clients|join('\n') }}</textarea>
       </label>
       {% if clients_from_env %}<p class="warning">DELIBRA_ALLOWED_CLIENTS is set and overrides this list until it is unset and Delibra restarted.</p>{% endif %}
       <p class="hint">One IP address or CIDR range per line; <code>*</code> allows every peer. Empty: only the bind address limits who connects. This machine is always allowed.</p>
       <label>Allowed hosts
-        <textarea name="allowed_hosts" rows="4" maxlength="65536"{% if hosts_from_env %} disabled{% endif %}>{{ allowed_hosts|join('\n') }}</textarea>
+        <textarea name="allowed_hosts" rows="4" maxlength="{{ access_field_max }}"{% if hosts_from_env %} disabled{% endif %}>{{ allowed_hosts|join('\n') }}</textarea>
       </label>
       {% if hosts_from_env %}<p class="warning">DELIBRA_ALLOWED_HOSTS is set and overrides this list until it is unset and Delibra restarted.</p>{% endif %}
       <p class="hint">One host, host:port, IP address, CIDR range or <code>*</code> per line, matched against the Host header. localhost and loopback addresses are always accepted.</p>

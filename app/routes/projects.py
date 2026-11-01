@@ -319,6 +319,9 @@ async def save_coding(
     git_exclude_preset: str = Form(""),
 ):
     require_loopback_client(request)
+    # FastAPI gives an emptied box its default (None), so whether a box was
+    # on the page is read from the form itself (already parsed, so cached).
+    sent = await request.form()
     project = request_project(request, project_id)
     resolved_project_id = project.id
     lines = network_allowlist.splitlines() if network_allowlist.strip() else []
@@ -366,16 +369,16 @@ async def save_coding(
             guidance = guidance_files.splitlines() if guidance_files.strip() else []
             # A form without the box (older pages) keeps the saved skills.
             skills = (
-                current.guidance_skills
-                if guidance_skills is None
-                else [line for line in guidance_skills.splitlines() if line.strip()]
+                [line for line in (guidance_skills or "").splitlines() if line.strip()]
+                if "guidance_skills" in sent
+                else current.guidance_skills
             )
         if git_exclude_preset == "default":
             exclude = None
-        elif git_exclude is None:
+        elif "git_exclude" not in sent:
             exclude = current.git_exclude  # older forms: keep what is saved
         else:
-            lines = git_exclude.splitlines()
+            lines = (git_exclude or "").splitlines()
             # Unchanged from the default: keep following Delibra's list.
             exclude = None if lines == default_git_exclude() else lines
 

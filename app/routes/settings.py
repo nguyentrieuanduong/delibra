@@ -46,6 +46,7 @@ router = APIRouter()
 
 CLIENTS_ENV = "DELIBRA_ALLOWED_CLIENTS"
 HOSTS_ENV = "DELIBRA_ALLOWED_HOSTS"
+ACCESS_FIELD_MAX = 65536
 
 
 def _require_local(request: Request) -> None:
@@ -235,6 +236,7 @@ def _settings_page(
             "clients_from_env": CLIENTS_ENV in os.environ,
             "hosts_from_env": HOSTS_ENV in os.environ,
             "preset_rows": rows,
+            "access_field_max": ACCESS_FIELD_MAX,
             "error": error,
             "health": request.app.state.health,
         },
@@ -282,6 +284,14 @@ async def global_settings(request: Request):
     return _settings_page(request, rows, settings.allowed_clients, settings.allowed_hosts)
 
 
+def _access_field(form, key: str, label: str) -> list[str]:
+    value = form.get(key)
+    # The box's maxlength, enforced here too: a direct POST skips the box.
+    if isinstance(value, str) and len(value) > ACCESS_FIELD_MAX:
+        raise ValueError(f"{label} is longer than {ACCESS_FIELD_MAX} characters")
+    return _lines(value)
+
+
 @router.post("/settings")
 async def save_global_settings(request: Request):
     _require_local(request)
@@ -296,26 +306,9 @@ async def save_global_settings(request: Request):
         saved = {
             preset.name: (preset.files, preset.skills) for preset in settings.guidance_presets
         }
-        # Validate everything before writing: a rejected form changes neither
-        # the file nor what the running server accepts.
-        try:
-            data = read_config_file(settings.home)
-            presets = await asyncio.to_thread(_checked_presets, rows, saved)
-            clients = (
-                settings.allowed_clients
-                if clients_env
-                else tuple(normalize_allowed_client(item) for item in typed_clients)
-            )
-            hosts = (
-                settings.allowed_hosts
-                if hosts_env
-                else tuple(normalize_allowed_host(item) for item in typed_hosts)
-            )
-            policy = AccessPolicy.build(hosts, clients)
-        except ValueError as exc:
+
+        async def refused(message: str, error_row: int | None = None):
             # The page again, as submitted, so chosen files are not lost.
-            error_row = exc.row if isinstance(exc, _PresetRowError) else None
-            message = _sentence(str(exc))
             shown = await asyncio.to_thread(_preset_rows, rows, error_row, message)
             return _settings_page(
                 request,
@@ -325,12 +318,42 @@ async def save_global_settings(request: Request):
                 error=f"Nothing was saved: {message}",
                 status_code=422,
             )
+
+        # Validate everything before writing: a rejected form changes neither
+        # the file nor what the running server accepts.
+        try:
+            data = read_config_file(settings.home)
+            presets = await asyncio.to_thread(_checked_presets, rows, saved)
+            clients = (
+                settings.allowed_clients
+                if clients_env
+                else tuple(
+                    normalize_allowed_client(item)
+                    for item in _access_field(form, "allowed_clients", "allowed clients")
+                )
+            )
+            hosts = (
+                settings.allowed_hosts
+                if hosts_env
+                else tuple(
+                    normalize_allowed_host(item)
+                    for item in _access_field(form, "allowed_hosts", "allowed hosts")
+                )
+            )
+            policy = AccessPolicy.build(hosts, clients)
+        except ValueError as exc:
+            error_row = exc.row if isinstance(exc, _PresetRowError) else None
+            return await refused(_sentence(str(exc)), error_row)
         if not clients_env:
             data["allowed_clients"] = list(clients)
         if not hosts_env:
             data["allowed_hosts"] = list(hosts)
         data["guidance_presets"] = {preset.name: preset.to_json() for preset in presets}
-        write_config_file(settings.home, data)
+        try:
+            write_config_file(settings.home, data)
+        except (StorageError, OSError) as exc:
+            # The running server keeps its settings; the page says why.
+            return await refused(_sentence(str(exc)))
         request.app.state.settings = replace(
             settings,
             allowed_clients=clients,

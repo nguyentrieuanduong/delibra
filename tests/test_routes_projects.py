@@ -2266,3 +2266,26 @@ def test_reset_rejects_an_unknown_scope(tmp_path: Path) -> None:
         )
 
     assert response.status_code == 422
+
+
+def test_an_emptied_skills_or_git_exclude_box_clears_the_saved_list(tmp_path, monkeypatch) -> None:
+    # FastAPI turns an empty form field into its default, so "kept by an older
+    # form" must be judged by whether the field was sent, not by its value.
+    skills = _skill_files(tmp_path / "skills")
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_skills": skills[0], "git_exclude": "out/"},
+            follow_redirects=False,
+        )
+        cleared = client.post(
+            f"{prefix}/coding",
+            data={"network_allowlist": "pypi.org", "guidance_skills": "", "git_exclude": ""},
+            follow_redirects=False,
+        )
+
+    assert cleared.status_code == 303
+    policy = ProjectStore(project).coding_policy()
+    assert policy.guidance_skills == []
+    assert policy.git_exclude == []

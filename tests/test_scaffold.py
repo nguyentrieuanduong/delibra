@@ -547,3 +547,25 @@ def test_config_file_round_trips_in_order_with_private_mode(tmp_path: Path) -> N
     assert read_config_file(home) == data
     assert "Dương" in (home / "config.json").read_text(encoding="utf-8")
     assert os.stat(home / "config.json").st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("name", ["bad‮name", "zero​width", "no break"])
+def test_a_preset_name_must_be_printable(name: str) -> None:
+    with pytest.raises(ValueError, match="printable characters"):
+        parse_guidance_presets({name: {"files": ["/a.md"]}})
+
+
+def test_a_preset_name_may_use_letters_beyond_ascii() -> None:
+    assert parse_guidance_presets({"kỹ năng": {"files": ["/a.md"]}})[0].name == "kỹ năng"
+
+
+@pytest.mark.parametrize("entry", ["/a‮.md", "/a‏.md", "/a .md"])
+def test_a_preset_path_refuses_invisible_controls(entry: str) -> None:
+    with pytest.raises(ValueError, match="must be an absolute or ~/ path"):
+        parse_guidance_presets({"x": {"files": [entry]}})
+
+
+def test_a_preset_path_keeps_unicode_spaces_files_really_use() -> None:
+    # macOS names screenshots with a narrow no-break space before "PM".
+    entry = "/Screenshot 10.00.00 PM.md"
+    assert parse_guidance_presets({"x": {"files": [entry]}})[0].files == (entry,)
