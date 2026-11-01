@@ -746,6 +746,24 @@ function initializeDynamicPresentation(root) {
   syncAutoNotesAvailability(documentRoot);
 }
 
+// htmx's history snapshot keeps the controls' markup, not the values typed or
+// picked since, so after Back they would disagree with the restored list.
+// The URL holds the restored view. An unknown sort means the server's default,
+// which is listed first.
+function syncProjectListControls(form, search) {
+  const params = new URLSearchParams(search);
+  const query = form.querySelector('input[name="q"]');
+  const sort = form.querySelector('select[name="sort"]');
+  if (query) {
+    query.value = params.get("q") || "";
+  }
+  if (sort) {
+    const wanted = params.get("sort");
+    const known = Array.from(sort.options).some((option) => option.value === wanted);
+    sort.value = known ? wanted : sort.options[0].value;
+  }
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     appendPickedPaths,
@@ -1002,6 +1020,14 @@ if (typeof document !== "undefined") {
 
   document.addEventListener("htmx:oobBeforeSwap", function (event) {
     skipStaleNotesSwap(event.detail);
+  });
+
+  document.addEventListener("htmx:historyRestore", function (event) {
+    const form = document.getElementById("project-list-controls");
+    if (form) {
+      const path = (event.detail && event.detail.path) || window.location.href;
+      syncProjectListControls(form, new URL(path, window.location.href).search);
+    }
   });
 
   document.addEventListener("htmx:afterRequest", function (event) {

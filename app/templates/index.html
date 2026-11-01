@@ -16,42 +16,21 @@
       Re-registering a Delibra directory reuses its stored name when available.
     </p>
   </details>
-  {% if project_cards %}
-    <div class="projects">
-      {% for card in project_cards %}
-        {% set project = card.project %}
-        <article class="project-card">
-          <h2>
-            {% if card.available %}
-              <a href="{{ project_url(project.name) }}">{{ project.name }}</a>
-            {% else %}
-              {{ project.name }}
-            {% endif %}
-          </h2>
-          <p><small>{{ project.path }}</small></p>
-          {% if not card.available %}
-            <p class="error">Registered path unavailable</p>
-          {% endif %}
-          {% if card.has_legacy_sessions %}
-            <p class="warning">
-              Agent directory migration needs permanent names in Manage.
-            </p>
-          {% endif %}
-          <form method="post" action="{{ project_url(project.name, '/rebind') }}">
-            <label>New absolute location
-              <input id="rebind-path-{{ loop.index0 }}" name="path" maxlength="4096" required>
-            </label>
-            {% if is_loopback_client(request) %}{{ browse_button("/browse?mode=folder&fallback=" ~ (project.path|string|urlencode), "rebind-path-" ~ loop.index0) }}{% endif %}
-            <button type="submit">Rebind location</button>
-          </form>
-          <form method="post" action="{{ project_url(project.name, '/unregister') }}">
-            <button type="submit"{% if card.auto_active %} disabled{% endif %}>Unregister</button>
-          </form>
-        </article>
-      {% endfor %}
-    </div>
-  {% else %}
-    <p>No projects registered yet.</p>
-  {% endif %}
+  <form id="project-list-controls" class="project-list-controls" method="get" action="/" role="search"
+        hx-get="/" hx-target="#project-list" hx-push-url="true">
+    <label>Search projects
+      <input type="search" name="q" value="{{ listing.q }}" maxlength="200" autocomplete="off"
+             hx-get="/" hx-trigger="input changed delay:500ms" hx-target="#project-list"
+             hx-include="#project-list-controls" hx-push-url="true">
+    </label>
+    <label>Sort
+      <select name="sort" hx-get="/" hx-trigger="change" hx-target="#project-list"
+              hx-include="#project-list-controls" hx-push-url="true">
+        {% for value, label in sorts.items() %}<option value="{{ value }}"{% if value == listing.sort %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit">Search</button></noscript>
+  </form>
+  <div id="project-list">{% include "_project_list.html" %}</div>
   {% if is_loopback_client(request) %}{% include "_path_picker_dialog.html" %}{% endif %}
 {% endblock %}

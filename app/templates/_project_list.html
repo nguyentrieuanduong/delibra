@@ -1,0 +1,54 @@
+{% from "_path_picker_macros.html" import browse_button %}
+{% macro page_link(number, text, label=none) %}{% set target = listing.url(number) %}<a href="{{ target }}" hx-get="{{ target }}" hx-target="#project-list" hx-push-url="true"{% if label %} aria-label="{{ label }}"{% endif %}>{{ text }}</a>{% endmacro %}
+  {% if project_cards %}
+    <div class="projects">
+      {% for card in project_cards %}
+        {% set project = card.project %}
+        <article class="project-card">
+          <h2>
+            {% if card.available %}
+              <a href="{{ project_url(project.name) }}">{{ project.name }}</a>
+            {% else %}
+              {{ project.name }}
+            {% endif %}
+          </h2>
+          <p><small>{{ project.path }}</small></p>
+          <p><small>Registered <time datetime="{{ card.registered.isoformat() }}">{{ card.registered.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% if card.activity %} · Last activity <time datetime="{{ card.activity.isoformat() }}">{{ card.activity.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% endif %}</small></p>
+          {% if not card.available %}
+            <p class="error">Registered path unavailable</p>
+          {% endif %}
+          {% if card.has_legacy_sessions %}
+            <p class="warning">
+              Agent directory migration needs permanent names in Manage.
+            </p>
+          {% endif %}
+          <form method="post" action="{{ project_url(project.name, '/rebind') }}">
+            <label>New absolute location
+              <input id="rebind-path-{{ loop.index0 }}" name="path" maxlength="4096" required>
+            </label>
+            {% if is_loopback_client(request) %}{{ browse_button("/browse?mode=folder&fallback=" ~ (project.path|string|urlencode), "rebind-path-" ~ loop.index0) }}{% endif %}
+            <button type="submit">Rebind location</button>
+          </form>
+          <form method="post" action="{{ project_url(project.name, '/unregister') }}">
+            <button type="submit"{% if card.auto_active %} disabled{% endif %}>Unregister</button>
+          </form>
+        </article>
+      {% endfor %}
+    </div>
+    {% if listing.pages > 1 %}
+      <nav class="pagination" aria-label="Project pages">
+        {% if listing.page > 1 %}{{ page_link(listing.page - 1, "Previous") }}{% endif %}
+        {% for number in listing.page_numbers() %}
+          {% if number is none %}<span class="pagination-gap" aria-hidden="true">…</span>
+          {% elif number == listing.page %}<span aria-current="page">{{ number }}</span>
+          {% else %}{{ page_link(number, number, "Page " ~ number) }}
+          {% endif %}
+        {% endfor %}
+        {% if listing.page < listing.pages %}{{ page_link(listing.page + 1, "Next") }}{% endif %}
+      </nav>
+    {% endif %}
+  {% elif listing.q %}
+    <p>No projects match "{{ listing.q }}".</p>
+  {% else %}
+    <p>No projects registered yet.</p>
+  {% endif %}

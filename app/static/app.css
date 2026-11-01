@@ -352,3 +352,8 @@ textarea { min-height: 7rem; }
 .picker-files-heading { font-size: 1rem; margin: 0 0 .25rem; }
 .preset-file-list { list-style: none; margin: .25rem 0; max-height: 30vh; overflow: auto; padding: 0; }
 .preset-file-list li { align-items: baseline; display: flex; flex-wrap: wrap; gap: .5rem; }
+
+.project-list-controls { display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; margin: 1rem 0; }
+.project-list-controls input[type="search"] { min-width: 18rem; }
+.pagination { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1rem 0; }
+.pagination [aria-current="page"] { font-weight: bold; }

@@ -22,6 +22,7 @@ from app.config import Settings
 from app.docker_backend import DockerController
 from app.health import checking_health, probe_all
 from app.markdown import render_markdown
+from app.project_list import DEFAULT_SORT, SORTS, list_projects
 from app.project_routing import CanonicalProjectMiddleware, request_project
 from app.routes.auto import router as auto_router
 from app.routes.chat import router as chat_router
@@ -287,17 +288,37 @@ def create_app(
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request):
+    async def index(request: Request, q: str = "", sort: str = DEFAULT_SORT, page: str = "1"):
         registry = request.app.state.registry
-        projects = registry.list_projects()
-        return templates.TemplateResponse(
+        try:
+            number = int(page)
+        except ValueError:
+            number = 1
+        # stat calls per project: off the event loop.
+        listing = await asyncio.to_thread(
+            list_projects, registry.list_projects(), q, sort, number
+        )
+        cards = [
+            {**project_card(item.project), "registered": item.registered, "activity": item.activity}
+            for item in listing.projects
+        ]
+        # A history-cache miss asks for the whole page even though it is an htmx request.
+        partial = (
+            request.headers.get("HX-Request") == "true"
+            and request.headers.get("HX-History-Restore-Request") != "true"
+        )
+        response = templates.TemplateResponse(
             request=request,
-            name="index.html",
+            name="_project_list.html" if partial else "index.html",
             context={
-                "project_cards": [project_card(project) for project in projects],
+                "listing": listing,
+                "sorts": SORTS,
+                "project_cards": cards,
                 "health": request.app.state.health,
             },
         )
+        response.headers["Vary"] = "HX-Request"
+        return response
 
     @app.get("/projects/{project_id}")
     async def project_primary(request: Request, project_id: str):

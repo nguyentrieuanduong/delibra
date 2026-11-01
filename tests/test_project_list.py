@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from app.models import Project
-from app.project_list import DEFAULT_SORT, PAGE_SIZE, fold, last_activity, list_projects
+from app.project_list import DEFAULT_SORT, PAGE_SIZE, ProjectPage, fold, last_activity, list_projects
 
 
 def make(tmp_path: Path, name: str, created: str, activity: float | None = None, exists: bool = True) -> Project:
@@ -104,3 +104,16 @@ def test_page_urls_keep_search_and_sort() -> None:
 
     assert page.url(2) == "/?q=a+b%26c&sort=name-desc&page=2"
     assert list_projects([], "", DEFAULT_SORT, 1).url(1) == "/"
+
+
+def test_page_numbers_show_ends_and_neighbours_with_gaps() -> None:
+    def numbers(page: int, pages: int) -> list[int | None]:
+        return ProjectPage([], "", DEFAULT_SORT, page, pages, pages * PAGE_SIZE).page_numbers()
+
+    assert numbers(1, 1) == [1]
+    assert numbers(1, 5) == [1, 2, 3, 4, 5]
+    assert numbers(6, 12) == [1, None, 4, 5, 6, 7, 8, None, 12]
+    assert numbers(5, 12) == [1, 2, 3, 4, 5, 6, 7, None, 12]
+    assert numbers(1, 12) == [1, 2, 3, None, 12]
+    # A gap of one page shows that page instead of an ellipsis.
+    assert numbers(5, 9) == [1, 2, 3, 4, 5, 6, 7, 8, 9]

@@ -2289,3 +2289,59 @@ def test_an_emptied_skills_or_git_exclude_box_clears_the_saved_list(tmp_path, mo
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_skills == []
     assert policy.git_exclude == []
+
+
+def register_many(settings, tmp_path: Path, count: int) -> None:
+    registry = RegistryStore(settings.home)
+    for index in range(count):
+        path = tmp_path / f"many-{index:02}"
+        path.mkdir()
+        registry.register(f"Many {index:02}", path)
+
+
+def test_home_page_searches_sorts_and_pages(tmp_path) -> None:
+    app, settings = project_app(tmp_path)
+    register_many(settings, tmp_path, 21)
+    with TestClient(app, base_url="http://localhost") as client:
+        first = client.get("/", params={"sort": "name-asc"}).text
+        second = client.get("/", params={"sort": "name-asc", "page": "2"}).text
+        found = client.get("/", params={"q": "many 07"}).text
+        missing = client.get("/", params={"q": "zzz"}).text
+
+    assert "Many 00" in first and "Many 19" in first and "Many 20" not in first
+    assert '<span aria-current="page">1</span>' in first
+    assert re.search(r'<a href="/\?sort=name-asc&amp;page=2"[^>]*>2</a>', first)
+    assert re.search(r'<a href="/\?sort=name-asc&amp;page=2"[^>]*>Next</a>', first)
+    assert re.search(r'<a href="/\?sort=name-asc"[^>]*>1</a>', second)
+    assert "Many 20" in second and "Many 00" not in second
+    assert "Many 07" in found and "Many 08" not in found
+    assert 'No projects match "zzz".' in missing
+    assert '<option value="name-asc" selected>' in client_page_sort(first)
+
+
+def client_page_sort(page: str) -> str:
+    return page[page.index('<select name="sort"') :]
+
+
+def test_home_page_serves_only_the_list_to_htmx(tmp_path) -> None:
+    app, settings = project_app(tmp_path)
+    register_many(settings, tmp_path, 1)
+    with TestClient(app, base_url="http://localhost") as client:
+        partial = client.get("/", headers={"HX-Request": "true"})
+        restore = client.get(
+            "/", headers={"HX-Request": "true", "HX-History-Restore-Request": "true"}
+        )
+
+    assert partial.headers["vary"] == "HX-Request"
+    assert "<html" not in partial.text and "Many 00" in partial.text
+    assert "<html" in restore.text
+
+
+def test_home_page_shows_registered_and_activity_times(tmp_path) -> None:
+    app, settings = project_app(tmp_path)
+    register_many(settings, tmp_path, 1)
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get("/").text
+
+    assert re.search(r'Registered <time datetime="[^"]+">\d{4}-\d\d-\d\d \d\d:\d\d UTC</time>', page)
+    assert "Last activity <time" in page

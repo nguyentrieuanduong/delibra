@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from app.models import Project
 
 PAGE_SIZE = 20
+PAGE_NEIGHBOURS = 2
 QUERY_MAX = 200
 SORTS = {
     "activity-desc": "Last activity (newest first)",
@@ -97,6 +98,24 @@ class ProjectPage:
         if page > 1:
             params["page"] = str(page)
         return "/" + (f"?{urlencode(params)}" if params else "")
+
+    def page_numbers(self) -> list[int | None]:
+        """First, last, and the current page with two either side; None marks a gap.
+
+        A gap of exactly one page shows that page, since "…" would take its place.
+        """
+
+        shown = {1, self.pages, *range(self.page - PAGE_NEIGHBOURS, self.page + PAGE_NEIGHBOURS + 1)}
+        numbers: list[int | None] = []
+        previous = 0
+        for number in sorted(n for n in shown if 1 <= n <= self.pages):
+            if number - previous == 2:
+                numbers.append(number - 1)
+            elif number - previous > 2:
+                numbers.append(None)
+            numbers.append(number)
+            previous = number
+        return numbers
 
 
 def _listed(project: Project) -> ListedProject:
