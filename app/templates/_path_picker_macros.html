@@ -1,0 +1,3 @@
+{% macro browse_button(url, target, files_list="", label="Browse…") -%}
+<button type="button" class="path-picker-open" data-path-picker-open data-picker-url="{{ url }}" data-picker-target="{{ target }}"{% if files_list %} data-picker-files-list="{{ files_list }}"{% endif %} aria-controls="path-picker">{{ label }}</button>
+{%- endmacro %}

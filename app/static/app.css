@@ -334,3 +334,19 @@ textarea { min-height: 7rem; }
 .question-collapsed > summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .question-collapsed[open] > summary { white-space: normal; }
 .question-collapsed[open] .question-preview { display: none; }
+
+/* Browse… dialog: one row per entry, each checkbox beside its name. */
+.path-picker-dialog { box-sizing: border-box; max-height: 85vh; width: min(48rem, 92vw); }
+.path-picker-dialog::backdrop { background: #0009; }
+.path-picker-crumbs { align-items: center; display: flex; flex-wrap: wrap; gap: .25rem; }
+.path-picker-entries { list-style: none; margin: .5rem 0; max-height: 40vh; overflow: auto; padding: 0; }
+.path-picker-entry { align-items: center; display: flex; gap: .35rem; }
+.path-picker-skipped { opacity: .6; }
+.path-picker-dialog .auto-choice { align-items: center; display: flex; gap: .35rem; }
+.path-picker-actions { display: flex; gap: .5rem; justify-content: flex-end; }
+.link-button { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
+.path-picker-open { justify-self: start; }
+.picker-files { border-top: 1px solid #8886; margin-top: .75rem; padding-top: .5rem; }
+.picker-files-heading { font-size: 1rem; margin: 0 0 .25rem; }
+.preset-file-list { list-style: none; margin: .25rem 0; max-height: 30vh; overflow: auto; padding: 0; }
+.preset-file-list li { align-items: baseline; display: flex; flex-wrap: wrap; gap: .5rem; }

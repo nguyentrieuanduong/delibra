@@ -13,6 +13,7 @@ const {
   openFocusDialog,
   removeConversationEmptyState,
   resetFileReader,
+  showPageAlert,
   renderChatError,
   restoreConversationScroll,
   shouldClearChatError,
@@ -380,4 +381,32 @@ test("loaded Auto history detail receives focus", function () {
   };
   assert.equal(focusAutoHistoryView(wrong), false);
   assert.equal(focused, 1);
+});
+
+test("a refused page's message pops up once as a browser alert", function () {
+  const marker = {
+    textContent: "\n  Nothing was saved: Guidance preset name '' must be 1-40 printable characters\n",
+    removed: [],
+    removeAttribute(name) {
+      this.removed.push(name);
+    },
+  };
+  const doc = {
+    querySelector(selector) {
+      assert.equal(selector, "[data-page-alert]");
+      return marker.removed.length ? null : marker;
+    },
+  };
+  const shown = [];
+
+  assert.equal(
+    showPageAlert(doc, (text) => shown.push(text)),
+    "Nothing was saved: Guidance preset name '' must be 1-40 printable characters"
+  );
+  assert.deepEqual(shown, [
+    "Nothing was saved: Guidance preset name '' must be 1-40 printable characters",
+  ]);
+  assert.deepEqual(marker.removed, ["data-page-alert"]);
+  assert.equal(showPageAlert(doc, (text) => shown.push(text)), null);
+  assert.equal(shown.length, 1);
 });

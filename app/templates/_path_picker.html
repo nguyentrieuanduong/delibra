@@ -1,0 +1,43 @@
+<div id="path-picker-body" class="path-picker-body" data-picker-mode="{{ mode }}">
+  <nav class="path-picker-crumbs" aria-label="Folder path">
+    {% for crumb in crumbs %}{% if crumb.separator %}<span aria-hidden="true">/</span>{% endif %}<button type="button" class="link-button" hx-get="{{ crumb.url }}" hx-target="#path-picker-body" hx-swap="outerHTML">{{ crumb.label }}</button>{% endfor %}
+  </nav>
+  {% if error %}
+    <p class="warning">{{ error }}</p>
+    <button type="button" hx-get="{{ home_url }}" hx-target="#path-picker-body" hx-swap="outerHTML">Open {{ home_label }}</button>
+  {% else %}
+    <ul class="path-picker-entries">
+      {% for entry in entries %}
+        <li class="path-picker-entry {{ entry.kind }}">
+          {% if entry.kind == "symlink" %}
+            <span class="path-picker-skipped">{{ entry.name }} (symlink, skipped)</span>
+          {% else %}
+            {% if entry.tickable %}<input type="checkbox" data-picker-value="{{ entry.value }}" aria-label="Pick {{ entry.name }}">{% endif %}
+            {% if entry.url %}<button type="button" class="link-button" hx-get="{{ entry.url }}" hx-target="#path-picker-body" hx-swap="outerHTML">{{ entry.name }}/</button>{% else %}<span>{{ entry.name }}</span> <small>{{ entry.kb }} KB</small>{% endif %}
+          {% endif %}
+        </li>
+      {% else %}
+        <li class="hint">{{ "No folders here." if mode in ("folder", "project") else "No folders or .md files here." }}</li>
+      {% endfor %}
+    </ul>
+    {% if truncated_note %}<p class="warning">{{ truncated_note }}</p>{% endif %}
+  {% endif %}
+  <div class="path-picker-options">
+    <label class="auto-choice"><input type="checkbox" hx-get="{{ hidden_url }}" hx-trigger="change" hx-target="#path-picker-body" hx-swap="outerHTML"{% if hidden %} checked{% endif %}> Show hidden folders</label>
+    {% if mode == "guidance" and not error %}<label class="auto-choice"><input type="checkbox" data-picker-select-all> Select all .md here</label>{% endif %}
+    {% if mode == "preset" and not error %}<label class="auto-choice"><input type="checkbox" data-picker-subdirs> Include sub-directories of ticked folders</label>{% endif %}
+  </div>
+  <div class="path-picker-actions">
+    {% if mode == "preset" %}
+      {# Cancel and Use these files sit under the Will include list. #}
+      {% if not error %}<button type="button" data-picker-add-files>Add ticked to list</button>{% endif %}
+    {% else %}
+      <button type="button" data-path-picker-close>Cancel</button>
+      {% if mode == "folder" %}
+        {% if not error %}<button type="button" data-path-picker-choose data-picker-value="{{ current_value }}">Choose {{ current_label }}</button>{% endif %}
+      {% else %}
+        <button type="button" data-path-picker-add>Add ticked paths</button>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>

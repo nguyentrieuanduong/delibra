@@ -28,6 +28,8 @@ from app.routes.chat import router as chat_router
 from app.routes.files import router as files_router
 from app.routes.projects import router as projects_router
 from app.routes.notes import router as notes_router
+from app.routes.picker import router as picker_router
+from app.routes.settings import router as settings_router
 from app.routes.questions import router as questions_router
 from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
@@ -126,6 +128,7 @@ def create_app(
     templates.env.filters["md"] = render_markdown
     templates.env.globals["project_url"] = project_url
     templates.env.globals["static_url"] = static_url
+    templates.env.globals["is_loopback_client"] = is_loopback_client
     templates.env.globals["build_capable"] = build_capable
     templates.env.globals["cli_newer_than_verified"] = cli_newer_than_verified
     # The exact command a user can paste when a VM did not stop.
@@ -268,6 +271,8 @@ def create_app(
     app.include_router(usage_router)
     app.include_router(questions_router)
     app.include_router(notes_router)
+    app.include_router(settings_router)
+    app.include_router(picker_router)
 
     @app.exception_handler(NotFoundError)
     async def not_found(_: Request, exc: NotFoundError):

@@ -532,6 +532,190 @@ function openQuestionsPanelForNew(list, responseText) {
   return true;
 }
 
+function lastPathLine(value) {
+  const lines = String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : "";
+}
+
+function appendPickedPaths(field, values) {
+  const present = String(field.value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const added = values.filter(
+    (value, index) => value && !present.includes(value) && values.indexOf(value) === index
+  );
+  if (!added.length) {
+    return 0;
+  }
+  field.value = present.concat(added).join("\n");
+  return added.length;
+}
+
+function pickerUrl(url, field) {
+  const separator = url.indexOf("?") === -1 ? "?" : "&";
+  return url + separator + "start=" + encodeURIComponent(lastPathLine(field.value));
+}
+
+const PICKER_SESSION_HEADER = "X-Delibra-Picker";
+const PICKER_FILES_URL = "/settings/preset-files";
+const PICKER_REGIONS = ["path-picker-body", "picker-files"];
+const PICKER_LOADING_HTML = '<p class="hint">Loading…</p>';
+const PICKER_CANCEL_HTML =
+  '<div class="path-picker-actions"><button type="button" data-path-picker-close>Cancel</button></div>';
+
+// One dialog serves every Browse… button. Each opening is a new session: the
+// last opening's controls are gone before anything new is asked for, and
+// isStalePickerSwap drops any answer for an earlier opening.
+function openPathPicker(button, doc, htmxApi) {
+  const dialog = doc.getElementById("path-picker");
+  const body = doc.getElementById("path-picker-body");
+  const files = doc.getElementById("picker-files");
+  const field = doc.getElementById(button.dataset.pickerTarget || "");
+  if (!dialog || !body || !files || !field || !htmxApi || typeof dialog.showModal !== "function") {
+    return false;
+  }
+  const session = String(Number(dialog.dataset.pickerSession || "0") + 1);
+  const headers = { [PICKER_SESSION_HEADER]: session };
+  // A preset's fixed file list is edited below the listing in this dialog.
+  const list = button.dataset.pickerFilesList || "";
+  dialog.dataset.pickerSession = session;
+  dialog.dataset.pickerTarget = button.dataset.pickerTarget;
+  dialog.dataset.pickerList = list;
+  // Clicks inside the dialog inherit this, so they carry the session too.
+  dialog.setAttribute("hx-headers", JSON.stringify(headers));
+  body.innerHTML = PICKER_LOADING_HTML + (list ? "" : PICKER_CANCEL_HTML);
+  files.innerHTML = list ? PICKER_LOADING_HTML + PICKER_CANCEL_HTML : "";
+  files.hidden = !list;
+  if (!dialog.open) {
+    dialog.showModal();
+  }
+  // From the dialog, whose hx-sync aborts the previous opening's listing.
+  htmxApi.ajax("GET", pickerUrl(button.dataset.pickerUrl, field), {
+    source: dialog,
+    target: "#path-picker-body",
+    swap: "outerHTML",
+    headers: headers,
+  });
+  if (list) {
+    htmxApi.ajax("POST", PICKER_FILES_URL, {
+      source: files,
+      target: "#picker-files",
+      swap: "innerHTML",
+      values: { view: "dialog", files: field.value },
+      headers: headers,
+    });
+  }
+  return true;
+}
+
+function isStalePickerSwap(detail, doc) {
+  if (!detail.target || !PICKER_REGIONS.includes(detail.target.id)) {
+    return false;
+  }
+  const dialog = doc.getElementById("path-picker");
+  const headers = (detail.requestConfig && detail.requestConfig.headers) || {};
+  return (
+    !dialog || !dialog.open || headers[PICKER_SESSION_HEADER] !== dialog.dataset.pickerSession
+  );
+}
+
+function addPickedFiles(dialog, doc, htmxApi) {
+  const body = doc.getElementById("path-picker-body");
+  const files = doc.getElementById("picker-files");
+  const current = doc.getElementById("picker-files-value");
+  if (!body || !files || !current || !htmxApi) {
+    return;
+  }
+  const ticked = Array.from(body.querySelectorAll("input[data-picker-value]:checked"));
+  if (!ticked.length) {
+    return;
+  }
+  const subdirs = body.querySelector("input[data-picker-subdirs]");
+  htmxApi.ajax("POST", PICKER_FILES_URL, {
+    source: files,
+    target: "#picker-files",
+    swap: "innerHTML",
+    values: {
+      view: "dialog",
+      files: current.value,
+      add: ticked.map((input) => input.dataset.pickerValue).join("\n"),
+      subdirs: subdirs && subdirs.checked ? "true" : "false",
+    },
+    headers: { [PICKER_SESSION_HEADER]: dialog.dataset.pickerSession },
+  });
+  ticked.forEach(function (input) {
+    input.checked = false;
+  });
+}
+
+// Fills the field the dialog was opened for; the form's own button saves.
+function applyPathPicker(control, doc, htmxApi) {
+  const dialog = doc.getElementById("path-picker");
+  if (!dialog) {
+    return false;
+  }
+  if (control.matches("[data-picker-add-files]")) {
+    addPickedFiles(dialog, doc, htmxApi);
+    return false;
+  }
+  const field = doc.getElementById(dialog.dataset.pickerTarget || "");
+  let changed = false;
+  if (field && control.matches("[data-path-picker-choose]")) {
+    changed = field.value !== control.dataset.pickerValue;
+    field.value = control.dataset.pickerValue;
+  } else if (field && control.matches("[data-path-picker-add]")) {
+    const body = doc.getElementById("path-picker-body");
+    const picked = body
+      ? Array.from(body.querySelectorAll("input[data-picker-value]:checked")).map(
+          (input) => input.dataset.pickerValue
+        )
+      : [];
+    changed = appendPickedPaths(field, picked) > 0;
+  } else if (field && control.matches("[data-path-picker-use]")) {
+    const chosen = doc.getElementById("picker-files-value");
+    const list = doc.getElementById(dialog.dataset.pickerList || "");
+    if (chosen) {
+      changed = field.value !== chosen.value;
+      field.value = chosen.value;
+      if (list && htmxApi) {
+        // Sent from the dialog, which sits outside the settings form, so only
+        // these values are posted.
+        htmxApi.ajax("POST", PICKER_FILES_URL, {
+          source: dialog,
+          target: list,
+          swap: "innerHTML",
+          values: { view: "row", files: field.value },
+        });
+      }
+    }
+  }
+  if (changed) {
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (dialog.open) {
+    dialog.close();
+  }
+  return changed;
+}
+
+// A page answered to a refused form names the reason in [data-page-alert];
+// it pops up once as a browser alert, the same kind of dialog as the
+// confirm before Start new phase.
+function showPageAlert(doc, alertFn) {
+  const marker = doc.querySelector("[data-page-alert]");
+  if (!marker) {
+    return null;
+  }
+  const message = marker.textContent.trim();
+  marker.removeAttribute("data-page-alert");
+  alertFn(message);
+  return message;
+}
+
 function initializeDynamicPresentation(root) {
   timeoutControlsWithin(root).forEach(initializeTimeoutCountdown);
   if (root && typeof root.matches === "function" && root.matches("[data-auto-setup-dialog]")) {
@@ -556,6 +740,8 @@ function initializeDynamicPresentation(root) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    appendPickedPaths,
+    applyPathPicker,
     autoSetupPlacement,
     captureAutoStopDisclosure,
     chatErrorMessage,
@@ -568,16 +754,21 @@ if (typeof module !== "undefined" && module.exports) {
     formatRemainingSeconds,
     handleFocusDialogCancel,
     isDialogBackdropClick,
+    isStalePickerSwap,
+    lastPathLine,
     moveAutoOrderItem,
     openAutoSetup,
     openFocusDialog,
+    openPathPicker,
     openQuestionsPanelForNew,
+    pickerUrl,
     removeConversationEmptyState,
     resetFileReader,
     renderChatError,
     resetAutoNotesForm,
     restoreAutoStopDisclosure,
     restoreConversationScroll,
+    showPageAlert,
     setTimeoutFormPending,
     shouldClearChatError,
     skipStaleNotesSwap,
@@ -595,6 +786,15 @@ if (typeof document !== "undefined") {
   const autoStopDisclosureSnapshots = new WeakMap();
 
   initializeDynamicPresentation(document);
+
+  window.addEventListener("load", function () {
+    // After load, so the page is drawn behind the alert.
+    window.setTimeout(function () {
+      showPageAlert(document, function (message) {
+        window.alert(message);
+      });
+    }, 0);
+  });
 
   document.querySelectorAll("[data-session-config-form]").forEach(function (form) {
     syncEffortOptions(form);
@@ -713,6 +913,20 @@ if (typeof document !== "undefined") {
   });
 
   document.addEventListener("click", function (event) {
+    const pickerControl =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest(
+            "[data-path-picker-open], [data-path-picker-add], [data-path-picker-choose], [data-path-picker-close], [data-picker-add-files], [data-path-picker-use]"
+          )
+        : null;
+    if (pickerControl) {
+      if (pickerControl.matches("[data-path-picker-open]")) {
+        openPathPicker(pickerControl, document, window.htmx);
+      } else {
+        applyPathPicker(pickerControl, document, window.htmx);
+      }
+      return;
+    }
     const autoCloseControl =
       event.target && typeof event.target.closest === "function"
         ? event.target.closest("[data-auto-setup-close]")
@@ -750,6 +964,25 @@ if (typeof document !== "undefined") {
     }
     if (closeControl || isDialogBackdropClick(dialog, event)) {
       closeFocusDialog(dialog);
+    }
+  });
+
+  document.addEventListener("htmx:beforeSwap", function (event) {
+    if (isStalePickerSwap(event.detail, document)) {
+      event.detail.shouldSwap = false;
+    }
+  });
+
+  document.addEventListener("change", function (event) {
+    const all = event.target;
+    if (!all || typeof all.matches !== "function" || !all.matches("[data-picker-select-all]")) {
+      return;
+    }
+    const body = all.closest("#path-picker-body");
+    if (body) {
+      body.querySelectorAll("input[data-picker-value]").forEach(function (input) {
+        input.checked = all.checked;
+      });
     }
   });
 
