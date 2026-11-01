@@ -740,6 +740,14 @@ class AutoManager:
                 if skill_library is not None
                 else None
             )
+            # Every turn reads the index back within this limit; refuse now
+            # rather than fail each turn. Before notes are abandoned, so a
+            # refusal only spends the run number.
+            if skills_index is not None and len(skills_index) > SKILLS_INDEX_MAX_BYTES:
+                raise StorageError(
+                    f"The skills index would exceed {SKILLS_INDEX_MAX_BYTES} bytes; "
+                    "list fewer skill files"
+                )
             NoteStore(store.root).abandon_before(number)
             record = AutoRunRecord(
                 id=auto_id,

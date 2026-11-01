@@ -5230,6 +5230,21 @@ async def test_a_skill_file_changed_after_saving_refuses_the_run(tmp_path, monke
     assert store.list_auto_runs() == []
 
 
+@pytest.mark.asyncio
+async def test_a_skills_index_over_its_limit_refuses_the_run(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    monkeypatch.setattr("app.auto.SKILLS_INDEX_MAX_BYTES", 20)
+
+    with pytest.raises(StorageError, match="^The skills index would exceed 20 bytes"):
+        await start_build(manager, project_id, session_ids)
+    assert store.list_auto_runs() == []
+
+
 def test_the_gate_note_without_a_question_spool_names_the_decision_in_the_report() -> None:
     note = guidance_gate_note(can_ask=False)
 

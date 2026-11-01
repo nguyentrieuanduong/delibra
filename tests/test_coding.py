@@ -528,6 +528,9 @@ def test_skill_layout_keeps_each_skill_folder(tmp_path) -> None:
         (["a/notes.md", "b/notes.md"], "notes.md"),
         # A file copied where a skill needs its folder.
         (["a/tdd.md/SKILL.md", "b/tdd.md"], "tdd.md"),
+        # macOS folders ignore case: TDD and tdd are one folder (review F1).
+        (["a/TDD/SKILL.md", "b/tdd/SKILL.md"], "tdd/SKILL.md"),
+        (["a/Notes.md", "b/notes.md"], "notes.md"),
     ],
 )
 def test_skill_layout_refuses_two_files_on_one_path(tmp_path, relative, dest) -> None:
@@ -595,6 +598,9 @@ def test_skill_summary_reads_front_matter() -> None:
     assert skill_summary("---\nname: [unclosed\n---\n") == (None, None)
     assert skill_summary("---\nname: 3\ndescription: d\n---\n") == (None, "d")
     assert skill_summary("---\nname: a\n") == (None, None)
+    # Review F2: a name is cut like a description, so the index stays small.
+    long_name, _ = skill_summary("---\nname: " + "n" * 5000 + "\n---\n")
+    assert len(long_name) == 100 and long_name.endswith("…")
 
 
 def test_render_skill_index_lists_skills_then_files(tmp_path) -> None:

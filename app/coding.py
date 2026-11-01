@@ -320,6 +320,7 @@ SKILLS_MAX_FILES = 512
 SKILLS_MAX_BYTES = 4 * 1024 * 1024
 SKILL_FILE = "SKILL.md"
 SKILL_DESCRIPTION_MAX = 300
+SKILL_NAME_MAX = 100
 
 
 def skill_layout(paths: list[str]) -> list[tuple[str, str]]:
@@ -348,18 +349,22 @@ def skill_layout(paths: list[str]) -> list[tuple[str, str]]:
             f"{root.name}/{path.relative_to(root).as_posix()}" if root else path.name
         )
         placed.append((source, destination))
+    # Keyed case-insensitively: on macOS `TDD` and `tdd` are one folder, so
+    # the second copy would silently replace the first.
     files: dict[str, str] = {}
     folders: dict[str, str] = {}
     for source, destination in placed:
-        if destination in files:
-            raise _layout_clash(files[destination], source, destination)
-        files[destination] = source
-        parts = destination.split("/")
+        key = destination.casefold()
+        if key in files:
+            raise _layout_clash(files[key], source, destination)
+        files[key] = source
+        parts = key.split("/")
         for depth in range(1, len(parts)):
             folders.setdefault("/".join(parts[:depth]), source)
-    for destination, source in files.items():
-        if destination in folders:
-            raise _layout_clash(folders[destination], source, destination)
+    for (source, destination) in placed:
+        key = destination.casefold()
+        if key in folders:
+            raise _layout_clash(folders[key], source, destination)
     return placed
 
 
@@ -424,6 +429,8 @@ def skill_summary(text: str) -> tuple[str | None, str | None]:
         return None, None
     name = data.get("name")
     name = name.strip() if isinstance(name, str) and name.strip() and "\n" not in name.strip() else None
+    if name is not None and len(name) > SKILL_NAME_MAX:
+        name = name[: SKILL_NAME_MAX - 1] + "…"
     description = data.get("description")
     if isinstance(description, str) and description.split():
         description = " ".join(description.split())
