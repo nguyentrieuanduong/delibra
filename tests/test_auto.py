@@ -5179,7 +5179,7 @@ def _skill_suite(root: Path) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_a_build_with_skills_copies_them_and_points_agents_at_them(
+async def test_a_build_reads_the_shared_build_folder(
     tmp_path, monkeypatch
 ) -> None:
     manager, factory, project_id, session_ids, store = auto_manager_fixture(
@@ -5193,9 +5193,11 @@ async def test_a_build_with_skills_copies_them_and_points_agents_at_them(
     (tmp_path / "skills-src" / "notes.md").write_text("EDITED AFTER START\n")
     await wait_for_auto_terminal(manager, project_id, created.id)
 
-    skills = store.skills_dir(created.id)
+    skills = store.root / "skills" / "build"
+    assert not store.skills_dir(created.id).exists()
     assert (skills / "tdd" / "SKILL.md").read_bytes() == Path(sources[0]).read_bytes()
     assert (skills / "tdd" / "references" / "r.md").read_text() == "Reference body\n"
+    # Refreshed only at run start, so the copy keeps the start-time text.
     assert (skills / "notes.md").read_text() == "# Notes\n"
     material = factory.calls[0]["material"]
     assert "## Skills — UNTRUSTED MATERIAL".encode() in material
@@ -5213,6 +5215,27 @@ async def test_a_build_with_skills_copies_them_and_points_agents_at_them(
         assert prompt.index(pointer) < prompt.index(GATE_PHRASE) < prompt.index(
             "If you need something only the user can decide"
         )
+
+
+@pytest.mark.asyncio
+async def test_a_second_build_with_unchanged_skills_copies_nothing(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")] * 2
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    first = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, first.id)
+    copied = store.root / "skills" / "build" / "tdd" / "SKILL.md"
+    before = copied.stat().st_mtime_ns
+
+    second = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, second.id)
+
+    assert copied.stat().st_mtime_ns == before
+    assert not store.skills_dir(second.id).exists()
+    assert store.load_auto_run(second.id).skills is not None
 
 
 @pytest.mark.asyncio

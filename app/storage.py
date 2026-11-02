@@ -2296,7 +2296,7 @@ class ProjectStore:
         return self._auto_location(auto_id).path
 
     def skills_dir(self, auto_id: str) -> Path:
-        """The read-only copy of a build run's skills (agents cannot write .delibra)."""
+        """Where a build run made before the shared folders (2026-11-02) keeps its own copy."""
 
         return self.auto_run_dir(auto_id) / SKILLS_DIRNAME
 
@@ -2420,7 +2420,6 @@ class ProjectStore:
         shared_context: bytes | None = None,
         guidance: bytes | None = None,
         skills_index: bytes | None = None,
-        skill_files: list[tuple[str, bytes]] | None = None,
     ) -> AutoRunRecord:
         self._validate_auto_record(record, self.project.id)
         if (record.skills is None) != (skills_index is None):
@@ -2431,8 +2430,6 @@ class ProjectStore:
             and sha256(skills_index).hexdigest() != record.skills.sha256
         ):
             raise OwnershipError("Auto skills digest does not match")
-        for relative, _contents in skill_files or []:
-            _check_skill_destination(relative)
         if (record.guidance is None) != (guidance is None):
             raise OwnershipError("Auto guidance metadata does not match")
         if (
@@ -2503,15 +2500,6 @@ class ProjectStore:
                     self._auto_artifact_path(temporary, record.skills, "skills.md"),
                     skills_index,
                 )
-                skills_root = temporary / SKILLS_DIRNAME
-                skills_root.mkdir(mode=0o700)
-                for relative, contents in skill_files or []:
-                    target = skills_root / relative
-                    for folder in reversed(target.parents):
-                        if folder.is_relative_to(skills_root) and folder != skills_root:
-                            folder.mkdir(mode=0o700, exist_ok=True)
-                    _assert_no_symlink_components(target, skills_root, allow_missing_leaf=True)
-                    atomic_write_bytes(target, contents)
             atomic_write_json(temporary / "config.json", record.to_dict())
             os.replace(temporary, destination)
             published = True

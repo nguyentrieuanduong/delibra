@@ -25,8 +25,6 @@ from app.coding import (
     cli_newer_than_verified,
     docker_capable,
     read_guidance,
-    read_skill_library,
-    render_skill_index,
 )
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
@@ -67,6 +65,7 @@ from app.notes import (
     notes_prompt,
     parse_marks,
 )
+from app.skill_folders import SkillMode, read_skill_index, refresh_skill_folder, skill_folder
 from app.questions import (
     QUESTIONS_DIR,
     SPOOL_NAME,
@@ -94,7 +93,6 @@ from app.storage import (
     OwnershipError,
     ProjectStore,
     RegistryStore,
-    SKILLS_DIRNAME,
     StorageError,
     atomic_write_bytes,
     first_unsafe_writable_root_character,
@@ -151,6 +149,12 @@ BUILD_TURN_PROMPT = (
 )
 
 
+def skill_mode(kind: str) -> SkillMode:
+    """Build runs read the build folder; discussion runs share chat's."""
+
+    return "build" if kind == "build" else "chat"
+
+
 def guidance_gate_note(can_ask: bool) -> str:
     """Approval steps in guidance, for build turns that carry guidance.
 
@@ -179,7 +183,7 @@ def guidance_gate_note(can_ask: bool) -> str:
 
 
 def skills_turn_note(skills_dir: Path, context: str) -> str:
-    """Where a build run's skills are; the index itself is untrusted material."""
+    """Where a run's skills are; the index itself is untrusted material."""
 
     return (
         f" Skills you may read are copied read-only under {skills_dir.as_posix()}; "
@@ -664,7 +668,6 @@ class AutoManager:
             if kind not in AUTO_KINDS:
                 raise StorageError("Auto kind is invalid")
             guidance_bytes = None
-            skill_library: list[tuple[str, str, bytes]] | None = None
             cli_notes: list[str] = []
             docker_state = None
             if kind == "build":
@@ -695,21 +698,20 @@ class AutoManager:
                         raise StorageError(
                             f"Guidance file changed or is unavailable: {exc}"
                         ) from exc
-                skill_paths = store.coding_policy().guidance_skills
-                if skill_paths:
-                    try:
-                        skill_library = await asyncio.to_thread(
-                            read_skill_library, skill_paths
-                        )
-                    except CodingPolicyError as exc:
-                        raise StorageError(
-                            f"Skill file changed or is unavailable: {exc}"
-                        ) from exc
             if any(session.status == "running" for session in sessions) or any(
                 self.runner.active_key(project_id, session.id) is not None
                 for session in sessions
             ):
                 raise ConflictError("all project sessions must be idle before Auto")
+            # Refreshed only now: every session is idle, so no turn reads the
+            # folder while it is rewritten.
+            skill_snapshot = await asyncio.to_thread(
+                refresh_skill_folder,
+                store.root,
+                skill_mode(kind),
+                store.coding_policy().guidance_skills if kind == "build" else [],
+            )
+            skills_index = skill_snapshot.index if skill_snapshot is not None else None
 
             participants = [
                 AutoParticipant(
@@ -733,13 +735,6 @@ class AutoManager:
             topic_bytes = topic.encode("utf-8")
             auto_id = uuid4().hex
             number = store.reserve_auto_run_number()
-            skills_index = (
-                render_skill_index(
-                    skill_library, store.auto_runs_root / str(number) / SKILLS_DIRNAME
-                )
-                if skill_library is not None
-                else None
-            )
             # Every turn reads the index back within this limit; refuse now
             # rather than fail each turn. Before notes are abandoned, so a
             # refusal only spends the run number.
@@ -810,11 +805,6 @@ class AutoManager:
                 shared_context=shared_bytes,
                 guidance=guidance_bytes,
                 skills_index=skills_index,
-                skill_files=(
-                    [(destination, contents) for _source, destination, contents in skill_library]
-                    if skill_library is not None
-                    else None
-                ),
             )
             try:
                 store.publish_auto_reservation(auto_id)
@@ -1097,6 +1087,22 @@ class AutoManager:
                     docker_checked,
                     docker_refusal,
                 )
+
+            if not store.skills_dir(record.id).is_dir():
+                skill_snapshot = await asyncio.to_thread(
+                    refresh_skill_folder,
+                    store.root,
+                    skill_mode(record.kind),
+                    store.coding_policy().guidance_skills if record.kind == "build" else [],
+                )
+                if (
+                    skill_snapshot is not None
+                    and len(skill_snapshot.index) > SKILLS_INDEX_MAX_BYTES
+                ):
+                    raise StorageError(
+                        f"The skills index would exceed {SKILLS_INDEX_MAX_BYTES} bytes; "
+                        "list fewer skill files"
+                    )
 
             # Re-verify every artifact the next turn will read. _discussion_context
             # covers topic, preparations, baseline entries, and prior discussion
@@ -2287,6 +2293,7 @@ class AutoManager:
                     marks_path = (
                         spool_dir.with_name(MARKS_NAME) if spool_dir is not None else None
                     )
+                    turn_skills = self._turn_skills(store, current)
                     round_n = store.allocate_round(participant.session_id)
                     staged = Path("inputs") / f"round-{round_n:02d}" / "auto-context.md"
                     request = AutoRunRequest(
@@ -2323,17 +2330,17 @@ class AutoManager:
                                 )
                                 + (
                                     skills_turn_note(
-                                        store.skills_dir(current.id),
+                                        turn_skills[0],
                                         (
                                             store.workspace_dir(participant.session_id) / staged
                                         ).as_posix(),
                                     )
-                                    if current.skills is not None
+                                    if turn_skills is not None
                                     else ""
                                 )
                                 + (
                                     guidance_gate_note(spool_dir is not None)
-                                    if current.guidance is not None or current.skills is not None
+                                    if current.guidance is not None or turn_skills is not None
                                     else ""
                                 )
                             )
@@ -3266,6 +3273,23 @@ class AutoManager:
             ),
         )
 
+    def _turn_skills(
+        self, store: ProjectStore, record: AutoRunRecord
+    ) -> tuple[Path, bytes] | None:
+        """The folder and index a turn reads: a run made before the shared
+        folders keeps its own copy; every other run reads its mode's folder."""
+
+        legacy = store.skills_dir(record.id)
+        if legacy.is_dir():
+            if record.skills is None:
+                return None
+            return legacy, store.load_auto_artifact(
+                record.id, record.skills, SKILLS_INDEX_MAX_BYTES
+            )
+        mode = skill_mode(record.kind)
+        index = read_skill_index(store.root, mode)
+        return (skill_folder(store.root, mode), index) if index is not None else None
+
     async def _build_turn_context(self, store: ProjectStore, record: AutoRunRecord) -> bytes:
         """Build-only wrapper; the discussion renderer itself is untouched."""
 
@@ -3277,11 +3301,9 @@ class AutoManager:
             if record.guidance is not None
             else b""
         )
-        if record.skills is not None:
-            before += _untrusted_section(
-                "Skills",
-                store.load_auto_artifact(record.id, record.skills, SKILLS_INDEX_MAX_BYTES),
-            )
+        skills = self._turn_skills(store, record)
+        if skills is not None:
+            before += _untrusted_section("Skills", skills[1])
         after = await self._handover_section(store, record)
         body = self._discussion_context(store, record, reserve=len(before) + len(after))
         return before + body + after
