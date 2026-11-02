@@ -1,4 +1,4 @@
-<div id="auto-notes-list" class="auto-notes-list" data-notes-revision="{{ notes_revision }}"{% if notes_oob|default(false) %} hx-swap-oob="outerHTML"{% endif %}>
+<div id="auto-notes-list" class="auto-notes-list" data-notes-revision="{{ notes_revision }}" data-notes-mode="auto"{% if chat_notes_shown|default(false) %} hidden{% endif %}{% if notes_oob|default(false) %} hx-swap-oob="outerHTML"{% endif %}>
   {% if notes %}
     <ul>
       {% for note in notes %}

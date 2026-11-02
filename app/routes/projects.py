@@ -30,7 +30,7 @@ from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
 from app.models import Project
-from app.notes import NoteStore
+from app.notes import NoteStore, chat_note_store
 from app.project_routing import request_project
 from app.questions import QuestionStore
 from app.security import (
@@ -272,6 +272,8 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
             ).dismiss_all()
         if scope in {"notes", "all"}:
             NoteStore(store.root).clear()
+            for session in store.list_sessions():
+                chat_note_store(store, session.id).clear()
     return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
 

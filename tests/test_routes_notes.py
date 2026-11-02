@@ -218,3 +218,100 @@ def test_a_lan_client_may_still_note_a_discussion_run(tmp_path: Path) -> None:
         posted = lan.post(f"{base(project)}/auto-notes", data={"text": "Prefer SQLite"})
 
     assert posted.status_code == 200
+
+
+from app.notes import chat_note_store  # noqa: E402
+
+ALPHA = "1" * 32
+
+
+def test_a_chat_note_reaches_the_replying_agent(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        app.state.manager.replying = lambda project_id, session_id: session_id == ALPHA
+        response = client.post(
+            f"{base(project)}/auto-notes",
+            data={"text": "<i>Short</i>", "target": "chat", "session_id": ALPHA},
+        )
+
+    assert response.status_code == 200
+    assert 'id="chat-notes-list"' in response.text
+    assert f'data-session-id="{ALPHA}"' in response.text
+    assert "&lt;i&gt;Short&lt;/i&gt;" in response.text
+    [note] = chat_note_store(store, ALPHA).load().notes
+    assert (note.text, note.status) == ("<i>Short</i>", "pending")
+    assert NoteStore(store.root).load().notes == []
+
+
+def test_a_chat_note_to_an_idle_agent_is_refused(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    seed_durable_auto(store, auto_id="a" * 32, status="stopped", publish=False)
+    with TestClient(app, base_url="http://localhost") as client:
+        app.state.manager.replying = lambda project_id, session_id: False
+        response = client.post(
+            f"{base(project)}/auto-notes", data={"text": "x", "target": "chat", "session_id": ALPHA}
+        )
+        missing = client.post(
+            f"{base(project)}/auto-notes", data={"text": "x", "target": "chat", "session_id": "9" * 32}
+        )
+
+    assert response.status_code == 409
+    assert "Alpha is not replying; send a message instead" in response.text
+    assert missing.status_code == 404
+    assert chat_note_store(store, ALPHA).load().notes == []
+    assert NoteStore(store.root).load().notes == []
+
+
+def test_a_pending_chat_note_can_be_deleted_and_reset_clears_chat_notes(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    chat_note_store(store, ALPHA).add("one", name="Alpha")
+    chat_note_store(store, "2" * 32).add("two", name="Beta")
+    with TestClient(app, base_url="http://localhost") as client:
+        deleted = client.post(f"{base(project)}/sessions/{ALPHA}/chat-notes/N1/delete")
+        reset = client.post(f"{base(project)}/reset", data={"scope": "notes"}, follow_redirects=False)
+
+    assert deleted.status_code == 200
+    assert "N1 · deleted" in deleted.text
+    assert reset.status_code == 303
+    assert chat_note_store(store, ALPHA).load().notes == []
+    assert chat_note_store(store, "2" * 32).load().notes == []
+
+
+def test_an_idle_agent_still_lists_its_chat_notes_after_auto_ends(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    seed_durable_auto(store, auto_id="b" * 32, status="converged", publish=False)
+    chat_note_store(store, ALPHA).add("Earlier note", name="Alpha")
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+
+    chat_list = re.search(r'<div id="chat-notes-list"[^>]*>', page)[0]
+    auto_list = re.search(r'<div id="auto-notes-list"[^>]*>', page)[0]
+    assert " hidden" not in chat_list and "Earlier note" in page
+    assert " hidden" in auto_list
+    assert " disabled" in notes_textarea(page)
+    assert 'name="target" value="auto"' in page
+    assert "Notes reach Alpha while it replies." in page
+
+
+def test_a_replying_agent_gets_the_chat_target_on_the_page(tmp_path: Path) -> None:
+    from app.models import RoundRecord, SourceDescriptor
+
+    app, project, store = notes_app(tmp_path)
+    with TestClient(app, base_url="http://localhost") as client:
+        # After startup: recovery would mark a round with no live process as failed.
+        config = store.load_session(ALPHA)
+        config.status = "running"
+        config.rounds.append(
+            RoundRecord(
+                n=1, status="running", error=None, warnings=[], agent="claude", model="fake",
+                effort="low", started_at="2026-11-02T00:00:00Z", finished_at=None,
+                source=SourceDescriptor(type="user"),
+            )
+        )
+        store.save_session(config)
+        page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+
+    assert 'name="target" value="chat"' in page
+    assert 'aria-describedby="chat-note-hint"' in notes_textarea(page)
+    assert " disabled" not in notes_textarea(page)
+    assert 'data-agent-replying="true"' in page

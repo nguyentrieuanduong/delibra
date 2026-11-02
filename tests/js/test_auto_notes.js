@@ -8,30 +8,85 @@ const {
   syncAutoNotesAvailability,
 } = require("../../app/static/app.js");
 
-function documentWith(open) {
+function page({ autoActive = false, autoOpen = false, selected = "s1", running = false, compacting = false } = {}) {
   const controls = [{ disabled: true }, { disabled: true }];
+  const target = { value: "auto" };
+  const textarea = { attrs: {}, setAttribute(name, value) { this.attrs[name] = value; } };
+  const modes = [
+    { dataset: { notesMode: "auto" }, hidden: false },
+    { dataset: { notesMode: "chat" }, hidden: true },
+  ];
   return {
-    controls,
+    controls, target, textarea, modes,
     querySelector(selector) {
-      assert.equal(selector, "#auto-status");
-      return open === null ? null : { dataset: { autoNotesOpen: open ? "true" : "false" } };
+      if (selector === "#auto-status") {
+        return { dataset: { autoActive: String(autoActive), autoNotesOpen: String(autoOpen) } };
+      }
+      if (selector === "#chat-composer") return { dataset: { sessionId: selected } };
+      if (selector === `#agent-status-${selected}`) {
+        return {
+          dataset: {
+            agentStatus: running || compacting ? "running" : "idle",
+            agentReplying: running ? "true" : "false",
+          },
+        };
+      }
+      if (selector === "[data-notes-target]") return target;
+      if (selector === "#auto-note-text") return textarea;
+      return null;
     },
     querySelectorAll(selector) {
-      assert.equal(selector, "[data-auto-notes-input]");
-      return controls;
+      if (selector === "[data-auto-notes-input]") return controls;
+      if (selector === "[data-notes-mode]") return modes;
+      return [];
     },
   };
 }
 
-test("enables the notes inputs only while the shown run accepts notes", function () {
-  const open = documentWith(true);
-  assert.equal(syncAutoNotesAvailability(open), true);
-  assert.deepEqual(open.controls.map((item) => item.disabled), [false, false]);
-  const closed = documentWith(false);
-  closed.controls.forEach((item) => { item.disabled = false; });
+test("a replying agent takes notes first, then an Auto run that accepts them", function () {
+  const chat = page({ autoOpen: true, running: true });
+  assert.equal(syncAutoNotesAvailability(chat), true);
+  assert.equal(chat.target.value, "chat");
+  assert.deepEqual(chat.modes.map((item) => item.hidden), [true, false]);
+  assert.equal(chat.textarea.attrs["aria-describedby"], "chat-note-hint");
+  assert.deepEqual(chat.controls.map((item) => item.disabled), [false, false]);
+
+  const auto = page({ autoOpen: true });
+  assert.equal(syncAutoNotesAvailability(auto), true);
+  assert.equal(auto.target.value, "auto");
+  assert.deepEqual(auto.modes.map((item) => item.hidden), [false, true]);
+  assert.equal(auto.textarea.attrs["aria-describedby"], "auto-note-hint");
+
+  const duringAuto = page({ autoActive: true, autoOpen: true, running: true });
+  syncAutoNotesAvailability(duringAuto);
+  assert.equal(duringAuto.target.value, "auto");
+
+  // Closed: nothing can be sent, but the selected agent's notes stay listed.
+  const closed = page({});
   assert.equal(syncAutoNotesAvailability(closed), false);
   assert.deepEqual(closed.controls.map((item) => item.disabled), [true, true]);
-  assert.equal(syncAutoNotesAvailability(documentWith(null)), false);
+  assert.deepEqual(closed.modes.map((item) => item.hidden), [true, false]);
+
+  // A compaction runs, but it is not a reply.
+  const compacting = page({ compacting: true });
+  assert.equal(syncAutoNotesAvailability(compacting), false);
+  assert.equal(syncAutoNotesAvailability({ querySelector: () => null, querySelectorAll: () => [] }), false);
+});
+
+test("a chat list for an agent that is not selected never lands", function () {
+  const ownerDocument = { querySelector: (s) => (s === "#chat-composer" ? { dataset: { sessionId: "s2" } } : null) };
+  const shown = { id: "chat-notes-list", ownerDocument, dataset: { sessionId: "s1", notesRevision: "9" } };
+  const other = { shouldSwap: true, target: shown, fragment: { dataset: { sessionId: "s1", notesRevision: "10" } } };
+  assert.equal(skipStaleNotesSwap(other), true);
+  assert.equal(other.shouldSwap, false);
+  const switched = { shouldSwap: true, target: shown, fragment: { dataset: { sessionId: "s2", notesRevision: "1" } } };
+  assert.equal(skipStaleNotesSwap(switched), false);
+  assert.equal(switched.shouldSwap, true);
+  const own = { ...shown, dataset: { sessionId: "s2", notesRevision: "5" } };
+  const ownOlder = { shouldSwap: true, target: own, fragment: { dataset: { sessionId: "s2", notesRevision: "4" } } };
+  assert.equal(skipStaleNotesSwap(ownOlder), true);
+  const ownNewer = { shouldSwap: true, target: own, fragment: { dataset: { sessionId: "s2", notesRevision: "6" } } };
+  assert.equal(skipStaleNotesSwap(ownNewer), false);
 });
 
 test("clears the note only after a successful post", function () {

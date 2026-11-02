@@ -21,8 +21,10 @@ from app.security import validate_field
 from app.storage import ProjectStore, validate_id
 from app.urls import project_url
 from app.views import (
+    accepts_notes,
     agent_views,
     auto_notes_context,
+    chat_notes_context,
     conversation_round_views,
     effort_levels,
     round_views,
@@ -79,9 +81,11 @@ def _sidebar_context(
     *,
     composer_oob: bool,
     auto_active: bool,
+    auto_open: bool,
 ) -> dict:
     selected = selected_session(sessions, selected_id)
     return {
+        **chat_notes_context(store, selected, auto_active=auto_active, auto_open=auto_open),
         "project": store.project,
         "sessions": sessions,
         "selected_session": selected,
@@ -111,6 +115,7 @@ def sidebar_response(
             selected_id,
             composer_oob=composer_oob,
             auto_active=store.active_auto_run_id() is not None,
+            auto_open=accepts_notes(project_auto_record(request, project.id).record),
         ),
         headers=headers,
     )
@@ -156,6 +161,7 @@ async def chat_page(
         agent,
         composer_oob=False,
         auto_active=auto_active,
+        auto_open=accepts_notes(auto_record),
     )
     auto_numbers = {
         record.id: record.number
@@ -184,6 +190,12 @@ async def chat_page(
             "auto_setup": setup_context,
             "questions_panel": questions_panel_context(request, project),
             "notes_box": auto_notes_context(store, auto_record),
+            "chat_notes_box": chat_notes_context(
+                store,
+                sidebar["selected_session"],
+                auto_active=auto_active,
+                auto_open=accepts_notes(auto_record),
+            ),
             "auto_migration_warning": auto_projection.warning,
             "health": request.app.state.health,
             **usage_badge_context(request),

@@ -1,7 +1,9 @@
 {# Rendered in place inside the card, and out of band by _agent_card_oob.html.
-   data-agent-status is what app.js reads to gate the composer. #}
+   data-agent-status is what app.js reads to gate the composer;
+   data-agent-replying (a chat reply, not a compaction) gates chat notes. #}
 <span
   id="agent-status-{{ agent_view.session.id }}"
   data-agent-status="{{ agent_view.session.status }}"
   {% if agent_card_oob|default(false) %}hx-swap-oob="outerHTML"{% endif %}
+  data-agent-replying="{{ 'true' if agent_view.replying else 'false' }}"
 >{{ agent_view.session.status }}</span>

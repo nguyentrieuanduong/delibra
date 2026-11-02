@@ -50,4 +50,4 @@
     {% endfor %}
   </div>
 </aside>
-{% if composer_oob %}{% include "_composer.html" %}{% endif %}
+{% if composer_oob %}{% include "_composer.html" %}{% with notes_oob=true %}{% include "_chat_note_hint.html" %}{% include "_chat_notes_list.html" %}{% endwith %}{% endif %}

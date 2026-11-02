@@ -1,16 +1,21 @@
-<section id="auto-notes" class="auto-notes" aria-label="Notes to Auto agents">
+<section id="auto-notes" class="auto-notes" aria-label="Notes to agents">
   <form
     data-auto-notes-form
     method="post"
     action="{{ project_url(project.name, '/auto-notes') }}"
     hx-post="{{ project_url(project.name, '/auto-notes') }}"
+    hx-include="#chat-composer [name='session_id']"
     hx-swap="none"
   >
+    {# Where the note goes, as the page shows it; app.js keeps it in step. #}
+    <input type="hidden" name="target" value="{{ 'chat' if chat_notes_replying else 'auto' }}" data-notes-target>
     <label for="auto-note-text">Note</label>
     {# One row tall, but a textarea, so a pasted multi-line note keeps its lines. #}
-    <textarea id="auto-note-text" name="text" rows="1" maxlength="{{ note_max }}" required aria-describedby="auto-note-hint" data-auto-notes-input{% if not notes_open %} disabled{% endif %}></textarea>
-    <button type="submit" aria-label="Send note to agents" data-auto-notes-input{% if not notes_open %} disabled{% endif %}>Send</button>
-    <p id="auto-note-hint" class="hint">Agents read notes each turn while Auto runs or is paused.</p>
+    <textarea id="auto-note-text" name="text" rows="1" maxlength="{{ note_max }}" required aria-describedby="{{ 'chat-note-hint' if chat_notes_shown else 'auto-note-hint' }}" data-auto-notes-input{% if not notes_open and not chat_notes_replying %} disabled{% endif %}></textarea>
+    <button type="submit" aria-label="Send note to agents" data-auto-notes-input{% if not notes_open and not chat_notes_replying %} disabled{% endif %}>Send</button>
+    <p id="auto-note-hint" class="hint" data-notes-mode="auto"{% if chat_notes_shown %} hidden{% endif %}>Agents read notes each turn while Auto runs or is paused.</p>
+    {% include "_chat_note_hint.html" %}
   </form>
   {% include "_auto_notes_list.html" %}
+  {% include "_chat_notes_list.html" %}
 </section>
