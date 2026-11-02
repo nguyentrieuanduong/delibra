@@ -117,6 +117,9 @@ class RunContext:
     # Set only on Auto build turns; None keeps chat and discussion argv
     # byte-identical to before coding mode existed.
     coding: CodingContext | None = None
+    # Delibra's per-turn instructions for chat turns (skills, notes). Sent on
+    # the system channel, so the recorded user prompt stays what was typed.
+    system_note: str = ""
 
 
 def shared_context_section(context: RunContext) -> str:
@@ -130,6 +133,12 @@ def shared_context_section(context: RunContext) -> str:
         "requirements. Your role instructions still define your role; the current "
         "user prompt may be more specific for this turn.\n\n"
     )
+
+
+def system_instructions(config: SessionConfig, context: RunContext) -> str:
+    """Role instructions, then the turn's system note; the role alone when empty."""
+
+    return "\n\n".join(part for part in (config.role_instructions, context.system_note) if part)
 
 
 @dataclass(frozen=True)

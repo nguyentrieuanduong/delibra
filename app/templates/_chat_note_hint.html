@@ -1,0 +1,1 @@
+<p id="chat-note-hint" class="hint" data-notes-mode="chat"{% if not chat_notes_shown %} hidden{% endif %}{% if notes_oob|default(false) %} hx-swap-oob="outerHTML"{% endif %}>{% if chat_notes_agent %}Notes reach {{ chat_notes_agent }} while it replies.{% else %}Notes reach the selected agent while it replies.{% endif %}</p>

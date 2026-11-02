@@ -9,7 +9,10 @@ from pathlib import Path
 import shutil
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from app.agents.claude import ClaudeAdapter
+from app.agents.codex import CodexAdapter
 
 from app.coding import (
     CodingEnvState,
@@ -26,16 +29,20 @@ from app.coding import (
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
-from app.notes import NoteStore
+from app.models import Project
+from app.notes import NoteStore, chat_note_store
 from app.project_routing import request_project
 from app.questions import QuestionStore
 from app.security import (
+    is_loopback_client,
     require_loopback_client,
     validate_field,
     validate_pass_prompt_template_field,
 )
 from app.storage import (
     ConflictError,
+    ProjectFileDisplayError,
+    ProjectFileSecurityError,
     ProjectStore,
     StorageError,
     normalize_project_name,
@@ -265,6 +272,8 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
             ).dismiss_all()
         if scope in {"notes", "all"}:
             NoteStore(store.root).clear()
+            for session in store.list_sessions():
+                chat_note_store(store, session.id).clear()
     return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
 
@@ -676,3 +685,142 @@ async def reset_pass_prompt(request: Request, project_id: str):
         project_url(project.name, "/settings"),
         status_code=303,
     )
+
+
+async def render_project_settings(
+    request: Request,
+    project: Project,
+    *,
+    error: str | None = None,
+    chat_skills_text: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    """The project settings page; a refused form passes its text and error back."""
+
+    store = ProjectStore(project)
+    sessions = store.list_sessions()
+    shared_markdown_path = store.selected_shared_markdown_path()
+    shared_markdown_available: bool | None = None
+    if shared_markdown_path is not None:
+        try:
+            store.read_selected_shared_markdown(
+                request.app.state.settings.file_view_limit
+            )
+        except (ProjectFileDisplayError, ProjectFileSecurityError):
+            shared_markdown_available = False
+        else:
+            shared_markdown_available = True
+    migration = store.session_migration_status()
+    migration_issue_lists: dict[str, list[str]] = {}
+    for issue in migration.issues:
+        migration_issue_lists.setdefault(issue.session_id, []).append(issue.message)
+    migration_issues = {
+        session_id: tuple(messages)
+        for session_id, messages in migration_issue_lists.items()
+    }
+    auto_migration_issues = store.auto_migration_status().issues
+    configured_turn_timeout = store.configured_turn_timeout_seconds()
+    coding = store.coding_policy()
+    docker_lima = (
+        await request.app.state.docker_controller.lima_status()
+        if coding.docker.enabled
+        else None
+    )
+    effective_turn_timeout = store.effective_turn_timeout_seconds(
+        request.app.state.settings.run_timeout,
+        maximum=request.app.state.settings.max_run_timeout,
+    )
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="project.html",
+        context={
+            "project": project,
+            "sessions": sessions,
+            "shared_markdown_path": shared_markdown_path,
+            "shared_markdown_available": shared_markdown_available,
+            "health": request.app.state.health,
+            "effort_levels": {
+                "claude": ClaudeAdapter.EFFORT_LEVELS,
+                "codex": CodexAdapter.EFFORT_LEVELS,
+            },
+            "auto_active": store.active_auto_run_id() is not None,
+            "legacy_session_ids": frozenset(migration.legacy_session_ids),
+            "migration_issues": migration_issues,
+            "auto_migration_issues": auto_migration_issues,
+            "pass_prompt_template": store.effective_pass_prompt_template(),
+            "writable_roots": store.effective_writable_roots(),
+            "coding": coding,
+            "git_exclude_lines": (
+                coding.git_exclude if coding.git_exclude is not None else default_git_exclude()
+            ),
+            "coding_local": is_loopback_client(request),
+            "guidance_presets": request.app.state.settings.guidance_presets,
+            "docker_lima": docker_lima,
+            "turn_timeout_seconds": effective_turn_timeout,
+            "configured_turn_timeout_seconds": configured_turn_timeout,
+            "turn_timeout_inherited": configured_turn_timeout is None,
+            "max_turn_timeout_seconds": (
+                request.app.state.settings.max_run_timeout
+            ),
+            "chat_skills_text": (
+                chat_skills_text
+                if chat_skills_text is not None
+                else "\n".join(store.chat_skills())
+            ),
+            "error": error,
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/projects/{project_id}/settings", response_class=HTMLResponse)
+async def project_settings(request: Request, project_id: str) -> HTMLResponse:
+    return await render_project_settings(request, request_project(request, project_id))
+
+
+@router.post("/projects/{project_id}/chat-skills")
+async def save_chat_skills(
+    request: Request,
+    project_id: str,
+    chat_skills: str = Form(""),
+    chat_preset: str = Form(""),
+):
+    require_loopback_client(request)
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    lines = [line for line in chat_skills.splitlines() if line.strip()]
+    try:
+        # Off the event loop and before the lock, as save_coding does. A preset
+        # button copies that preset's skills list (user request 2026-11-02).
+        if chat_preset:
+            preset = next(
+                (
+                    item
+                    for item in request.app.state.settings.guidance_presets
+                    if item.name == chat_preset
+                ),
+                None,
+            )
+            if preset is None:
+                raise StorageError(
+                    f"Unknown guidance preset {chat_preset!r}; the chat skills were not changed"
+                )
+            paths = (await asyncio.to_thread(preset_guidance_lists, preset))[1]
+        else:
+            paths = await asyncio.to_thread(normalize_skill_paths, lines)
+        async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+            _reject_in_memory_work(request, resolved_project_id)
+            project = request.app.state.registry.get(resolved_project_id)
+            store = ProjectStore(project)
+            store.require_auto_inactive()
+            store.set_chat_skills(paths)
+    except (CodingPolicyError, StorageError) as exc:
+        message = str(exc)
+        return await render_project_settings(
+            request,
+            project,
+            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            chat_skills_text=chat_skills,
+            status_code=422,
+        )
+    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)

@@ -127,10 +127,12 @@ and agent cards in the wider left rail, with the selected agent's information
 expanded and every unselected agent collapsed. A compact composer and merged
 conversation stay in the center, while project-file browsing/reading stays in the
 narrower right rail. Select an agent name to route the composer and highlight that
-card; unsent text stays in the composer when you pick, create or edit an agent. Recorded rounds and opened files use the shared keyboard-accessible focus
-dialog. **Manage** opens project and agent settings. The footer starts in a checking
-state, then reports missing CLIs and version drift without delaying or preventing
-the rest of the UI from loading.
+card; unsent text stays in the composer when you pick, create or edit an agent. A
+floating **↓ Latest** button appears when the newest message is out of view and
+jumps to its start. Recorded rounds and opened files use the shared
+keyboard-accessible focus dialog. **Manage** opens project and agent settings. The
+footer starts in a checking state, then reports missing CLIs and version drift
+without delaying or preventing the rest of the UI from loading.
 
 ## Workflow and storage
 
@@ -444,8 +446,8 @@ compacted session contributes its summary instead of the rounds it replaced.
 
 **New phase** on the Manage page clears earlier work in one place:
 **Dismiss all questions** dismisses every open and answered question (restorable,
-answers kept), **Delete all notes** deletes the notes history, **Clear all
-context** runs Clear context for every agent, and **Start new phase** does all
+answers kept), **Delete all notes** deletes the notes history and every
+agent's chat notes, **Clear all context** runs Clear context for every agent, and **Start new phase** does all
 three. Each is refused, changing nothing, while Auto runs or any agent is busy.
 
 **Continue Auto** resumes a finished run in place, from any of the five terminal
@@ -589,7 +591,19 @@ limit, that outcome stands and Continue Auto still lists the questions. When off
 agents are told the run will not pause and continue on their assumptions.
 Preparation and compaction turns neither see nor ask questions.
 
-## Notes to Auto agents
+## Notes to agents
+
+While the selected agent is replying to a chat message, the **Note** box sends
+to that agent instead ("Notes reach <agent> while it replies."), even when an
+Auto run is paused. The agent reads `delibra-notes.json` in its workspace, is
+told to re-read it before each significant decision, and may mark notes read
+in `delibra-notes-read.json`. A completed reply delivers the notes it saw at
+its start or marked; a note it never saw waits for that agent's next chat
+message. Failed, cancelled and compaction turns deliver nothing. A note sent
+after the reply ended is refused ("<agent> is not replying; send a message
+instead"). The selected agent's chat notes are listed under the box, where
+Delete removes a pending one. **Start new phase → Delete all notes** also
+clears chat notes.
 
 Under the message box, beside the Auto status, the one-line **Note** box sends
 guidance to the latest Auto
@@ -625,6 +639,22 @@ pending note from the view at once. Delivered and deleted notes stay in the
 history, and starting a new run marks the previous run's pending notes
 undelivered. Preparation and compaction turns do not read notes.
 
+## Skills for chat and discussion
+
+Project settings hold a **Skills for chat and discussion** list, separate from
+the build skills: absolute Markdown paths, one per line, with the same limits,
+saved from this machine only. A **Use <name> skills** button sets it from each
+Settings preset that has skills. Coding mode does not need to be on. Chat
+replies and Auto discussion runs (discussion and preparation turns) read it
+from `.delibra/skills/chat/`. A chat reply rewrites that folder when a file
+changed, unless another agent of the project is running a turn at that moment.
+Then it uses the current copy, and a later reply catches up. Chat replies are
+told about the index through their system instructions, so the recorded prompt
+stays what you typed. In chat you approve a skill's steps yourself. In
+discussion runs the other agents stand in, as in build runs. Build runs never
+read this list, and chat never reads the build list. A project whose path has
+characters Claude's read rules cannot express cannot save a chat list.
+
 ## Coding mode and build runs
 
 Each project has a **Coding** setting on its Settings page. It is off by default,
@@ -659,8 +689,10 @@ Turning it on does three things:
   skills or hooks load in build turns. **Build guidance files** (at most 32
   files and 256 KB) are pasted into every build turn, so they cost tokens on
   every turn. **Skills agents can read** (at most 512 files and 4 MB) are
-  copied read-only into the run (`.delibra/auto-runs/<n>/skills/`, never
-  committed) with an index of each skill's name, path and description; agents
+  copied read-only into `.delibra/skills/build/` (never committed; rewritten
+  at a run's start or Continue only when a listed file changed; runs made
+  before 2026-11-02 keep their own copy) with an index of each skill's name,
+  path and description; agents
   read a skill when they need it, and a skill's `references/` files sit beside
   its `SKILL.md`. For a skill suite with a router skill, paste the router (for
   code-craft, `using-code-craft/SKILL.md`) and list the rest as skills. Both

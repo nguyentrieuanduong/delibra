@@ -12,6 +12,7 @@ from app.agents.base import (
     build_command_environment,
     RunContext,
     shared_context_section,
+    system_instructions,
 )
 from app.agents.errors import (
     ProviderErrorInfo,
@@ -212,7 +213,7 @@ class CodexAdapter:
             "--config",
             'shell_environment_policy.inherit="all"',
             "--config",
-            _developer_instructions_config(config.role_instructions),
+            _developer_instructions_config(system_instructions(config, context)),
             "--disable",
             "hooks",
             "--disable",

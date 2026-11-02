@@ -11,6 +11,7 @@ from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import SessionConfig
 from app.project_routing import request_project
+from app.routes.auto import project_auto_record
 from app.routes.chat import sidebar_response
 from app.routes.projects import _writable_roots_field
 from app.security import validate_agent_name, validate_field
@@ -23,7 +24,7 @@ from app.storage import (
     validate_id,
 )
 from app.urls import project_url
-from app.views import agent_views, round_views
+from app.views import accepts_notes, agent_views, chat_notes_context, round_views
 
 
 router = APIRouter()
@@ -375,5 +376,16 @@ async def round_fragment(
             "agent_view": card,
             "auto_active": store.active_auto_run_id() is not None,
             "pass_prompt_template": store.effective_pass_prompt_template(),
+            **(
+                chat_notes_context(
+                    store,
+                    session,
+                    auto_active=store.active_auto_run_id() is not None,
+                    auto_open=accepts_notes(project_auto_record(request, project.id).record),
+                )
+                if chat_view
+                else {}
+            ),
+            "chat_notes_oob": chat_view,
         },
     )

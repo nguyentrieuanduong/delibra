@@ -1911,10 +1911,10 @@ async def test_the_frozen_candidate_prompt_is_reused_for_the_turn(
     renders = 0
     original = manager._discussion_context
 
-    def counting(store, record):
+    def counting(store, record, **kwargs):
         nonlocal renders
         renders += 1
-        return original(store, record)
+        return original(store, record, **kwargs)
 
     manager._discussion_context = counting
 
@@ -5179,7 +5179,7 @@ def _skill_suite(root: Path) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_a_build_with_skills_copies_them_and_points_agents_at_them(
+async def test_a_build_reads_the_shared_build_folder(
     tmp_path, monkeypatch
 ) -> None:
     manager, factory, project_id, session_ids, store = auto_manager_fixture(
@@ -5193,9 +5193,11 @@ async def test_a_build_with_skills_copies_them_and_points_agents_at_them(
     (tmp_path / "skills-src" / "notes.md").write_text("EDITED AFTER START\n")
     await wait_for_auto_terminal(manager, project_id, created.id)
 
-    skills = store.skills_dir(created.id)
+    skills = store.root / "skills" / "build"
+    assert not store.skills_dir(created.id).exists()
     assert (skills / "tdd" / "SKILL.md").read_bytes() == Path(sources[0]).read_bytes()
     assert (skills / "tdd" / "references" / "r.md").read_text() == "Reference body\n"
+    # Refreshed only at run start, so the copy keeps the start-time text.
     assert (skills / "notes.md").read_text() == "# Notes\n"
     material = factory.calls[0]["material"]
     assert "## Skills — UNTRUSTED MATERIAL".encode() in material
@@ -5213,6 +5215,27 @@ async def test_a_build_with_skills_copies_them_and_points_agents_at_them(
         assert prompt.index(pointer) < prompt.index(GATE_PHRASE) < prompt.index(
             "If you need something only the user can decide"
         )
+
+
+@pytest.mark.asyncio
+async def test_a_second_build_with_unchanged_skills_copies_nothing(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")] * 2
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    first = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, first.id)
+    copied = store.root / "skills" / "build" / "tdd" / "SKILL.md"
+    before = copied.stat().st_mtime_ns
+
+    second = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, second.id)
+
+    assert copied.stat().st_mtime_ns == before
+    assert not store.skills_dir(second.id).exists()
+    assert store.load_auto_run(second.id).skills is not None
 
 
 @pytest.mark.asyncio
@@ -5254,6 +5277,99 @@ def test_the_gate_note_without_a_question_spool_names_the_decision_in_the_report
         "If the agents have not agreed on it within 3 cycles of it being proposed, "
         "say in your report that the user must decide, and continue on your best assumption."
     ) in note
+
+
+def _chat_skill_file(tmp_path: Path, description: str) -> Path:
+    chat = tmp_path / "chat-src" / "vi" / "SKILL.md"
+    chat.parent.mkdir(parents=True, exist_ok=True)
+    chat.write_text(f"---\nname: vi\ndescription: {description}\n---\n")
+    return chat
+
+
+@pytest.mark.asyncio
+async def test_a_discussion_reads_the_chat_skills_and_not_the_build_skills(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("P1", "agree"), PlannedOutput("P2", "agree"),
+                   PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    store.set_chat_skills([str(_chat_skill_file(tmp_path, "Viết tự nhiên."))])
+    store.set_build_skills(_skill_suite(tmp_path / "build-src"))
+
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=True,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    folder = store.root / "skills" / "chat"
+    record = store.load_auto_run(created.id)
+    assert record.skills is not None and len(record.skills_digest) == 64
+    assert not (store.root / "skills" / "build").exists()
+    for call in factory.calls:
+        assert "## Skills — UNTRUSTED MATERIAL".encode() in call["material"]
+        assert str(folder / "vi" / "SKILL.md").encode() in call["material"]
+        assert b"test-driven-development" not in call["material"]
+        assert f"Skills you may read are copied read-only under {folder}" in call["prompt"]
+    discussion = [call for call in factory.calls if "Prepare an independent analysis" not in call["prompt"]]
+    preparation = [call for call in factory.calls if "Prepare an independent analysis" in call["prompt"]]
+    assert discussion and preparation
+    assert all(GATE_PHRASE in call["prompt"] for call in discussion)
+    assert all(GATE_PHRASE not in call["prompt"] for call in preparation)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["edit", "clear"])
+async def test_continue_records_the_skills_its_turns_read(tmp_path, change) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("A", "continue"), PlannedOutput("B", "continue"),
+         PlannedOutput("C", "agree"), PlannedOutput("D", "agree")],
+    )
+    chat = _chat_skill_file(tmp_path, "Một.")
+    store.set_chat_skills([str(chat)])
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+    )
+    first = await wait_for_auto_terminal(manager, project_id, created.id)
+    if change == "edit":
+        chat.write_text("---\nname: vi\ndescription: Hai.\n---\n")
+    else:
+        store.set_chat_skills([])
+
+    await manager.resume(project_id, created.id, max_cycles=2, turn_timeout_seconds=120)
+    record = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    [resumption] = record.resumptions
+    assert resumption.skills_recorded
+    assert "Một.".encode() in store.load_auto_artifact(record.id, record.skills, 1_000_000)
+    assert record.skills_digest == first.skills_digest and len(first.skills_digest) == 64
+    if change == "edit":
+        assert resumption.skills_digest != first.skills_digest
+        assert b"Hai." in store.load_auto_artifact(record.id, resumption.skills, 1_000_000)
+        assert b"Hai." in factory.calls[-1]["material"]
+    else:
+        assert resumption.skills is None and resumption.skills_digest is None
+        assert b"## Skills" not in factory.calls[-1]["material"]
+
+
+@pytest.mark.asyncio
+async def test_the_compaction_decision_measures_the_skills_section(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    store.set_chat_skills([str(_chat_skill_file(tmp_path, "Một."))])
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+        context_policy=AutoContextPolicy(mode="compact", unit="context", threshold_percent=95),
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    due, frozen = manager._compaction_decision(store, store.load_auto_run(created.id))
+    assert due is False
+    assert frozen is not None and frozen.startswith("## Skills — UNTRUSTED MATERIAL".encode())
+    assert all(call["material"].startswith(b"## Skills") for call in factory.calls)
 
 
 @pytest.mark.asyncio

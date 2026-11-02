@@ -233,6 +233,9 @@ textarea { min-height: 7rem; }
 .auto-preparation-empty { opacity: .75; }
 .auto-preparation-unavailable, .auto-topic-unavailable { font-style: italic; opacity: .75; }
 .chat-timeline { min-height: 0; overflow: auto; }
+/* The frame takes the timeline's 1fr row; the button floats over it and adds no height. */
+.chat-timeline-frame { display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; position: relative; }
+.timeline-latest { bottom: .75rem; position: absolute; right: 1.25rem; z-index: 1; }
 .workspace-agents {
   display: grid;
   font-size: .85rem;

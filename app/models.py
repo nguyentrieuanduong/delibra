@@ -38,6 +38,15 @@ def _strict_bool(data: dict[str, Any], key: str) -> bool:
     return value
 
 
+def _optional_digest(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}|", value):
+        raise ValueError(f"{key} must be a sha256 hex digest")
+    return value
+
+
 def _strict_str(data: dict[str, Any], key: str) -> str:
     value = data[key]
     if type(value) is not str:
@@ -225,6 +234,10 @@ class AutoResumption:
     max_cycles: int
     turn_timeout_seconds: int
     quota_override: AutoQuotaOverride | None = None
+    # Set by every Continue made after 2026-11-02: the skills its turns read.
+    skills_recorded: bool = False
+    skills: AutoArtifact | None = None
+    skills_digest: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoResumption":
@@ -238,6 +251,13 @@ class AutoResumption:
                 if data.get("quota_override") is not None
                 else None
             ),
+            skills_recorded="skills" in data,
+            skills=(
+                AutoArtifact.from_dict(data["skills"])
+                if data.get("skills") is not None
+                else None
+            ),
+            skills_digest=_optional_digest(data, "skills_digest"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -249,6 +269,9 @@ class AutoResumption:
         }
         if self.quota_override is not None:
             result["quota_override"] = self.quota_override.to_dict()
+        if self.skills_recorded:
+            result["skills"] = self.skills.to_dict() if self.skills is not None else None
+            result["skills_digest"] = self.skills_digest
         return result
 
 
@@ -1503,8 +1526,10 @@ class AutoRunRecord:
     git: AutoBuildGit | None = None
     # Snapshot of the project's guidance files at creation (build runs only).
     guidance: AutoArtifact | None = None
-    # Index of the skills copied into the run's skills/ folder (build runs only).
+    # Index of the skills the run started with, and the content digest of
+    # their files ("" when a kept stale folder's digest was unknown).
     skills: AutoArtifact | None = None
+    skills_digest: str | None = None
     # Docker build runs only: the backend and its probed isolation (design §4).
     docker: AutoBuildDocker | None = None
     # Absent means on: every run that never turned it off keeps its shape.
@@ -1660,6 +1685,7 @@ class AutoRunRecord:
                 if data.get("skills") is not None
                 else None
             ),
+            skills_digest=_optional_digest(data, "skills_digest"),
             pause_on_blocking_questions=(
                 _strict_bool(data, "pause_on_blocking_questions")
                 if "pause_on_blocking_questions" in data
@@ -1741,12 +1767,14 @@ class AutoRunRecord:
             payload["handovers"] = [item.to_dict() for item in self.handovers]
             payload["git"] = self.git.to_dict() if self.git is not None else None
             payload["guidance"] = self.guidance.to_dict() if self.guidance is not None else None
-            if self.skills is not None:
-                payload["skills"] = self.skills.to_dict()
             if self.cli_notes:
                 payload["cli_notes"] = list(self.cli_notes)
             if self.docker is not None:
                 payload["docker"] = self.docker.to_dict()
+        # Either kind; a record without skills keeps its exact on-disk shape.
+        if self.skills is not None:
+            payload["skills"] = self.skills.to_dict()
+            payload["skills_digest"] = self.skills_digest
         if not self.pause_on_blocking_questions:
             payload["pause_on_blocking_questions"] = False
         return payload

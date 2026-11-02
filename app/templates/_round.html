@@ -29,3 +29,4 @@
   {% endif %}
 </article>
 {% if agent_card_oob|default(false) %}{% include "_agent_card_oob.html" %}{% endif %}
+{% if chat_notes_oob|default(false) %}{% with notes_oob=true %}{% include "_chat_notes_list.html" %}{% endwith %}{% endif %}

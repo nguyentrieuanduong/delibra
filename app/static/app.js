@@ -193,6 +193,62 @@ function syncConversationDisclosure(timeline) {
   return true;
 }
 
+// The conversation runs oldest → newest, so the last in DOM order is newest.
+function latestMessage(timeline) {
+  if (!timeline || typeof timeline.querySelectorAll !== "function") {
+    return null;
+  }
+  const messages = timeline.querySelectorAll(".round, .live-round");
+  return messages.length ? messages[messages.length - 1] : null;
+}
+
+// "↓ Latest" shows only while the start of the last message is outside the
+// panel. New rounds never move the reader; this is the way down.
+function syncLatestButton(documentRoot) {
+  if (!documentRoot || typeof documentRoot.querySelector !== "function") {
+    return false;
+  }
+  const button = documentRoot.querySelector("[data-timeline-latest]");
+  const timeline = documentRoot.querySelector("#chat-timeline");
+  if (!button) {
+    return false;
+  }
+  const latest = latestMessage(timeline);
+  if (!latest) {
+    button.hidden = true;
+    return false;
+  }
+  const view = timeline.getBoundingClientRect();
+  const top = latest.getBoundingClientRect().top;
+  const away = top < view.top || top >= view.bottom;
+  button.hidden = !away;
+  return away;
+}
+
+function goToLatestMessage(documentRoot) {
+  const timeline = documentRoot.querySelector("#chat-timeline");
+  const latest = latestMessage(timeline);
+  if (!latest) {
+    return false;
+  }
+  const details = latest.querySelector(".round-details");
+  if (details) {
+    details.open = true;
+  }
+  const view = documentRoot.defaultView;
+  const reduced = Boolean(
+    view && view.matchMedia && view.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+  timeline.scrollTo({
+    top:
+      timeline.scrollTop +
+      latest.getBoundingClientRect().top -
+      timeline.getBoundingClientRect().top,
+    behavior: reduced ? "auto" : "smooth",
+  });
+  return true;
+}
+
 // Every sse:status replaces #auto-status, and a fresh stream replays the run's
 // events, so an opened Stop disclosure would otherwise snap shut under the
 // reader before they can choose.
@@ -431,16 +487,45 @@ function syncComposerAvailability(documentRoot) {
   return blocked;
 }
 
+// Where a note goes, from what the page shows. A replying chat agent comes
+// first (user decision 2026-11-02); otherwise an Auto run that accepts notes.
+// The form sends the answer, so the server never reroutes a note. "Replying"
+// comes from the agent card: a compaction runs but is not a reply.
+function notesTarget(documentRoot) {
+  const status = documentRoot.querySelector("#auto-status");
+  const autoActive = Boolean(status && status.dataset.autoActive === "true");
+  const autoOpen = Boolean(status && status.dataset.autoNotesOpen === "true");
+  const composer = documentRoot.querySelector("#chat-composer");
+  const sessionId = composer && composer.dataset ? composer.dataset.sessionId || "" : "";
+  const card = sessionId ? documentRoot.querySelector(`#agent-status-${sessionId}`) : null;
+  if (!autoActive && card && card.dataset.agentReplying === "true") {
+    return "chat";
+  }
+  return autoOpen ? "auto" : "closed";
+}
+
 function syncAutoNotesAvailability(documentRoot) {
   if (!documentRoot || typeof documentRoot.querySelector !== "function") {
     return false;
   }
-  const status = documentRoot.querySelector("#auto-status");
-  const open = Boolean(status && status.dataset.autoNotesOpen === "true");
+  const target = notesTarget(documentRoot);
+  // Closed still lists the selected agent's notes, so they can be read and deleted.
+  const mode = target === "auto" ? "auto" : "chat";
   documentRoot.querySelectorAll("[data-auto-notes-input]").forEach(function (control) {
-    control.disabled = !open;
+    control.disabled = target === "closed";
   });
-  return open;
+  const field = documentRoot.querySelector("[data-notes-target]");
+  if (field) {
+    field.value = mode;
+  }
+  documentRoot.querySelectorAll("[data-notes-mode]").forEach(function (element) {
+    element.hidden = element.dataset.notesMode !== mode;
+  });
+  const textarea = documentRoot.querySelector("#auto-note-text");
+  if (textarea) {
+    textarea.setAttribute("aria-describedby", `${mode}-note-hint`);
+  }
+  return target !== "closed";
 }
 
 function resetAutoNotesForm(source, detail) {
@@ -455,21 +540,33 @@ function resetAutoNotesForm(source, detail) {
   return true;
 }
 
-// Every notes list arrives out-of-band. A status update rendered before a
-// note was posted can land after the post's response; its older list must
-// not replace the newer one.
+// Every notes list arrives out-of-band. An older list must not replace a newer
+// one, and a chat list belongs on the page only while its agent is selected.
 function skipStaleNotesSwap(detail) {
-  if (!detail || !detail.target || detail.target.id !== "auto-notes-list" || !detail.fragment) {
+  const id = detail && detail.target ? detail.target.id : "";
+  if (!detail || !detail.fragment || (id !== "auto-notes-list" && id !== "chat-notes-list")) {
     return false;
   }
-  const element = detail.fragment.dataset
-    ? detail.fragment
-    : detail.fragment.firstElementChild;
+  const element = detail.fragment.dataset ? detail.fragment : detail.fragment.firstElementChild;
+  const incoming = element && element.dataset ? element.dataset : {};
+  const shown = detail.target.dataset || {};
+  if (id === "chat-notes-list") {
+    const root = detail.target.ownerDocument;
+    const composer = root && root.querySelector ? root.querySelector("#chat-composer") : null;
+    const selected = composer && composer.dataset ? composer.dataset.sessionId || "" : "";
+    if ((incoming.sessionId || "") !== selected) {
+      detail.shouldSwap = false;
+      return true;
+    }
+    if ((shown.sessionId || "") !== incoming.sessionId) {
+      return false;
+    }
+  }
   // Number("") is 0, so an absent attribute must stay NaN, not become 0.
   const revision = (value) => (value ? Number(value) : NaN);
-  const incoming = revision(element && element.dataset ? element.dataset.notesRevision : "");
-  const shown = revision(detail.target.dataset ? detail.target.dataset.notesRevision : "");
-  if (!Number.isFinite(incoming) || !Number.isFinite(shown) || incoming >= shown) {
+  const next = revision(incoming.notesRevision);
+  const current = revision(shown.notesRevision);
+  if (!Number.isFinite(next) || !Number.isFinite(current) || next >= current) {
     return false;
   }
   detail.shouldSwap = false;
@@ -785,6 +882,8 @@ function syncProjectListControls(form, search) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     appendPickedPaths,
+    goToLatestMessage,
+    syncLatestButton,
     applyPathPicker,
     autoSetupPlacement,
     captureAutoStopDisclosure,
@@ -831,6 +930,47 @@ if (typeof document !== "undefined") {
   const autoStopDisclosureSnapshots = new WeakMap();
 
   initializeDynamicPresentation(document);
+
+  syncLatestButton(document);
+  document.addEventListener("click", function (event) {
+    if (event.target.closest && event.target.closest("[data-timeline-latest]")) {
+      goToLatestMessage(document);
+    }
+  });
+  // Scroll does not bubble; capture sees the timeline's own scrolling.
+  document.addEventListener(
+    "scroll",
+    function (event) {
+      if (event.target && event.target.id === "chat-timeline") {
+        syncLatestButton(document);
+      }
+    },
+    true
+  );
+  window.addEventListener("resize", function () {
+    syncLatestButton(document);
+  });
+  // Opening a message or streaming text moves the last message without any
+  // scroll. An IntersectionObserver cannot tell when the top edge of a message
+  // taller than the panel crosses it, so watch every message's size instead.
+  const latestResize =
+    typeof ResizeObserver === "function"
+      ? new ResizeObserver(function () {
+          syncLatestButton(document);
+        })
+      : null;
+  function observeMessages() {
+    if (!latestResize) {
+      return;
+    }
+    latestResize.disconnect();
+    document
+      .querySelectorAll("#chat-timeline .round, #chat-timeline .live-round")
+      .forEach(function (message) {
+        latestResize.observe(message);
+      });
+  }
+  observeMessages();
 
   window.addEventListener("load", function () {
     // After load, so the page is drawn behind the alert.
@@ -938,6 +1078,9 @@ if (typeof document !== "undefined") {
         conversationScrollSnapshots.delete(detail.xhr);
       }
     }
+    // After the reading position is restored: the swap may have added a round.
+    observeMessages();
+    syncLatestButton(document);
     if (detail.xhr && autoStopDisclosureSnapshots.has(detail.xhr)) {
       restoreAutoStopDisclosure(
         document,
@@ -1040,6 +1183,12 @@ if (typeof document !== "undefined") {
   document.addEventListener("htmx:oobBeforeSwap", function (event) {
     skipStaleNotesSwap(event.detail);
     keepComposerText(event.detail);
+  });
+
+  // Out-of-band swaps (agent card, composer, notes lists) can change where a
+  // note goes; the main swap's handler may not run for hx-swap="none".
+  document.addEventListener("htmx:oobAfterSwap", function () {
+    syncAutoNotesAvailability(document);
   });
 
   document.addEventListener("htmx:historyRestore", function (event) {

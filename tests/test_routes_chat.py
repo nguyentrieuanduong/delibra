@@ -733,7 +733,8 @@ def test_conversation_rows_give_the_timeline_the_flexible_track(
     rows = re.search(r"grid-template-rows: (?P<tracks>[^;]+);", rule["body"])
     assert rows is not None
     tracks = re.findall(r"minmax\([^)]*\)|\S+", rows["tracks"])
-    assert children[-1][1].get("id") == "chat-timeline"
+    assert children[-1][1].get("id") == "chat-timeline-frame"
+    assert "data-timeline-latest" in response.text
     assert len(tracks) == len(children)
     assert tracks[-1] == "minmax(0, 1fr)"
     assert (

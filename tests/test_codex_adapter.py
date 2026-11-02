@@ -592,3 +592,14 @@ def test_build_profile_grants_read_only_system_roots() -> None:
     profile = next(item for item in codex_build_overrides(context) if item.startswith("permissions="))
     assert '"/Library/Developer/CommandLineTools"="read"' in profile
     assert '"/Library/Developer/CommandLineTools"="write"' not in profile
+
+
+def test_a_codex_system_note_follows_the_developer_instructions() -> None:
+    run_context = replace(
+        context("Investigate."), system_note="Notes the user sent to you are in /w/delibra-notes.json."
+    )
+    command = CodexAdapter().build_command(config(), run_context)
+    assert developer_instructions(command) == (
+        "Begin with ROLE-CODEX-OK.\n\nNotes the user sent to you are in /w/delibra-notes.json."
+    )
+    assert "delibra-notes.json" not in command.stdin

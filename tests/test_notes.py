@@ -300,3 +300,140 @@ def test_clear_deletes_every_note_but_never_reuses_an_id(tmp_path: Path) -> None
     notes.history_path.write_text("{corrupt", encoding="utf-8")
     assert notes.load().notes == []
     assert notes.add("Third", auto_run=3).id == "N3"
+
+
+from app.notes import CHAT_MARKS_NAME, CHAT_VIEW_NAME, ChatNoteStore, notes_prompt  # noqa: E402
+
+SESSION = "a" * 32
+
+
+def _chat(tmp_path: Path) -> ChatNoteStore:
+    (tmp_path / "s" / "workspace").mkdir(parents=True)
+    return ChatNoteStore(tmp_path / "s", tmp_path / "s" / "workspace")
+
+
+def _start(chat: ChatNoteStore):
+    return chat.turn_start(SESSION, lambda n: None)
+
+
+def _complete(chat: ChatNoteStore, session_id: str, seen) -> list[str]:
+    marked, warnings = chat.read_credit()
+    chat.apply_credit(session_id, seen, marked)
+    return warnings
+
+
+def test_a_chat_note_is_in_the_view_and_delivered_once_the_turn_saw_it(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    chat.add("Use tables", name="Alpha")
+    view = _start(chat)
+    assert view.seen == ("N1",)
+    shown = json.loads((tmp_path / "s" / "workspace" / CHAT_VIEW_NAME).read_text())
+    assert shown["notes"][0]["text"] == "Use tables"
+
+    assert _complete(chat, SESSION, view.seen) == []
+
+    [note] = chat.load().notes
+    assert (note.status, note.delivered_to, note.auto_run) == ("delivered", [SESSION], 0)
+
+
+def test_a_note_added_mid_turn_counts_only_when_marked(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    view = _start(chat)
+    chat.add("Shorter", name="Alpha")
+    chat.add("Later", name="Alpha")
+    (tmp_path / "s" / "workspace" / CHAT_MARKS_NAME).write_text('{"read": ["N1", "N9"]}')
+
+    warnings = _complete(chat, SESSION, view.seen)
+
+    notes = {note.id: note for note in chat.load().notes}
+    assert notes["N1"].status == "delivered" and notes["N1"].marked_by == [SESSION]
+    assert notes["N2"].status == "pending"
+    assert warnings == ["Note read marks name unknown notes: N9"]
+    assert not (tmp_path / "s" / "workspace" / CHAT_MARKS_NAME).exists()
+    assert _start(chat).seen == ("N2",)
+
+
+def test_bad_marks_are_a_warning_not_a_failure(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    chat.add("x", name="Alpha")
+    (tmp_path / "s" / "workspace" / CHAT_MARKS_NAME).write_text("not json")
+    assert _complete(chat, SESSION, ())[0].startswith("Note read marks ignored: ")
+    assert chat.load().notes[0].status == "pending"
+
+
+def test_a_symlinked_marks_file_is_refused(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    chat.add("x", name="Alpha")
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"read": ["N1"]}')
+    (tmp_path / "s" / "workspace" / CHAT_MARKS_NAME).symlink_to(secret)
+    assert _complete(chat, SESSION, ())[0].startswith("Note read marks ignored: ")
+    assert chat.load().notes[0].status == "pending"
+
+
+def test_chat_notes_are_limited_like_auto_notes(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    for index in range(25):
+        chat.add(f"n{index}", name="Alpha")
+    with pytest.raises(ConflictError, match="^Alpha already has 25 pending notes$"):
+        chat.add("one more", name="Alpha")
+
+
+def test_a_saved_intent_is_credited_only_when_its_round_completed(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    chat.add("once", name="Alpha")
+    chat.add("twice", name="Alpha")
+    chat.record_intent(3, ["N1"], ["N2"])
+
+    chat.reconcile(SESSION, {3: "error"}.get)
+    assert not chat.intent_path.exists()
+    assert [note.status for note in chat.load().notes] == ["pending", "pending"]
+
+    chat.record_intent(4, ["N1"], ["N2"])
+    view = chat.turn_start(SESSION, {4: "complete"}.get)
+
+    assert [note.status for note in chat.load().notes] == ["delivered", "delivered"]
+    assert view.seen == ()
+    assert not chat.intent_path.exists()
+
+
+def test_apply_intent_credits_and_removes_it(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    chat.add("x", name="Alpha")
+    chat.record_intent(1, ["N1"], [])
+
+    chat.apply_intent(SESSION)
+
+    assert chat.load().notes[0].status == "delivered"
+    assert not chat.intent_path.exists()
+    chat.apply_intent(SESSION)  # nothing left: a no-op
+
+
+@pytest.mark.parametrize("body", ["not json", '{"round": "1", "seen": [], "marked": []}', '{"round": 1}', "[]"])
+def test_a_corrupt_intent_is_dropped(tmp_path: Path, body: str) -> None:
+    chat = _chat(tmp_path)
+    chat.add("x", name="Alpha")
+    chat.intent_path.write_text(body)
+
+    chat.reconcile(SESSION, lambda n: "complete")
+
+    assert chat.load().notes[0].status == "pending"
+    assert not chat.intent_path.exists()
+
+
+def test_the_intent_lives_outside_the_workspace(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    assert chat.intent_path == tmp_path / "s" / "notes-credit.json"
+    assert chat.view_path.parent == chat.marks_path.parent == tmp_path / "s" / "workspace"
+
+
+def test_the_chat_wording_of_the_notes_prompt() -> None:
+    text = notes_prompt(
+        Path("/w/delibra-notes.json"), live=True, marks_path=Path("/w/delibra-notes-read.json"),
+        sent="to you in this conversation", overrides="the message",
+    )
+    assert text.startswith(" Notes the user sent to you in this conversation are in /w/delibra-notes.json.")
+    assert text.endswith("overrides the message where they conflict.")
+    assert notes_prompt(Path("/v"), live=True, marks_path=None).startswith(
+        " Notes the user sent during this run are in /v."
+    )

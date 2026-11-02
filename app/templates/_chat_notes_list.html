@@ -1,0 +1,22 @@
+<div id="chat-notes-list" class="auto-notes-list" data-notes-mode="chat" data-session-id="{{ chat_notes_session_id }}" data-notes-revision="{{ chat_notes_revision }}"{% if not chat_notes_shown %} hidden{% endif %}{% if notes_oob|default(false) %} hx-swap-oob="outerHTML"{% endif %}>
+  {% if chat_notes %}
+    <ul>
+      {% for note in chat_notes %}
+        <li class="auto-note {{ note.status }}">
+          <p class="auto-note-meta">{{ note.id }} · {{ note.status }}{% if note.marked_by %} · marked read{% endif %}</p>
+          <pre class="auto-note-text">{{ note.text }}</pre>
+          {% if note.status == 'pending' %}
+            <form
+              method="post"
+              action="{{ project_url(project.name, '/sessions/' ~ chat_notes_session_id ~ '/chat-notes/' ~ note.id ~ '/delete') }}"
+              hx-post="{{ project_url(project.name, '/sessions/' ~ chat_notes_session_id ~ '/chat-notes/' ~ note.id ~ '/delete') }}"
+              hx-swap="none"
+            >
+              <button type="submit" aria-label="Delete {{ note.id }}">Delete</button>
+            </form>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</div>

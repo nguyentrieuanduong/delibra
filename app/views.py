@@ -15,7 +15,7 @@ from app.models import (
     TurnUsage,
     total_turn_usage,
 )
-from app.notes import NOTE_MAX_CHARS, NoteStore
+from app.notes import NOTE_MAX_CHARS, NoteStore, chat_note_store
 from app.storage import (
     NotFoundError,
     ProjectStore,
@@ -276,6 +276,7 @@ def agent_views(
                 "preview_status": preview_status,
                 "latest_round": latest.n if latest is not None else None,
                 "context_occupancy": context_occupancy(session),
+                "replying": chat_reply_running(session),
             }
         )
     return views
@@ -283,6 +284,54 @@ def agent_views(
 
 # A blocking question pauses a run as "stopped"; Continue Auto resumes it.
 NOTE_RUN_STATUSES = frozenset({"preparing", "discussing", "stopped"})
+
+
+def chat_reply_running(session: SessionConfig) -> bool:
+    """A chat reply is under way: not an Auto turn and not a compaction (B5)."""
+
+    last = session.rounds[-1] if session.rounds else None
+    return (
+        session.status == "running"
+        and last is not None
+        and last.status == "running"
+        and last.auto is None
+        and last.source.type != "compact"
+    )
+
+
+def chat_notes_context(
+    store: ProjectStore,
+    session: SessionConfig | None,
+    *,
+    auto_active: bool,
+    auto_open: bool,
+) -> dict[str, Any]:
+    """One agent's notes to its running chat reply, newest first (design B).
+
+    Sending needs a running chat reply; the list stays visible whenever no
+    Auto run takes notes, so an idle agent's notes can be read and deleted.
+    """
+
+    replying = session is not None and chat_reply_running(session) and not auto_active
+    shown = replying or not auto_open
+    if session is None:
+        return {
+            "chat_notes": [],
+            "chat_notes_session_id": "",
+            "chat_notes_agent": "",
+            "chat_notes_revision": 0,
+            "chat_notes_replying": False,
+            "chat_notes_shown": shown,
+        }
+    book = chat_note_store(store, session.id).load()
+    return {
+        "chat_notes": sorted(book.notes, key=lambda note: note.number, reverse=True),
+        "chat_notes_session_id": session.id,
+        "chat_notes_agent": session.name,
+        "chat_notes_revision": book.revision,
+        "chat_notes_replying": replying,
+        "chat_notes_shown": shown,
+    }
 
 
 def accepts_notes(record: AutoRunRecord | None) -> bool:

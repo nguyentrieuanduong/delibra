@@ -27,7 +27,7 @@
       <div class="conversation-top" data-conversation-top>
         <div class="conversation-input">
           {% include "_composer.html" %}
-          {% with notes=notes_box.notes, note_counts=notes_box.note_counts, note_marked=notes_box.note_marked, note_participants=notes_box.note_participants, notes_revision=notes_box.notes_revision, notes_open=notes_box.notes_open, note_max=notes_box.note_max %}
+          {% with notes=notes_box.notes, note_counts=notes_box.note_counts, note_marked=notes_box.note_marked, note_participants=notes_box.note_participants, notes_revision=notes_box.notes_revision, notes_open=notes_box.notes_open, note_max=notes_box.note_max, chat_notes=chat_notes_box.chat_notes, chat_notes_session_id=chat_notes_box.chat_notes_session_id, chat_notes_agent=chat_notes_box.chat_notes_agent, chat_notes_revision=chat_notes_box.chat_notes_revision, chat_notes_replying=chat_notes_box.chat_notes_replying, chat_notes_shown=chat_notes_box.chat_notes_shown %}
             {% include "_auto_notes.html" %}
           {% endwith %}
         </div>
@@ -66,7 +66,10 @@
           </p>
         {% endif -%}
       </div>
-      {% include "_timeline.html" %}
+      <div class="chat-timeline-frame" id="chat-timeline-frame">
+        {% include "_timeline.html" %}
+        <button type="button" class="timeline-latest" data-timeline-latest aria-label="Go to the latest message" hidden>↓ Latest</button>
+      </div>
     </section>
 
     <aside

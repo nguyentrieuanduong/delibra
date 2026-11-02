@@ -7,14 +7,17 @@ available participant has completed a turn whose turn-start view held it.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
-from typing import Any
+import stat
+from typing import TYPE_CHECKING, Any
 
+from app.coding import open_without_symlinks
 from app.questions import OutboxError
 from app.storage import (
     ConflictError,
@@ -27,6 +30,9 @@ from app.storage import (
     utc_now,
 )
 
+
+if TYPE_CHECKING:
+    from app.storage import ProjectStore
 
 HISTORY_NAME = "notes-history.json"
 VIEW_NAME = "notes.json"
@@ -225,9 +231,9 @@ def render_view(book: NoteBook, auto_run: int) -> NoteView:
 class NoteStore:
     """The project's note files. Every caller that writes holds the project lock."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, view_path: Path | None = None) -> None:
         self.history_path = root / HISTORY_NAME
-        self.view_path = root / VIEW_NAME
+        self.view_path = view_path if view_path is not None else root / VIEW_NAME
 
     def load(self) -> NoteBook:
         backup = self.history_path.with_name(f"{self.history_path.name}.bak")
@@ -328,7 +334,14 @@ class NoteStore:
         self._save(book, auto_run)
 
 
-def notes_prompt(view_path: Path, *, live: bool, marks_path: Path | None) -> str:
+def notes_prompt(
+    view_path: Path,
+    *,
+    live: bool,
+    marks_path: Path | None,
+    sent: str = "during this run",
+    overrides: str = "the topic",
+) -> str:
     """Name the notes view; promise mid-turn notes only when the file is live,
     and ask for read marks only when the turn has somewhere to write them."""
 
@@ -347,8 +360,149 @@ def notes_prompt(view_path: Path, *, live: bool, marks_path: Path | None) -> str
         else ""
     )
     return (
-        f" Notes the user sent during this run are in {view_path.as_posix()}."
+        f" Notes the user sent {sent} are in {view_path.as_posix()}."
         + reading
         + marking
-        + " Treat its notes as user direction that overrides the topic where they conflict."
+        + f" Treat its notes as user direction that overrides {overrides} where they conflict."
     )
+
+
+# Notes to a running chat reply (design 2026-11-02): one agent's own history,
+# with the view and read marks in its workspace, which a chat turn can read
+# and write. Every chat note carries this run number.
+CHAT_NOTES_RUN = 0
+CHAT_VIEW_NAME = "delibra-notes.json"
+CHAT_MARKS_NAME = "delibra-notes-read.json"
+CHAT_INTENT_NAME = "notes-credit.json"
+
+
+def _read_marks(path: Path) -> bytes | None:
+    """The agent's marks, opened without following a symlink anywhere."""
+
+    try:
+        descriptor = open_without_symlinks(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise OutboxError(f"read marks are unavailable: {exc}") from exc
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OutboxError("read marks are not a regular file")
+        return handle.read(MARKS_MAX_BYTES + 1)
+
+
+class ChatNoteStore:
+    """One agent's notes to its running chat reply. Writers hold that session's lock.
+
+    A completed reply is credited in two steps around saving its round: the
+    credit intent is written first (beside the history, where the agent cannot
+    write), applied once the round is saved, and reconciled at the next turn
+    start if the process stopped in between (Codex follow-up, 2026-11-02).
+    """
+
+    def __init__(self, session_dir: Path, workspace: Path) -> None:
+        self._store = NoteStore(session_dir, view_path=workspace / CHAT_VIEW_NAME)
+        self.view_path = workspace / CHAT_VIEW_NAME
+        self.marks_path = workspace / CHAT_MARKS_NAME
+        self.intent_path = session_dir / CHAT_INTENT_NAME
+
+    def load(self) -> NoteBook:
+        return self._store.load()
+
+    def add(self, text: str, *, name: str) -> Note:
+        if len(self.load().pending(CHAT_NOTES_RUN)) >= MAX_PENDING_NOTES:
+            raise ConflictError(f"{name} already has {MAX_PENDING_NOTES} pending notes")
+        return self._store.add(text, auto_run=CHAT_NOTES_RUN)
+
+    def delete(self, note_id: str) -> Note:
+        return self._store.delete(note_id)
+
+    def clear(self) -> int:
+        self.intent_path.unlink(missing_ok=True)
+        return self._store.clear()
+
+    def turn_start(
+        self, session_id: str, round_status: Callable[[int], str | None]
+    ) -> NoteView:
+        """The view a chat turn starts with, after settling an earlier reply's
+        credit; stale marks from an earlier turn go."""
+
+        self.reconcile(session_id, round_status)
+        self.marks_path.unlink(missing_ok=True)
+        return self._store.refresh_view(CHAT_NOTES_RUN)
+
+    def read_credit(self) -> tuple[list[str], list[str]]:
+        """The ids the reply marked read, and the warnings they earn. Reads only."""
+
+        warnings: list[str] = []
+        marked: list[str] = []
+        try:
+            data = _read_marks(self.marks_path)
+            if data is not None:
+                marked = parse_marks(data)
+        except OutboxError as exc:
+            warnings.append(f"Note read marks ignored: {exc}")
+        known = {note.id for note in self.load().notes}
+        unknown = [item for item in marked if item not in known]
+        if unknown:
+            warnings.append(f"Note read marks name unknown notes: {', '.join(unknown)}")
+        return marked, warnings
+
+    def apply_credit(
+        self, session_id: str, seen: Collection[str], marked: Collection[str]
+    ) -> None:
+        """Credit a reply whose completion is already saved."""
+
+        self._store.record_delivery(
+            CHAT_NOTES_RUN, session_id, seen, [session_id], marked=marked
+        )
+        self.marks_path.unlink(missing_ok=True)
+
+    def record_intent(
+        self, round_n: int, seen: Collection[str], marked: Collection[str]
+    ) -> None:
+        """Before the reply's completion is saved: what to credit if it is."""
+
+        atomic_write_json(
+            self.intent_path,
+            {"round": round_n, "seen": list(seen), "marked": list(marked)},
+        )
+
+    def apply_intent(self, session_id: str) -> None:
+        """Credit the saved intent and remove it."""
+
+        intent = self._load_intent()
+        if intent is not None:
+            self.apply_credit(session_id, intent["seen"], intent["marked"])
+        self.intent_path.unlink(missing_ok=True)
+
+    def reconcile(
+        self, session_id: str, round_status: Callable[[int], str | None]
+    ) -> None:
+        """Credit an intent whose round was saved complete; drop any other."""
+
+        intent = self._load_intent()
+        if intent is not None and round_status(intent["round"]) == "complete":
+            self.apply_credit(session_id, intent["seen"], intent["marked"])
+        self.intent_path.unlink(missing_ok=True)
+
+    def _load_intent(self) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self.intent_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return None  # an unreadable intent credits nothing rather than guess
+        if (
+            not isinstance(data, dict)
+            or type(data.get("round")) is not int
+            or not isinstance(data.get("seen"), list)
+            or not isinstance(data.get("marked"), list)
+            or not all(isinstance(item, str) for item in data["seen"] + data["marked"])
+        ):
+            return None
+        return data
+
+
+def chat_note_store(store: "ProjectStore", session_id: str) -> ChatNoteStore:
+    return ChatNoteStore(store.session_dir(session_id), store.workspace_dir(session_id))

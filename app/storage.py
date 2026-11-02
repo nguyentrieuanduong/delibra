@@ -1647,6 +1647,8 @@ class RegistryStore:
 
 
 SKILLS_DIRNAME = "skills"
+# The skills index a Continue's turns read (one per resumption, 2026-11-02).
+CONTINUE_SKILLS_ARTIFACT = re.compile(r"skills-continue-[1-9][0-9]{0,3}\.md")
 
 
 def _check_skill_destination(destination: str) -> None:
@@ -1658,7 +1660,7 @@ def _check_skill_destination(destination: str) -> None:
         or destination.startswith("/")
         or any(part in {"", ".", ".."} for part in parts)
     ):
-        raise OwnershipError(f"Auto skill copy path is invalid: {destination!r}")
+        raise OwnershipError(f"skill copy path is invalid: {destination!r}")
 
 
 class ProjectStore:
@@ -1859,6 +1861,32 @@ class ProjectStore:
         except CodingPolicyError as exc:
             raise StorageError(str(exc)) from exc
         return self._save_coding(policy)
+
+    def chat_skills(self) -> list[str]:
+        """Skills chat turns and discussion runs read (design 2026-11-02)."""
+
+        value = self._load_manifest().get("chat_skills", [])
+        if not isinstance(value, list) or any(
+            type(item) is not str or not Path(item).is_absolute() for item in value
+        ):
+            raise StorageError("chat skill files are invalid")
+        return list(value)
+
+    def set_chat_skills(self, values: object) -> list[str]:
+        try:
+            paths = normalize_skill_paths(values)
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
+        if paths and first_unsafe_writable_root_character(str(self.project_path)) is not None:
+            raise StorageError(
+                "This project's path has characters Claude's read rules cannot express, "
+                "so chat agents could not read the skills; leave the list empty or move "
+                "the project"
+            )
+        manifest = self._load_manifest()
+        manifest["chat_skills"] = paths
+        atomic_write_json_recovery_pair(self.manifest_path, manifest)
+        return paths
 
     def set_coding_env(self, state: CodingEnvState) -> CodingPolicy:
         policy = self.coding_policy()
@@ -2296,7 +2324,7 @@ class ProjectStore:
         return self._auto_location(auto_id).path
 
     def skills_dir(self, auto_id: str) -> Path:
-        """The read-only copy of a build run's skills (agents cannot write .delibra)."""
+        """Where a build run made before the shared folders (2026-11-02) keeps its own copy."""
 
         return self.auto_run_dir(auto_id) / SKILLS_DIRNAME
 
@@ -2420,7 +2448,6 @@ class ProjectStore:
         shared_context: bytes | None = None,
         guidance: bytes | None = None,
         skills_index: bytes | None = None,
-        skill_files: list[tuple[str, bytes]] | None = None,
     ) -> AutoRunRecord:
         self._validate_auto_record(record, self.project.id)
         if (record.skills is None) != (skills_index is None):
@@ -2431,8 +2458,6 @@ class ProjectStore:
             and sha256(skills_index).hexdigest() != record.skills.sha256
         ):
             raise OwnershipError("Auto skills digest does not match")
-        for relative, _contents in skill_files or []:
-            _check_skill_destination(relative)
         if (record.guidance is None) != (guidance is None):
             raise OwnershipError("Auto guidance metadata does not match")
         if (
@@ -2503,15 +2528,6 @@ class ProjectStore:
                     self._auto_artifact_path(temporary, record.skills, "skills.md"),
                     skills_index,
                 )
-                skills_root = temporary / SKILLS_DIRNAME
-                skills_root.mkdir(mode=0o700)
-                for relative, contents in skill_files or []:
-                    target = skills_root / relative
-                    for folder in reversed(target.parents):
-                        if folder.is_relative_to(skills_root) and folder != skills_root:
-                            folder.mkdir(mode=0o700, exist_ok=True)
-                    _assert_no_symlink_components(target, skills_root, allow_missing_leaf=True)
-                    atomic_write_bytes(target, contents)
             atomic_write_json(temporary / "config.json", record.to_dict())
             os.replace(temporary, destination)
             published = True
@@ -2568,6 +2584,18 @@ class ProjectStore:
             legacy=False,
         )
 
+    def write_continue_skills(self, auto_id: str, resumption: int, index: bytes) -> AutoArtifact:
+        """The skills index a Continue's turns read, kept beside the run's own."""
+
+        artifact = AutoArtifact(f"skills-continue-{resumption}.md", sha256(index).hexdigest())
+        if not CONTINUE_SKILLS_ARTIFACT.fullmatch(artifact.path):
+            raise OwnershipError("Auto artifact path is invalid")
+        run_dir = self.auto_run_dir(auto_id)
+        path = run_dir / artifact.path
+        _assert_no_symlink_components(path, run_dir, allow_missing_leaf=True)
+        atomic_write_bytes(path, index)
+        return artifact
+
     def load_auto_artifact(
         self,
         auto_id: str,
@@ -2578,7 +2606,7 @@ class ProjectStore:
             raise ValueError("Auto artifact limit must be positive")
         if artifact.path not in {
             "topic.md", "baseline.md", "shared-context.md", "guidance.md", "skills.md"
-        }:
+        } and not CONTINUE_SKILLS_ARTIFACT.fullmatch(artifact.path):
             raise OwnershipError("Auto artifact path is invalid")
         if not SHA256_PATTERN.fullmatch(artifact.sha256):
             raise OwnershipError("Auto artifact digest is invalid")

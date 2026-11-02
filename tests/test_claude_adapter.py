@@ -707,3 +707,31 @@ def test_chat_turn_argv_is_unchanged_by_coding_support() -> None:
     assert "Bash" not in argv[argv.index("--tools") + 1]
     assert "--settings" not in argv
     assert "--disallowedTools" not in argv
+
+
+@pytest.mark.parametrize("strategy,resume_id", [("native", None), ("native", "thread"), ("stateless", None)])
+def test_a_system_note_follows_the_role_and_never_enters_the_prompt(strategy, resume_id) -> None:
+    run_context = RunContext(
+        user_prompt="Investigate.", resume_id=resume_id, resume_strategy=strategy,
+        staged_history=[], staged_source=None, workspace=Path("/session/workspace"),
+        system_note="Skills you may read are listed in /p/.delibra/skills/chat-index.md",
+    )
+    command = ClaudeAdapter().build_command(config(), run_context)
+    system = command.argv[command.argv.index("--append-system-prompt") + 1]
+    assert system == (
+        "Begin with ROLE-CLAUDE-OK.\n\n"
+        "Skills you may read are listed in /p/.delibra/skills/chat-index.md"
+    )
+    if strategy == "stateless":
+        assert f"Role instructions (reapplied):\n{system}\n" in command.stdin
+    else:
+        assert "chat-index.md" not in command.stdin
+
+
+def test_an_empty_system_note_keeps_the_role_exactly() -> None:
+    run_context = RunContext(
+        user_prompt="Investigate.", resume_id=None, resume_strategy="native",
+        staged_history=[], staged_source=None,
+    )
+    command = ClaudeAdapter().build_command(config(), run_context)
+    assert command.argv[command.argv.index("--append-system-prompt") + 1] == "Begin with ROLE-CLAUDE-OK."
