@@ -16,7 +16,6 @@ from fastapi.templating import Jinja2Templates
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
-from app.build_git import default_git_exclude
 from app.coding import CodingEnvState, DockerPolicy, build_capable, cli_newer_than_verified
 from app.config import Settings
 from app.docker_backend import DockerController
@@ -46,8 +45,6 @@ from app.storage import (
     ConflictError,
     LockCoordinator,
     NotFoundError,
-    ProjectFileDisplayError,
-    ProjectFileSecurityError,
     ProjectStore,
     RegistryStore,
     StorageError,
@@ -324,77 +321,6 @@ def create_app(
     async def project_primary(request: Request, project_id: str):
         project = request_project(request, project_id)
         return RedirectResponse(project_url(project.name, "/chat"), status_code=303)
-
-    @app.get("/projects/{project_id}/settings", response_class=HTMLResponse)
-    async def project_settings(request: Request, project_id: str):
-        project = request_project(request, project_id)
-        store = ProjectStore(project)
-        sessions = store.list_sessions()
-        shared_markdown_path = store.selected_shared_markdown_path()
-        shared_markdown_available: bool | None = None
-        if shared_markdown_path is not None:
-            try:
-                store.read_selected_shared_markdown(
-                    request.app.state.settings.file_view_limit
-                )
-            except (ProjectFileDisplayError, ProjectFileSecurityError):
-                shared_markdown_available = False
-            else:
-                shared_markdown_available = True
-        migration = store.session_migration_status()
-        migration_issue_lists: dict[str, list[str]] = {}
-        for issue in migration.issues:
-            migration_issue_lists.setdefault(issue.session_id, []).append(issue.message)
-        migration_issues = {
-            session_id: tuple(messages)
-            for session_id, messages in migration_issue_lists.items()
-        }
-        auto_migration_issues = store.auto_migration_status().issues
-        configured_turn_timeout = store.configured_turn_timeout_seconds()
-        coding = store.coding_policy()
-        docker_lima = (
-            await request.app.state.docker_controller.lima_status()
-            if coding.docker.enabled
-            else None
-        )
-        effective_turn_timeout = store.effective_turn_timeout_seconds(
-            request.app.state.settings.run_timeout,
-            maximum=request.app.state.settings.max_run_timeout,
-        )
-        return templates.TemplateResponse(
-            request=request,
-            name="project.html",
-            context={
-                "project": project,
-                "sessions": sessions,
-                "shared_markdown_path": shared_markdown_path,
-                "shared_markdown_available": shared_markdown_available,
-                "health": request.app.state.health,
-                "effort_levels": {
-                    "claude": ClaudeAdapter.EFFORT_LEVELS,
-                    "codex": CodexAdapter.EFFORT_LEVELS,
-                },
-                "auto_active": store.active_auto_run_id() is not None,
-                "legacy_session_ids": frozenset(migration.legacy_session_ids),
-                "migration_issues": migration_issues,
-                "auto_migration_issues": auto_migration_issues,
-                "pass_prompt_template": store.effective_pass_prompt_template(),
-                "writable_roots": store.effective_writable_roots(),
-                "coding": coding,
-                "git_exclude_lines": (
-                    coding.git_exclude if coding.git_exclude is not None else default_git_exclude()
-                ),
-                "coding_local": is_loopback_client(request),
-                "guidance_presets": request.app.state.settings.guidance_presets,
-                "docker_lima": docker_lima,
-                "turn_timeout_seconds": effective_turn_timeout,
-                "configured_turn_timeout_seconds": configured_turn_timeout,
-                "turn_timeout_inherited": configured_turn_timeout is None,
-                "max_turn_timeout_seconds": (
-                    request.app.state.settings.max_run_timeout
-                ),
-            },
-        )
 
     return app
 

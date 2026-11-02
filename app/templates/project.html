@@ -4,6 +4,7 @@
 {% block body_class %}settings-page{% endblock %}
 {% block content %}
   {% from "_path_picker_macros.html" import browse_button %}
+  {% if error %}<div hidden data-page-alert>{{ error }}</div>{% endif %}
   <p><a href="/">Projects</a> · <a href="{{ project_url(project.name, '/chat') }}">Chat</a></p>
   <h1>{{ project.name }}</h1>
   <p><code>{{ project.path }}</code></p>
@@ -58,6 +59,23 @@
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Save writable roots</button>
     </form>
   </section>
+  <section aria-labelledby="chat-skills-heading">
+    <h2 id="chat-skills-heading">Skills for chat and discussion</h2>
+    {% if not coding_local %}<p class="hint">Only this machine can change this list.</p>{% endif %}
+    <form method="post" action="{{ project_url(project.name, '/chat-skills') }}">
+      <label>Skills for chat and discussion
+        <textarea id="chat-skills" name="chat_skills" maxlength="262144">{{ chat_skills_text }}</textarea>
+      </label>
+      {% if coding_local %}{{ browse_button("/browse?mode=guidance", "chat-skills") }}{% endif %}
+      <p class="hint">Markdown files (a skill's SKILL.md with its references/ files) that chat replies and Auto discussion runs may read. Delibra keeps one copy in <code>.delibra/skills/chat/</code> and refreshes it when a file changes. Build runs use their own list under Coding. At most 512 files and 4 MB. One absolute path per line.</p>
+      <button type="submit" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save skills</button>
+      {% for preset in guidance_presets if preset.skills %}
+      <button type="submit" name="chat_preset" value="{{ preset.name }}" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Use {{ preset.name }} skills</button>
+      {% else %}
+      <p class="hint">{% if coding_local %}Add presets with skills in <a href="/settings">Settings</a>.{% else %}Presets are set on this machine's Settings page.{% endif %}</p>
+      {% endfor %}
+    </form>
+  </section>
   <section aria-labelledby="coding-heading">
     <h2 id="coding-heading">Coding</h2>
     {% if not coding_local %}<p class="hint">Only this machine can change coding settings.</p>{% endif %}
@@ -94,7 +112,7 @@
         <textarea id="coding-guidance-skills" name="guidance_skills" maxlength="262144">{{ coding.guidance_skills|join('\n') }}</textarea>
       </label>
       {% if coding_local %}{{ browse_button("/browse?mode=guidance", "coding-guidance-skills") }}{% endif %}
-      <p class="hint">Markdown files copied read-only into each build run for agents to read when they need them (a skill's SKILL.md with its references/ files). At most 512 files and 4 MB. One absolute path per line.</p>
+      <p class="hint">Markdown files build agents read when they need them (a skill's SKILL.md with its references/ files). Delibra keeps one copy in <code>.delibra/skills/build/</code> and refreshes it when a file changes. At most 512 files and 4 MB. One absolute path per line.</p>
       {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
       <button type="submit" data-disable-during-auto{% if auto_active or not coding_local %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save coding settings</button>
       {% for preset in guidance_presets %}

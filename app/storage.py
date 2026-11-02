@@ -1860,6 +1860,32 @@ class ProjectStore:
             raise StorageError(str(exc)) from exc
         return self._save_coding(policy)
 
+    def chat_skills(self) -> list[str]:
+        """Skills chat turns and discussion runs read (design 2026-11-02)."""
+
+        value = self._load_manifest().get("chat_skills", [])
+        if not isinstance(value, list) or any(
+            type(item) is not str or not Path(item).is_absolute() for item in value
+        ):
+            raise StorageError("chat skill files are invalid")
+        return list(value)
+
+    def set_chat_skills(self, values: object) -> list[str]:
+        try:
+            paths = normalize_skill_paths(values)
+        except CodingPolicyError as exc:
+            raise StorageError(str(exc)) from exc
+        if paths and first_unsafe_writable_root_character(str(self.project_path)) is not None:
+            raise StorageError(
+                "This project's path has characters Claude's read rules cannot express, "
+                "so chat agents could not read the skills; leave the list empty or move "
+                "the project"
+            )
+        manifest = self._load_manifest()
+        manifest["chat_skills"] = paths
+        atomic_write_json_recovery_pair(self.manifest_path, manifest)
+        return paths
+
     def set_coding_env(self, state: CodingEnvState) -> CodingPolicy:
         policy = self.coding_policy()
         policy.env = state

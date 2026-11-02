@@ -1893,3 +1893,33 @@ def test_tampered_coding_settings_fail_closed(tmp_path: Path) -> None:
     store.manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(OwnershipError):
         store.coding_policy()
+
+
+def test_chat_skills_are_saved_apart_from_build_skills(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    store = ProjectStore(RegistryStore(tmp_path / "home").register("Alpha", project_dir))
+    skill = tmp_path / "s" / "vi-humanize" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# vi\n")
+
+    assert store.chat_skills() == []
+    assert store.set_chat_skills([str(skill)]) == [str(skill)]
+    assert store.chat_skills() == [str(skill)]
+    assert store.coding_policy().guidance_skills == []
+    with pytest.raises(StorageError, match="must be an absolute path to a .md file"):
+        store.set_chat_skills(["relative.md"])
+    assert store.set_chat_skills([]) == []
+
+
+def test_chat_skills_are_refused_where_claude_rules_cannot_reach_the_project(tmp_path: Path) -> None:
+    project_dir = tmp_path / "a,b" / "project"
+    project_dir.mkdir(parents=True)
+    store = ProjectStore(RegistryStore(tmp_path / "home").register("Alpha", project_dir))
+    skill = tmp_path / "s" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# vi\n")
+
+    with pytest.raises(StorageError, match="^This project's path has characters Claude's read rules"):
+        store.set_chat_skills([str(skill)])
+    assert store.set_chat_skills([]) == []

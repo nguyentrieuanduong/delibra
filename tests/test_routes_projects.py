@@ -1628,7 +1628,7 @@ def test_the_coding_page_shows_the_skills_box(tmp_path, monkeypatch) -> None:
         + "\n".join(skills)
         + "</textarea>"
     ) in page
-    assert "Markdown files copied read-only into each build run" in page
+    assert "Delibra keeps one copy in <code>.delibra/skills/build/</code>" in page
 
 
 def test_an_invalid_skill_list_is_refused_and_keeps_settings(tmp_path, monkeypatch) -> None:
@@ -2345,3 +2345,121 @@ def test_home_page_shows_registered_and_activity_times(tmp_path) -> None:
 
     assert re.search(r'Registered <time datetime="[^"]+">\d{4}-\d\d-\d\d \d\d:\d\d UTC</time>', page)
     assert "Last activity <time" in page
+
+
+def test_chat_skills_save_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(
+            f"{prefix}/chat-skills",
+            data={"chat_skills": "\n".join(skills) + "\n\n"},
+            follow_redirects=False,
+        )
+        page = client.get(f"{prefix}/settings").text
+    with TestClient(app, base_url="http://localhost", client=LAN) as remote:
+        refused = remote.post(f"{prefix}/chat-skills", data={"chat_skills": ""})
+
+    store = ProjectStore(project)
+    assert saved.status_code == 303
+    assert store.chat_skills() == skills
+    assert store.coding_policy().guidance_skills == []
+    assert (
+        '<textarea id="chat-skills" name="chat_skills" maxlength="262144">'
+        + "\n".join(skills)
+        + "</textarea>"
+    ) in page
+    assert "Delibra keeps one copy in <code>.delibra/skills/chat/</code>" in page
+    assert refused.status_code == 403
+    assert store.chat_skills() == skills
+
+
+def test_a_refused_chat_skills_save_pops_up_and_keeps_the_text(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    typed = "/no/such/skill/SKILL.md"
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/chat-skills", data={"chat_skills": typed})
+
+    assert response.status_code == 422
+    assert "data-page-alert" in response.text
+    assert "Nothing was saved: " in response.text
+    assert f">{typed}</textarea>" in response.text
+    assert ProjectStore(project).chat_skills() == []
+
+
+def test_a_preset_button_copies_its_skills_into_the_chat_list(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    router = tmp_path / "router.md"
+    router.write_text("# Router\n")
+    app, project, _dir, prefix = coding_project(
+        tmp_path,
+        monkeypatch,
+        guidance_presets=(
+            GuidancePreset("files-only", (str(router),)),
+            GuidancePreset("zeta", (), tuple(skills)),
+            GuidancePreset("a<b", (str(router),), (skills[0],)),
+        ),
+    )
+
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("the chat skills button must not read a folder")
+
+    monkeypatch.setattr("app.coding._scan", no_scan)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings").text
+        saved = client.post(
+            f"{prefix}/chat-skills",
+            data={"chat_skills": "", "chat_preset": "zeta"},
+            follow_redirects=False,
+        )
+
+    zeta = page.index('name="chat_preset" value="zeta" data-disable-during-auto')
+    escaped = page.index('name="chat_preset" value="a&lt;b" data-disable-during-auto')
+    assert zeta < escaped
+    assert ">Use zeta skills</button>" in page
+    assert 'name="chat_preset" value="files-only"' not in page
+    assert saved.status_code == 303
+    store = ProjectStore(project)
+    assert store.chat_skills() == skills
+    assert store.coding_policy().guidance_skills == []
+    assert store.coding_policy().guidance_files == []
+
+
+def test_a_bad_chat_skills_preset_is_refused_and_keeps_the_text(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    app, project, _dir, prefix = coding_project(
+        tmp_path, monkeypatch, guidance_presets=(GuidancePreset("zeta", (), tuple(skills)),)
+    )
+    ProjectStore(project).set_chat_skills(skills[:1])
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        unknown = client.post(
+            f"{prefix}/chat-skills", data={"chat_skills": "typed", "chat_preset": "code-craft"}
+        )
+        Path(skills[1]).unlink()
+        missing = client.post(
+            f"{prefix}/chat-skills", data={"chat_skills": "typed", "chat_preset": "zeta"}
+        )
+
+    assert unknown.status_code == 422
+    assert (
+        "Nothing was saved: Unknown guidance preset &#39;code-craft&#39;; "
+        "the chat skills were not changed"
+    ) in unknown.text
+    assert ">typed</textarea>" in unknown.text
+    assert missing.status_code == 422
+    assert "Nothing was saved: Guidance preset &#39;zeta&#39;: " in missing.text
+    assert ProjectStore(project).chat_skills() == skills[:1]
+
+
+def test_no_preset_with_skills_links_to_global_settings_from_the_chat_section(
+    tmp_path, monkeypatch
+) -> None:
+    app, _project, _dir, prefix = coding_project(
+        tmp_path, monkeypatch, guidance_presets=(GuidancePreset("files-only", ("/opt/a.md",)),)
+    )
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings").text
+
+    section = page.split('id="chat-skills-heading"', 1)[1].split("</section>", 1)[0]
+    assert 'name="chat_preset"' not in section
+    assert 'Add presets with skills in <a href="/settings">Settings</a>.' in section
