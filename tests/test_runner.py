@@ -2381,3 +2381,113 @@ async def test_an_adopted_conda_env_is_activated_as_conda(tmp_path, monkeypatch)
     env = spawned[-1]["env"]
     assert env["CONDA_PREFIX"] == str(store.project_path / "envs")
     assert "VIRTUAL_ENV" not in env
+
+
+def _chat_skill(tmp_path: Path, description: str = "Viết tự nhiên.") -> Path:
+    skill = tmp_path / "src" / "vi-humanize" / "SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text(f"---\nname: vi-humanize\ndescription: {description}\n---\n")
+    return skill
+
+
+@pytest.mark.asyncio
+async def test_a_chat_turn_reads_the_chat_skills_without_changing_the_prompt(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    skill = _chat_skill(tmp_path)
+    store.set_chat_skills([str(skill)])
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    folder = store.root / "skills" / "chat"
+    index = store.root / "skills" / "chat-index.md"
+    assert (folder / "vi-humanize" / "SKILL.md").read_bytes() == skill.read_bytes()
+    assert f"Skills you may read are listed in {index.as_posix()}" in contexts[0].system_note
+    assert contexts[0].user_prompt == "Question"
+    assert (store.rounds_dir(session_id) / "round-01.prompt.md").read_text() == "Question"
+
+
+@pytest.mark.asyncio
+async def test_a_chat_turn_without_chat_skills_has_no_skills_note(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert "Skills you may read" not in contexts[0].system_note
+    assert not (store.root / "skills" / "chat").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_bad_chat_skill_refuses_the_send_before_a_round(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    skill = _chat_skill(tmp_path)
+    store.set_chat_skills([str(skill)])
+    skill.unlink()
+
+    with pytest.raises(StorageError, match="^Skill file changed or is unavailable: "):
+        await manager.start(project_id, session_id, "Question")
+    assert store.load_session(session_id).rounds == []
+
+
+@pytest.mark.asyncio
+async def test_the_chat_folder_is_not_rewritten_while_another_agent_replies(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    skill = _chat_skill(tmp_path)
+    store.set_chat_skills([str(skill)])
+    await manager.wait(await manager.start(project_id, session_id, "First"))
+    other = session("b" * 32, mode="sleep")
+    store.create_session(other)
+    await manager.start(project_id, other.id, "Hold")
+    _chat_skill(tmp_path, "EDITED")
+
+    await manager.wait(await manager.start(project_id, session_id, "Second"))
+
+    copied = store.root / "skills" / "chat" / "vi-humanize" / "SKILL.md"
+    assert "EDITED" not in copied.read_text()
+    assert "Skills you may read" in contexts[-1].system_note
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_bad_chat_skill_is_refused_even_while_another_agent_replies(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    skill = _chat_skill(tmp_path)
+    store.set_chat_skills([str(skill)])
+    await manager.wait(await manager.start(project_id, session_id, "First"))
+    other = session("b" * 32, mode="sleep")
+    store.create_session(other)
+    await manager.start(project_id, other.id, "Hold")
+    skill.unlink()
+    (tmp_path / "elsewhere.md").write_text("---\nname: x\n---\n")
+    skill.symlink_to(tmp_path / "elsewhere.md")
+
+    with pytest.raises(StorageError, match="^Skill file changed or is unavailable: "):
+        await manager.start(project_id, session_id, "Second")
+    assert len(store.load_session(session_id).rounds) == 1
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_missing_chat_index_is_not_rewritten_while_another_agent_replies(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    skill = _chat_skill(tmp_path)
+    store.set_chat_skills([str(skill)])
+    await manager.wait(await manager.start(project_id, session_id, "First"))
+    other = session("b" * 32, mode="sleep")
+    store.create_session(other)
+    await manager.start(project_id, other.id, "Hold")
+    (store.root / "skills" / "chat-index.md").unlink()
+    copied = store.root / "skills" / "chat" / "vi-humanize" / "SKILL.md"
+    before = copied.stat().st_mtime_ns
+    _chat_skill(tmp_path, "EDITED")
+
+    record = await manager.wait(await manager.start(project_id, session_id, "Second"))
+
+    assert record.status == "complete"
+    assert "Skills you may read" not in contexts[-1].system_note
+    assert copied.stat().st_mtime_ns == before
+    assert not (store.root / "skills" / "chat-index.md").exists()
+    await manager.shutdown()

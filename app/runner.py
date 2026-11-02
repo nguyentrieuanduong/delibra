@@ -54,6 +54,7 @@ from app.models import (
     TimeoutRecord,
     TurnUsage,
 )
+from app.skill_folders import chat_skills_note, refresh_skill_folder, skill_index_path
 from app.storage import (
     CodexRolloutState,
     ConflictError,
@@ -555,6 +556,33 @@ class RunManager:
         except (OSError, UnicodeError) as exc:
             raise StorageError("retry prompt is unavailable") from exc
 
+    async def _chat_skills_note(
+        self, store: ProjectStore, project_id: str, session_id: str
+    ) -> str:
+        """Check the chat skills list on every send and name its index (design A).
+
+        The folder is not rewritten while another turn of the project runs: that
+        turn may be reading it. The caller holds the project lock, so no turn
+        starts meanwhile.
+        """
+
+        others = any(
+            key.project_id == project_id and key.session_id != session_id
+            for key in self._active
+        )
+        snapshot = await asyncio.to_thread(
+            refresh_skill_folder,
+            store.root,
+            "chat",
+            store.chat_skills(),
+            rewrite=not others,
+        )
+        return (
+            chat_skills_note(skill_index_path(store.root, "chat"))
+            if snapshot is not None
+            else ""
+        )
+
     async def _start_locked(
         self,
         project_id: str,
@@ -586,6 +614,11 @@ class RunManager:
             # spent. Awaited, not scheduled: this is the moment a stale figure
             # would be acted on. Auto keeps its own pre-dispatch check.
             await self.refresh_codex_quota()
+
+        chat_turn = auto_request is None and not request.compact
+        system_note = (
+            await self._chat_skills_note(store, project_id, session_id) if chat_turn else ""
+        )
 
         round_n = store.allocate_round(session_id)
         key = RunKey(project_id, session_id, round_n)
@@ -821,6 +854,7 @@ class RunManager:
                 else None
             ),
             coding=coding_context,
+            system_note=system_note,
         )
         try:
             adapter = self.adapter_factory(config)
