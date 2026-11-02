@@ -1658,7 +1658,7 @@ def _check_skill_destination(destination: str) -> None:
         or destination.startswith("/")
         or any(part in {"", ".", ".."} for part in parts)
     ):
-        raise OwnershipError(f"Auto skill copy path is invalid: {destination!r}")
+        raise OwnershipError(f"skill copy path is invalid: {destination!r}")
 
 
 class ProjectStore:
