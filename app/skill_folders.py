@@ -69,6 +69,8 @@ def _read_digest(path: Path) -> str | None:
 
 def read_skill_index(delibra_root: Path, mode: SkillMode) -> bytes | None:
     path = skill_index_path(delibra_root, mode)
+    if not os.path.lexists(skills_root(delibra_root)):
+        return None  # no skills folder has ever been written
     _assert_no_symlink_components(path, delibra_root, allow_missing_leaf=True)
     try:
         return path.read_bytes()

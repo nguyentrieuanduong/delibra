@@ -156,3 +156,11 @@ def test_a_copy_outside_its_folder_is_refused(tmp_path: Path, destination: str) 
 def test_the_chat_note_names_the_index() -> None:
     note = chat_skills_note(Path("/p/.delibra/skills/chat-index.md"))
     assert note.startswith("Skills you may read are listed in /p/.delibra/skills/chat-index.md")
+
+
+def test_a_project_without_a_skills_folder_has_no_index(tmp_path: Path) -> None:
+    root = _delibra(tmp_path)
+
+    assert read_skill_index(root, "chat") is None
+    assert read_skill_index(root, "build") is None
+    assert not (root / "skills").exists()

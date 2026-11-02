@@ -133,3 +133,39 @@ def test_an_unknown_docker_backend_is_rejected() -> None:
                          "host_loopback_closed": None, "local_endpoint": None}
     with pytest.raises((ValueError, TypeError)):
         AutoRunRecord.from_dict(payload)
+
+
+def test_a_discussion_record_keeps_its_skills_and_digest_only_when_it_has_them() -> None:
+    from app.models import AutoArtifact
+
+    plain = AutoRunRecord.from_dict(dict(BASE))
+    assert "skills" not in plain.to_dict() and "skills_digest" not in plain.to_dict()
+
+    data = dict(BASE, skills={"path": "skills.md", "sha256": "1" * 64}, skills_digest="2" * 64)
+    record = AutoRunRecord.from_dict(data)
+
+    assert record.kind == "discussion"
+    assert record.skills == AutoArtifact("skills.md", "1" * 64)
+    assert record.skills_digest == "2" * 64
+    assert AutoRunRecord.from_dict(record.to_dict()) == record
+    assert "kind" not in record.to_dict()
+    with pytest.raises(ValueError, match="skills_digest"):
+        AutoRunRecord.from_dict(dict(data, skills_digest="not hex"))
+
+
+def test_a_resumption_records_its_skills_only_when_recorded() -> None:
+    from app.models import AutoArtifact, AutoResumption
+
+    old = AutoResumption("2026-11-02T00:00:00Z", "stopped", 2, 60)
+    assert "skills" not in old.to_dict()
+    assert AutoResumption.from_dict(old.to_dict()).skills_recorded is False
+
+    cleared = AutoResumption("2026-11-02T00:00:00Z", "stopped", 2, 60, skills_recorded=True)
+    assert cleared.to_dict()["skills"] is None
+    assert AutoResumption.from_dict(cleared.to_dict()) == cleared
+
+    kept = AutoResumption(
+        "2026-11-02T00:00:00Z", "stopped", 2, 60, skills_recorded=True,
+        skills=AutoArtifact("skills-continue-1.md", "3" * 64), skills_digest="4" * 64,
+    )
+    assert AutoResumption.from_dict(kept.to_dict()) == kept

@@ -1647,6 +1647,8 @@ class RegistryStore:
 
 
 SKILLS_DIRNAME = "skills"
+# The skills index a Continue's turns read (one per resumption, 2026-11-02).
+CONTINUE_SKILLS_ARTIFACT = re.compile(r"skills-continue-[1-9][0-9]{0,3}\.md")
 
 
 def _check_skill_destination(destination: str) -> None:
@@ -2582,6 +2584,18 @@ class ProjectStore:
             legacy=False,
         )
 
+    def write_continue_skills(self, auto_id: str, resumption: int, index: bytes) -> AutoArtifact:
+        """The skills index a Continue's turns read, kept beside the run's own."""
+
+        artifact = AutoArtifact(f"skills-continue-{resumption}.md", sha256(index).hexdigest())
+        if not CONTINUE_SKILLS_ARTIFACT.fullmatch(artifact.path):
+            raise OwnershipError("Auto artifact path is invalid")
+        run_dir = self.auto_run_dir(auto_id)
+        path = run_dir / artifact.path
+        _assert_no_symlink_components(path, run_dir, allow_missing_leaf=True)
+        atomic_write_bytes(path, index)
+        return artifact
+
     def load_auto_artifact(
         self,
         auto_id: str,
@@ -2592,7 +2606,7 @@ class ProjectStore:
             raise ValueError("Auto artifact limit must be positive")
         if artifact.path not in {
             "topic.md", "baseline.md", "shared-context.md", "guidance.md", "skills.md"
-        }:
+        } and not CONTINUE_SKILLS_ARTIFACT.fullmatch(artifact.path):
             raise OwnershipError("Auto artifact path is invalid")
         if not SHA256_PATTERN.fullmatch(artifact.sha256):
             raise OwnershipError("Auto artifact digest is invalid")
