@@ -193,6 +193,62 @@ function syncConversationDisclosure(timeline) {
   return true;
 }
 
+// The conversation runs oldest → newest, so the last in DOM order is newest.
+function latestMessage(timeline) {
+  if (!timeline || typeof timeline.querySelectorAll !== "function") {
+    return null;
+  }
+  const messages = timeline.querySelectorAll(".round, .live-round");
+  return messages.length ? messages[messages.length - 1] : null;
+}
+
+// "↓ Latest" shows only while the start of the last message is outside the
+// panel. New rounds never move the reader; this is the way down.
+function syncLatestButton(documentRoot) {
+  if (!documentRoot || typeof documentRoot.querySelector !== "function") {
+    return false;
+  }
+  const button = documentRoot.querySelector("[data-timeline-latest]");
+  const timeline = documentRoot.querySelector("#chat-timeline");
+  if (!button) {
+    return false;
+  }
+  const latest = latestMessage(timeline);
+  if (!latest) {
+    button.hidden = true;
+    return false;
+  }
+  const view = timeline.getBoundingClientRect();
+  const top = latest.getBoundingClientRect().top;
+  const away = top < view.top || top >= view.bottom;
+  button.hidden = !away;
+  return away;
+}
+
+function goToLatestMessage(documentRoot) {
+  const timeline = documentRoot.querySelector("#chat-timeline");
+  const latest = latestMessage(timeline);
+  if (!latest) {
+    return false;
+  }
+  const details = latest.querySelector(".round-details");
+  if (details) {
+    details.open = true;
+  }
+  const view = documentRoot.defaultView;
+  const reduced = Boolean(
+    view && view.matchMedia && view.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+  timeline.scrollTo({
+    top:
+      timeline.scrollTop +
+      latest.getBoundingClientRect().top -
+      timeline.getBoundingClientRect().top,
+    behavior: reduced ? "auto" : "smooth",
+  });
+  return true;
+}
+
 // Every sse:status replaces #auto-status, and a fresh stream replays the run's
 // events, so an opened Stop disclosure would otherwise snap shut under the
 // reader before they can choose.
@@ -785,6 +841,8 @@ function syncProjectListControls(form, search) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     appendPickedPaths,
+    goToLatestMessage,
+    syncLatestButton,
     applyPathPicker,
     autoSetupPlacement,
     captureAutoStopDisclosure,
@@ -831,6 +889,47 @@ if (typeof document !== "undefined") {
   const autoStopDisclosureSnapshots = new WeakMap();
 
   initializeDynamicPresentation(document);
+
+  syncLatestButton(document);
+  document.addEventListener("click", function (event) {
+    if (event.target.closest && event.target.closest("[data-timeline-latest]")) {
+      goToLatestMessage(document);
+    }
+  });
+  // Scroll does not bubble; capture sees the timeline's own scrolling.
+  document.addEventListener(
+    "scroll",
+    function (event) {
+      if (event.target && event.target.id === "chat-timeline") {
+        syncLatestButton(document);
+      }
+    },
+    true
+  );
+  window.addEventListener("resize", function () {
+    syncLatestButton(document);
+  });
+  // Opening a message or streaming text moves the last message without any
+  // scroll. An IntersectionObserver cannot tell when the top edge of a message
+  // taller than the panel crosses it, so watch every message's size instead.
+  const latestResize =
+    typeof ResizeObserver === "function"
+      ? new ResizeObserver(function () {
+          syncLatestButton(document);
+        })
+      : null;
+  function observeMessages() {
+    if (!latestResize) {
+      return;
+    }
+    latestResize.disconnect();
+    document
+      .querySelectorAll("#chat-timeline .round, #chat-timeline .live-round")
+      .forEach(function (message) {
+        latestResize.observe(message);
+      });
+  }
+  observeMessages();
 
   window.addEventListener("load", function () {
     // After load, so the page is drawn behind the alert.
@@ -938,6 +1037,9 @@ if (typeof document !== "undefined") {
         conversationScrollSnapshots.delete(detail.xhr);
       }
     }
+    // After the reading position is restored: the swap may have added a round.
+    observeMessages();
+    syncLatestButton(document);
     if (detail.xhr && autoStopDisclosureSnapshots.has(detail.xhr)) {
       restoreAutoStopDisclosure(
         document,
