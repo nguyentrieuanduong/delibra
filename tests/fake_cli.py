@@ -38,6 +38,18 @@ def main() -> int:
         Path(args.source).write_text("mutated by target\n", encoding="utf-8")
 
     mode = args.mode
+    if mode == "mark-notes":
+        # A chat turn that reads its notes view and marks every note read.
+        view = json.loads(Path("delibra-notes.json").read_text(encoding="utf-8"))
+        Path("delibra-notes-read.json").write_text(
+            json.dumps({"read": [note["id"] for note in view["notes"]]}), encoding="utf-8"
+        )
+        mode = "success"
+    if mode == "echo-notes":
+        # A chat turn whose answer is the notes view it started with.
+        emit({"kind": "init", "session_id": "fake-native-session"})
+        emit({"kind": "result", "text": Path("delibra-notes.json").read_text(encoding="utf-8")})
+        return 0
     if mode == "codex-auth-event":
         emit({"kind": "error", "text": CODEX_REVOKED})
         return 1

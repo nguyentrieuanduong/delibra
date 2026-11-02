@@ -285,6 +285,19 @@ def agent_views(
 NOTE_RUN_STATUSES = frozenset({"preparing", "discussing", "stopped"})
 
 
+def chat_reply_running(session: SessionConfig) -> bool:
+    """A chat reply is under way: not an Auto turn and not a compaction (B5)."""
+
+    last = session.rounds[-1] if session.rounds else None
+    return (
+        session.status == "running"
+        and last is not None
+        and last.status == "running"
+        and last.auto is None
+        and last.source.type != "compact"
+    )
+
+
 def accepts_notes(record: AutoRunRecord | None) -> bool:
     return (
         record is not None

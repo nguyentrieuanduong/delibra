@@ -54,6 +54,7 @@ from app.models import (
     TimeoutRecord,
     TurnUsage,
 )
+from app.notes import chat_note_store, notes_prompt
 from app.skill_folders import chat_skills_note, refresh_skill_folder, skill_index_path
 from app.storage import (
     CodexRolloutState,
@@ -136,6 +137,8 @@ class ActiveRun:
     deadline_changed: asyncio.Event
     auto_request: AutoRunRequest | None = None
     compact: bool = False
+    # A chat reply's turn-start notes view; None for Auto and compaction turns.
+    chat_notes_seen: tuple[str, ...] | None = None
     resumed: bool = False
     task: asyncio.Task[None] | None = None
     captured: bytearray = field(default_factory=bytearray)
@@ -556,6 +559,18 @@ class RunManager:
         except (OSError, UnicodeError) as exc:
             raise StorageError("retry prompt is unavailable") from exc
 
+    def replying(self, project_id: str, session_id: str) -> bool:
+        """Whether the agent is mid-way through a chat reply (not Auto, not compaction)."""
+
+        return any(
+            key.project_id == project_id
+            and key.session_id == session_id
+            and active.auto_request is None
+            and not active.compact
+            and not active.finalized
+            for key, active in self._active.items()
+        )
+
     async def _chat_skills_note(
         self, store: ProjectStore, project_id: str, session_id: str
     ) -> str:
@@ -616,9 +631,23 @@ class RunManager:
             await self.refresh_codex_quota()
 
         chat_turn = auto_request is None and not request.compact
-        system_note = (
-            await self._chat_skills_note(store, project_id, session_id) if chat_turn else ""
-        )
+        chat_notes_seen: tuple[str, ...] | None = None
+        system_note = ""
+        if chat_turn:
+            skills_note = await self._chat_skills_note(store, project_id, session_id)
+            notes = chat_note_store(store, session_id)
+            # Settles an earlier reply's credit before building this view.
+            chat_notes_seen = notes.turn_start(
+                session_id, {item.n: item.status for item in config.rounds}.get
+            ).seen
+            notes_note = notes_prompt(
+                notes.view_path,
+                live=True,
+                marks_path=notes.marks_path,
+                sent="to you in this conversation",
+                overrides="the message",
+            ).strip()
+            system_note = "\n\n".join(part for part in (skills_note, notes_note) if part)
 
         round_n = store.allocate_round(session_id)
         key = RunKey(project_id, session_id, round_n)
@@ -967,6 +996,7 @@ class RunManager:
             deadline_changed=asyncio.Event(),
             auto_request=auto_request,
             compact=request.compact,
+            chat_notes_seen=chat_notes_seen,
             resumed=resume_id is not None,
             warnings=list(record.warnings),
         )
@@ -1960,6 +1990,19 @@ class RunManager:
                 active.usage = None
                 active.context_reading = None
 
+        chat_credit = False
+        if status == "complete" and active.chat_notes_seen is not None:
+            try:
+                notes = chat_note_store(active.store, active.key.session_id)
+                marked, note_warnings = notes.read_credit()
+                # Written before the round is saved; credited once it is, or
+                # by the next turn start if the process stops in between.
+                notes.record_intent(record.n, active.chat_notes_seen, marked)
+                active.warnings.extend(note_warnings)
+                chat_credit = True
+            except Exception:
+                LOGGER.exception("Could not read chat note marks for %s", active.key)
+                active.warnings.append("Notes could not be credited to this reply")
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
         record.usage = active.usage
@@ -2002,6 +2045,14 @@ class RunManager:
                 record.auto = replace(record.auto, verdict=None)
             LOGGER.exception("Failed to persist terminal metadata for %s", active.key)
 
+        if chat_credit and metadata_persisted and record.status == "complete":
+            try:
+                chat_note_store(active.store, active.key.session_id).apply_intent(
+                    active.key.session_id
+                )
+            except Exception:
+                # The intent stays; the next turn start credits it.
+                LOGGER.exception("Could not credit chat notes for %s", active.key)
         if output_persisted and metadata_persisted:
             active.partial_path.unlink(missing_ok=True)
         if record.status == "error":

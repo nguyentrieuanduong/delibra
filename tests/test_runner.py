@@ -2491,3 +2491,136 @@ async def test_a_missing_chat_index_is_not_rewritten_while_another_agent_replies
     assert copied.stat().st_mtime_ns == before
     assert not (store.root / "skills" / "chat-index.md").exists()
     await manager.shutdown()
+
+
+from app.notes import ChatNoteStore, chat_note_store  # noqa: E402
+from app.views import chat_reply_running  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_a_pending_chat_note_reaches_the_next_reply_and_is_delivered(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    notes = chat_note_store(store, session_id)
+    notes.add("Answer in Vietnamese", name="A")
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    view = store.workspace_dir(session_id) / "delibra-notes.json"
+    assert (
+        f"Notes the user sent to you in this conversation are in {view.as_posix()}"
+        in contexts[0].system_note
+    )
+    assert "delibra-notes-read.json" in contexts[0].system_note
+    assert contexts[0].user_prompt == "Question"
+    [note] = notes.load().notes
+    assert (note.status, note.delivered_to) == ("delivered", [session_id])
+    assert not notes.intent_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_marks_written_by_the_reply_are_credited(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="mark-notes")
+    notes = chat_note_store(store, session_id)
+    notes.add("x", name="A")
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert notes.load().notes[0].marked_by == [session_id]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reply_delivers_nothing(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="nonzero")
+    notes = chat_note_store(store, session_id)
+    notes.add("x", name="A")
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert notes.load().notes[0].status == "pending"
+    assert not notes.intent_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_reply_whose_end_cannot_be_saved_delivers_nothing(tmp_path: Path, monkeypatch) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    notes = chat_note_store(store, session_id)
+    notes.add("x", name="A")
+    original = ProjectStore.save_session
+
+    def failing(self, config, *args, **kwargs):
+        if config.status != "running":
+            raise StorageError("disk full")
+        return original(self, config, *args, **kwargs)
+
+    monkeypatch.setattr(ProjectStore, "save_session", failing)
+    record = await manager.wait(await manager.start(project_id, session_id, "Question"))
+    monkeypatch.undo()
+
+    assert record.status == "error"
+    assert notes.load().notes[0].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_reply_saved_before_its_credit_is_credited_after_a_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    notes = chat_note_store(store, session_id)
+    notes.add("Only once", name="A")
+
+    def stop(self, session_id):
+        raise RuntimeError("the process stops here")
+
+    # The process "stops" between saving the reply and crediting its notes.
+    monkeypatch.setattr(ChatNoteStore, "apply_intent", stop)
+    first = await manager.wait(await manager.start(project_id, session_id, "First"))
+    monkeypatch.undo()
+    assert first.status == "complete"
+    assert notes.load().notes[0].status == "pending"
+    assert notes.intent_path.exists()
+
+    restarted = RunManager(
+        registry=manager.registry,
+        locks=LockCoordinator(),
+        settings=manager.settings,
+        adapter_factory=AdapterFactory(),
+        final_writer=atomic_write_text,
+        codex_executable="/missing/codex",
+    )
+    config = store.load_session(session_id)
+    config.model = "echo-notes"
+    store.save_session(config)
+    second = await restarted.wait(await restarted.start(project_id, session_id, "Second"))
+
+    assert second.status == "complete"
+    assert notes.load().notes[0].status == "delivered"
+    assert "Only once" not in (store.rounds_dir(session_id) / "round-02.md").read_text()
+    assert not notes.intent_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_replying_is_true_only_during_a_chat_reply(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path, mode="sleep")
+    assert manager.replying(project_id, session_id) is False
+    await manager.start(project_id, session_id, "Hold")
+    assert manager.replying(project_id, session_id) is True
+    assert chat_reply_running(store.load_session(session_id)) is True
+    await manager.shutdown()
+    assert manager.replying(project_id, session_id) is False
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_is_not_a_reply(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    await manager.wait(await manager.start(project_id, session_id, "First"))
+    config = store.load_session(session_id)
+    config.model = "sleep"
+    store.save_session(config)
+
+    await manager.compact(project_id, session_id)
+
+    assert store.load_session(session_id).status == "running"
+    assert manager.replying(project_id, session_id) is False
+    assert chat_reply_running(store.load_session(session_id)) is False
+    await manager.shutdown()
