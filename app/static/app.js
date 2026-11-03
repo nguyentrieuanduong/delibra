@@ -901,6 +901,8 @@ function syncProjectListControls(form, search) {
 // draws each diagram in an iframe that may not run script (design
 // 2026-11-03); sandboxedMermaidFrame below tightens Mermaid's own flags.
 const MERMAID_CONFIG = { startOnLoad: false, securityLevel: "sandbox" };
+// Least recently used first: Map keeps insertion order, and a hit re-inserts.
+const MERMAID_CACHE_LIMIT = 50;
 const mermaidRenders = new Map();
 let mermaidRenderCount = 0;
 let mermaidLoading = null;
@@ -914,27 +916,33 @@ function mermaidErrorText(error) {
 }
 
 // Auto status swaps replace the whole timeline, so one source is drawn once
-// and its result reused by every later copy of the block.
+// and its result reused by every later copy of the block. Only the
+// MERMAID_CACHE_LIMIT most recently used results are kept.
 function renderMermaidSource(mermaid, source) {
-  if (!mermaidRenders.has(source)) {
-    mermaidRenderCount += 1;
-    mermaidRenders.set(
-      source,
-      Promise.resolve()
-        .then(function () {
-          return mermaid.render("delibra-mermaid-" + mermaidRenderCount, source);
-        })
-        .then(
-          function (result) {
-            return { svg: result.svg };
-          },
-          function (error) {
-            return { error: mermaidErrorText(error) };
-          }
-        )
-    );
+  const cached = mermaidRenders.get(source);
+  if (cached) {
+    mermaidRenders.delete(source);
+    mermaidRenders.set(source, cached);
+    return cached;
   }
-  return mermaidRenders.get(source);
+  mermaidRenderCount += 1;
+  const rendered = Promise.resolve()
+    .then(function () {
+      return mermaid.render("delibra-mermaid-" + mermaidRenderCount, source);
+    })
+    .then(
+      function (result) {
+        return { svg: result.svg };
+      },
+      function (error) {
+        return { error: mermaidErrorText(error) };
+      }
+    );
+  mermaidRenders.set(source, rendered);
+  while (mermaidRenders.size > MERMAID_CACHE_LIMIT) {
+    mermaidRenders.delete(mermaidRenders.keys().next().value);
+  }
+  return rendered;
 }
 
 function loadMermaid(documentRoot) {
@@ -1092,6 +1100,7 @@ if (typeof module !== "undefined" && module.exports) {
     isStalePickerSwap,
     keepComposerText,
     lastPathLine,
+    MERMAID_CACHE_LIMIT,
     mermaidErrorText,
     mermaidFrameSize,
     moveAutoOrderItem,
