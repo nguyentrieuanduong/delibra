@@ -560,6 +560,13 @@ Questions from a failed or stopped turn stay, labelled in red
 "From failed turn" or "From stopped turn", and never pause the run. If the
 watch cannot start, the turn says so and its questions arrive at turn end.
 
+If the agents have not agreed on a point within 3 cycles of it being raised,
+the next agent asks you about it as a blocking question giving each side's
+position, and the agents stop arguing it; a point left to you does not by
+itself keep the run from converging. A turn without a question outbox says
+in its report that you must decide and goes on with its best assumption.
+Delibra does not count the cycles; the agents read them from the turn labels.
+
 The store is `.delibra/questions-history.json`, written only by Delibra.
 Auto agents read `.delibra/questions.json`: open and answered questions,
 latest answer only, newest first. An answer you save while a turn runs

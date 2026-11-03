@@ -182,6 +182,30 @@ def guidance_gate_note(can_ask: bool) -> str:
     )
 
 
+def disagreement_note(can_ask: bool) -> str:
+    """Hand a point the agents cannot settle to the user.
+
+    User decision 2026-11-03: the same 3-cycle count as guidance_gate_note,
+    on every discussion and build turn. Delibra does not count the cycles;
+    the agents read them from the turn labels.
+    """
+
+    handover = (
+        "ask the user about it in one blocking question (blocking true, even "
+        "though each side has an assumption) that states the point and each "
+        "side's position, unless the questions view already has it"
+        if can_ask
+        else "say in your report that the user must decide it, give each side's "
+        "position, and continue on your best assumption"
+    )
+    return (
+        " If the agents have not agreed on a point within 3 cycles of it being "
+        f"raised, {handover}. Then stop arguing that point: the user's answer "
+        "settles it, and a point left to the user is not by itself a reason to "
+        "write Not converged."
+    )
+
+
 def skills_turn_note(skills_dir: Path, context: str) -> str:
     """Where a run's skills are; the index itself is untrusted material."""
 
@@ -2374,6 +2398,7 @@ class AutoManager:
                                     if current.guidance is not None or turn_skills is not None
                                     else ""
                                 )
+                                + disagreement_note(spool_dir is not None)
                             )
                             if current.kind == "build"
                             else (
@@ -2390,6 +2415,7 @@ class AutoManager:
                                     if turn_skills is not None
                                     else ""
                                 )
+                                + disagreement_note(spool_dir is not None)
                             )
                         ) + questions_prompt(
                             view_path, spool_dir, pause_enabled=current.pause_on_blocking_questions

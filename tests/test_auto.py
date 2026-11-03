@@ -25,6 +25,7 @@ from app.auto import (
     AutoStatusEvent,
     ContextEntry,
     ResumeCursor,
+    disagreement_note,
     guidance_gate_note,
     parse_auto_verdict,
     reconstruct_resume_cursor,
@@ -5119,6 +5120,9 @@ async def test_build_turn_context_includes_guidance_snapshot(tmp_path, monkeypat
 
 
 GATE_PHRASE = "the other agents stand in for the user"
+DISAGREEMENT_PHRASE = (
+    "If the agents have not agreed on a point within 3 cycles of it being raised"
+)
 
 
 @pytest.mark.asyncio
@@ -5149,6 +5153,9 @@ async def test_a_build_with_guidance_softens_its_approval_gates(tmp_path, monkey
         assert prompt.index(GATE_PHRASE) < prompt.index(
             "If you need something only the user can decide"
         )
+        assert prompt.index(GATE_PHRASE) < prompt.index(DISAGREEMENT_PHRASE) < prompt.index(
+            "If you need something only the user can decide"
+        )
 
 
 @pytest.mark.asyncio
@@ -5165,6 +5172,7 @@ async def test_a_build_without_guidance_has_no_gate_note(tmp_path, monkeypatch) 
     assert all(GATE_PHRASE not in call["prompt"] for call in factory.calls)
     assert all("Skills you may read" not in call["prompt"] for call in factory.calls)
     assert all(b"## Skills" not in call["material"] for call in factory.calls)
+    assert all(DISAGREEMENT_PHRASE in call["prompt"] for call in factory.calls)
 
 
 def _skill_suite(root: Path) -> list[str]:
@@ -5277,6 +5285,53 @@ def test_the_gate_note_without_a_question_spool_names_the_decision_in_the_report
         "If the agents have not agreed on it within 3 cycles of it being proposed, "
         "say in your report that the user must decide, and continue on your best assumption."
     ) in note
+
+
+def test_the_disagreement_note_asks_the_user_a_blocking_question() -> None:
+    note = disagreement_note(can_ask=True)
+
+    assert note.startswith(" " + DISAGREEMENT_PHRASE + ", ask the user about it")
+    assert "blocking true, even though each side has an assumption" in note
+    assert "unless the questions view already has it" in note
+    assert "stop arguing that point" in note
+    assert "not by itself a reason to write Not converged" in note
+
+
+def test_the_disagreement_note_without_a_spool_names_the_decision_in_the_report() -> None:
+    note = disagreement_note(can_ask=False)
+
+    assert DISAGREEMENT_PHRASE in note
+    assert "blocking" not in note
+    assert (
+        "say in your report that the user must decide it, give each side's "
+        "position, and continue on your best assumption"
+    ) in note
+
+
+@pytest.mark.asyncio
+async def test_discussion_turns_hand_a_point_stuck_for_3_cycles_to_the_user(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("P1", "agree"), PlannedOutput("P2", "agree"),
+                   PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=True,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    preparation = [c for c in factory.calls if "Prepare an independent analysis" in c["prompt"]]
+    discussion = [c for c in factory.calls if "Prepare an independent analysis" not in c["prompt"]]
+    assert discussion and preparation
+    for call in discussion:
+        prompt = call["prompt"]
+        assert DISAGREEMENT_PHRASE in prompt
+        # No chat skills, so no gate note -- the rule stands on its own.
+        assert GATE_PHRASE not in prompt
+        assert prompt.index(DISAGREEMENT_PHRASE) < prompt.index(
+            "The user's questions and answers are in"
+        )
+    assert all(DISAGREEMENT_PHRASE not in call["prompt"] for call in preparation)
 
 
 def _chat_skill_file(tmp_path: Path, description: str) -> Path:
