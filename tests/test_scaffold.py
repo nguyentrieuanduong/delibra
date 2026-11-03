@@ -23,6 +23,7 @@ def test_vendored_htmx_assets_match_recorded_release() -> None:
     expected = {
         "htmx.min.js": "449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452",
         "sse.js": "be05b2e2265279f035271adbea0b72a356f20ce4dfa5870481bfe9c51b822fc1",
+        "mermaid.min.js": "a8a6a6f805b074a8261a2825c86f99c8054acb3b35f50bb7e24a4f9f2c3c3b9f",
     }
 
     for filename, digest in expected.items():
