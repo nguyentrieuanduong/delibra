@@ -1923,3 +1923,31 @@ def test_chat_skills_are_refused_where_claude_rules_cannot_reach_the_project(tmp
     with pytest.raises(StorageError, match="^This project's path has characters Claude's read rules"):
         store.set_chat_skills([str(skill)])
     assert store.set_chat_skills([]) == []
+
+
+def test_the_global_instruction_is_on_unless_a_project_switches_it_off(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    store = ProjectStore(RegistryStore(tmp_path / "home").register("Global", project_dir))
+
+    assert store.use_global_instruction() is True
+    assert store.set_use_global_instruction(False) is False
+    assert store.use_global_instruction() is False
+    assert json.loads(store.manifest_path.read_text())["use_global_instruction"] is False
+    store.set_use_global_instruction(True)
+    assert store.use_global_instruction() is True
+
+
+def test_a_non_boolean_global_instruction_switch_is_refused(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    store = ProjectStore(RegistryStore(tmp_path / "home").register("Global", project_dir))
+
+    with pytest.raises(StorageError, match="must be true or false"):
+        store.set_use_global_instruction("yes")  # type: ignore[arg-type]
+    manifest = json.loads(store.manifest_path.read_text())
+    manifest["use_global_instruction"] = "no"
+    store.manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(OwnershipError, match="global instruction setting is invalid"):
+        store.use_global_instruction()

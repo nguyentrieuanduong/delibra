@@ -18,6 +18,7 @@ import pytest
 from app.agents.base import AgentEvent, Command, DockerAccess, RunContext
 from app.coding import CodingEnvState
 from app.coding_env import developer_tools_dir
+from app.global_instruction import GlobalInstructionError, save_global_instruction
 from app.config import Settings
 from app.models import (
     AutoArtifact,
@@ -2624,3 +2625,45 @@ async def test_a_compaction_is_not_a_reply(tmp_path: Path) -> None:
     assert manager.replying(project_id, session_id) is False
     assert chat_reply_running(store.load_session(session_id)) is False
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_every_turn_reads_the_global_instruction_unless_the_project_opts_out(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    save_global_instruction(manager.settings.home, "Be concise.\n")
+    await manager.wait(await manager.start(project_id, session_id, "First"))
+    # Edited between turns: the next turn reads the new text.
+    save_global_instruction(manager.settings.home, "Cite sources.\n")
+    await manager.wait(await manager.start(project_id, session_id, "Second"))
+    store.set_use_global_instruction(False)
+    await manager.wait(await manager.start(project_id, session_id, "Third"))
+
+    assert [item.global_instruction for item in contexts] == ["Be concise.\n", "Cite sources.\n", ""]
+    assert contexts[0].user_prompt == "First"
+
+
+@pytest.mark.asyncio
+async def test_a_build_turn_reads_the_global_instruction(tmp_path, monkeypatch) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    ready_build_project(store)
+    record_spawns(monkeypatch)
+    save_global_instruction(manager.settings.home, "Be concise.\n")
+
+    await run_auto_turn(manager, project_id, session_id, store, kind="build", build=True)
+
+    assert contexts[0].global_instruction == "Be concise.\n"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_global_instruction_refuses_the_turn(tmp_path: Path) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    (manager.settings.home / "instructions.md").write_bytes(b"\xff")
+
+    with pytest.raises(GlobalInstructionError, match="not valid UTF-8"):
+        await manager.start(project_id, session_id, "Question")
+    assert store.load_session(session_id).rounds == []
+    # Switched off, the project does not read the file at all.
+    store.set_use_global_instruction(False)
+    await manager.wait(await manager.start(project_id, session_id, "Question"))

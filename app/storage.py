@@ -1716,6 +1716,10 @@ class ProjectStore:
                 )
             except StorageError as exc:
                 raise OwnershipError("project turn time limit is invalid") from exc
+        if "use_global_instruction" in manifest and type(
+            manifest["use_global_instruction"]
+        ) is not bool:
+            raise OwnershipError("project global instruction setting is invalid")
         try:
             normalize_writable_roots(manifest.get("writable_roots", []))
         except StorageError as exc:
@@ -1779,6 +1783,21 @@ class ProjectStore:
         manifest["turn_timeout_seconds"] = candidate
         atomic_write_json(self.manifest_path, manifest)
         return candidate
+
+    def use_global_instruction(self) -> bool:
+        """Whether this project's turns get the global instruction; on unless switched off."""
+
+        return self._load_manifest().get("use_global_instruction", True)
+
+    def set_use_global_instruction(self, enabled: bool) -> bool:
+        if type(enabled) is not bool:
+            raise StorageError("The global instruction switch must be true or false")
+        manifest = self._load_manifest()
+        if manifest.get("use_global_instruction", True) is enabled:
+            return enabled
+        manifest["use_global_instruction"] = enabled
+        atomic_write_json(self.manifest_path, manifest)
+        return enabled
 
     def effective_writable_roots(self) -> list[str]:
         return normalize_writable_roots(
