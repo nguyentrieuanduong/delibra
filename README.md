@@ -272,6 +272,14 @@ Markdown links in recorded prompts and outputs open project-owned `.md` and
 absolute links under the registered project root are supported; external,
 non-Markdown, traversal, and out-of-project links are not rewritten.
 
+A fenced ```` ```mermaid ```` block in rendered Markdown (the file reader,
+Focus, and recorded prompts and replies) is drawn as a diagram, with its
+source under **Source**; while a reply is still streaming it shows as text.
+Mermaid 12.2.0 (about 5.5 MB) is vendored and loaded only on pages that have
+a diagram. Each diagram is drawn in a sandboxed frame that runs no script and
+cannot navigate or open windows, so links and click actions inside diagrams
+do nothing. A diagram Mermaid cannot parse shows its source and the error.
+
 ## Auto discussions and live timeouts
 
 Auto runs display and store a per-project number while retaining an internal UUID

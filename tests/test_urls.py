@@ -68,6 +68,8 @@ def test_pages_link_every_static_asset_by_version(tmp_path: Path) -> None:
         "/static/app.css",
         "/static/app.js",
         "/static/htmx.min.js",
+        # data-mermaid-src on <body>: app.js loads it only when a diagram is shown.
+        "/static/mermaid.min.js",
         "/static/sse.js",
     ]
     assert all(re.search(r"\?v=[0-9a-f]{12}$", url) for url in assets)

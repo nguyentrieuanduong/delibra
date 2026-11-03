@@ -1,4 +1,6 @@
 from pathlib import Path
+import shutil
+import subprocess
 from urllib.parse import quote
 
 import pytest
@@ -103,3 +105,17 @@ def test_other_fences_still_render_as_code() -> None:
 
 def test_an_indented_block_saying_mermaid_is_not_a_diagram() -> None:
     assert "data-mermaid" not in str(render_markdown("    mermaid\n    graph TD\n"))
+
+
+def test_mermaid_javascript_contract_runs_under_node() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node unavailable; Mermaid unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_mermaid.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

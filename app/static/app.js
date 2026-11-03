@@ -879,6 +879,179 @@ function syncProjectListControls(form, search) {
   }
 }
 
+// Diagram source is untrusted (agent replies, project files). "sandbox"
+// draws each diagram in an iframe that may not run script (design
+// 2026-11-03); sandboxedMermaidFrame below tightens Mermaid's own flags.
+const MERMAID_CONFIG = { startOnLoad: false, securityLevel: "sandbox" };
+const mermaidRenders = new Map();
+let mermaidRenderCount = 0;
+let mermaidLoading = null;
+
+function mermaidErrorText(error) {
+  const raw = error && error.message ? error.message : error;
+  const text = String(raw === undefined || raw === null ? "unknown error" : raw)
+    .replace(/\s+/g, " ")
+    .trim();
+  return (text || "unknown error").slice(0, 300);
+}
+
+// Auto status swaps replace the whole timeline, so one source is drawn once
+// and its result reused by every later copy of the block.
+function renderMermaidSource(mermaid, source) {
+  if (!mermaidRenders.has(source)) {
+    mermaidRenderCount += 1;
+    mermaidRenders.set(
+      source,
+      Promise.resolve()
+        .then(function () {
+          return mermaid.render("delibra-mermaid-" + mermaidRenderCount, source);
+        })
+        .then(
+          function (result) {
+            return { svg: result.svg };
+          },
+          function (error) {
+            return { error: mermaidErrorText(error) };
+          }
+        )
+    );
+  }
+  return mermaidRenders.get(source);
+}
+
+function loadMermaid(documentRoot) {
+  const view = documentRoot.defaultView;
+  if (view.mermaid) {
+    return Promise.resolve(view.mermaid);
+  }
+  if (!mermaidLoading) {
+    mermaidLoading = new Promise(function (resolve, reject) {
+      const script = documentRoot.createElement("script");
+      script.src = documentRoot.body.dataset.mermaidSrc;
+      script.onload = function () {
+        const dark = Boolean(
+          view.matchMedia && view.matchMedia("(prefers-color-scheme: dark)").matches
+        );
+        view.mermaid.initialize(
+          Object.assign({ theme: dark ? "dark" : "default" }, MERMAID_CONFIG)
+        );
+        resolve(view.mermaid);
+      };
+      script.onerror = function () {
+        mermaidLoading = null;
+        reject(new Error("the diagram library did not load"));
+      };
+      documentRoot.head.appendChild(script);
+    });
+  }
+  return mermaidLoading;
+}
+
+// Mermaid sizes its frame to the diagram's full height, but the SVG inside
+// shrinks to a narrow column, leaving a blank band. The SVG's viewBox, in the
+// frame's data URL, gives the proportions to shrink the frame with it.
+function mermaidFrameSize(src) {
+  const match = /^data:[^,]*;base64,(.*)$/.exec(String(src || ""));
+  if (!match) {
+    return null;
+  }
+  let markup;
+  try {
+    markup = atob(match[1]);
+  } catch (error) {
+    return null;
+  }
+  const box = /viewBox="[-\d.]+ [-\d.]+ ([\d.]+) ([\d.]+)"/.exec(markup);
+  const width = box ? Number(box[1]) : 0;
+  const height = box ? Number(box[2]) : 0;
+  return width > 0 && height > 0 ? { width: width, height: height } : null;
+}
+
+// Mermaid's sandbox frame still allows top navigation on click and popups
+// (Codex review H1, seen on 12.2.0), so only a lone iframe is accepted and
+// its sandbox is emptied while it sits in an inert template, before it
+// ever loads.
+function sandboxedMermaidFrame(documentRoot, markup) {
+  const template = documentRoot.createElement("template");
+  template.innerHTML = markup;
+  const content = template.content;
+  const frame = content.firstElementChild;
+  const strayText = Array.from(content.childNodes).some(function (node) {
+    return node.nodeType === 3 && node.textContent.trim() !== "";
+  });
+  if (content.childElementCount !== 1 || frame.tagName !== "IFRAME" || strayText) {
+    return null;
+  }
+  frame.setAttribute("sandbox", "");
+  const size = mermaidFrameSize(frame.getAttribute("src"));
+  if (size) {
+    frame.style.maxWidth = size.width + "px";
+    frame.style.aspectRatio = size.width + " / " + size.height;
+    frame.style.height = "auto";
+  }
+  return frame;
+}
+
+function showMermaidResult(block, result) {
+  const documentRoot = block.ownerDocument;
+  const source = block.querySelector(".mermaid-source");
+  const frame = result.error ? null : sandboxedMermaidFrame(documentRoot, result.svg);
+  if (!frame) {
+    const message = documentRoot.createElement("p");
+    message.className = "mermaid-error";
+    message.textContent =
+      "Diagram could not be rendered: " + (result.error || "unexpected diagram output");
+    block.insertBefore(message, source);
+    block.dataset.mermaidState = "error";
+    return;
+  }
+  const figure = documentRoot.createElement("div");
+  figure.className = "mermaid-figure";
+  figure.append(frame);
+  const details = documentRoot.createElement("details");
+  const summary = documentRoot.createElement("summary");
+  summary.textContent = "Source";
+  details.append(summary, source);
+  block.replaceChildren(figure, details);
+  block.dataset.mermaidState = "rendered";
+}
+
+// Loads the library only when a page has a diagram to draw.
+function renderMermaidBlocks(documentRoot) {
+  const blocks = Array.from(
+    documentRoot.querySelectorAll("[data-mermaid]:not([data-mermaid-state])")
+  );
+  if (!blocks.length) {
+    return Promise.resolve(0);
+  }
+  blocks.forEach(function (block) {
+    block.dataset.mermaidState = "pending";
+  });
+  return loadMermaid(documentRoot)
+    .then(
+      function (mermaid) {
+        return Promise.all(
+          blocks.map(function (block) {
+            const source = block.querySelector(".mermaid-source");
+            return renderMermaidSource(mermaid, source ? source.textContent : "").then(
+              function (result) {
+                showMermaidResult(block, result);
+              }
+            );
+          })
+        );
+      },
+      function (error) {
+        blocks.forEach(function (block) {
+          showMermaidResult(block, { error: mermaidErrorText(error) });
+        });
+      }
+    )
+    .then(function () {
+      return blocks.length;
+    });
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     appendPickedPaths,
@@ -900,12 +1073,15 @@ if (typeof module !== "undefined" && module.exports) {
     isStalePickerSwap,
     keepComposerText,
     lastPathLine,
+    mermaidErrorText,
+    mermaidFrameSize,
     moveAutoOrderItem,
     openAutoSetup,
     openFocusDialog,
     openPathPicker,
     openQuestionsPanelForNew,
     pickerUrl,
+    renderMermaidSource,
     removeConversationEmptyState,
     resetFileReader,
     renderChatError,
@@ -932,6 +1108,12 @@ if (typeof document !== "undefined") {
   initializeDynamicPresentation(document);
 
   syncLatestButton(document);
+  renderMermaidBlocks(document);
+  // After settle, not afterSwap: an outerHTML swap's event target is the
+  // replaced element, and OOB swaps land elsewhere. One scan finds them all.
+  document.addEventListener("htmx:afterSettle", function () {
+    renderMermaidBlocks(document);
+  });
   document.addEventListener("click", function (event) {
     if (event.target.closest && event.target.closest("[data-timeline-latest]")) {
       goToLatestMessage(document);
