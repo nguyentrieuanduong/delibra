@@ -2506,3 +2506,23 @@ def test_the_project_page_says_when_the_global_instruction_is_set_or_unreadable(
 
     assert "Added before each agent's role instructions" in set_page
     assert "The global instruction is not valid UTF-8; turns are refused" in bad_page
+
+
+@pytest.mark.parametrize("value", ["tru", "maybe"])
+def test_an_unknown_global_instruction_switch_value_is_refused(tmp_path: Path, value: str) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "project-global"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Global", project_dir)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/global-instruction",
+            data={"use_global_instruction": value},
+            follow_redirects=False,
+        )
+
+    # Same rule as the other checkbox routes: a value that is not a boolean is
+    # refused instead of being read as "off".
+    assert response.status_code == 422
+    assert ProjectStore(project).use_global_instruction() is True

@@ -679,14 +679,15 @@ async def save_turn_timeout(
 async def save_global_instruction_use(
     request: Request,
     project_id: str,
-    use_global_instruction: str = Form(""),
+    use_global_instruction: bool = Form(False),
 ):
     project = request_project(request, project_id)
     resolved_project_id = project.id
     async with request.app.state.locks.registry_project_sessions(resolved_project_id):
         project = request.app.state.registry.get(resolved_project_id)
-        # An unticked checkbox sends nothing.
-        ProjectStore(project).set_use_global_instruction(use_global_instruction == "true")
+        # An unticked checkbox sends nothing; FastAPI refuses a non-boolean
+        # value with 422, as for the other checkbox routes here.
+        ProjectStore(project).set_use_global_instruction(use_global_instruction)
     return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
 
