@@ -9,6 +9,8 @@ from typing import Literal, Protocol
 from app.agents.errors import ProviderErrorInfo
 from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsage
 
+GLOBAL_INSTRUCTION_HEADER = "Global instructions from the user:"
+
 
 EventKind = Literal[
     "init",
@@ -120,6 +122,9 @@ class RunContext:
     # Delibra's per-turn instructions for chat turns (skills, notes). Sent on
     # the system channel, so the recorded user prompt stays what was typed.
     system_note: str = ""
+    # The user's global instruction (Settings), read for this turn; "" when
+    # unset or the project switched it off. Sent on the system channel.
+    global_instruction: str = ""
 
 
 def shared_context_section(context: RunContext) -> str:
@@ -135,10 +140,27 @@ def shared_context_section(context: RunContext) -> str:
     )
 
 
-def system_instructions(config: SessionConfig, context: RunContext) -> str:
-    """Role instructions, then the turn's system note; the role alone when empty."""
+def _global_section(context: RunContext) -> str:
+    text = context.global_instruction.rstrip()
+    return f"{GLOBAL_INSTRUCTION_HEADER}\n{text}" if text else ""
 
-    return "\n\n".join(part for part in (config.role_instructions, context.system_note) if part)
+
+def system_instructions(config: SessionConfig, context: RunContext) -> str:
+    """Global instruction, role instructions, then the turn's system note; empty parts dropped."""
+
+    return "\n\n".join(
+        part
+        for part in (_global_section(context), config.role_instructions, context.system_note)
+        if part
+    )
+
+
+def build_system_instructions(config: SessionConfig, context: RunContext) -> str:
+    """Build turns: global instruction then role; their notes travel in the prompt."""
+
+    return "\n\n".join(
+        part for part in (_global_section(context), config.role_instructions) if part
+    )
 
 
 @dataclass(frozen=True)
