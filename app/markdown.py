@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlencode, urlsplit
 
 from markupsafe import Markup
 from markdown_it import MarkdownIt
+from markdown_it.common.utils import escapeHtml
 from markdown_it.token import Token
 
 from app.models import Project
@@ -34,6 +35,23 @@ _MARKDOWN = MarkdownIt(
         "typographer": False,
     },
 )
+
+
+def _render_fence(self, tokens: list[Token], idx: int, options, env) -> str:
+    """A ```mermaid fence becomes a marker app.js draws; others render as code."""
+
+    token = tokens[idx]
+    words = token.info.split(maxsplit=1)
+    if not words or words[0].casefold() != "mermaid":
+        return self.fence(tokens, idx, options, env)
+    return (
+        '<div class="mermaid-diagram" data-mermaid>'
+        f'<pre class="mermaid-source">{escapeHtml(token.content)}</pre>'
+        "</div>\n"
+    )
+
+
+_MARKDOWN.add_render_rule("fence", _render_fence)
 
 
 def _project_markdown_path(href: str, project: Project) -> tuple[str, str] | None:
