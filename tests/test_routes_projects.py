@@ -2463,3 +2463,46 @@ def test_no_preset_with_skills_links_to_global_settings_from_the_chat_section(
     section = page.split('id="chat-skills-heading"', 1)[1].split("</section>", 1)[0]
     assert 'name="chat_preset"' not in section
     assert 'Add presets with skills in <a href="/settings">Settings</a>.' in section
+
+
+def test_the_project_global_instruction_switch_renders_and_saves(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "project-global"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Global", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        before = client.get(f"{prefix}/settings").text
+        off = client.post(f"{prefix}/global-instruction", data={}, follow_redirects=False)
+        after_off = client.get(f"{prefix}/settings").text
+        assert ProjectStore(project).use_global_instruction() is False
+        on = client.post(
+            f"{prefix}/global-instruction",
+            data={"use_global_instruction": "true"},
+            follow_redirects=False,
+        )
+
+    assert 'name="use_global_instruction" value="true" checked' in before
+    assert "The global instruction is empty, so nothing is added." in before
+    assert off.status_code == 303 and on.status_code == 303
+    assert 'name="use_global_instruction" value="true">' in after_off
+    assert ProjectStore(project).use_global_instruction() is True
+
+
+def test_the_project_page_says_when_the_global_instruction_is_set_or_unreadable(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "project-global"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Global", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    path = settings.home / "instructions.md"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        path.write_text("Be concise.\n")
+        set_page = client.get(f"{prefix}/settings").text
+        path.write_bytes(b"\xff")
+        bad_page = client.get(f"{prefix}/settings").text
+
+    assert "Added before each agent's role instructions" in set_page
+    assert "The global instruction is not valid UTF-8; turns are refused" in bad_page

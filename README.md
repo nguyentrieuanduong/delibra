@@ -117,6 +117,18 @@ build guidance presets, writes `config.json`, and applies the change to the
 next request without a restart. A list whose environment variable is set is
 shown read-only. Hand edits to `config.json` still need a restart.
 
+**Global instruction.** Settings also holds one instruction text (at most
+64 KB, saved to `$DELIBRA_HOME/instructions.md`) added to the system prompt
+of every agent turn (chat, Auto discussion and Auto build) before the
+agent's role instructions. Delibra runs Claude without its setting sources
+and Codex with its own `CODEX_HOME`, so `~/.claude/CLAUDE.md` and
+`~/.codex/AGENTS.md` never reach Delibra agents; put what they should
+follow here. It is read when each turn starts, so an edit reaches running
+Auto runs from their next turn. A project can switch it off under
+**Global instruction** in its settings. If the file is unreadable (over
+64 KB or not UTF-8), turns in projects that use it are refused until it is
+fixed.
+
 On this machine, build guidance files, skills agents can read, Register and
 Rebind have a **Browse…** button that lists this machine's folders;
 writable-roots fields browse the project's own folders from any allowed client.

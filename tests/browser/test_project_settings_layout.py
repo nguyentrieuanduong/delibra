@@ -21,7 +21,7 @@ def test_coding_and_docker_checkboxes_share_a_line_with_their_text(
     page.goto(f"{app['base_url']}/projects/Verify/settings")
 
     rows = page.evaluate(
-        """() => ["/coding", "/coding/docker"].map((path) => {
+        """() => ["/coding", "/coding/docker", "/global-instruction"].map((path) => {
           const label = document.querySelector(`form[action$="${path}"] label.auto-choice`);
           const box = label.querySelector("input[type=checkbox]").getBoundingClientRect();
           const range = document.createRange();
@@ -38,6 +38,7 @@ def test_coding_and_docker_checkboxes_share_a_line_with_their_text(
     assert [row["text"] for row in rows] == [
         "Enable coding (Auto build runs)",
         "Let build agents use Docker (a Lima VM per project)",
+        "Use the global instruction in this project",
     ], rows
     for row in rows:
         # The text starts right of the checkbox, on the checkbox's line.

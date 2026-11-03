@@ -29,6 +29,7 @@ from app.coding import (
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
+from app.global_instruction import GlobalInstructionError, read_global_instruction
 from app.models import Project
 from app.notes import NoteStore, chat_note_store
 from app.project_routing import request_project
@@ -674,6 +675,21 @@ async def save_turn_timeout(
     )
 
 
+@router.post("/projects/{project_id}/global-instruction")
+async def save_global_instruction_use(
+    request: Request,
+    project_id: str,
+    use_global_instruction: str = Form(""),
+):
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+        project = request.app.state.registry.get(resolved_project_id)
+        # An unticked checkbox sends nothing.
+        ProjectStore(project).set_use_global_instruction(use_global_instruction == "true")
+    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+
+
 @router.post("/projects/{project_id}/pass-prompt/reset")
 async def reset_pass_prompt(request: Request, project_id: str):
     project = request_project(request, project_id)
@@ -730,6 +746,14 @@ async def render_project_settings(
         request.app.state.settings.run_timeout,
         maximum=request.app.state.settings.max_run_timeout,
     )
+    try:
+        global_text = await asyncio.to_thread(
+            read_global_instruction, request.app.state.settings.home
+        )
+    except GlobalInstructionError as exc:
+        global_instruction_state = str(exc)
+    else:
+        global_instruction_state = "set" if global_text else "empty"
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="project.html",
@@ -767,6 +791,8 @@ async def render_project_settings(
                 if chat_skills_text is not None
                 else "\n".join(store.chat_skills())
             ),
+            "use_global_instruction": store.use_global_instruction(),
+            "global_instruction_state": global_instruction_state,
             "error": error,
         },
         status_code=status_code,
