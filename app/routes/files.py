@@ -133,6 +133,11 @@ async def list_files(
     )
 
 
+def _markdown_base(path: str) -> str:
+    folder = PurePosixPath(path).parent.as_posix()
+    return "" if folder == "." else folder
+
+
 def _file_view_context(
     request: Request,
     project_id: str,
@@ -217,6 +222,8 @@ def _file_view_context(
         "path": path,
         "text": text,
         "markdown": suffix in {".md", ".markdown"},
+        # Links in the file resolve from its folder ("" is the project root).
+        "markdown_base": _markdown_base(path),
         "structured_kind": structured_kind,
         "truncated": truncated,
         "replacements": replacements,

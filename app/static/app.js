@@ -116,6 +116,24 @@ function resetFileReader(reader) {
   return empty;
 }
 
+// The file reader and Focus swap a whole file view in. A link inside a long
+// file would otherwise open the next file at the old file's scroll offset.
+function fileViewPath(container) {
+  const heading =
+    container && typeof container.querySelector === "function"
+      ? container.querySelector(".file-view-header h3")
+      : null;
+  return heading ? heading.textContent.trim() : null;
+}
+
+function resetScrollForNewFile(container, previousPath) {
+  if (fileViewPath(container) === previousPath) {
+    return false;
+  }
+  container.scrollTop = 0;
+  return true;
+}
+
 function conversationTimelineForSwap(detailTarget, swappedElement) {
   if (
     swappedElement &&
@@ -1066,6 +1084,7 @@ if (typeof module !== "undefined" && module.exports) {
     closeFocusDialog,
     conversationTimelineForSwap,
     copyAutoComposerTopic,
+    fileViewPath,
     focusAutoHistoryView,
     formatRemainingSeconds,
     handleFocusDialogCancel,
@@ -1086,6 +1105,7 @@ if (typeof module !== "undefined" && module.exports) {
     resetFileReader,
     renderChatError,
     resetAutoNotesForm,
+    resetScrollForNewFile,
     restoreAutoStopDisclosure,
     restoreConversationScroll,
     showPageAlert,
@@ -1103,6 +1123,7 @@ if (typeof module !== "undefined" && module.exports) {
 
 if (typeof document !== "undefined") {
   const conversationScrollSnapshots = new WeakMap();
+  const fileViewPaths = new WeakMap();
   const autoStopDisclosureSnapshots = new WeakMap();
 
   initializeDynamicPresentation(document);
@@ -1238,6 +1259,9 @@ if (typeof document !== "undefined") {
     if (autoStop) {
       autoStopDisclosureSnapshots.set(xhr, autoStop);
     }
+    if (target.id === "file-reader" || target.id === "focus-dialog-content") {
+      fileViewPaths.set(xhr, fileViewPath(target));
+    }
   });
 
   document.addEventListener("htmx:afterSwap", function (event) {
@@ -1269,6 +1293,10 @@ if (typeof document !== "undefined") {
         autoStopDisclosureSnapshots.get(detail.xhr)
       );
       autoStopDisclosureSnapshots.delete(detail.xhr);
+    }
+    if (detail.xhr && fileViewPaths.has(detail.xhr)) {
+      resetScrollForNewFile(target, fileViewPaths.get(detail.xhr));
+      fileViewPaths.delete(detail.xhr);
     }
     if (focusAutoHistoryView(target)) {
       return;

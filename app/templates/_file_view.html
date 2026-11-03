@@ -56,7 +56,7 @@
       </section>
     {% endif %}
     {% if markdown %}
-      <div class="markdown">{{ text|md }}</div>
+      <div class="markdown">{{ text|md(project, 'focus' if focused else 'reader', markdown_base) }}</div>
     {% elif structured_kind %}
       <pre class="structured-data" data-format="{{ structured_kind }}">{{ text }}</pre>
     {% else %}
