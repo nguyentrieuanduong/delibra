@@ -116,6 +116,24 @@ function resetFileReader(reader) {
   return empty;
 }
 
+// The file reader and Focus swap a whole file view in. A link inside a long
+// file would otherwise open the next file at the old file's scroll offset.
+function fileViewPath(container) {
+  const heading =
+    container && typeof container.querySelector === "function"
+      ? container.querySelector(".file-view-header h3")
+      : null;
+  return heading ? heading.textContent.trim() : null;
+}
+
+function resetScrollForNewFile(container, previousPath) {
+  if (fileViewPath(container) === previousPath) {
+    return false;
+  }
+  container.scrollTop = 0;
+  return true;
+}
+
 function conversationTimelineForSwap(detailTarget, swappedElement) {
   if (
     swappedElement &&
@@ -883,6 +901,8 @@ function syncProjectListControls(form, search) {
 // draws each diagram in an iframe that may not run script (design
 // 2026-11-03); sandboxedMermaidFrame below tightens Mermaid's own flags.
 const MERMAID_CONFIG = { startOnLoad: false, securityLevel: "sandbox" };
+// Least recently used first: Map keeps insertion order, and a hit re-inserts.
+const MERMAID_CACHE_LIMIT = 50;
 const mermaidRenders = new Map();
 let mermaidRenderCount = 0;
 let mermaidLoading = null;
@@ -896,27 +916,33 @@ function mermaidErrorText(error) {
 }
 
 // Auto status swaps replace the whole timeline, so one source is drawn once
-// and its result reused by every later copy of the block.
+// and its result reused by every later copy of the block. Only the
+// MERMAID_CACHE_LIMIT most recently used results are kept.
 function renderMermaidSource(mermaid, source) {
-  if (!mermaidRenders.has(source)) {
-    mermaidRenderCount += 1;
-    mermaidRenders.set(
-      source,
-      Promise.resolve()
-        .then(function () {
-          return mermaid.render("delibra-mermaid-" + mermaidRenderCount, source);
-        })
-        .then(
-          function (result) {
-            return { svg: result.svg };
-          },
-          function (error) {
-            return { error: mermaidErrorText(error) };
-          }
-        )
-    );
+  const cached = mermaidRenders.get(source);
+  if (cached) {
+    mermaidRenders.delete(source);
+    mermaidRenders.set(source, cached);
+    return cached;
   }
-  return mermaidRenders.get(source);
+  mermaidRenderCount += 1;
+  const rendered = Promise.resolve()
+    .then(function () {
+      return mermaid.render("delibra-mermaid-" + mermaidRenderCount, source);
+    })
+    .then(
+      function (result) {
+        return { svg: result.svg };
+      },
+      function (error) {
+        return { error: mermaidErrorText(error) };
+      }
+    );
+  mermaidRenders.set(source, rendered);
+  while (mermaidRenders.size > MERMAID_CACHE_LIMIT) {
+    mermaidRenders.delete(mermaidRenders.keys().next().value);
+  }
+  return rendered;
 }
 
 function loadMermaid(documentRoot) {
@@ -1066,6 +1092,7 @@ if (typeof module !== "undefined" && module.exports) {
     closeFocusDialog,
     conversationTimelineForSwap,
     copyAutoComposerTopic,
+    fileViewPath,
     focusAutoHistoryView,
     formatRemainingSeconds,
     handleFocusDialogCancel,
@@ -1073,6 +1100,7 @@ if (typeof module !== "undefined" && module.exports) {
     isStalePickerSwap,
     keepComposerText,
     lastPathLine,
+    MERMAID_CACHE_LIMIT,
     mermaidErrorText,
     mermaidFrameSize,
     moveAutoOrderItem,
@@ -1086,6 +1114,7 @@ if (typeof module !== "undefined" && module.exports) {
     resetFileReader,
     renderChatError,
     resetAutoNotesForm,
+    resetScrollForNewFile,
     restoreAutoStopDisclosure,
     restoreConversationScroll,
     showPageAlert,
@@ -1103,6 +1132,7 @@ if (typeof module !== "undefined" && module.exports) {
 
 if (typeof document !== "undefined") {
   const conversationScrollSnapshots = new WeakMap();
+  const fileViewPaths = new WeakMap();
   const autoStopDisclosureSnapshots = new WeakMap();
 
   initializeDynamicPresentation(document);
@@ -1238,6 +1268,9 @@ if (typeof document !== "undefined") {
     if (autoStop) {
       autoStopDisclosureSnapshots.set(xhr, autoStop);
     }
+    if (target.id === "file-reader" || target.id === "focus-dialog-content") {
+      fileViewPaths.set(xhr, fileViewPath(target));
+    }
   });
 
   document.addEventListener("htmx:afterSwap", function (event) {
@@ -1269,6 +1302,10 @@ if (typeof document !== "undefined") {
         autoStopDisclosureSnapshots.get(detail.xhr)
       );
       autoStopDisclosureSnapshots.delete(detail.xhr);
+    }
+    if (detail.xhr && fileViewPaths.has(detail.xhr)) {
+      resetScrollForNewFile(target, fileViewPaths.get(detail.xhr));
+      fileViewPaths.delete(detail.xhr);
     }
     if (focusAutoHistoryView(target)) {
       return;

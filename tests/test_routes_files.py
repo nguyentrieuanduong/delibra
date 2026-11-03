@@ -5,6 +5,8 @@ import json
 import os
 import random
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
@@ -789,3 +791,40 @@ def test_displayability_failures_are_scoped_http_200_fragments_and_routes_are_ge
     assert post_listing.status_code == 405
     assert post_view.status_code == 405
     assert post_focus.status_code == 405
+
+
+def test_links_in_a_viewed_file_open_files_beside_it(tmp_path: Path) -> None:
+    app, project, project_path = setup_file_project(tmp_path, project_name="tu-vi")
+    (project_path / ".plans" / "sub").mkdir(parents=True)
+    (project_path / ".plans" / "plan.md").write_text("[01](sub/target.md)\n", encoding="utf-8")
+    (project_path / ".plans" / "sub" / "target.md").write_text("# Target\n", encoding="utf-8")
+    (project_path / "README.md").write_text("[plan](.plans/plan.md)\n", encoding="utf-8")
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        reader = client.get(f"{prefix}/files/view", params={"path": ".plans/plan.md"}).text
+        focused = client.get(f"{prefix}/files/focus", params={"path": ".plans/plan.md"}).text
+        target = client.get(f"{prefix}/files/view", params={"path": ".plans/sub/target.md"})
+        root = client.get(f"{prefix}/files/view", params={"path": "README.md"}).text
+
+    target_query = "path=.plans%2Fsub%2Ftarget.md"
+    assert f'<a href="{prefix}/files/view?{target_query}" hx-get="{prefix}/files/view?{target_query}" hx-target="#file-reader"' in reader
+    assert f'<a href="{prefix}/files/focus?{target_query}" hx-get="{prefix}/files/focus?{target_query}" hx-target="#focus-dialog-content"' in focused
+    assert target.status_code == 200
+    assert "<h1>Target</h1>" in target.text
+    # A file at the project root resolves from the root.
+    assert f'hx-get="{prefix}/files/view?path=.plans%2Fplan.md"' in root
+
+
+def test_file_view_scroll_javascript_contract_runs_under_node() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node unavailable; file view scroll unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_file_view_scroll.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

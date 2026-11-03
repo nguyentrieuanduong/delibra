@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { mermaidErrorText, mermaidFrameSize, renderMermaidSource } = require("../../app/static/app.js");
+const { MERMAID_CACHE_LIMIT, mermaidErrorText, mermaidFrameSize, renderMermaidSource } = require("../../app/static/app.js");
 
 test("renders each source once and reuses the result", async function () {
   const calls = [];
@@ -40,4 +40,38 @@ test("reads the diagram's size from the frame's data URL", function () {
   assert.equal(mermaidFrameSize("data:text/html;base64," + Buffer.from("<svg></svg>").toString("base64")), null);
   assert.equal(mermaidFrameSize("https://example.com/"), null);
   assert.equal(mermaidFrameSize(null), null);
+});
+
+function countingMermaid() {
+  const calls = [];
+  return {
+    calls: calls,
+    render: function (id, source) {
+      calls.push(source);
+      return Promise.resolve({ svg: "<svg>" + source + "</svg>" });
+    },
+  };
+}
+
+test("keeps only the 50 most recently drawn sources", async function () {
+  const fake = countingMermaid();
+  for (let n = 0; n < 51; n += 1) {
+    await renderMermaidSource(fake, "evict-" + n);
+  }
+  await renderMermaidSource(fake, "evict-0");
+  // The oldest of 51 was dropped, so it is drawn again.
+  assert.equal(fake.calls.filter((source) => source === "evict-0").length, 2);
+});
+
+test("a source drawn again counts as recent and survives", async function () {
+  const fake = countingMermaid();
+  await renderMermaidSource(fake, "keep-a");
+  for (let n = 0; n < 49; n += 1) {
+    await renderMermaidSource(fake, "keep-" + n);
+  }
+  await renderMermaidSource(fake, "keep-a");
+  await renderMermaidSource(fake, "keep-extra");
+  await renderMermaidSource(fake, "keep-a");
+  assert.equal(fake.calls.filter((source) => source === "keep-a").length, 1);
+  assert.equal(MERMAID_CACHE_LIMIT, 50);
 });

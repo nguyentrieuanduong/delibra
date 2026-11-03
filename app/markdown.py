@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
+import posixpath
 import re
 from typing import Literal
 from urllib.parse import unquote, urlencode, urlsplit
@@ -54,7 +55,9 @@ def _render_fence(self, tokens: list[Token], idx: int, options, env) -> str:
 _MARKDOWN.add_render_rule("fence", _render_fence)
 
 
-def _project_markdown_path(href: str, project: Project) -> tuple[str, str] | None:
+def _project_markdown_path(
+    href: str, project: Project, base_dir: str | None = None
+) -> tuple[str, str] | None:
     raw_path, separator, fragment = href.partition("#")
     raw_path = _LINE_SUFFIX.sub(r"\1", raw_path)
     parsed = urlsplit(raw_path)
@@ -66,6 +69,12 @@ def _project_markdown_path(href: str, project: Project) -> tuple[str, str] | Non
         try:
             decoded = Path(decoded).relative_to(Path(project.path)).as_posix()
         except ValueError:
+            return None
+    elif base_dir is not None:
+        # A viewed file's links are relative to its own folder, as in any
+        # Markdown viewer; ".." may climb back to the project root, not past it.
+        decoded = posixpath.normpath(posixpath.join(base_dir, decoded))
+        if decoded == ".." or decoded.startswith("../"):
             return None
     try:
         parts = project_path_parts(decoded)
@@ -111,8 +120,13 @@ def render_markdown(
     source: str | None,
     project: Project | None = None,
     link_target: LinkTarget | None = None,
+    base_dir: str | None = None,
 ) -> Markup:
-    """Render safe Markdown and route owned Markdown links to the file reader."""
+    """Render safe Markdown and route owned Markdown links to the file reader.
+
+    ``base_dir`` is the project-relative folder of the file being shown;
+    relative links resolve from it. None resolves from the project root.
+    """
 
     if link_target is not None and link_target not in _LINK_TARGETS:
         raise ValueError("Markdown link target is invalid")
@@ -122,7 +136,7 @@ def render_markdown(
             if token.type != "link_open":
                 continue
             href = token.attrGet("href")
-            linked = _project_markdown_path(href, project) if href else None
+            linked = _project_markdown_path(href, project, base_dir) if href else None
             if linked is None:
                 continue
             url, target = _project_file_url(

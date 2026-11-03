@@ -270,7 +270,11 @@ to the correct stream.
 Markdown links in recorded prompts and outputs open project-owned `.md` and
 `.markdown` files through Delibra's file reader. Project-relative links and
 absolute links under the registered project root are supported; external,
-non-Markdown, traversal, and out-of-project links are not rewritten.
+non-Markdown, traversal, and out-of-project links are not rewritten. Links in
+a Markdown file shown in the file reader or Focus work the same way, but a
+relative link resolves from that file's folder, as in other Markdown viewers;
+`..` may climb back to the project root, not past it. They open in the reader
+or in Focus respectively.
 
 A fenced ```` ```mermaid ```` block in rendered Markdown (the file reader,
 Focus, and recorded prompts and replies) is drawn as a diagram, with its

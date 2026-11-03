@@ -119,3 +119,48 @@ def test_mermaid_javascript_contract_runs_under_node() -> None:
         timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _links_project(tmp_path: Path) -> Project:
+    root = tmp_path / "project"
+    root.mkdir()
+    return Project(id="a" * 32, name="tu-vi", path=str(root), created_at="2026-11-03T00:00:00Z")
+
+
+def _reader_url(project: Project, path: str) -> str:
+    return f"/projects/{quote(project.name, safe='')}/files/view?path={quote(path, safe='')}"
+
+
+def test_a_relative_link_resolves_from_the_viewed_files_folder(tmp_path: Path) -> None:
+    project = _links_project(tmp_path)
+    rendered = str(
+        render_markdown(
+            "[01](source-knowledge-repository/01-foundation-contracts.md)",
+            project,
+            "reader",
+            ".plans",
+        )
+    )
+    url = _reader_url(project, ".plans/source-knowledge-repository/01-foundation-contracts.md")
+    assert f'href="{url}"' in rendered
+    assert f'hx-get="{url}"' in rendered
+    assert 'hx-target="#file-reader"' in rendered
+
+
+def test_a_parent_link_may_climb_to_the_project_root_but_not_out(tmp_path: Path) -> None:
+    project = _links_project(tmp_path)
+    rendered = str(
+        render_markdown("[up](../README.md) [out](../../outside.md)", project, "reader", ".plans")
+    )
+    assert f'href="{_reader_url(project, "README.md")}"' in rendered
+    assert 'href="../../outside.md"' in rendered
+    assert rendered.count("hx-get=") == 1
+
+
+def test_without_a_base_folder_links_keep_the_project_root_rule(tmp_path: Path) -> None:
+    # Round prompts and replies: agents write project-relative paths, and a
+    # ".." segment stays refused as before.
+    project = _links_project(tmp_path)
+    rendered = str(render_markdown("[a](docs/x.md) [b](a/../b.md)", project, "reader"))
+    assert f'href="{_reader_url(project, "docs/x.md")}"' in rendered
+    assert 'href="a/../b.md"' in rendered
