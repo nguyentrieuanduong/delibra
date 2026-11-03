@@ -9,7 +9,7 @@
     <script src="{{ static_url('sse.js') }}" defer></script>
     <script src="{{ static_url('app.js') }}" defer></script>
   </head>
-  <body class="{% block body_class %}{% endblock %}">
+  <body class="{% block body_class %}{% endblock %}" data-mermaid-src="{{ static_url('mermaid.min.js') }}">
     <header><a href="/">Delibra</a>{% if request is defined and is_loopback_client(request) %} · <a href="/settings">Settings</a>{% endif %}</header>
     <main>{% block content %}{% endblock %}</main>
     <footer>

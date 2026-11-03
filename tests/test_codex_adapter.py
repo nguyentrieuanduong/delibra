@@ -603,3 +603,25 @@ def test_a_codex_system_note_follows_the_developer_instructions() -> None:
         "Begin with ROLE-CODEX-OK.\n\nNotes the user sent to you are in /w/delibra-notes.json."
     )
     assert "delibra-notes.json" not in command.stdin
+
+
+GLOBAL = "Global instructions from the user:\nBe concise."
+
+
+def test_a_codex_chat_turn_puts_the_global_instruction_first() -> None:
+    run_context = replace(context("Investigate."), system_note="NOTE", global_instruction="Be concise.\n")
+    command = CodexAdapter().build_command(config(), run_context)
+    assert developer_instructions(command) == f"{GLOBAL}\n\nBegin with ROLE-CODEX-OK.\n\nNOTE"
+    assert "Be concise." not in command.stdin
+
+
+def test_a_codex_build_turn_carries_the_global_instruction_before_the_role() -> None:
+    command = CodexAdapter(executable="codex").build_command(
+        config(), replace(build_context(), global_instruction="Be concise.")
+    )
+    assert developer_instructions(command) == f"{GLOBAL}\n\nBegin with ROLE-CODEX-OK."
+
+
+def test_a_codex_build_turn_without_a_global_instruction_keeps_the_role_exactly() -> None:
+    command = CodexAdapter(executable="codex").build_command(config(), build_context())
+    assert developer_instructions(command) == "Begin with ROLE-CODEX-OK."

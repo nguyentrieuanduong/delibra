@@ -510,3 +510,57 @@ def test_an_access_list_longer_than_the_box_allows_is_refused(tmp_path, field) -
         f"<div hidden data-page-alert>Nothing was saved: {label} is longer than 65536 characters</div>"
     ) in response.text
     assert not (tmp_path / "home" / "config.json").exists()
+
+
+def test_the_global_instruction_saves_and_shows(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        empty = client.get("/settings").text
+        saved = client.post(
+            "/settings/global-instruction",
+            data={"global_instruction": "Be concise.\r\n"},
+            follow_redirects=False,
+        )
+        page = client.get("/settings").text
+
+    assert '<textarea name="global_instruction" rows="12" maxlength="65536"></textarea>' in empty
+    assert saved.status_code == 303
+    assert saved.headers["location"] == "/settings"
+    assert (tmp_path / "home" / "instructions.md").read_text() == "Be concise.\n"
+    assert ">Be concise.\n</textarea>" in page
+    assert not (tmp_path / "home" / "config.json").exists()
+
+
+def test_a_global_instruction_over_64_kb_is_refused_and_kept_in_the_box(tmp_path) -> None:
+    app = make_app(tmp_path)
+    text = "a" * 65537
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post("/settings/global-instruction", data={"global_instruction": text})
+
+    assert response.status_code == 422
+    assert not (tmp_path / "home" / "instructions.md").exists()
+    assert f">{text}</textarea>" in response.text
+    assert (
+        "<div hidden data-page-alert>Nothing was saved: "
+        "The global instruction is larger than 64 KB</div>"
+    ) in response.text
+
+
+def test_an_unreadable_global_instruction_is_reported_on_the_page(tmp_path) -> None:
+    app = make_app(tmp_path)
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "home" / "instructions.md").write_bytes(b"\xff")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings").text
+
+    assert "<div hidden data-page-alert>The global instruction is not valid UTF-8</div>" in page
+    assert '<textarea name="global_instruction" rows="12" maxlength="65536"></textarea>' in page
+
+
+def test_only_this_machine_may_save_the_global_instruction(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        response = client.post("/settings/global-instruction", data={"global_instruction": "x"})
+
+    assert response.status_code == 403
+    assert not (tmp_path / "home" / "instructions.md").exists()

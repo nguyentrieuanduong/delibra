@@ -117,6 +117,18 @@ build guidance presets, writes `config.json`, and applies the change to the
 next request without a restart. A list whose environment variable is set is
 shown read-only. Hand edits to `config.json` still need a restart.
 
+**Global instruction.** Settings also holds one instruction text (at most
+64 KB, saved to `$DELIBRA_HOME/instructions.md`) added to the system prompt
+of every agent turn (chat, Auto discussion and Auto build) before the
+agent's role instructions. Delibra runs Claude without its setting sources
+and Codex with its own `CODEX_HOME`, so `~/.claude/CLAUDE.md` and
+`~/.codex/AGENTS.md` never reach Delibra agents; put what they should
+follow here. It is read when each turn starts, so an edit reaches running
+Auto runs from their next turn. A project can switch it off under
+**Global instruction** in its settings. If the file is unreadable (over
+64 KB or not UTF-8), turns in projects that use it are refused until it is
+fixed.
+
 On this machine, build guidance files, skills agents can read, Register and
 Rebind have a **Browse…** button that lists this machine's folders;
 writable-roots fields browse the project's own folders from any allowed client.
@@ -259,6 +271,14 @@ Markdown links in recorded prompts and outputs open project-owned `.md` and
 `.markdown` files through Delibra's file reader. Project-relative links and
 absolute links under the registered project root are supported; external,
 non-Markdown, traversal, and out-of-project links are not rewritten.
+
+A fenced ```` ```mermaid ```` block in rendered Markdown (the file reader,
+Focus, and recorded prompts and replies) is drawn as a diagram, with its
+source under **Source**; while a reply is still streaming it shows as text.
+Mermaid 12.2.0 (about 5.5 MB) is vendored and loaded only on pages that have
+a diagram. Each diagram is drawn in a sandboxed frame that runs no script and
+cannot navigate or open windows, so links and click actions inside diagrams
+do nothing. A diagram Mermaid cannot parse shows its source and the error.
 
 ## Auto discussions and live timeouts
 
@@ -559,6 +579,13 @@ that would pass 64 questions, is dropped with a warning on that turn.
 Questions from a failed or stopped turn stay, labelled in red
 "From failed turn" or "From stopped turn", and never pause the run. If the
 watch cannot start, the turn says so and its questions arrive at turn end.
+
+If the agents have not agreed on a point within 3 cycles of it being raised,
+the next agent asks you about it as a blocking question giving each side's
+position, and the agents stop arguing it; a point left to you does not by
+itself keep the run from converging. A turn without a question outbox says
+in its report that you must decide and goes on with its best assumption.
+Delibra does not count the cycles; the agents read them from the turn labels.
 
 The store is `.delibra/questions-history.json`, written only by Delibra.
 Auto agents read `.delibra/questions.json`: open and answered questions,

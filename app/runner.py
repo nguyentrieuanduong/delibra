@@ -33,6 +33,7 @@ from app.agents.errors import CODEX_AUTH_MARKERS, classify_text, fold_categories
 from app.auto import parse_auto_verdict
 from app.coding_env import developer_tools_dir
 from app.docker_backend import write_cli_config
+from app.global_instruction import read_global_instruction
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
 from app.questions import QUESTIONS_DIR, SPOOL_NAME
@@ -623,6 +624,14 @@ class RunManager:
             raise SessionBusy("session already has a running agent")
 
         writable_roots = store.resolve_session_writable_roots(session_id)
+        # Read per turn, so a Settings edit reaches the next turn, running
+        # Auto runs included (design 2026-11-03). Before allocate_round: an
+        # unreadable file refuses the turn without leaving a round behind.
+        global_instruction = (
+            await asyncio.to_thread(read_global_instruction, self.settings.home)
+            if store.use_global_instruction()
+            else ""
+        )
 
         if auto_request is None and config.agent == "codex":
             # One quota check per manual prompt, on the provider about to be
@@ -884,6 +893,7 @@ class RunManager:
             ),
             coding=coding_context,
             system_note=system_note,
+            global_instruction=global_instruction,
         )
         try:
             adapter = self.adapter_factory(config)

@@ -50,6 +50,11 @@ def main() -> int:
         emit({"kind": "init", "session_id": "fake-native-session"})
         emit({"kind": "result", "text": Path("delibra-notes.json").read_text(encoding="utf-8")})
         return 0
+    if mode == "mermaid":
+        # A reply holding a diagram, for the Mermaid browser tests.
+        emit({"kind": "init", "session_id": "fake-native-session"})
+        emit({"kind": "result", "text": "```mermaid\nflowchart LR\n  Start --> Finish\n```\n"})
+        return 0
     if mode == "codex-auth-event":
         emit({"kind": "error", "text": CODEX_REVOKED})
         return 1

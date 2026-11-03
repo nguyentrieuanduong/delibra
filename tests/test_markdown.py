@@ -1,4 +1,6 @@
 from pathlib import Path
+import shutil
+import subprocess
 from urllib.parse import quote
 
 import pytest
@@ -80,3 +82,40 @@ def test_project_markdown_rejects_unknown_link_target(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Markdown link target"):
         render_markdown("[notes](notes.md)", project, "sidebar")
+
+
+def test_a_mermaid_fence_becomes_a_diagram_marker_with_escaped_source() -> None:
+    rendered = str(render_markdown('```mermaid\nflowchart LR\n  A["<b>x</b>"] --> B\n```\n'))
+    assert rendered == (
+        '<div class="mermaid-diagram" data-mermaid>'
+        '<pre class="mermaid-source">flowchart LR\n  A[&quot;&lt;b&gt;x&lt;/b&gt;&quot;] --&gt; B\n</pre>'
+        "</div>\n"
+    )
+
+
+@pytest.mark.parametrize("info", ["Mermaid", "mermaid title=x"])
+def test_the_mermaid_word_ignores_case_and_options(info: str) -> None:
+    assert "data-mermaid" in str(render_markdown(f"```{info}\ngraph TD\n```\n"))
+
+
+def test_other_fences_still_render_as_code() -> None:
+    rendered = str(render_markdown("```python\nprint(1)\n```\n"))
+    assert rendered == '<pre><code class="language-python">print(1)\n</code></pre>\n'
+
+
+def test_an_indented_block_saying_mermaid_is_not_a_diagram() -> None:
+    assert "data-mermaid" not in str(render_markdown("    mermaid\n    graph TD\n"))
+
+
+def test_mermaid_javascript_contract_runs_under_node() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node unavailable; Mermaid unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_mermaid.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

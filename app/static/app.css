@@ -20,6 +20,14 @@ form { display: grid; gap: .75rem; margin: 1rem 0; }
 label { display: grid; gap: .25rem; }
 textarea { min-height: 7rem; }
 .markdown pre { overflow-x: auto; padding: .75rem; background: #8882; }
+.mermaid-diagram { margin: .75rem 0; }
+.mermaid-figure { border-radius: .35rem; padding: .5rem 0; }
+/* Mermaid's frame document has no color-scheme, so it is light. Chromium paints
+   an opaque backdrop when the frame element's scheme differs (it would inherit
+   dark here), hiding the dark theme; matching keeps the frame transparent. */
+.mermaid-figure iframe { border: 0; color-scheme: light; display: block; width: 100%; }
+.mermaid-diagram details > summary { cursor: pointer; font-size: .85rem; }
+.mermaid-error { color: #c43b2f; margin: .25rem 0; }
 .error, .warning, .warnings { color: #c43b2f; }
 /* A quota pause is a state, not a failure: amber, matching .round.cancelled,
    and deliberately separate from the red .error/.warning rule above. */

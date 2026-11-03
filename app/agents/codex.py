@@ -10,6 +10,7 @@ from app.agents.base import (
     CodingContext,
     Command,
     build_command_environment,
+    build_system_instructions,
     RunContext,
     shared_context_section,
     system_instructions,
@@ -184,7 +185,9 @@ class CodexAdapter:
             raise ValueError(f"unsupported Codex effort: {config.effort}")
         if context.coding is not None:
             return Command(
-                argv=self._build_turn_argv(config, context.coding),
+                argv=self._build_turn_argv(
+                    config, context.coding, build_system_instructions(config, context)
+                ),
                 stdin=shared_context_section(context) + context.user_prompt,
             )
         global_options = [
@@ -254,7 +257,9 @@ class CodexAdapter:
         )
         return Command(argv=argv, stdin=prompt)
 
-    def _build_turn_argv(self, config: SessionConfig, coding: CodingContext) -> list[str]:
+    def _build_turn_argv(
+        self, config: SessionConfig, coding: CodingContext, instructions: str
+    ) -> list[str]:
         """Build-turn argv: a permission profile instead of the legacy sandbox.
 
         Profiles do not compose with `--sandbox` or `sandbox_workspace_write.*`,
@@ -280,7 +285,7 @@ class CodexAdapter:
             "--config",
             "project_doc_max_bytes=0",
             "--config",
-            _developer_instructions_config(config.role_instructions),
+            _developer_instructions_config(instructions),
         ]
         for override in codex_build_overrides(coding):
             argv.extend(["--config", override])

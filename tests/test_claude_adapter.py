@@ -735,3 +735,31 @@ def test_an_empty_system_note_keeps_the_role_exactly() -> None:
     )
     command = ClaudeAdapter().build_command(config(), run_context)
     assert command.argv[command.argv.index("--append-system-prompt") + 1] == "Begin with ROLE-CLAUDE-OK."
+
+
+GLOBAL = "Global instructions from the user:\nBe concise."
+
+
+@pytest.mark.parametrize("strategy", ["native", "stateless"])
+def test_the_global_instruction_comes_before_the_role_and_the_note(strategy) -> None:
+    run_context = RunContext(
+        user_prompt="Investigate.", resume_id=None, resume_strategy=strategy,
+        staged_history=[], staged_source=None, workspace=Path("/session/workspace"),
+        system_note="NOTE", global_instruction="Be concise.\n",
+    )
+    command = ClaudeAdapter().build_command(config(), run_context)
+    system = command.argv[command.argv.index("--append-system-prompt") + 1]
+    assert system == f"{GLOBAL}\n\nBegin with ROLE-CLAUDE-OK.\n\nNOTE"
+    if strategy == "native":
+        assert "Be concise." not in command.stdin
+
+
+def test_a_build_turn_carries_the_global_instruction_before_the_role() -> None:
+    run_context = replace(build_context(), global_instruction="Be concise.")
+    argv = ClaudeAdapter(executable="claude").build_command(config(), run_context).argv
+    assert argv[argv.index("--append-system-prompt") + 1] == f"{GLOBAL}\n\nBegin with ROLE-CLAUDE-OK."
+
+
+def test_a_build_turn_without_a_global_instruction_keeps_the_role_exactly() -> None:
+    argv = ClaudeAdapter(executable="claude").build_command(config(), build_context()).argv
+    assert argv[argv.index("--append-system-prompt") + 1] == "Begin with ROLE-CLAUDE-OK."

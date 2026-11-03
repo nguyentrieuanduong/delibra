@@ -1,4 +1,4 @@
-"""Global settings: access lists and guidance presets, this machine only."""
+"""Global settings: access lists, guidance presets and the global instruction, this machine only."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import replace
 import os
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.coding import (
@@ -32,6 +32,11 @@ from app.config import (
     parse_guidance_presets,
     read_config_file,
     write_config_file,
+)
+from app.global_instruction import (
+    GlobalInstructionError,
+    read_global_instruction,
+    save_global_instruction,
 )
 from app.path_picker import display_path, kilobytes
 from app.security import (
@@ -225,7 +230,16 @@ def _settings_page(
     hosts: list[str] | tuple[str, ...],
     error: str | None = None,
     status_code: int = 200,
+    global_instruction: str | None = None,
 ):
+    if global_instruction is None:
+        try:
+            # At most 64 KB, read inline like the config.json this page reads.
+            global_instruction = read_global_instruction(request.app.state.settings.home)
+        except GlobalInstructionError as exc:
+            # Shown as the page's alert; saving replaces the bad file.
+            global_instruction = ""
+            error = error or str(exc)
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="settings.html",
@@ -238,6 +252,7 @@ def _settings_page(
             "preset_rows": rows,
             "access_field_max": ACCESS_FIELD_MAX,
             "error": error,
+            "global_instruction": global_instruction,
             "health": request.app.state.health,
         },
     )
@@ -361,6 +376,27 @@ async def save_global_settings(request: Request):
             guidance_presets=presets,
         )
         request.app.state.access.policy = policy
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/global-instruction")
+async def save_global_instruction_text(request: Request, global_instruction: str = Form("")):
+    _require_local(request)
+    async with request.app.state.global_settings_lock:
+        settings = request.app.state.settings
+        try:
+            await asyncio.to_thread(save_global_instruction, settings.home, global_instruction)
+        except (StorageError, OSError) as exc:
+            rows = await asyncio.to_thread(_preset_rows, _saved_rows(settings.guidance_presets))
+            return _settings_page(
+                request,
+                rows,
+                settings.allowed_clients,
+                settings.allowed_hosts,
+                error=f"Nothing was saved: {_sentence(str(exc))}",
+                status_code=422,
+                global_instruction=global_instruction,
+            )
     return RedirectResponse("/settings", status_code=303)
 
 

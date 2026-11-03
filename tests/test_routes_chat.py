@@ -625,7 +625,7 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
         stylesheet = client.get("/static/app.css")
 
     assert response.status_code == 200
-    assert '<body class="chat-page">' in response.text
+    assert '<body class="chat-page" data-mermaid-src="/static/mermaid.min.js?v=' in response.text
     for region in ("topic", "files", "conversation", "agents"):
         assert f'data-workspace-region="{region}"' in response.text
     assert 'id="file-browser-host"' in response.text

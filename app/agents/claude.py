@@ -9,6 +9,7 @@ from app.agents.base import (
     AgentEvent,
     Command,
     RunContext,
+    build_system_instructions,
     shared_context_section,
     system_instructions,
 )
@@ -297,7 +298,7 @@ class ClaudeAdapter:
             "--add-dir",
             temp,
             "--append-system-prompt",
-            config.role_instructions,
+            build_system_instructions(config, context),
             "--permission-mode",
             "dontAsk",
             "--tools",
