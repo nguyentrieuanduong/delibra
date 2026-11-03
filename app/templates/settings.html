@@ -54,5 +54,15 @@
     </section>
     <button type="submit">Save global settings</button>
   </form>
+  <form method="post" action="/settings/global-instruction" class="global-settings">
+    <section aria-labelledby="global-instruction-heading">
+      <h2 id="global-instruction-heading">Global instruction</h2>
+      <p class="hint">Added to the system prompt of every agent turn (chat, Auto discussion and build) in every project that has not switched it off in its settings, before the agent's role instructions. Delibra agents do not read <code>~/.claude/CLAUDE.md</code> or <code>~/.codex/AGENTS.md</code>; put here what they should follow. Saved to <code>$DELIBRA_HOME/instructions.md</code>, at most 64 KB. Read when each turn starts, so a change reaches running Auto runs from their next turn.</p>
+      <label>Global instruction
+        <textarea name="global_instruction" rows="12" maxlength="65536">{{ global_instruction }}</textarea>
+      </label>
+      <button type="submit">Save global instruction</button>
+    </section>
+  </form>
   {% include "_path_picker_dialog.html" %}
 {% endblock %}
