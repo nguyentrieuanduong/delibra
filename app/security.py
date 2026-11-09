@@ -188,6 +188,24 @@ def _same_origin(value: str, host: str, scheme: str) -> bool:
     )
 
 
+def _no_store_html(message: Message) -> Message:
+    """Mark HTML `no-store` so Back refetches the page instead of reusing it.
+
+    Pages reflect live state (a running Auto, a busy agent). A browser's
+    history navigation reuses a cached document regardless of its age, so a
+    page without this showed the state from when it was first loaded.
+    """
+
+    headers = list(message.get("headers", []))
+    names = {name.lower() for name, _ in headers}
+    content_type = next(
+        (value for name, value in headers if name.lower() == b"content-type"), b""
+    )
+    if b"cache-control" in names or not content_type.lower().startswith(b"text/html"):
+        return message
+    return {**message, "headers": [*headers, (b"cache-control", b"no-store")]}
+
+
 async def _plain_response(send: Send, status: int, text: str) -> None:
     body = text.encode("utf-8")
     await send(
@@ -354,6 +372,7 @@ class LocalSecurityMiddleware:
             nonlocal response_started
             if message.get("type") == "http.response.start":
                 response_started = True
+                message = _no_store_html(message)
             await send(message)
 
         try:

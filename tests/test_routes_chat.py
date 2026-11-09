@@ -672,7 +672,7 @@ def test_chat_uses_compact_composer_and_wider_agent_rail(
         "grid-template-rows: minmax(32rem, calc(100vh - 4rem))"
         in css.text
     )
-    assert "#chat-composer textarea { min-height: 3rem; }" in css.text
+    assert "#chat-composer textarea { min-height: 3rem; resize: vertical; }" in css.text
     assert (
         ".workspace-agents {\n"
         "  display: grid;\n"
@@ -892,7 +892,7 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
         css.text,
         flags=re.DOTALL,
     )
-    assert "#chat-composer textarea { min-height: 3rem; }" in css.text
+    assert "#chat-composer textarea { min-height: 3rem; resize: vertical; }" in css.text
     assert ".file-reader-empty { opacity: .55; }" in css.text
     assert ".conversation-controls" not in css.text
     assert ".chat-agent-select" not in css.text

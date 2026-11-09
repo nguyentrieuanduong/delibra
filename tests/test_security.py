@@ -481,3 +481,16 @@ def test_an_access_policy_reads_no_file_per_request(tmp_path, monkeypatch) -> No
             lambda home: (_ for _ in ()).throw(AssertionError("config.json read per request")),
         )
         assert client.get("/", headers={"host": "localhost"}).status_code == 200
+
+
+def test_html_pages_are_not_stored_so_back_navigation_refetches(tmp_path) -> None:
+    # Without no-store, a browser's Back button reuses the page as first
+    # loaded, so Auto started since then is missing until a reload.
+    with app_client(tmp_path) as client:
+        page = client.get("/")
+        script = client.get("/static/app.js")
+
+    assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store"
+    assert script.status_code == 200
+    assert "cache-control" not in script.headers
