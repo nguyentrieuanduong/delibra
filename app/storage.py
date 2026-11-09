@@ -396,7 +396,15 @@ def resolve_project_subdirectory(root: Path, relative_path: str) -> Path:
     try:
         with _open_project_directory(root, parts):
             pass
+    except ProjectFileSecurityError as exc:
+        raise StorageError(f"writable root {canonical!r} is unavailable: {exc}") from exc
     except StorageError as exc:
+        # Message only: the refusal itself came from the descriptor walk.
+        if not os.path.lexists(root.joinpath(*parts)):
+            raise StorageError(
+                f"writable root {canonical!r} does not exist; tick "
+                "\"Create directories that don't exist\" to have Delibra create it"
+            ) from exc
         raise StorageError(f"writable root {canonical!r} is unavailable: {exc}") from exc
     resolved = root.joinpath(*parts)
     unsafe = first_unsafe_writable_root_character(str(resolved))

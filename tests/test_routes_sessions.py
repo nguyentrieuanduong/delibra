@@ -975,3 +975,60 @@ def test_project_writable_root_revocation_clears_only_changed_native_sessions(
     recovered = ProjectStore(project).load_session(first_id)
     assert recovered.cli_session_id is None
     assert recovered.writable_roots == []
+
+
+def test_agent_writable_roots_tick_creates_missing_on_create_and_edit(
+    tmp_path: Path,
+) -> None:
+    client, project, store = seeded_client(tmp_path)
+    url = f"/projects/{quote(project.name, safe='')}"
+
+    with client:
+        refused = create_session(client, project.id, writable_roots="new/dir")
+        assert refused.status_code == 422
+        assert not (store.project_path / "new").exists()
+
+        created = create_session(
+            client,
+            project.id,
+            writable_roots="new/dir",
+            create_missing_writable_roots="true",
+        )
+        session_id = created_session_id(created)
+        assert (store.project_path / "new" / "dir").is_dir()
+        assert store.load_session(session_id).create_missing_writable_roots is True
+
+        settings_page = client.get(f"{url}/settings")
+        chat_page = client.get(f"{url}/chat")
+
+        # An edit that does not submit the roots leaves the tick alone.
+        client.post(
+            f"{url}/sessions/{session_id}/edit",
+            data={"model": "opus"},
+            follow_redirects=False,
+        )
+        assert store.load_session(session_id).create_missing_writable_roots is True
+
+        # Submitting the roots without the tick clears it.
+        cleared = client.post(
+            f"{url}/sessions/{session_id}/edit",
+            data={"writable_roots": "new/dir"},
+            follow_redirects=False,
+        )
+        assert cleared.status_code == 303
+        assert store.load_session(session_id).create_missing_writable_roots is False
+
+        edited = client.post(
+            f"{url}/sessions/{session_id}/edit",
+            data={"writable_roots": "other", "create_missing_writable_roots": "true"},
+            follow_redirects=False,
+        )
+
+    assert edited.status_code == 303
+    assert (store.project_path / "other").is_dir()
+    config = store.load_session(session_id)
+    assert config.writable_roots == ["other"]
+    assert config.create_missing_writable_roots is True
+    checked = 'name="create_missing_writable_roots" value="true" checked'
+    assert checked in settings_page.text
+    assert checked in chat_page.text

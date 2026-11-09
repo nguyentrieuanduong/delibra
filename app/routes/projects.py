@@ -42,6 +42,7 @@ from app.security import (
 )
 from app.storage import (
     ConflictError,
+    NotFoundError,
     ProjectFileDisplayError,
     ProjectFileSecurityError,
     ProjectStore,
@@ -301,15 +302,32 @@ async def save_writable_roots(
     request: Request,
     project_id: str,
     writable_roots: str = Form(""),
+    create_missing_writable_roots: bool = Form(False),
 ):
     project = request_project(request, project_id)
     resolved_project_id = project.id
-    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-        _reject_in_memory_work(request, resolved_project_id)
-        project = request.app.state.registry.get(resolved_project_id)
-        store = ProjectStore(project)
-        store.require_auto_inactive()
-        store.set_writable_roots(_writable_roots_field(writable_roots))
+    try:
+        async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+            _reject_in_memory_work(request, resolved_project_id)
+            project = request.app.state.registry.get(resolved_project_id)
+            store = ProjectStore(project)
+            store.require_auto_inactive()
+            store.set_writable_roots(
+                _writable_roots_field(writable_roots),
+                create_missing=create_missing_writable_roots,
+            )
+    except (ConflictError, NotFoundError):
+        raise  # Active work, Auto, or a gone project keep their 409/404.
+    except StorageError as exc:
+        message = str(exc)
+        return await render_project_settings(
+            request,
+            project,
+            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            writable_roots_text=writable_roots,
+            create_missing_writable_roots=create_missing_writable_roots,
+            status_code=422,
+        )
     return RedirectResponse(
         project_url(project.name, "/settings"),
         status_code=303,
@@ -710,6 +728,8 @@ async def render_project_settings(
     *,
     error: str | None = None,
     chat_skills_text: str | None = None,
+    writable_roots_text: str | None = None,
+    create_missing_writable_roots: bool | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     """The project settings page; a refused form passes its text and error back."""
@@ -773,7 +793,16 @@ async def render_project_settings(
             "migration_issues": migration_issues,
             "auto_migration_issues": auto_migration_issues,
             "pass_prompt_template": store.effective_pass_prompt_template(),
-            "writable_roots": store.effective_writable_roots(),
+            "writable_roots_text": (
+                writable_roots_text
+                if writable_roots_text is not None
+                else "\n".join(store.effective_writable_roots())
+            ),
+            "create_missing_writable_roots": (
+                create_missing_writable_roots
+                if create_missing_writable_roots is not None
+                else store.create_missing_writable_roots()
+            ),
             "coding": coding,
             "git_exclude_lines": (
                 coding.git_exclude if coding.git_exclude is not None else default_git_exclude()

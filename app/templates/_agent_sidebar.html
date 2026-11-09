@@ -39,6 +39,7 @@
       <label>Additional writable roots
         <textarea name="writable_roots" maxlength="65536"></textarea>
       </label>
+      <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"> Create directories that don't exist</label>
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create agent</button>
     </form>
   </details>

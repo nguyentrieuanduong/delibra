@@ -2118,3 +2118,18 @@ def test_prepare_session_writable_roots_recreates_only_flagged_lists(
     with pytest.raises(StorageError, match="mine"):
         store.prepare_session_writable_roots(config.id)
     assert not (project_dir / "mine").exists()
+
+
+def test_resolve_writable_root_names_a_missing_directory_and_the_tick(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+
+    with pytest.raises(StorageError) as raised:
+        resolve_project_subdirectory(project, "src/api")
+
+    assert str(raised.value) == (
+        "writable root 'src/api' does not exist; tick "
+        "\"Create directories that don't exist\" to have Delibra create it"
+    )
