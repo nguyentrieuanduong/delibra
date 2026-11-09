@@ -142,7 +142,8 @@ textarea { min-height: 7rem; }
 #chat-composer .composer-field { display: grid; gap: .25rem; }
 #chat-composer .composer-heading { align-items: baseline; display: flex; gap: .5rem; min-width: 0; }
 #chat-composer .composer-agent-meta { font-size: .75rem; opacity: .7; overflow-wrap: anywhere; }
-#chat-composer textarea { min-height: 3rem; }
+/* Vertical only: a sideways drag would cover the Auto panel beside it. */
+#chat-composer textarea { min-height: 3rem; resize: vertical; }
 .composer-actions, .auto-status-heading, .auto-setup-heading {
   align-items: center;
   display: flex;
