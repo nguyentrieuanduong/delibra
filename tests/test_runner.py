@@ -2667,3 +2667,31 @@ async def test_an_unreadable_global_instruction_refuses_the_turn(tmp_path: Path)
     # Switched off, the project does not read the file at all.
     store.set_use_global_instruction(False)
     await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["agent", "project"])
+async def test_flagged_deleted_writable_root_is_recreated_before_the_turn(
+    tmp_path: Path,
+    owner: str,
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(
+        tmp_path,
+        contexts=contexts,
+    )
+    if owner == "project":
+        store.set_writable_roots(["out/logs"], create_missing=True)
+    else:
+        config = store.load_session(session_id)
+        config.writable_roots = store.validate_session_writable_roots(
+            ["out/logs"], create_missing=True
+        )
+        config.create_missing_writable_roots = True
+        store.save_session(config)
+    shutil.rmtree(store.project_path / "out")
+
+    await manager.wait(await manager.start(project_id, session_id, "Question"))
+
+    assert (store.project_path / "out" / "logs").is_dir()
+    assert contexts[0].writable_roots == (store.project_path / "out" / "logs",)

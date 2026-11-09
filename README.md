@@ -207,7 +207,13 @@ to the registered project directory. The effective grant is the normalized union
 of the project and agent lists, with at most 16 roots after redundant descendants
 are removed.
 
-Only existing, symlink-free directories may be saved. The project root itself and
+Only symlink-free directories may be saved. A directory that does not exist yet
+is refused unless **Create directories that don't exist** is ticked beside that
+list; then Delibra creates it on save, one level at a time inside the project,
+and creates it again before every turn if it has since been deleted. The tick
+belongs to its own list: the project's tick creates project roots and an agent's
+tick creates only that agent's roots. Nothing is removed if a later check refuses
+the save. The project root itself and
 the metadata roots `.delibra`, `.git`, `.hg`, and `.svn` are never grantable. The
 characters `,*?[]!#\` anywhere in the resulting absolute path, including an
 ancestor above the registered project directory, are rejected because that path
@@ -215,6 +221,7 @@ cannot be expressed safely in a provider permission rule. Control characters and
 non-space whitespace are rejected for the same reason; ordinary spaces and Unicode
 directory names remain supported. Every run revalidates every effective root and
 names a stale directory in the error instead of silently dropping the grant.
+A refused save on the project form pops up and keeps the typed roots.
 
 Writable roots deliberately extend an agent's provider working directories beyond
 its private session workspace. If two agents receive the same directory, they can

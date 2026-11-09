@@ -259,6 +259,8 @@ textarea { min-height: 7rem; }
 .workspace-agents :is(input, select, textarea, button) { font: inherit; }
 .workspace-agents form { gap: .45rem; margin: .5rem 0; }
 .workspace-agents textarea { min-height: 4rem; }
+/* Baseline: in the narrow rail the text wraps, and the box stays on its first line. */
+.workspace-agents .auto-choice { align-items: baseline; display: flex; gap: .35rem; }
 .workspace-agents .agent-card { margin: .5rem 0; padding: .5rem; }
 .agent-card-heading {
   align-items: baseline;

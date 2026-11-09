@@ -2526,3 +2526,64 @@ def test_an_unknown_global_instruction_switch_value_is_refused(tmp_path: Path, v
     # refused instead of being read as "off".
     assert response.status_code == 422
     assert ProjectStore(project).use_global_instruction() is True
+
+
+def create_missing_inputs(contents: str) -> list[str]:
+    return [
+        match.group(0)
+        for match in re.finditer(r"<input\b[^>]*>", contents)
+        if 'name="create_missing_writable_roots"' in match.group(0)
+    ]
+
+
+def test_project_writable_roots_tick_creates_missing_and_renders_checked(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "writable-project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Writable", project_path)
+    store = ProjectStore(project)
+    url = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        before = client.get(f"{url}/settings")
+        saved = client.post(
+            f"{url}/writable-roots",
+            data={"writable_roots": "out/logs", "create_missing_writable_roots": "true"},
+            follow_redirects=False,
+        )
+        after = client.get(f"{url}/settings")
+
+    assert "Create directories that don't exist" in before.text
+    assert "checked" not in create_missing_inputs(before.text)[0]
+    assert saved.status_code == 303
+    assert (project_path / "out" / "logs").is_dir()
+    assert store.effective_writable_roots() == ["out/logs"]
+    assert store.create_missing_writable_roots() is True
+    assert "checked" in create_missing_inputs(after.text)[0]
+
+
+def test_project_writable_roots_refusal_pops_up_and_keeps_input(
+    tmp_path: Path,
+) -> None:
+    app, settings = project_app(tmp_path)
+    project_path = tmp_path / "writable-project"
+    project_path.mkdir()
+    project = RegistryStore(settings.home).register("Writable", project_path)
+    store = ProjectStore(project)
+    before = store.manifest_path.read_bytes()
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/writable-roots",
+            data={"writable_roots": "typed/missing"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 422
+    assert "data-page-alert>Nothing was saved: Writable root" in response.text
+    assert ">typed/missing</textarea>" in response.text
+    assert "checked" not in create_missing_inputs(response.text)[0]
+    assert store.manifest_path.read_bytes() == before
+    assert not (project_path / "typed").exists()

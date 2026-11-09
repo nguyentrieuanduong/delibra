@@ -396,7 +396,15 @@ def resolve_project_subdirectory(root: Path, relative_path: str) -> Path:
     try:
         with _open_project_directory(root, parts):
             pass
+    except ProjectFileSecurityError as exc:
+        raise StorageError(f"writable root {canonical!r} is unavailable: {exc}") from exc
     except StorageError as exc:
+        # Message only: the refusal itself came from the descriptor walk.
+        if not os.path.lexists(root.joinpath(*parts)):
+            raise StorageError(
+                f"writable root {canonical!r} does not exist; tick "
+                "\"Create directories that don't exist\" to have Delibra create it"
+            ) from exc
         raise StorageError(f"writable root {canonical!r} is unavailable: {exc}") from exc
     resolved = root.joinpath(*parts)
     unsafe = first_unsafe_writable_root_character(str(resolved))
@@ -405,6 +413,38 @@ def resolve_project_subdirectory(root: Path, relative_path: str) -> Path:
             f"writable root {canonical!r} has unsafe resolved character {unsafe!r}"
         )
     return resolved
+
+
+def ensure_project_subdirectory(root: Path, relative_path: str) -> Path:
+    """Create a missing writable root one symlink-free level at a time.
+
+    Each level is created relative to its parent's descriptor, opened without
+    following symlinks, so nothing is ever created outside the project. An
+    existing symlink or file anywhere on the path is refused, as for an
+    existing root.
+    """
+
+    parts = writable_root_parts(relative_path)
+    canonical = "/".join(parts)
+    # Before any mkdir: a path no permission rule can express is refused
+    # whole, so it must not leave directories behind either.
+    unsafe = first_unsafe_writable_root_character(str(root.joinpath(*parts)))
+    if unsafe is not None:
+        raise StorageError(
+            f"writable root {canonical!r} has unsafe resolved character {unsafe!r}"
+        )
+    try:
+        for depth in range(len(parts)):
+            with _open_project_directory(root, parts[:depth]) as parent:
+                try:
+                    os.mkdir(parts[depth], 0o777, dir_fd=parent)
+                except FileExistsError:
+                    pass  # The next level's open checks what is there.
+                except OSError as exc:
+                    raise ProjectFileDisplayError("directory cannot be created") from exc
+    except StorageError as exc:
+        raise StorageError(f"writable root {canonical!r} is unavailable: {exc}") from exc
+    return resolve_project_subdirectory(root, relative_path)
 
 
 def normalize_writable_roots(values: object) -> list[str]:
@@ -1724,6 +1764,10 @@ class ProjectStore:
             normalize_writable_roots(manifest.get("writable_roots", []))
         except StorageError as exc:
             raise OwnershipError("project writable roots are invalid") from exc
+        if "create_missing_writable_roots" in manifest and type(
+            manifest["create_missing_writable_roots"]
+        ) is not bool:
+            raise OwnershipError("project writable roots are invalid")
         try:
             CodingPolicy.from_manifest(manifest)
         except CodingPolicyError as exc:
@@ -1804,14 +1848,29 @@ class ProjectStore:
             self._load_manifest().get("writable_roots", [])
         )
 
-    def set_writable_roots(self, values: object) -> list[str]:
+    def create_missing_writable_roots(self) -> bool:
+        """Whether Delibra creates this project's missing writable roots."""
+
+        return self._load_manifest().get("create_missing_writable_roots", False)
+
+    def set_writable_roots(
+        self, values: object, *, create_missing: bool = False
+    ) -> list[str]:
+        if type(create_missing) is not bool:
+            raise StorageError("The create-missing-directories setting must be true or false")
         candidate = normalize_writable_roots(values)
+        prepare = ensure_project_subdirectory if create_missing else resolve_project_subdirectory
         for relative_path in candidate:
-            resolve_project_subdirectory(self.project_path, relative_path)
+            prepare(self.project_path, relative_path)
 
         manifest = self._load_manifest()
         current = normalize_writable_roots(manifest.get("writable_roots", []))
         if candidate == current:
+            # The flag alone does not change what any agent may write, so no
+            # agent's native session needs resetting.
+            if manifest.get("create_missing_writable_roots", False) is not create_missing:
+                manifest["create_missing_writable_roots"] = create_missing
+                atomic_write_json_recovery_pair(self.manifest_path, manifest)
             return candidate
 
         entries = self._scan_session_directories()
@@ -1826,6 +1885,7 @@ class ProjectStore:
         for config in affected:
             self.save_session(config, replace_recovery=True)
         manifest["writable_roots"] = candidate
+        manifest["create_missing_writable_roots"] = create_missing
         atomic_write_json_recovery_pair(self.manifest_path, manifest)
         return candidate
 
@@ -1924,12 +1984,31 @@ class ProjectStore:
             config.writable_roots,
         )
 
-    def validate_session_writable_roots(self, values: object) -> list[str]:
+    def validate_session_writable_roots(
+        self, values: object, *, create_missing: bool = False
+    ) -> list[str]:
         candidate = normalize_writable_roots(values)
         merge_writable_roots(self.effective_writable_roots(), candidate)
+        prepare = ensure_project_subdirectory if create_missing else resolve_project_subdirectory
         for relative_path in candidate:
-            resolve_project_subdirectory(self.project_path, relative_path)
+            prepare(self.project_path, relative_path)
         return candidate
+
+    def prepare_session_writable_roots(self, session_id: str) -> tuple[Path, ...]:
+        """Before a turn: re-create flagged missing roots, then resolve all.
+
+        Each flag covers only its own list (design 2026-11-09): the project's
+        flag creates project roots, an agent's flag creates that agent's.
+        """
+
+        config = self.load_session(session_id)
+        if self.create_missing_writable_roots():
+            for relative_path in self.effective_writable_roots():
+                ensure_project_subdirectory(self.project_path, relative_path)
+        if config.create_missing_writable_roots:
+            for relative_path in config.writable_roots:
+                ensure_project_subdirectory(self.project_path, relative_path)
+        return self.resolve_session_writable_roots(session_id)
 
     def resolve_session_writable_roots(self, session_id: str) -> tuple[Path, ...]:
         return tuple(

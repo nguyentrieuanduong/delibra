@@ -78,6 +78,7 @@ async def create_session(
     effort: str = Form(...),
     role_instructions: str = Form(""),
     writable_roots: str = Form(""),
+    create_missing_writable_roots: bool = Form(False),
 ):
     name = validate_agent_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
@@ -94,7 +95,8 @@ async def create_session(
         store = ProjectStore(project)
         store.require_auto_inactive()
         validated_writable_roots = store.validate_session_writable_roots(
-            _writable_roots_field(writable_roots)
+            _writable_roots_field(writable_roots),
+            create_missing=create_missing_writable_roots,
         )
         config = SessionConfig(
             id=session_id,
@@ -108,6 +110,7 @@ async def create_session(
             created_at=utc_now(),
             rounds=[],
             writable_roots=validated_writable_roots,
+            create_missing_writable_roots=create_missing_writable_roots,
         )
         store.create_session(config)
     if request.headers.get("HX-Request") == "true":
@@ -140,6 +143,9 @@ async def edit_session(
     effort: str | None = Form(None),
     role_instructions: str | None = Form(None),
     writable_roots: str | None = Form(None),
+    # Read only with the roots it governs: an unticked box sends nothing, so
+    # a form without the roots field must leave the tick alone.
+    create_missing_writable_roots: bool = Form(False),
     selected_agent: str | None = Query(None, alias="agent"),
 ):
     if writable_roots is None:
@@ -176,8 +182,10 @@ async def edit_session(
         )
         if writable_roots is not None:
             config.writable_roots = store.validate_session_writable_roots(
-                _writable_roots_field(writable_roots)
+                _writable_roots_field(writable_roots),
+                create_missing=create_missing_writable_roots,
             )
+            config.create_missing_writable_roots = create_missing_writable_roots
         if name is not None and validate_agent_name(name) != config.name:
             raise ConflictError("agent name is immutable")
         if config.rounds:

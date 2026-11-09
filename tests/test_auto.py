@@ -6754,3 +6754,34 @@ async def test_a_failed_turn_discards_its_read_marks(tmp_path: Path) -> None:
 
     assert terminal.status == "error"
     assert not (store.workspace_dir(session_ids[0]) / "questions" / "notes-read.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_flagged_deleted_writable_root_is_recreated_for_auto_turns(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("Alpha", "agree"), PlannedOutput("Beta", "agree")],
+    )
+    config = store.load_session(session_ids[0])
+    config.writable_roots = store.validate_session_writable_roots(
+        ["shared"], create_missing=True
+    )
+    config.create_missing_writable_roots = True
+    store.save_session(config)
+    (store.project_path / "shared").rmdir()
+
+    created = await manager.create(
+        project_id,
+        topic="Recreated writable root",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged", terminal.terminal_reason
+    assert (store.project_path / "shared").is_dir()
+    assert factory.created == 2
