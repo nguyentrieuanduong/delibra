@@ -31,7 +31,11 @@ def _strict_int(data: dict[str, Any], key: str, *, default: int | None = None) -
     return value
 
 
-def _strict_bool(data: dict[str, Any], key: str) -> bool:
+def _strict_bool(
+    data: dict[str, Any], key: str, *, default: bool | None = None
+) -> bool:
+    if key not in data and default is not None:
+        return default
     value = data[key]
     if type(value) is not bool:
         raise TypeError(f"{key} must be a boolean")
@@ -1394,6 +1398,9 @@ class SessionConfig:
     created_at: str
     rounds: list[RoundRecord] = field(default_factory=list)
     writable_roots: list[str] = field(default_factory=list)
+    # Delibra creates this agent's missing writable roots on save and before
+    # each turn (design 2026-11-09). Absent on older records.
+    create_missing_writable_roots: bool = False
     # Latest wins, and invalidated to None wherever Delibra deliberately
     # discards the provider-side context this describes. Absent on legacy
     # records.
@@ -1424,6 +1431,9 @@ class SessionConfig:
             created_at=str(data["created_at"]),
             rounds=[RoundRecord.from_dict(item) for item in data.get("rounds", [])],
             writable_roots=_strict_str_list(data, "writable_roots", default=[]),
+            create_missing_writable_roots=_strict_bool(
+                data, "create_missing_writable_roots", default=False
+            ),
             context_observation=(
                 ContextObservation.from_dict(data["context_observation"])
                 if data.get("context_observation") is not None

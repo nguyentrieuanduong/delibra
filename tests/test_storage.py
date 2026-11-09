@@ -43,6 +43,7 @@ from app.storage import (
     normalize_agent_name,
     normalize_project_name,
     normalize_writable_roots,
+    ensure_project_subdirectory,
     resolve_project_subdirectory,
     safe_copy_file,
     sanitize_name,
@@ -1951,3 +1952,169 @@ def test_a_non_boolean_global_instruction_switch_is_refused(tmp_path: Path) -> N
 
     with pytest.raises(OwnershipError, match="global instruction setting is invalid"):
         store.use_global_instruction()
+
+
+def test_ensure_project_subdirectory_creates_nested_missing_directories(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+
+    created = ensure_project_subdirectory(project, "src/api/v1")
+
+    assert created == project / "src" / "api" / "v1"
+    assert created.is_dir()
+    # Idempotent on an existing directory.
+    assert ensure_project_subdirectory(project, "src/api/v1") == created
+
+
+@pytest.mark.parametrize("kind", ["intermediate-symlink", "leaf-symlink", "file"])
+def test_ensure_project_subdirectory_refuses_symlink_or_file_in_the_path(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if kind == "intermediate-symlink":
+        (project / "src").symlink_to(outside, target_is_directory=True)
+    elif kind == "leaf-symlink":
+        (project / "src").mkdir()
+        (project / "src" / "api").symlink_to(outside, target_is_directory=True)
+    else:
+        (project / "src").write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(StorageError, match="src/api"):
+        ensure_project_subdirectory(project, "src/api")
+
+    assert list(outside.iterdir()) == []
+
+
+def test_ensure_project_subdirectory_creates_nothing_under_unsafe_project_path(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "pro,ject"
+    project.mkdir()
+
+    with pytest.raises(StorageError, match="unsafe"):
+        ensure_project_subdirectory(project, "src")
+
+    assert not (project / "src").exists()
+
+
+@pytest.mark.parametrize("relative", [".delibra/x", ".git", "src/../up"])
+def test_ensure_project_subdirectory_keeps_reserved_and_traversal_refusals(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    with pytest.raises(StorageError):
+        ensure_project_subdirectory(project, relative)
+
+    assert list(project.iterdir()) == []
+
+
+def test_session_create_missing_flag_is_backward_compatible_and_strict() -> None:
+    legacy_data = make_session().to_dict()
+    legacy_data.pop("create_missing_writable_roots", None)
+    legacy = SessionConfig.from_dict(legacy_data)
+    assert legacy.create_missing_writable_roots is False
+
+    legacy.create_missing_writable_roots = True
+    assert SessionConfig.from_dict(legacy.to_dict()).create_missing_writable_roots is True
+
+    for invalid in (None, "true", 1):
+        invalid_data = legacy.to_dict()
+        invalid_data["create_missing_writable_roots"] = invalid
+        with pytest.raises(TypeError, match="create_missing_writable_roots"):
+            SessionConfig.from_dict(invalid_data)
+
+
+def test_project_create_missing_flag_is_strict_in_the_manifest(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    assert store.create_missing_writable_roots() is False
+
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["create_missing_writable_roots"] = "yes"
+    atomic_write_json(store.manifest_path, manifest)
+
+    with pytest.raises(OwnershipError, match="project writable roots"):
+        store.create_missing_writable_roots()
+
+
+def test_set_writable_roots_creates_missing_only_when_asked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+
+    with pytest.raises(StorageError, match="out/logs"):
+        store.set_writable_roots(["out/logs"])
+    assert not (project_dir / "out").exists()
+    assert store.effective_writable_roots() == []
+
+    assert store.set_writable_roots(["out/logs"], create_missing=True) == ["out/logs"]
+    assert (project_dir / "out" / "logs").is_dir()
+    assert store.create_missing_writable_roots() is True
+
+    # Changing only the flag persists it without rescanning agents.
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("flag-only change must not scan sessions")
+
+    monkeypatch.setattr(ProjectStore, "_scan_session_directories", no_scan)
+    store.set_writable_roots(["out/logs"], create_missing=False)
+    assert store.create_missing_writable_roots() is False
+
+
+def test_prepare_session_writable_roots_recreates_only_flagged_lists(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("Alpha", project_dir)
+    store = ProjectStore(project)
+    store.set_writable_roots(["shared"], create_missing=True)
+    config = make_session()
+    config.writable_roots = store.validate_session_writable_roots(
+        ["mine"], create_missing=True
+    )
+    config.create_missing_writable_roots = True
+    store.create_session(config)
+    (project_dir / "shared").rmdir()
+    (project_dir / "mine").rmdir()
+
+    assert store.prepare_session_writable_roots(config.id) == (
+        project_dir / "mine",
+        project_dir / "shared",
+    )
+
+    # The agent's flag does not create project roots, nor the reverse.
+    (project_dir / "shared").rmdir()
+    store.set_writable_roots(["shared"], create_missing=True)
+    (project_dir / "shared").rmdir()
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["create_missing_writable_roots"] = False
+    atomic_write_json(store.manifest_path, manifest)
+    with pytest.raises(StorageError, match="shared"):
+        store.prepare_session_writable_roots(config.id)
+    assert not (project_dir / "shared").exists()
+
+    config = store.load_session(config.id)
+    config.create_missing_writable_roots = False
+    store.save_session(config)
+    (project_dir / "mine").rmdir()
+    store.set_writable_roots([], create_missing=True)
+    with pytest.raises(StorageError, match="mine"):
+        store.prepare_session_writable_roots(config.id)
+    assert not (project_dir / "mine").exists()
