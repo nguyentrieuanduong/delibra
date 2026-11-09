@@ -623,7 +623,8 @@ class RunManager:
         ):
             raise SessionBusy("session already has a running agent")
 
-        writable_roots = store.resolve_session_writable_roots(session_id)
+        # Re-creates flagged missing roots first (design 2026-11-09).
+        writable_roots = store.prepare_session_writable_roots(session_id)
         # Read per turn, so a Settings edit reaches the next turn, running
         # Auto runs included (design 2026-11-03). Before allocate_round: an
         # unreadable file refuses the turn without leaving a round behind.
