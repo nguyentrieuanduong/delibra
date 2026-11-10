@@ -212,6 +212,8 @@ textarea { min-height: 7rem; }
 .auto-note form { justify-items: start; }
 .auto-note-text { margin: .25rem 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .auto-note.delivered, .auto-note.deleted, .auto-note.undelivered { opacity: .7; }
+/* Red: a note that waits for Continue Auto, or that no agent will read. */
+.auto-note-waiting, .auto-note.undelivered .auto-note-meta { color: #c43b2f; }
 .auto-status {
   border: 1px solid #3b82c488;
   border-radius: .5rem;

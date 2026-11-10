@@ -20,6 +20,7 @@ from app.storage import (
     NotFoundError,
     ProjectStore,
     StorageError,
+    TERMINAL_AUTO_STATUSES,
     validate_id,
 )
 from app.urls import project_url
@@ -282,8 +283,6 @@ def agent_views(
     return views
 
 
-# A blocking question pauses a run as "stopped"; Continue Auto resumes it.
-NOTE_RUN_STATUSES = frozenset({"preparing", "discussing", "stopped"})
 
 
 def chat_reply_running(session: SessionConfig) -> bool:
@@ -335,11 +334,10 @@ def chat_notes_context(
 
 
 def accepts_notes(record: AutoRunRecord | None) -> bool:
-    return (
-        record is not None
-        and record.number is not None
-        and record.status in NOTE_RUN_STATUSES
-    )
+    """Any numbered run takes notes. An ended run's notes wait for Continue
+    Auto; one that cannot continue keeps them as undelivered."""
+
+    return record is not None and record.number is not None
 
 
 def _available_participants(record: AutoRunRecord) -> list[AutoParticipant]:
@@ -372,6 +370,8 @@ def auto_notes_context(store: ProjectStore, record: AutoRunRecord | None) -> dic
         "note_participants": len(available),
         "notes_revision": book.revision,
         "notes_open": accepts_notes(record),
+        # Pending notes of an ended run reach agents only on Continue Auto.
+        "notes_waiting": record is not None and record.status in TERMINAL_AUTO_STATUSES,
         "note_max": NOTE_MAX_CHARS,
     }
 

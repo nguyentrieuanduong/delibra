@@ -255,16 +255,20 @@ class NoteStore:
         atomic_write_json(self.history_path, book.to_dict())
         atomic_write_bytes(self.view_path, render_view(book, auto_run).data)
 
-    def add(self, text: str, *, auto_run: int) -> Note:
+    def add(self, text: str, *, auto_run: int, undelivered: bool = False) -> Note:
+        """``undelivered`` keeps a note for a run that can never read it."""
+
         text = text.strip()
         if not text or len(text) > NOTE_MAX_CHARS or "\x00" in text:
             raise StorageError(f"a note must be 1 to {NOTE_MAX_CHARS} characters")
         book = self.load()
-        if len(book.pending(auto_run)) >= MAX_PENDING_NOTES:
+        if not undelivered and len(book.pending(auto_run)) >= MAX_PENDING_NOTES:
             raise ConflictError(
                 f"Auto {auto_run} already has {MAX_PENDING_NOTES} pending notes"
             )
         note = Note(f"N{book.next_id}", auto_run, utc_now(), text)
+        if undelivered:
+            note.close("undelivered", note.posted_at)
         book.next_id += 1
         book.notes.append(note)
         self._save(book, auto_run)

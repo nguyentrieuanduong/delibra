@@ -191,3 +191,28 @@ def test_the_notes_box_sits_under_the_composer_beside_the_auto_status(
     # One line at the page's 1.5 line height is ~24px; two would be ~48px.
     assert box["labelHeight"] < 1.6 * box["sendHeight"], box
     assert box["hintSize"] == "12px", box
+
+
+@pytest.mark.browser
+def test_a_note_after_the_run_ended_waits_for_continue_auto_in_red(
+    live_server: LiveServer,
+    page: Any,
+    tmp_path: Path,
+) -> None:
+    from tests.test_auto import seed_durable_auto
+
+    app = live_server(["success"], tmp_path)
+    seed_durable_auto(app["store"], auto_id="b" * 32, status="converged", publish=False)
+    page.goto(f"{app['base_url']}/projects/Verify/chat")
+    expect(page.locator("#auto-status")).to_contain_text("converged", timeout=10_000)
+    note_box = page.locator("#auto-notes textarea")
+    expect(note_box).to_be_enabled()
+    expect(page.locator("#auto-note-hint")).to_contain_text("or on Continue Auto once it ends")
+
+    note_box.fill("Also cover rollback")
+    page.get_by_role("button", name="Send note to agents").click()
+
+    waiting = page.locator("#auto-notes-list .auto-note-waiting")
+    expect(waiting).to_have_text("waits for Continue Auto")
+    expect(waiting).to_have_css("color", "rgb(196, 59, 47)")
+    expect(note_box).to_have_value("")

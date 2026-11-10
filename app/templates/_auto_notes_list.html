@@ -4,7 +4,7 @@
       {% for note in notes %}
         <li class="auto-note {{ note.status }}">
           <p class="auto-note-meta">
-            {{ note.id }} · {{ note.status }}{% if note.status == 'pending' %} · delivered to {{ note_counts[note.id] }}/{{ note_participants }}{% endif %}{% if note_marked[note.id] %} · marked read by {{ note_marked[note.id]|join(', ') }}{% endif %}
+            {{ note.id }} · {{ note.status }}{% if note.status == 'pending' %} · delivered to {{ note_counts[note.id] }}/{{ note_participants }}{% endif %}{% if note_marked[note.id] %} · marked read by {{ note_marked[note.id]|join(', ') }}{% endif %}{% if note.status == 'pending' and notes_waiting|default(false) %} · <span class="auto-note-waiting">waits for Continue Auto</span>{% endif %}
           </p>
           <pre class="auto-note-text">{{ note.text }}</pre>
           {% if note.status == 'pending' %}
