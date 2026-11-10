@@ -83,14 +83,19 @@ textarea { min-height: 7rem; }
 }
 #file-browser-host, #file-reader { min-height: 0; overflow: auto; }
 .file-reader-empty { opacity: .55; }
+/* Keeps the large bold `header` text, but not its 2rem bottom margin. */
 .file-view-header {
   align-items: baseline;
   display: flex;
-  gap: .5rem;
+  flex-wrap: wrap;
+  gap: .25rem .5rem;
   justify-content: space-between;
+  margin-bottom: .5rem;
 }
-.file-view-header h3 { margin-top: 0; overflow-wrap: anywhere; }
-.file-view-actions { display: flex; gap: .35rem; }
+/* When the path and buttons do not fit on one row, the buttons wrap below. */
+.file-view-header h3 { flex: 1 1 14rem; line-height: 1.25; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.file-view .markdown > :first-child { margin-top: 0; }
+.file-view-actions { display: flex; flex: 0 0 auto; gap: .35rem; margin-left: auto; }
 .file-view pre { overflow: auto; white-space: pre-wrap; }
 .file-view pre.structured-data { tab-size: 2; white-space: pre; }
 .shared-context-editor textarea { min-height: 16rem; font-family: ui-monospace, monospace; }
@@ -311,9 +316,27 @@ textarea { min-height: 7rem; }
   width: min(90vw, 64rem);
 }
 .focus-dialog::backdrop { background: #0009; }
-.focus-dialog-shell { padding: 1rem; }
-.focus-dialog-close { float: right; }
-#focus-dialog-content { max-height: calc(85vh - 4rem); overflow: auto; }
+.focus-dialog-shell {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  max-height: 85vh;
+  padding: 1rem;
+}
+/* Its own row, so the content below spans the dialog's full width. */
+.focus-dialog-toolbar { display: flex; flex: 0 0 auto; gap: .35rem; justify-content: flex-end; }
+.focus-dialog-toolbar [aria-pressed="true"] { border-color: #3b82c4; box-shadow: inset 0 0 0 1px #3b82c4; }
+#focus-dialog-content { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.focus-dialog.fit-width { max-width: none; width: calc(100vw - 1rem); }
+.focus-dialog.fit-window {
+  height: 100vh;
+  margin: 0;
+  max-height: none;
+  max-width: none;
+  width: 100vw;
+}
+.focus-dialog.fit-window .focus-dialog-shell { height: 100%; max-height: none; }
 .round-focus { min-width: 0; }
 .agent-context h4 { margin: .5rem 0 .25rem; }
 .agent-context-state { font-size: .9rem; opacity: .8; }

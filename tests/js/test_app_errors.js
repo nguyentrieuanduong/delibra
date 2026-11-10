@@ -9,9 +9,11 @@ const {
   conversationTimelineForSwap,
   focusAutoHistoryView,
   handleFocusDialogCancel,
+  handleFocusDialogClosed,
   isDialogBackdropClick,
   openFocusDialog,
   removeConversationEmptyState,
+  setFocusDialogFit,
   resetFileReader,
   showPageAlert,
   renderChatError,
@@ -85,6 +87,91 @@ test("focus dialog opens, focuses its close control, and restores its trigger", 
   closeFocusDialog(dialog);
   assert.equal(dialog.open, false);
   assert.equal(triggerFocused, 1);
+});
+
+function fitDialog() {
+  const classes = new Set();
+  const buttons = ["width", "window"].map(function (mode) {
+    return {
+      dataset: { focusDialogFit: mode },
+      attrs: {},
+      setAttribute(name, value) {
+        this.attrs[name] = value;
+      },
+    };
+  });
+  return {
+    open: false,
+    buttons,
+    classes,
+    classList: {
+      contains(name) {
+        return classes.has(name);
+      },
+      add(name) {
+        classes.add(name);
+      },
+      remove(...names) {
+        names.forEach(function (name) {
+          classes.delete(name);
+        });
+      },
+    },
+    showModal() {
+      this.open = true;
+    },
+    close() {
+      this.open = false;
+    },
+    querySelector() {
+      return { focus() {} };
+    },
+    querySelectorAll(selector) {
+      assert.equal(selector, "[data-focus-dialog-fit]");
+      return buttons;
+    },
+  };
+}
+
+test("focus dialog fit buttons toggle one size at a time", function () {
+  const dialog = fitDialog();
+
+  setFocusDialogFit(dialog, "width");
+  assert.deepEqual([...dialog.classes], ["fit-width"]);
+  assert.deepEqual(
+    dialog.buttons.map(function (b) { return b.attrs["aria-pressed"]; }),
+    ["true", "false"]
+  );
+
+  setFocusDialogFit(dialog, "window");
+  assert.deepEqual([...dialog.classes], ["fit-window"]);
+  assert.deepEqual(
+    dialog.buttons.map(function (b) { return b.attrs["aria-pressed"]; }),
+    ["false", "true"]
+  );
+
+  // Pressing the active size again returns to the default size.
+  setFocusDialogFit(dialog, "window");
+  assert.deepEqual([...dialog.classes], []);
+  assert.deepEqual(
+    dialog.buttons.map(function (b) { return b.attrs["aria-pressed"]; }),
+    ["false", "false"]
+  );
+});
+
+test("focus dialog returns to its default size each time it closes", function () {
+  const dialog = fitDialog();
+  openFocusDialog(dialog, null);
+  setFocusDialogFit(dialog, "window");
+
+  dialog.close();
+  handleFocusDialogClosed({ currentTarget: dialog });
+
+  assert.deepEqual([...dialog.classes], []);
+  assert.deepEqual(
+    dialog.buttons.map(function (b) { return b.attrs["aria-pressed"]; }),
+    ["false", "false"]
+  );
 });
 
 test("focus dialog recognizes only clicks on its backdrop", function () {

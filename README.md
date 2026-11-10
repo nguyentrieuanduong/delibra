@@ -142,8 +142,11 @@ narrower right rail. Select an agent name to route the composer and highlight th
 card; unsent text stays in the composer when you pick, create or edit an agent. A
 floating **↓ Latest** button appears when the newest message is out of view and
 jumps to its start. Recorded rounds and opened files use the shared
-keyboard-accessible focus dialog. **Manage** opens project and agent settings. The
-footer starts in a checking state, then reports missing CLIs and version drift
+keyboard-accessible focus dialog. Its toolbar holds **Fit width**, which widens
+the dialog to the browser tab, **Fit window**, which fills the tab's width and
+height, and **Close**; press an active fit button again for the default size.
+Each time the dialog opens, it starts at the default size. **Manage** opens
+project and agent settings. The footer starts in a checking state, then reports missing CLIs and version drift
 without delaying or preventing the rest of the UI from loading.
 
 ## Workflow and storage
