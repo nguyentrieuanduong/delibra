@@ -8,9 +8,15 @@ from fastapi.responses import HTMLResponse
 from app.models import Project
 from app.notes import NOTE_ID, NOTE_MAX_CHARS, NoteStore, chat_note_store
 from app.project_routing import request_project
-from app.routes.auto import project_auto_record
+from app.routes.auto import continue_cursor, project_auto_record
 from app.security import require_loopback_client, validate_field
-from app.storage import ConflictError, NotFoundError, ProjectStore, validate_id
+from app.storage import (
+    TERMINAL_AUTO_STATUSES,
+    ConflictError,
+    NotFoundError,
+    ProjectStore,
+    validate_id,
+)
 from app.views import accepts_notes, auto_notes_context, chat_notes_context
 
 
@@ -51,13 +57,15 @@ async def post_note(
             # rule that guards starting or continuing a build run applies.
             require_loopback_client(request)
         if not accepts_notes(record):
-            if record is not None and record.number is not None:
-                raise ConflictError(
-                    f"Auto {record.number} has ended ({record.status}); "
-                    "continue it before sending a note"
-                )
             raise ConflictError("no Auto run accepts notes; start Auto first")
-        NoteStore(ProjectStore(project).root).add(text, auto_run=record.number)
+        store = ProjectStore(project)
+        # An ended run's note waits for Continue Auto. If the run can never
+        # continue, the note is still kept, marked undelivered, not refused.
+        undelivered = (
+            record.status in TERMINAL_AUTO_STATUSES
+            and continue_cursor(store, record) is None
+        )
+        NoteStore(store.root).add(text, auto_run=record.number, undelivered=undelivered)
     return _render_list(request, project)
 
 

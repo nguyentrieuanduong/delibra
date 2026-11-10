@@ -17,7 +17,7 @@
   <span id="question-{{ question.id }}-outcome" class="question-outcome" hx-swap-oob="true">From {{ question.turn_outcome }} turn</span>
 {% endfor %}
 {% if auto_notes|default(none) is not none %}
-  {% with notes=auto_notes.notes, note_counts=auto_notes.note_counts, note_marked=auto_notes.note_marked, note_participants=auto_notes.note_participants, notes_revision=auto_notes.notes_revision, notes_oob=true %}
+  {% with notes=auto_notes.notes, note_counts=auto_notes.note_counts, note_marked=auto_notes.note_marked, note_participants=auto_notes.note_participants, notes_revision=auto_notes.notes_revision, notes_waiting=auto_notes.notes_waiting, notes_oob=true %}
     {% include "_auto_notes_list.html" %}
   {% endwith %}
 {% endif %}

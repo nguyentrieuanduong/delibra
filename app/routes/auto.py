@@ -15,6 +15,7 @@ from starlette.responses import Response
 from app.auto import (
     ACTIVE_AUTO_STATUSES,
     AUTO_MAX_LIFETIME_CYCLES,
+    ResumeCursor,
     TERMINAL_AUTO_STATUSES,
     reconstruct_resume_cursor,
 )
@@ -255,6 +256,21 @@ def _run_questions(request: Request, store: ProjectStore, record: AutoRunRecord)
     ]
 
 
+def continue_cursor(store: ProjectStore, record: AutoRunRecord) -> ResumeCursor | None:
+    """Where Continue Auto would resume this ended run, or None if it cannot."""
+
+    if record.status not in TERMINAL_AUTO_STATUSES or store.active_auto_run_id() is not None:
+        return None
+    try:
+        cursor = reconstruct_resume_cursor(record)
+    except StorageError:
+        # An inconsistent record is genuinely not resumable, and a run past
+        # the lifetime cap is terminal for good. Hide the control rather than
+        # offering a button that can only fail.
+        return None
+    return cursor if cursor.current_cycle <= AUTO_MAX_LIFETIME_CYCLES else None
+
+
 def _resume_context(
     request: Request,
     store: ProjectStore,
@@ -262,16 +278,8 @@ def _resume_context(
 ) -> dict:
     """Decide whether Continue Auto may be offered, and with what bounds."""
 
-    cursor = None
-    if record.status in TERMINAL_AUTO_STATUSES and store.active_auto_run_id() is None:
-        try:
-            cursor = reconstruct_resume_cursor(record)
-        except StorageError:
-            # An inconsistent record is genuinely not resumable, and a run past
-            # the lifetime cap is terminal for good. Hide the control rather than
-            # offering a button that can only fail.
-            cursor = None
-    resumable = cursor is not None and cursor.current_cycle <= AUTO_MAX_LIFETIME_CYCLES
+    cursor = continue_cursor(store, record)
+    resumable = cursor is not None
     quota_resume = None
     if resumable and record.quota_pause is not None:
         observation = record.quota_pause.observation

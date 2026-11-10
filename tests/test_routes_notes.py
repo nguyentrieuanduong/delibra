@@ -9,6 +9,7 @@ from app.main import create_app
 from app.models import SessionConfig
 from app.notes import NoteStore
 from app.storage import ProjectStore, RegistryStore
+from app.views import auto_notes_context
 from tests.test_auto import seed_durable_auto
 
 
@@ -66,19 +67,72 @@ def test_a_note_posts_to_a_paused_run_escaped(tmp_path: Path) -> None:
     assert (note.auto_run, note.status) == (record.number, "pending")
 
 
-def test_notes_are_refused_without_a_run_that_accepts_them(tmp_path: Path) -> None:
+def test_notes_are_refused_only_without_any_auto_run(tmp_path: Path) -> None:
     app, project, store = notes_app(tmp_path)
 
     with TestClient(app, base_url="http://localhost") as client:
         without_run = client.post(f"{base(project)}/auto-notes", data={"text": "x"})
         seed_durable_auto(store, auto_id="b" * 32, status="converged", publish=False)
-        finished = client.post(f"{base(project)}/auto-notes", data={"text": "x"})
         blank = client.post(f"{base(project)}/auto-notes", data={"text": "   "})
 
     assert without_run.status_code == 409
-    assert finished.status_code == 409
     assert blank.status_code == 422
     assert NoteStore(store.root).load().notes == []
+
+
+def test_a_note_to_an_ended_run_waits_for_continue_auto(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="b" * 32, status="converged", publish=False)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{base(project)}/chat")
+        posted = client.post(f"{base(project)}/auto-notes", data={"text": "After the end"})
+
+    assert 'data-auto-notes-open="true"' in page.text
+    assert "disabled" not in notes_textarea(page.text)
+    assert "or on Continue Auto once it ends" in re.sub(r"\s+", " ", page.text)
+    assert posted.status_code == 200
+    text = re.sub(r"\s+", " ", posted.text)
+    assert "N1 · pending · delivered to 0/2" in text
+    assert '<span class="auto-note-waiting">waits for Continue Auto</span>' in text
+    [note] = NoteStore(store.root).load().notes
+    assert (note.auto_run, note.status) == (record.number, "pending")
+
+
+def test_a_note_to_a_run_that_cannot_continue_is_kept_undelivered(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="b" * 32, status="converged", publish=False)
+    # A discussion cursor with no discussion turn: Continue Auto cannot rebuild it.
+    broken = store.load_auto_run(record.id)
+    broken.current_cycle = 1
+    store.save_auto_run(broken)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{base(project)}/chat")
+        posted = client.post(f"{base(project)}/auto-notes", data={"text": "Too late"})
+
+    assert "disabled" not in notes_textarea(page.text)
+    # No refusal: the note is kept, and marked as never reaching an agent.
+    assert posted.status_code == 200
+    text = re.sub(r"\s+", " ", posted.text)
+    assert '<li class="auto-note undelivered">' in text
+    assert "N1 · undelivered" in text
+    assert "/auto-notes/N1/delete" not in text
+    [note] = NoteStore(store.root).load().notes
+    assert (note.auto_run, note.status, note.text) == (record.number, "undelivered", "Too late")
+
+
+def test_only_an_ended_run_marks_its_pending_notes_waiting(tmp_path: Path) -> None:
+    _app, _project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="b" * 32, status="discussing", publish=False)
+
+    running = auto_notes_context(store, record)
+    record.status = "stopped"
+    paused = auto_notes_context(store, record)
+
+    assert (running["notes_open"], running["notes_waiting"]) == (True, False)
+    assert (paused["notes_open"], paused["notes_waiting"]) == (True, True)
+    assert auto_notes_context(store, None)["notes_open"] is False
 
 
 def test_the_list_names_agents_that_marked_a_note(tmp_path: Path) -> None:
@@ -150,7 +204,7 @@ def test_the_notes_box_is_disabled_without_an_open_run(tmp_path: Path) -> None:
     assert "disabled" in notes_textarea(page.text)
 
 
-def test_an_ended_run_warns_about_undelivered_notes_and_refuses_new_ones(
+def test_an_ended_run_warns_about_undelivered_notes_and_queues_new_ones(
     tmp_path: Path,
 ) -> None:
     app, project, store = notes_app(tmp_path)
@@ -162,7 +216,7 @@ def test_an_ended_run_warns_about_undelivered_notes_and_refuses_new_ones(
     with TestClient(app, base_url="http://localhost") as client:
         page = client.get(f"{base(project)}/chat")
         setup = client.get(f"{base(project)}/auto/setup")
-        refused = client.post(f"{base(project)}/auto-notes", data={"text": "x"})
+        queued = client.post(f"{base(project)}/auto-notes", data={"text": "x"})
 
     page_text = re.sub(r"\s+", " ", page.text)
     assert "Notes not delivered:</strong> N1 (not yet to Beta)." in page_text
@@ -172,9 +226,8 @@ def test_an_ended_run_warns_about_undelivered_notes_and_refuses_new_ones(
         f"Auto {record.number} still has notes its agents have not all received: N1."
         in setup_text
     )
-    assert refused.status_code == 409
-    assert f"Auto {record.number} has ended (converged)" in refused.json()["detail"]
-    assert [note.status for note in NoteStore(store.root).load().notes] == ["pending"]
+    assert queued.status_code == 200
+    assert [note.status for note in NoteStore(store.root).load().notes] == ["pending", "pending"]
 
 
 def test_lists_carry_the_store_revision(tmp_path: Path) -> None:
@@ -277,7 +330,9 @@ def test_a_pending_chat_note_can_be_deleted_and_reset_clears_chat_notes(tmp_path
     assert chat_note_store(store, "2" * 32).load().notes == []
 
 
-def test_an_idle_agent_still_lists_its_chat_notes_after_auto_ends(tmp_path: Path) -> None:
+def test_after_auto_ends_an_idle_agent_box_sends_to_the_run_as_when_paused(
+    tmp_path: Path,
+) -> None:
     app, project, store = notes_app(tmp_path)
     seed_durable_auto(store, auto_id="b" * 32, status="converged", publish=False)
     chat_note_store(store, ALPHA).add("Earlier note", name="Alpha")
@@ -286,11 +341,11 @@ def test_an_idle_agent_still_lists_its_chat_notes_after_auto_ends(tmp_path: Path
 
     chat_list = re.search(r'<div id="chat-notes-list"[^>]*>', page)[0]
     auto_list = re.search(r'<div id="auto-notes-list"[^>]*>', page)[0]
-    assert " hidden" not in chat_list and "Earlier note" in page
-    assert " hidden" in auto_list
-    assert " disabled" in notes_textarea(page)
+    # An ended run takes notes for Continue Auto, as a paused run does.
+    assert " hidden" in chat_list and "Earlier note" in page
+    assert " hidden" not in auto_list
+    assert " disabled" not in notes_textarea(page)
     assert 'name="target" value="auto"' in page
-    assert "Notes reach Alpha while it replies." in page
 
 
 def test_a_replying_agent_gets_the_chat_target_on_the_page(tmp_path: Path) -> None:

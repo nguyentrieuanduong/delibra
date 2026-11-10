@@ -647,9 +647,10 @@ Delete removes a pending one. **Start new phase → Delete all notes** also
 clears chat notes.
 
 Under the message box, beside the Auto status, the one-line **Note** box sends
-guidance to the latest Auto
-run while it is preparing, discussing or stopped (a blocking-question pause is
-`stopped`). Notes are stored in `.delibra/notes-history.json`; agents read the
+guidance to the latest Auto run, whether it is preparing, discussing, paused
+(`stopped`, as after a blocking question) or ended. It is disabled only before
+the project's first Auto run, and while an idle agent is selected it sends to
+that run, so the agent's chat notes list stays hidden until it replies. Notes are stored in `.delibra/notes-history.json`; agents read the
 run's pending notes from `.delibra/notes.json` (or a turn-start copy beside
 their questions copy on a project path Claude rules cannot express). A note
 is in the live view as soon as you post it, including while a turn runs; the
@@ -668,9 +669,11 @@ A run that converges, reaches its cycle limit or fails while a note is
 still pending keeps that outcome. The note stays pending: the run's status
 lists it with the agents that have not received it, and **Continue Auto**
 delivers it. Before a new run would mark such notes undelivered, the Auto
-setup dialog warns and names them. A note sent just after a run ended is
-refused with "Auto N has ended (...); continue it before sending a note",
-and the box keeps your text. Build agents have a shell and notes override the
+setup dialog warns and names them. You can still send a note after a run has
+ended: it waits for **Continue Auto**, and the list marks it in red "waits for
+Continue Auto". If Continue Auto cannot resume the run (an inconsistent record
+or past the lifetime cycle cap), the note is kept but marked **undelivered** in
+red at once, without a pop-up. Build agents have a shell and notes override the
 topic, so only this machine (a loopback client) may post a note to a build
 run, as with starting or continuing one. Each turn records
 the notes its view held at turn start. A note leaves the view once every
