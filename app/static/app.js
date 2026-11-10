@@ -53,10 +53,37 @@ function openFocusDialog(dialog, trigger) {
   }
 }
 
+const FOCUS_DIALOG_FIT_CLASSES = ["fit-width", "fit-window"];
+
+// Pressing the active size again returns to the default size.
+function setFocusDialogFit(dialog, mode) {
+  const buttons = Array.from(dialog.querySelectorAll("[data-focus-dialog-fit]"));
+  const known = buttons.some(function (button) {
+    return button.dataset.focusDialogFit === mode;
+  });
+  const next = known && !dialog.classList.contains("fit-" + mode) ? mode : null;
+  dialog.classList.remove(...FOCUS_DIALOG_FIT_CLASSES);
+  if (next) {
+    dialog.classList.add("fit-" + next);
+  }
+  buttons.forEach(function (button) {
+    button.setAttribute(
+      "aria-pressed",
+      String(next !== null && button.dataset.focusDialogFit === next)
+    );
+  });
+}
+
 function closeFocusDialog(dialog) {
   if (dialog.open) {
     dialog.close();
   }
+  restoreFocusDialogTrigger();
+}
+
+// Every way of closing fires "close"; each open starts at the default size.
+function handleFocusDialogClosed(event) {
+  setFocusDialogFit(event.currentTarget, null);
   restoreFocusDialogTrigger();
 }
 
@@ -1096,6 +1123,7 @@ if (typeof module !== "undefined" && module.exports) {
     focusAutoHistoryView,
     formatRemainingSeconds,
     handleFocusDialogCancel,
+    handleFocusDialogClosed,
     isDialogBackdropClick,
     isStalePickerSwap,
     keepComposerText,
@@ -1117,6 +1145,7 @@ if (typeof module !== "undefined" && module.exports) {
     resetScrollForNewFile,
     restoreAutoStopDisclosure,
     restoreConversationScroll,
+    setFocusDialogFit,
     showPageAlert,
     setTimeoutFormPending,
     shouldClearChatError,
@@ -1361,6 +1390,17 @@ if (typeof document !== "undefined") {
       }
       return;
     }
+    const fitControl =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest("[data-focus-dialog-fit]")
+        : null;
+    if (fitControl) {
+      const fitDialog = fitControl.closest("#focus-dialog");
+      if (fitDialog) {
+        setFocusDialogFit(fitDialog, fitControl.dataset.focusDialogFit);
+      }
+      return;
+    }
     const closeControl =
       event.target && typeof event.target.closest === "function"
         ? event.target.closest("[data-focus-dialog-close]")
@@ -1396,7 +1436,7 @@ if (typeof document !== "undefined") {
   const focusDialog = document.getElementById("focus-dialog");
   if (focusDialog) {
     focusDialog.addEventListener("cancel", handleFocusDialogCancel);
-    focusDialog.addEventListener("close", restoreFocusDialogTrigger);
+    focusDialog.addEventListener("close", handleFocusDialogClosed);
   }
 
   document.addEventListener("htmx:oobBeforeSwap", function (event) {
