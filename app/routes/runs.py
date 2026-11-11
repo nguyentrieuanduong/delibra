@@ -30,6 +30,11 @@ def _event_data(kind: str, data: str) -> str:
         return f'<span class="progress-item">{escaped}</span>'
     if kind in {"warning", "error"}:
         return f'<span class="{kind}">{escaped}</span>'
+    if kind in {"text_delta", "snapshot"}:
+        # htmx parses bare text as a whole document, which drops a chunk's
+        # leading spaces and any chunk that is only line breaks. Inside an
+        # element the whitespace is kept.
+        return f"<span>{escaped}</span>"
     return escaped
 
 
