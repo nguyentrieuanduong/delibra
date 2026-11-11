@@ -662,7 +662,11 @@ Under the message box, beside the Auto status, the one-line **Note** box sends
 guidance to the latest Auto run, whether it is preparing, discussing, paused
 (`stopped`, as after a blocking question) or ended. It is disabled only before
 the project's first Auto run, and while an idle agent is selected it sends to
-that run, so the agent's chat notes list stays hidden until it replies. Notes are stored in `.delibra/notes-history.json`; agents read the
+that run, so the agent's chat notes list stays hidden until it replies. The
+notes list under the box is a collapsible **Notes** section whose summary
+counts the list on screen ("Notes · 4 (1 pending)") and updates as notes are
+sent or delivered, even while collapsed; it is hidden while that list is
+empty, and this browser remembers whether you left it open. Notes are stored in `.delibra/notes-history.json`; agents read the
 run's pending notes from `.delibra/notes.json` (or a turn-start copy beside
 their questions copy on a project path Claude rules cannot express). A note
 is in the live view as soon as you post it, including while a turn runs; the

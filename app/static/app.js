@@ -631,7 +631,64 @@ function syncAutoNotesAvailability(documentRoot) {
   if (textarea) {
     textarea.setAttribute("aria-describedby", `${mode}-note-hint`);
   }
+  syncNotesDisclosure(documentRoot);
   return target !== "closed";
+}
+
+const NOTES_DISCLOSURE_KEY = "delibra.notesOpen";
+
+function notesSummaryText(total, pending) {
+  if (!total) {
+    return "";
+  }
+  return pending ? ` · ${total} (${pending} pending)` : ` · ${total}`;
+}
+
+// Counted from the list on screen: every list swap and mode change runs this,
+// so the summary needs no request of its own.
+function syncNotesDisclosure(documentRoot) {
+  const details =
+    documentRoot && typeof documentRoot.querySelector === "function"
+      ? documentRoot.querySelector("[data-notes-disclosure]")
+      : null;
+  if (!details) {
+    return null;
+  }
+  const shown = Array.from(details.querySelectorAll(".auto-notes-list")).find(function (list) {
+    return !list.hidden;
+  });
+  const total = shown ? shown.querySelectorAll("li.auto-note").length : 0;
+  const pending = shown ? shown.querySelectorAll("li.auto-note.pending").length : 0;
+  const count = details.querySelector("[data-notes-summary-count]");
+  if (count) {
+    count.textContent = notesSummaryText(total, pending);
+  }
+  details.hidden = total === 0;
+  return { total, pending };
+}
+
+// Storage can throw (blocked or private browsing); the rendered state stands.
+function rememberNotesDisclosure(details, storage) {
+  try {
+    storage.setItem(NOTES_DISCLOSURE_KEY, String(Boolean(details.open)));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function restoreNotesDisclosure(details, storage) {
+  let stored = null;
+  try {
+    stored = storage.getItem(NOTES_DISCLOSURE_KEY);
+  } catch (_error) {
+    return false;
+  }
+  if (stored !== "true" && stored !== "false") {
+    return false;
+  }
+  details.open = stored === "true";
+  return true;
 }
 
 function resetAutoNotesForm(source, detail) {
@@ -1171,6 +1228,7 @@ if (typeof module !== "undefined" && module.exports) {
     appendPickedPaths,
     goToLatestMessage,
     syncLatestButton,
+    syncNotesDisclosure,
     applyPathPicker,
     autoExtendPreviewText,
     autoSetupPlacement,
@@ -1194,6 +1252,8 @@ if (typeof module !== "undefined" && module.exports) {
     MERMAID_CACHE_LIMIT,
     mermaidErrorText,
     mermaidFrameSize,
+    NOTES_DISCLOSURE_KEY,
+    notesSummaryText,
     moveAutoOrderItem,
     openAutoSetup,
     openFocusDialog,
@@ -1205,10 +1265,12 @@ if (typeof module !== "undefined" && module.exports) {
     resetFileReader,
     renderChatError,
     resetAutoNotesForm,
+    rememberNotesDisclosure,
     resetScrollForNewFile,
     restoreAutoExtendForm,
     restoreAutoStopDisclosure,
     restoreConversationScroll,
+    restoreNotesDisclosure,
     setFocusDialogFit,
     showPageAlert,
     setTimeoutFormPending,
@@ -1515,6 +1577,14 @@ if (typeof document !== "undefined") {
       updateAutoExtendPreview(input.closest("form"));
     }
   });
+
+  const notesDisclosure = document.querySelector("[data-notes-disclosure]");
+  if (notesDisclosure && window.localStorage) {
+    restoreNotesDisclosure(notesDisclosure, window.localStorage);
+    notesDisclosure.addEventListener("toggle", function () {
+      rememberNotesDisclosure(notesDisclosure, window.localStorage);
+    });
+  }
 
   const focusDialog = document.getElementById("focus-dialog");
   if (focusDialog) {

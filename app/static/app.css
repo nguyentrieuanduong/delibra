@@ -207,7 +207,9 @@ textarea { min-height: 7rem; }
 }
 .auto-notes textarea { box-sizing: border-box; min-height: 0; resize: vertical; }
 .auto-notes .hint { font-size: .75rem; grid-column: 1 / -1; margin: 0; opacity: .7; }
-.auto-notes-list ul { list-style: none; margin: .5rem 0 0; max-height: 30vh; overflow: auto; padding: 0; }
+.notes-disclosure { margin-top: .35rem; }
+.notes-disclosure > summary { cursor: pointer; font-size: .85rem; }
+.auto-notes-list ul { list-style: none; margin: .25rem 0 0; max-height: 15vh; overflow: auto; padding: 0; }
 .auto-note-meta, .auto-note form { margin: 0; }
 .auto-note form { justify-items: start; }
 .auto-note-text { margin: .25rem 0; overflow-wrap: anywhere; white-space: pre-wrap; }

@@ -370,3 +370,27 @@ def test_a_replying_agent_gets_the_chat_target_on_the_page(tmp_path: Path) -> No
     assert 'aria-describedby="chat-note-hint"' in notes_textarea(page)
     assert " disabled" not in notes_textarea(page)
     assert 'data-agent-replying="true"' in page
+
+
+def test_the_notes_list_sits_in_a_disclosure_with_a_count(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="d" * 32, status="stopped", publish=False)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        empty = client.get(f"{base(project)}/chat").text
+        notes = NoteStore(store.root)
+        notes.add("First", auto_run=record.number)
+        notes.add("Second", auto_run=record.number)
+        notes.delete("N1")
+        page = client.get(f"{base(project)}/chat").text
+
+    disclosure = re.search(r"<details[^>]*data-notes-disclosure[^>]*>", empty)[0]
+    # Nothing to collapse yet.
+    assert " hidden" in disclosure
+    disclosure = re.search(r"<details[^>]*data-notes-disclosure[^>]*>", page)[0]
+    assert " open" in disclosure and " hidden" not in disclosure
+    text = re.sub(r"\s+", " ", page)
+    assert "<summary>Notes<span data-notes-summary-count> · 2 (1 pending)</span></summary>" in text
+    # Both lists live inside it, so a collapsed section hides either one.
+    inner = page[page.index("data-notes-disclosure"):page.index("</details>", page.index("data-notes-disclosure"))]
+    assert 'id="auto-notes-list"' in inner and 'id="chat-notes-list"' in inner
