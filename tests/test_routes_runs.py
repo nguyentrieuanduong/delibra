@@ -342,3 +342,12 @@ def test_timeout_fragment_disables_every_extension_at_hard_cap(
     assert "hard timeout cap has been reached" in fragment.text
     assert 'class="timeout-cap-controls" aria-disabled="true"' in fragment.text
     assert fragment.text.count(" disabled") >= 5
+
+
+def test_streamed_text_is_wrapped_so_htmx_keeps_its_whitespace() -> None:
+    from app.routes.runs import _event_data
+
+    assert _event_data("text_delta", " a <b>") == "<span> a &lt;b&gt;</span>"
+    assert _event_data("text_delta", "\n") == "<span>\n</span>"
+    assert _event_data("snapshot", " all") == "<span> all</span>"
+    assert _event_data("done", "completed") == "completed"

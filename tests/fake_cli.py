@@ -95,6 +95,15 @@ def main() -> int:
         return 0
     if mode != "no-session":
         emit({"kind": "init", "session_id": "fake-native-session"})
+    if mode == "spaced":
+        # Chunks that start with a space or are only a line break, as real
+        # providers stream them; then hold the round open so the live view
+        # can be read.
+        for text in ("Hello", " world", "\n", "Next ", " line", "\n\n", "End"):
+            emit({"kind": "delta", "text": text})
+            time.sleep(args.delay)
+        time.sleep(300)
+        return 0
     if mode == "huge-line":
         emit({"kind": "delta", "text": "x" * args.bytes})
         time.sleep(0.2)
