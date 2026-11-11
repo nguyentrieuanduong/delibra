@@ -1,0 +1,31 @@
+{# Raise a running run's cycle limit. Closing the disclosure is the Cancel. #}
+{% set cycles_url = project_url(project.name, '/auto-runs/' ~ auto.number ~ '/cycles') %}
+<details class="auto-extend">
+  <summary>Add cycles</summary>
+  <form
+    method="post"
+    action="{{ cycles_url }}"
+    hx-post="{{ cycles_url }}"
+    hx-target="#auto-status"
+    hx-swap="outerHTML"
+    data-auto-extend-form
+  >
+    <p class="hint">{% if auto.current_cycle %}Cycle {{ auto.current_cycle }} of {{ auto.max_cycles }}{% else %}Preparing; limit {{ auto.max_cycles }} cycle{{ '' if auto.max_cycles == 1 else 's' }}{% endif %}</p>
+    <label>Additional discussion cycles
+      <input
+        name="additional_cycles"
+        type="number"
+        min="1"
+        max="{{ extend_max_cycles }}"
+        value="1"
+        required
+        data-auto-extend-input
+        data-auto-extend-base="{{ auto.max_cycles }}"
+      >
+    </label>
+    <div class="auto-extend-submit">
+      <output class="hint" data-auto-extend-preview>New limit: {{ auto.max_cycles + 1 }} cycles</output>
+      <button type="submit">Add cycles</button>
+    </div>
+  </form>
+</details>

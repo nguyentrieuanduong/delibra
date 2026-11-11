@@ -223,6 +223,16 @@ textarea { min-height: 7rem; }
 .auto-status pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .auto-terminal-reason { font-weight: 600; }
 .auto-stop { justify-self: end; text-align: right; }
+/* Add cycles and Stop Auto stay together at the right; an open one takes the row. */
+.auto-run-controls { display: flex; flex-wrap: wrap; gap: .25rem 1rem; justify-content: flex-end; margin-left: auto; }
+.auto-run-controls:has(details[open]) { flex-basis: 100%; }
+.auto-extend summary { cursor: pointer; text-align: right; }
+.auto-extend[open] { flex-basis: 100%; }
+.auto-extend form { display: grid; gap: .35rem; margin-top: .35rem; }
+.auto-extend form > .hint { margin: 0; }
+.auto-extend label { align-items: center; display: flex; gap: .5rem; }
+.auto-extend input[type="number"] { width: 6rem; }
+.auto-extend-submit { align-items: center; display: flex; gap: .75rem; justify-content: space-between; }
 .auto-stop summary { cursor: pointer; }
 .auto-stop .hint { max-width: 20rem; }
 .auto-stop.pending { display: grid; gap: .35rem; justify-items: end; }

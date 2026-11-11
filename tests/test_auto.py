@@ -6785,3 +6785,71 @@ async def test_flagged_deleted_writable_root_is_recreated_for_auto_turns(
     assert terminal.status == "converged", terminal.terminal_reason
     assert (store.project_path / "shared").is_dir()
     assert factory.created == 2
+
+
+@pytest.mark.asyncio
+async def test_adding_cycles_to_a_running_run_lets_it_discuss_longer(
+    tmp_path: Path,
+) -> None:
+    manager, factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("Alpha", delay=0.3),
+            PlannedOutput("Beta"),
+            PlannedOutput("Alpha again"),
+            PlannedOutput("Beta again"),
+        ],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Longer discussion topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=1,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+
+    extended = await manager.extend_cycles(project_id, created.id, additional_cycles=1)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert (extended.status, extended.max_cycles) == ("discussing", 2)
+    assert terminal.status == "limit_reached"
+    assert (terminal.max_cycles, terminal.current_cycle) == (2, 2)
+    assert len(terminal.discussion) == 4
+    assert factory.created == 4
+
+
+@pytest.mark.asyncio
+async def test_adding_cycles_is_bounded_and_needs_a_running_run(
+    tmp_path: Path,
+) -> None:
+    manager, _factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [PlannedOutput("never completes", sleep=True)],
+    )
+    created = await manager.create(
+        project_id,
+        topic="Bounded extension topic",
+        participant_ids=session_ids,
+        agreement_policy="all_agree",
+        max_cycles=3,
+        preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+
+    with pytest.raises(StorageError, match="from 1 through 97"):
+        await manager.extend_cycles(project_id, created.id, additional_cycles=0)
+    with pytest.raises(StorageError, match="from 1 through 97"):
+        await manager.extend_cycles(
+            project_id, created.id, additional_cycles=AUTO_MAX_LIFETIME_CYCLES - 2
+        )
+    at_cap = await manager.extend_cycles(project_id, created.id, additional_cycles=97)
+    assert at_cap.max_cycles == AUTO_MAX_LIFETIME_CYCLES
+    with pytest.raises(StorageError, match="lifetime cycle limit"):
+        await manager.extend_cycles(project_id, created.id, additional_cycles=1)
+
+    await manager.stop(project_id, created.id)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    with pytest.raises(ConflictError, match="use Continue Auto"):
+        await manager.extend_cycles(project_id, created.id, additional_cycles=1)

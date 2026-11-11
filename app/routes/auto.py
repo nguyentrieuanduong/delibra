@@ -418,6 +418,7 @@ def auto_status_context(
         "project": project,
         "auto": record,
         "auto_active": record.status in ACTIVE_AUTO_STATUSES,
+        "extend_max_cycles": AUTO_MAX_LIFETIME_CYCLES - record.max_cycles,
         **_resume_context(request, store, record),
         **material,
         "preparing_number": min(
@@ -771,6 +772,30 @@ async def cancel_stop_auto_after_turn(
     record = await request.app.state.auto_manager.withdraw_stop_after_turn(
         resolved_project_id,
         record.id,
+    )
+    return _status_response(request, resolved_project_id, record)
+
+
+@router.post(
+    "/projects/{project_id}/auto-runs/{auto_id}/cycles",
+    response_class=HTMLResponse,
+)
+async def extend_auto_cycles(
+    request: Request,
+    project_id: str,
+    auto_id: str,
+    additional_cycles: int = Form(...),
+) -> HTMLResponse:
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    record, _ = _load_auto_reference(ProjectStore(project), auto_id)
+    if record.kind == "build":
+        # More cycles is more shell time for build agents, as Continue Auto is.
+        require_loopback_client(request)
+    record = await request.app.state.auto_manager.extend_cycles(
+        resolved_project_id,
+        record.id,
+        additional_cycles=additional_cycles,
     )
     return _status_response(request, resolved_project_id, record)
 
