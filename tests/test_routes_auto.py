@@ -2517,3 +2517,62 @@ def test_resume_form_offers_the_pause_choice_and_lists_waiting_questions(tmp_pat
     assert "asked Q1" in status.text
     assert "1 open question for you from this run" in status.text
     assert resumed.pause_on_blocking_questions is True
+
+
+def test_a_running_run_offers_add_cycles_and_raises_its_limit(tmp_path: Path) -> None:
+    app, _, project, store, sessions, _factory = auto_route_app(tmp_path, sleep=True)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost") as client:
+        start_auto(client, project.id, [session.id for session in sessions])
+        active = wait_for_auto(store, terminal=False)
+        idle = client.get(f"{prefix}/auto-runs/{active.number}")
+        added = client.post(
+            f"{prefix}/auto-runs/{active.number}/cycles", data={"additional_cycles": "2"}
+        )
+        record = store.load_auto_run(active.id)
+        too_many = client.post(
+            f"{prefix}/auto-runs/{active.number}/cycles", data={"additional_cycles": "98"}
+        )
+        client.post(f"{prefix}/auto-runs/{active.number}/stop")
+        wait_for_auto(store, terminal=True)
+        ended = client.post(
+            f"{prefix}/auto-runs/{active.number}/cycles", data={"additional_cycles": "1"}
+        )
+
+    idle_text = re.sub(r"\s+", " ", idle.text)
+    assert "<summary>Add cycles</summary>" in idle_text
+    assert "Cycle 1 of 1" in idle_text
+    assert re.search(r'name="additional_cycles"[^>]*max="99"', idle_text)
+    assert 'data-auto-extend-base="1"' in idle_text
+    assert "New limit: 2 cycles" in idle_text
+
+    assert added.status_code == 200
+    assert record.max_cycles == 3
+    assert record.status == "discussing"
+    added_text = re.sub(r"\s+", " ", added.text)
+    assert "up to 3 cycles" in added_text
+    assert "Cycle 1 of 3" in added_text
+    assert re.search(r'name="additional_cycles"[^>]*max="97"', added_text)
+
+    assert too_many.status_code == 422
+    assert "from 1 through 97" in too_many.json()["detail"]
+    assert ended.status_code == 409
+    assert "use Continue Auto to add cycles" in ended.json()["detail"]
+    assert store.load_auto_run(active.id).max_cycles == 3
+
+
+def test_adding_cycles_to_a_build_run_is_loopback_only(tmp_path: Path, monkeypatch) -> None:
+    app, _settings, project, store, sessions, _factory = auto_route_app(tmp_path, outputs=["One", "Two"])
+    build_ready(store, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
+        assert local.post(
+            f"/projects/{project.id}/auto-runs", data=build_form([s.id for s in sessions])
+        ).status_code == 202
+        record = wait_for_auto(store, terminal=True)
+    with TestClient(app, base_url="http://localhost", client=LAN) as lan:
+        refused = lan.post(
+            f"/projects/{project.id}/auto-runs/{record.number}/cycles",
+            data={"additional_cycles": "1"},
+        )
+
+    assert refused.status_code == 403

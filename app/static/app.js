@@ -324,6 +324,67 @@ function restoreAutoStopDisclosure(documentRoot, snapshot) {
   return true;
 }
 
+function autoExtendPreviewText(base, value, max) {
+  const text = String(value).trim();
+  const added = /^\d+$/.test(text) ? Number(text) : NaN;
+  if (!(added >= 1 && added <= Number(max))) {
+    return `Enter 1 to ${max} cycles`;
+  }
+  return `New limit: ${Number(base) + added} cycles`;
+}
+
+function updateAutoExtendPreview(container) {
+  const input = container.querySelector("[data-auto-extend-input]");
+  const preview = container.querySelector("[data-auto-extend-preview]");
+  if (!input || !preview) {
+    return;
+  }
+  preview.textContent = autoExtendPreviewText(
+    input.dataset.autoExtendBase,
+    input.value,
+    input.max
+  );
+}
+
+// A status refresh replaces the Add cycles form; keep it open with what was
+// typed. Its own submit's response is the exception: that closes it.
+function captureAutoExtendForm(target, source) {
+  if (!target || target.id !== "auto-status") {
+    return null;
+  }
+  const ownSubmit = Boolean(
+    source && typeof source.closest === "function" && source.closest("[data-auto-extend-form]")
+  );
+  const details = target.querySelector("details.auto-extend");
+  const input = target.querySelector("[data-auto-extend-input]");
+  return {
+    autoId: target.dataset.autoId,
+    open: !ownSubmit && Boolean(details && details.open),
+    value: !ownSubmit && input ? input.value : "",
+  };
+}
+
+function restoreAutoExtendForm(documentRoot, snapshot) {
+  if (!snapshot || !snapshot.open) {
+    return false;
+  }
+  const status = documentRoot.getElementById("auto-status");
+  if (!status || status.dataset.autoId !== snapshot.autoId) {
+    return false;
+  }
+  const details = status.querySelector("details.auto-extend");
+  if (!details) {
+    return false;
+  }
+  details.open = true;
+  const input = status.querySelector("[data-auto-extend-input]");
+  if (input) {
+    input.value = snapshot.value;
+  }
+  updateAutoExtendPreview(status);
+  return true;
+}
+
 function formatRemainingSeconds(value) {
   const parsed = Number(value);
   const bounded = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
@@ -1111,7 +1172,9 @@ if (typeof module !== "undefined" && module.exports) {
     goToLatestMessage,
     syncLatestButton,
     applyPathPicker,
+    autoExtendPreviewText,
     autoSetupPlacement,
+    captureAutoExtendForm,
     captureAutoStopDisclosure,
     chatErrorMessage,
     captureConversationScroll,
@@ -1143,6 +1206,7 @@ if (typeof module !== "undefined" && module.exports) {
     renderChatError,
     resetAutoNotesForm,
     resetScrollForNewFile,
+    restoreAutoExtendForm,
     restoreAutoStopDisclosure,
     restoreConversationScroll,
     setFocusDialogFit,
@@ -1163,6 +1227,7 @@ if (typeof document !== "undefined") {
   const conversationScrollSnapshots = new WeakMap();
   const fileViewPaths = new WeakMap();
   const autoStopDisclosureSnapshots = new WeakMap();
+  const autoExtendSnapshots = new WeakMap();
 
   initializeDynamicPresentation(document);
 
@@ -1297,6 +1362,13 @@ if (typeof document !== "undefined") {
     if (autoStop) {
       autoStopDisclosureSnapshots.set(xhr, autoStop);
     }
+    const autoExtend = captureAutoExtendForm(
+      target,
+      detail.requestConfig ? detail.requestConfig.elt : null
+    );
+    if (autoExtend) {
+      autoExtendSnapshots.set(xhr, autoExtend);
+    }
     if (target.id === "file-reader" || target.id === "focus-dialog-content") {
       fileViewPaths.set(xhr, fileViewPath(target));
     }
@@ -1331,6 +1403,10 @@ if (typeof document !== "undefined") {
         autoStopDisclosureSnapshots.get(detail.xhr)
       );
       autoStopDisclosureSnapshots.delete(detail.xhr);
+    }
+    if (detail.xhr && autoExtendSnapshots.has(detail.xhr)) {
+      restoreAutoExtendForm(document, autoExtendSnapshots.get(detail.xhr));
+      autoExtendSnapshots.delete(detail.xhr);
     }
     if (detail.xhr && fileViewPaths.has(detail.xhr)) {
       resetScrollForNewFile(target, fileViewPaths.get(detail.xhr));
@@ -1430,6 +1506,13 @@ if (typeof document !== "undefined") {
       body.querySelectorAll("input[data-picker-value]").forEach(function (input) {
         input.checked = all.checked;
       });
+    }
+  });
+
+  document.addEventListener("input", function (event) {
+    const input = event.target;
+    if (input && typeof input.matches === "function" && input.matches("[data-auto-extend-input]")) {
+      updateAutoExtendPreview(input.closest("form"));
     }
   });
 

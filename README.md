@@ -507,6 +507,18 @@ A creation-time cap of 20 cycles still applies to the setup box. Continue Auto
 offers from 1 through the remaining lifetime allowance; persistence retains
 cumulative limits up to 100.
 
+While a run is preparing or discussing, **Add cycles** beside **Stop Auto**
+raises its limit without stopping it. The disclosure shows where the run is
+("Cycle 3 of 5", or the limit while preparing), and a line under the
+**Additional discussion cycles** field shows the resulting limit as you type
+("New limit: 7 cycles"). The limit only goes up, to at most the 100-cycle
+lifetime cap, and the control disappears once the run is there. The run reads
+the limit at the end of each cycle, so it either uses the new one or has
+already ended; a request that lands after the end is refused ("use Continue
+Auto to add cycles"). Unlike Continue Auto, a raise is not recorded in
+`resumptions`; the run's `max_cycles` simply grows. Only this machine may add
+cycles to a build run. A status refresh keeps the form open with your number.
+
 When quota preflight pauses Auto, **Continue Auto** shows the responsible provider
 window, the observation and reset time before accepting the click. Continuing
 grants only that exact window and keeps spending it until the reset; a five-hour

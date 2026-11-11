@@ -3550,6 +3550,51 @@ class AutoManager:
         self._publish_status(record)
         return record
 
+    async def extend_cycles(
+        self,
+        project_id: str,
+        auto_id: str,
+        *,
+        additional_cycles: int,
+    ) -> AutoRunRecord:
+        """Raise a running run's cycle limit; it never goes down.
+
+        The limit is read only at a cycle's end, under these same locks, so the
+        run either sees the new limit there or has already ended -- and an
+        ended run is Continue Auto's to extend, never this method's.
+        """
+
+        project = self.registry.get(project_id)
+        store = ProjectStore(project)
+        session_ids = [
+            participant.session_id
+            for participant in store.load_auto_run(auto_id).participants
+        ]
+        async with self.locks.project_sessions(project_id, session_ids):
+            record = store.load_auto_run(auto_id)
+            if (
+                record.status not in ACTIVE_AUTO_STATUSES
+                or store.active_auto_run_id() != record.id
+            ):
+                raise ConflictError(
+                    f"Auto {record.number} has ended ({record.status}); "
+                    "use Continue Auto to add cycles"
+                )
+            room = AUTO_MAX_LIFETIME_CYCLES - record.max_cycles
+            if room < 1:
+                raise StorageError(
+                    "Auto run is already at the lifetime cycle limit of "
+                    f"{AUTO_MAX_LIFETIME_CYCLES}"
+                )
+            if type(additional_cycles) is not int or not 1 <= additional_cycles <= room:
+                raise StorageError(
+                    f"Additional Auto cycles must be from 1 through {room}"
+                )
+            record.max_cycles += additional_cycles
+            store.save_auto_run(record)
+        self._publish_status(record)
+        return record
+
     def _publish_status(
         self, record: AutoRunRecord, kind: Literal["status", "questions"] = "status"
     ) -> AutoStatusEvent:

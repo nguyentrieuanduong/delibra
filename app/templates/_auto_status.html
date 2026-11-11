@@ -33,7 +33,10 @@
   <div class="auto-status-heading">
     <h2><strong>Auto {{ auto.number }} · {{ auto.status }}</strong></h2>
     {% if auto_active %}
-      {% include "_auto_stop_controls.html" %}
+      <div class="auto-run-controls">
+        {% if extend_max_cycles|default(0) > 0 %}{% include "_auto_extend_form.html" %}{% endif %}
+        {% include "_auto_stop_controls.html" %}
+      </div>
     {% elif auto_resumable|default(false) %}
       {% include "_auto_resume_form.html" %}
     {% endif %}
