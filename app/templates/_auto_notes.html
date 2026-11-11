@@ -16,6 +16,13 @@
     <p id="auto-note-hint" class="hint" data-notes-mode="auto"{% if chat_notes_shown %} hidden{% endif %}>Agents read notes each Auto turn, or on Continue Auto once it ends.</p>
     {% include "_chat_note_hint.html" %}
   </form>
-  {% include "_auto_notes_list.html" %}
-  {% include "_chat_notes_list.html" %}
+  {# Outside the lists, which arrive out-of-band: a status update keeps the
+     reader's open or closed choice. app.js keeps the count in step. #}
+  {% set shown_notes = (chat_notes if chat_notes_shown else notes)|default([]) %}
+  {% set shown_pending = shown_notes|selectattr('status', 'equalto', 'pending')|list|length %}
+  <details id="notes-disclosure" class="notes-disclosure" data-notes-disclosure open{% if not shown_notes %} hidden{% endif %}>
+    <summary>Notes<span data-notes-summary-count>{% if shown_notes %} · {{ shown_notes|length }}{% if shown_pending %} ({{ shown_pending }} pending){% endif %}{% endif %}</span></summary>
+    {% include "_auto_notes_list.html" %}
+    {% include "_chat_notes_list.html" %}
+  </details>
 </section>

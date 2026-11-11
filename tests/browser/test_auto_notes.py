@@ -216,3 +216,85 @@ def test_a_note_after_the_run_ended_waits_for_continue_auto_in_red(
     expect(waiting).to_have_text("waits for Continue Auto")
     expect(waiting).to_have_css("color", "rgb(196, 59, 47)")
     expect(note_box).to_have_value("")
+
+
+@pytest.mark.browser
+def test_the_notes_list_collapses_counts_live_and_remembers(
+    live_server: LiveServer,
+    page: Any,
+    tmp_path: Path,
+) -> None:
+    from tests.test_auto import seed_durable_auto
+
+    app = live_server(["success"], tmp_path)
+    seed_durable_auto(app["store"], auto_id="b" * 32, status="converged", publish=False)
+    chat = f"{app['base_url']}/projects/Verify/chat"
+    page.goto(chat)
+    disclosure = page.locator("#notes-disclosure")
+    note_box = page.locator("#auto-notes textarea")
+    send = page.get_by_role("button", name="Send note to agents")
+    expect(disclosure).to_be_hidden()
+
+    note_box.fill("First")
+    send.click()
+    expect(disclosure).to_be_visible()
+    expect(disclosure.locator("summary")).to_have_text("Notes · 1 (1 pending)")
+    disclosure.locator("summary").click()
+    expect(disclosure).not_to_have_attribute("open", "")
+
+    page.reload()
+    expect(disclosure).to_be_visible(timeout=10_000)
+    expect(disclosure).not_to_have_attribute("open", "")
+    note_box.fill("Second")
+    send.click()
+    # Counted while collapsed: the new note shows without opening the list.
+    expect(disclosure.locator("summary")).to_have_text("Notes · 2 (2 pending)")
+    expect(disclosure).not_to_have_attribute("open", "")
+
+    # A status refresh re-renders the lists, never the reader's choice.
+    page.evaluate(
+        """(url) => htmx.ajax("GET", url, {target: "#auto-status", swap: "outerHTML"})""",
+        f"{app['base_url']}/projects/Verify/auto-runs/1",
+    )
+    page.wait_for_timeout(300)
+    expect(disclosure).not_to_have_attribute("open", "")
+    expect(disclosure.locator("summary")).to_have_text("Notes · 2 (2 pending)")
+
+    disclosure.locator("summary").click()
+    page.reload()
+    expect(disclosure).to_have_attribute("open", "", timeout=10_000)
+    expect(disclosure.locator("li.auto-note")).to_have_count(2)
+
+
+@pytest.mark.browser
+def test_the_expanded_notes_list_is_capped_at_fifteen_percent_of_the_window(
+    live_server: LiveServer,
+    page: Any,
+    tmp_path: Path,
+) -> None:
+    from tests.test_auto import seed_durable_auto
+
+    app = live_server(["success"], tmp_path)
+    seed_durable_auto(app["store"], auto_id="b" * 32, status="converged", publish=False)
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.goto(f"{app['base_url']}/projects/Verify/chat")
+    note_box = page.locator("#auto-notes textarea")
+    send = page.get_by_role("button", name="Send note to agents")
+    for n in range(1, 7):
+        note_box.fill(f"Note {n}")
+        send.click()
+        expect(page.locator("#notes-disclosure summary")).to_have_text(
+            f"Notes · {n} ({n} pending)"
+        )
+
+    sizes = page.evaluate(
+        """() => {
+          const list = [...document.querySelectorAll('#notes-disclosure .auto-notes-list ul')]
+            .find((ul) => ul.offsetParent !== null);
+          return {height: list.getBoundingClientRect().height,
+                  scroll: list.scrollHeight, client: list.clientHeight};
+        }"""
+    )
+    assert sizes["height"] <= 900 * 0.15 + 1
+    # The rest scrolls inside the list rather than pushing the page down.
+    assert sizes["scroll"] > sizes["client"]
