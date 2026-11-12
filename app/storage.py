@@ -931,6 +931,15 @@ def _assert_no_symlink_components(
             raise OwnershipError(f"symlinked path component rejected: {current}")
 
 
+def _remove_owned_entry(path: Path) -> None:
+    """Remove a file, symlink or directory tree without following links."""
+
+    if stat.S_ISDIR(path.lstat().st_mode):
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
 def ensure_owned_directory(path: Path, root: Path) -> Path:
     """Create a missing leaf directory after rejecting every symlink component."""
     _assert_no_symlink_components(path, root, allow_missing_leaf=True)
@@ -2028,6 +2037,35 @@ class ProjectStore:
         manifest.pop("pass_prompt_template", None)
         atomic_write_json(self.manifest_path, manifest)
 
+    def require_settings_resettable(self) -> None:
+        policy = self.coding_policy()
+        if policy.docker.status in ("preparing", "deleting"):
+            raise ConflictError(f"Docker is {policy.docker.status}; wait for it to finish")
+        if policy.env.status == "creating":
+            raise ConflictError(
+                "The Python environment is being created; wait for it to finish"
+            )
+
+    def reset_settings(self) -> None:
+        """Every project setting back to its default.
+
+        Identity stays, and so do the env and Docker records: they describe
+        real resources (envs/, a Lima VM) that would otherwise be orphaned.
+        """
+
+        self.require_auto_inactive()
+        self.require_settings_resettable()
+        manifest = self._load_manifest()
+        policy = CodingPolicy.from_manifest(manifest)
+        reset: dict[str, Any] = {
+            key: manifest[key]
+            for key in ("format", "id", "created_at", "name")
+            if key in manifest
+        }
+        reset["coding"] = CodingPolicy(env=policy.env, docker=policy.docker).to_dict()
+        # Recovery pair: the old backup would restore the settings just reset.
+        atomic_write_json_recovery_pair(self.manifest_path, reset)
+
     @property
     def auto_runs_root(self) -> Path:
         return ensure_owned_directory(self.root / "auto-runs", self.root)
@@ -2414,6 +2452,41 @@ class ProjectStore:
         index["next_number"] = number + 1
         atomic_write_json_recovery_pair(self.auto_index_path, index)
         return number
+
+    def clear_auto_runs(self) -> int:
+        """Remove every Auto run; the index keeps its next number.
+
+        Numbers are never reused, so a tab still showing an old run gets
+        "not found" instead of acting on a new run with the same number.
+        """
+
+        self.require_auto_inactive()
+        recovered = 1
+        try:
+            number = self._load_auto_index()["next_number"]
+            assert type(number) is int
+            recovered = number
+        except StorageError:
+            pass
+        self._scan_auto_directories()
+        next_number = self._auto_index_from_directory_cache(minimum_next=recovered)[
+            "next_number"
+        ]
+        index_name = self.auto_index_path.name
+        kept = {index_name, f"{index_name}.bak"}
+        removed = 0
+        for child in sorted(self.auto_runs_root.iterdir(), key=lambda item: item.name):
+            if child.name in kept:
+                continue
+            _remove_owned_entry(child)
+            removed += 1
+        # Recovery pair: the old backup lists runs that no longer exist.
+        atomic_write_json_recovery_pair(
+            self.auto_index_path,
+            {"format": AUTO_INDEX_FORMAT, "next_number": next_number, "runs": {}},
+        )
+        self._invalidate_auto_directory_cache()
+        return removed
 
     def _invalidate_auto_directory_cache(self) -> None:
         self._auto_directory_cache = None
@@ -3427,6 +3500,36 @@ class ProjectStore:
         shutil.rmtree(destination)
         self._invalidate_session_directory_cache()
 
+    def clear_session_history(self, session_id: str) -> SessionConfig:
+        """Empty one idle agent's rounds, workspace and context artifacts.
+
+        The agent and its configuration stay; its native session is dropped
+        and the baseline keeps round numbering going. Chat notes are cleared
+        by ChatNoteStore.clear, which keeps their id counter.
+        """
+
+        config = self.load_session(session_id)
+        if config.status == "running":
+            raise ConflictError("cannot clear a running session")
+        last_round = self.allocate_round(session_id) - 1
+        workspace = self.workspace_dir(session_id)
+        for directory in (self.rounds_dir(session_id), workspace):
+            for child in list(directory.iterdir()):
+                _remove_owned_entry(child)
+        for name in (".tmp", "inputs"):
+            (workspace / name).mkdir(mode=0o700)
+        context = self.context_dir(session_id)
+        if os.path.lexists(context):
+            _remove_owned_entry(context)
+        config.rounds = []
+        config.context_baseline_round = max(config.context_baseline_round, last_round)
+        config.context_summary = None
+        config.cli_session_id = None
+        config.context_observation = None
+        # Recovery pair: the old backup names rounds that no longer exist.
+        self.save_session(config, replace_recovery=True)
+        return config
+
     def scan_round_files(self, session_id: str) -> RoundScan:
         rounds_path = self.rounds_dir(session_id)
         outputs: list[RoundFile] = []
@@ -3454,11 +3557,12 @@ class ProjectStore:
 
     def allocate_round(self, session_id: str) -> int:
         scan = self.scan_round_files(session_id)
-        configured = [item.n for item in self.load_session(session_id).rounds]
-        numbers = configured + [
+        config = self.load_session(session_id)
+        numbers = [item.n for item in config.rounds] + [
             item.n for item in [*scan.outputs, *scan.prompts, *scan.partials]
         ]
-        return max(numbers, default=0) + 1
+        # A cleared history keeps its baseline, so numbering continues.
+        return max([*numbers, config.context_baseline_round]) + 1
 
     def reconcile_session(self, session_id: str) -> SessionConfig:
         config = self.load_session(session_id)

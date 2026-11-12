@@ -1532,3 +1532,31 @@ def test_a_summary_cannot_name_an_unbounded_list_of_dropped_entries(
 
     with pytest.raises(OwnershipError, match="dropped entries"):
         store.create_auto_run(record, topic=b"Original topic", baseline=b"")
+
+
+def test_clear_auto_runs_removes_every_run_and_keeps_numbering(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    create_numeric_auto_run(store, number=1, auto_id="a" * 32)
+    create_numeric_auto_run(store, number=2, auto_id="b" * 32)
+    create_legacy_auto_run(store, auto_id="c" * 32)
+    (store.auto_runs_root / f".creating-{'d' * 32}-5").mkdir()
+
+    assert store.clear_auto_runs() == 4
+
+    assert store.list_auto_runs() == []
+    assert sorted(item.name for item in store.auto_runs_root.iterdir()) == [
+        ".index.json",
+        ".index.json.bak",
+    ]
+    assert store.reserve_auto_run_number() == 6
+
+
+def test_clear_auto_runs_refuses_while_a_run_is_active(tmp_path: Path) -> None:
+    store = auto_project_store(tmp_path)
+    create_numeric_auto_run(store, number=1, auto_id="a" * 32)
+    store.publish_auto_reservation("a" * 32)
+
+    with pytest.raises(ConflictError):
+        store.clear_auto_runs()
+
+    assert [record.id for record in store.list_auto_runs()] == ["a" * 32]
