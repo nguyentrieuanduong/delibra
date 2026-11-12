@@ -298,18 +298,25 @@ class RunManager:
             self._retire_context(store, config)
             return config
 
-    def clear_contexts_locked(self, store: ProjectStore, project_id: str) -> int:
-        """Clear context for every agent, or none: all are checked first.
+    def require_all_quiescent_locked(
+        self, store: ProjectStore, project_id: str
+    ) -> list[SessionConfig]:
+        """Every agent's config, or SessionBusy if any is running. Writes nothing.
 
         The caller holds registry_project_sessions over the project and
         every one of its sessions.
         """
 
         store.require_auto_inactive()
-        configs = [
+        return [
             self._require_quiescent(store, project_id, session.id)
             for session in store.list_sessions()
         ]
+
+    def clear_contexts_locked(self, store: ProjectStore, project_id: str) -> int:
+        """Clear context for every agent, or none: all are checked first."""
+
+        configs = self.require_all_quiescent_locked(store, project_id)
         for config in configs:
             self._retire_context(store, config)
         return len(configs)

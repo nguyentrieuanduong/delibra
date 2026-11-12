@@ -2695,3 +2695,25 @@ async def test_flagged_deleted_writable_root_is_recreated_before_the_turn(
 
     assert (store.project_path / "out" / "logs").is_dir()
     assert contexts[0].writable_roots == (store.project_path / "out" / "logs",)
+
+
+def test_require_all_quiescent_locked_refuses_a_running_agent_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    idle = session("b" * 32)
+    idle.cli_session_id = "native-b"
+    store.create_session(idle)
+    running = store.load_session(session_id)
+    running.status = "running"
+    store.save_session(running)
+
+    with pytest.raises(SessionBusy):
+        manager.require_all_quiescent_locked(store, project_id)
+
+    assert store.load_session("b" * 32).cli_session_id == "native-b"
+    running.status = "idle"
+    store.save_session(running)
+    assert sorted(
+        config.id for config in manager.require_all_quiescent_locked(store, project_id)
+    ) == sorted([session_id, "b" * 32])
