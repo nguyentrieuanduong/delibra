@@ -1223,6 +1223,42 @@ function renderMermaidBlocks(documentRoot) {
     });
 }
 
+// htmx fixes a request's target when the request is sent. If a response
+// arrives after another swap replaced that target, swapping onto the
+// detached element throws inside htmx, which then never lets the requesting
+// element send again; and hx-preserve has already moved the Auto status
+// stream into the lost response. Swap into the element now holding the id.
+// Returns false when there is none and the response must be dropped.
+function retargetDetachedSwap(detail, documentRoot) {
+  const target = detail && detail.target;
+  if (!target || target.isConnected) {
+    return true;
+  }
+  const successor = target.id ? documentRoot.getElementById(target.id) : null;
+  if (!successor) {
+    return false;
+  }
+  detail.target = successor;
+  return true;
+}
+
+// A copy for a new stream. The new stream replays the round from its start,
+// so the text the old one showed would otherwise appear twice.
+function freshStreamElement(element) {
+  const fresh = element.cloneNode(true);
+  fresh.querySelectorAll(".live-text, .live-progress").forEach(function (node) {
+    node.textContent = "";
+  });
+  return fresh;
+}
+
+const STREAM_RETRY_MAX_MS = 30000;
+
+function streamRetryDelay(attempts) {
+  const count = Number.isFinite(attempts) && attempts > 0 ? attempts : 0;
+  return Math.min(STREAM_RETRY_MAX_MS, 1000 * 2 ** count);
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     appendPickedPaths,
@@ -1243,6 +1279,7 @@ if (typeof module !== "undefined" && module.exports) {
     fileViewPath,
     focusAutoHistoryView,
     formatRemainingSeconds,
+    freshStreamElement,
     handleFocusDialogCancel,
     handleFocusDialogClosed,
     isDialogBackdropClick,
@@ -1271,11 +1308,13 @@ if (typeof module !== "undefined" && module.exports) {
     restoreAutoStopDisclosure,
     restoreConversationScroll,
     restoreNotesDisclosure,
+    retargetDetachedSwap,
     setFocusDialogFit,
     showPageAlert,
     setTimeoutFormPending,
     shouldClearChatError,
     skipStaleNotesSwap,
+    streamRetryDelay,
     syncAutoOrderControls,
     syncConversationDisclosure,
     syncAutoDisabledControls,
@@ -1290,6 +1329,10 @@ if (typeof document !== "undefined") {
   const fileViewPaths = new WeakMap();
   const autoStopDisclosureSnapshots = new WeakMap();
   const autoExtendSnapshots = new WeakMap();
+  // Refused reconnects per stream element. Never an attribute: htmx sets an
+  // element up again whenever its attributes change, which would reopen the
+  // stream and leave the children's sse: listeners on the closed one.
+  const streamRetries = new WeakMap();
 
   initializeDynamicPresentation(document);
 
@@ -1387,6 +1430,46 @@ if (typeof document !== "undefined") {
     if (progress) {
       progress.textContent = "";
     }
+  });
+
+  // Dispatched on the requesting element, which for the Auto refreshes stays
+  // on the page while their target is replaced.
+  document.addEventListener("htmx:beforeOnLoad", function (event) {
+    if (!retargetDetachedSwap(event.detail, document)) {
+      event.preventDefault();
+    }
+  });
+
+  // A stream that ends reconnects on the same EventSource. One the browser
+  // closes for good (a refused reconnect) is replaced by sse.js with a new
+  // EventSource, but htmx keeps the hx-trigger="sse:..." listeners on the
+  // closed one: the tab would look connected and hear nothing. A fresh copy
+  // is set up from scratch instead; removing the old element also stops
+  // sse.js's own retry, which checks that the element is still on the page.
+  document.addEventListener("htmx:sseError", function (event) {
+    const element = event.target;
+    const source = event.detail && event.detail.source;
+    if (
+      !source ||
+      source.readyState !== EventSource.CLOSED ||
+      !element.isConnected ||
+      !element.hasAttribute("sse-connect")
+    ) {
+      return;
+    }
+    const attempts = streamRetries.get(element) || 0;
+    const fresh = freshStreamElement(element);
+    streamRetries.set(fresh, attempts + 1);
+    element.replaceWith(fresh);
+    window.setTimeout(function () {
+      if (fresh.isConnected) {
+        htmx.process(fresh);
+      }
+    }, streamRetryDelay(attempts));
+  });
+
+  document.addEventListener("htmx:sseOpen", function (event) {
+    streamRetries.delete(event.target);
   });
 
   document.addEventListener("htmx:responseError", function (event) {
