@@ -32,6 +32,7 @@ from app.docker_backend import DockerUnavailable
 from app.global_instruction import GlobalInstructionError, read_global_instruction
 from app.models import Project
 from app.notes import NoteStore, chat_note_store
+from app.project_reset import CLEAR_SCOPES, PartialClearError, clear_project
 from app.project_routing import request_project
 from app.questions import QuestionStore
 from app.security import (
@@ -55,7 +56,7 @@ from app.urls import project_url
 
 
 router = APIRouter()
-RESET_SCOPES = frozenset({"questions", "notes", "context", "all"})
+RESET_SCOPES = frozenset({"questions", "notes", "context", "all", *CLEAR_SCOPES})
 
 
 def _project_path(value: str) -> Path:
@@ -248,34 +249,62 @@ async def retry_auto_migration(request: Request, project_id: str):
 
 @router.post("/projects/{project_id}/reset")
 async def reset_project(request: Request, project_id: str, scope: str = Form(...)):
-    """Start a new phase: clear questions, notes, agent context, or all three."""
+    """Refresh (questions, notes, context, or all three) or clear and reset."""
 
     if scope not in RESET_SCOPES:
         raise StorageError("unknown reset scope")
     project = request_project(request, project_id)
     resolved_project_id = project.id
     session_ids = [session.id for session in ProjectStore(project).list_sessions()]
-    async with request.app.state.locks.registry_project_sessions(
-        resolved_project_id, session_ids
-    ):
-        _reject_in_memory_work(request, resolved_project_id)
-        project = request.app.state.registry.get(resolved_project_id)
-        store = ProjectStore(project)
-        store.require_auto_inactive()
-        if sorted(session.id for session in store.list_sessions()) != sorted(session_ids):
-            raise ConflictError("agents changed while clearing; try again")
-        # Context first: it has the strictest checks (every agent idle), so a
-        # refusal happens before any store is written.
-        if scope in {"context", "all"}:
-            request.app.state.manager.clear_contexts_locked(store, resolved_project_id)
-        if scope in {"questions", "all"}:
-            QuestionStore(
-                store.root, request.app.state.settings.auto_questions_view_limit
-            ).dismiss_all()
-        if scope in {"notes", "all"}:
-            NoteStore(store.root).clear()
-            for session in store.list_sessions():
-                chat_note_store(store, session.id).clear()
+    try:
+        async with request.app.state.locks.registry_project_sessions(
+            resolved_project_id, session_ids
+        ):
+            _reject_in_memory_work(request, resolved_project_id)
+            project = request.app.state.registry.get(resolved_project_id)
+            store = ProjectStore(project)
+            store.require_auto_inactive()
+            if sorted(session.id for session in store.list_sessions()) != sorted(session_ids):
+                raise ConflictError("agents changed while clearing; try again")
+            if scope in CLEAR_SCOPES:
+                # In-memory checks stay on the event loop; zipping goes off it.
+                request.app.state.manager.require_all_quiescent_locked(
+                    store, resolved_project_id
+                )
+                await asyncio.to_thread(
+                    clear_project,
+                    store,
+                    scope,
+                    view_limit=request.app.state.settings.auto_questions_view_limit,
+                )
+            else:
+                # Context first: it has the strictest checks (every agent idle), so a
+                # refusal happens before any store is written.
+                if scope in {"context", "all"}:
+                    request.app.state.manager.clear_contexts_locked(store, resolved_project_id)
+                if scope in {"questions", "all"}:
+                    QuestionStore(
+                        store.root, request.app.state.settings.auto_questions_view_limit
+                    ).dismiss_all()
+                if scope in {"notes", "all"}:
+                    NoteStore(store.root).clear()
+                    for session in store.list_sessions():
+                        chat_note_store(store, session.id).clear()
+    except NotFoundError:
+        raise
+    except PartialClearError as exc:
+        return await render_project_settings(
+            request, project, error=str(exc), status_code=500
+        )
+    except StorageError as exc:
+        message = str(exc)
+        lead = "Nothing was cleared" if scope in CLEAR_SCOPES else "Could not clear"
+        return await render_project_settings(
+            request,
+            project,
+            error=f"{lead}: {message[:1].upper()}{message[1:]}",
+            status_code=409 if isinstance(exc, ConflictError) else 422,
+        )
     return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
 
 
