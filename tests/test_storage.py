@@ -13,6 +13,7 @@ import unicodedata
 
 import pytest
 
+from app.coding import CodingEnvState, CodingPolicy, DockerPolicy
 from app.models import (
     ContextObservation,
     ContextSummaryArtifact,
@@ -2133,3 +2134,114 @@ def test_resolve_writable_root_names_a_missing_directory_and_the_tick(
         "writable root 'src/api' does not exist; tick "
         "\"Create directories that don't exist\" to have Delibra create it"
     )
+
+
+def _reset_store(tmp_path: Path) -> ProjectStore:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    return ProjectStore(RegistryStore(tmp_path / "home").register("Reset", project_dir))
+
+
+def test_allocate_round_continues_after_the_context_baseline(tmp_path: Path) -> None:
+    store = _reset_store(tmp_path)
+    config = store.create_session(make_session())
+    config.context_baseline_round = 7
+    store.save_session(config)
+
+    assert store.allocate_round(config.id) == 8
+
+
+def test_clear_session_history_empties_rounds_workspace_and_context(tmp_path: Path) -> None:
+    store = _reset_store(tmp_path)
+    config = make_session()
+    config.cli_session_id = "native"
+    store.create_session(config)
+    rounds = store.rounds_dir(config.id)
+    (rounds / "round-03.md").write_text("Old", encoding="utf-8")
+    workspace = store.workspace_dir(config.id)
+    (workspace / "inputs" / "round-03").mkdir()
+    (workspace / "inputs" / "round-03" / "a.txt").write_text("A", encoding="utf-8")
+    (workspace / "scratch.md").write_text("S", encoding="utf-8")
+    store.context_dir(config.id).mkdir()
+    (store.context_dir(config.id) / "summary.md").write_text("Sum", encoding="utf-8")
+    chat_history = store.session_dir(config.id) / "notes-history.json"
+    chat_history.write_text("{}", encoding="utf-8")
+
+    cleared = store.clear_session_history(config.id)
+
+    assert list(rounds.iterdir()) == []
+    assert sorted(item.name for item in workspace.iterdir()) == [".tmp", "inputs"]
+    assert list((workspace / "inputs").iterdir()) == []
+    assert not store.context_dir(config.id).exists()
+    assert chat_history.exists()  # chat notes are ChatNoteStore.clear's job
+    saved = store.load_session(config.id)
+    assert saved == cleared
+    assert saved.rounds == []
+    assert saved.cli_session_id is None
+    assert saved.context_summary is None
+    assert saved.context_observation is None
+    assert saved.context_baseline_round == 3
+    assert store.allocate_round(config.id) == 4
+
+
+def test_clear_session_history_refuses_a_running_agent(tmp_path: Path) -> None:
+    store = _reset_store(tmp_path)
+    config = store.create_session(make_session())
+    (store.rounds_dir(config.id) / "round-01.md").write_text("Keep", encoding="utf-8")
+    config.status = "running"
+    store.save_session(config)
+
+    with pytest.raises(ConflictError):
+        store.clear_session_history(config.id)
+
+    assert (store.rounds_dir(config.id) / "round-01.md").exists()
+
+
+def test_reset_settings_keeps_identity_and_resource_records_only(tmp_path: Path) -> None:
+    store = _reset_store(tmp_path)
+    (store.project_path / "docs").mkdir()
+    store.set_writable_roots(["docs"])
+    store.set_use_global_instruction(False)
+    store.set_coding_env(
+        CodingEnvState(
+            status="ready", tool="venv", python="3.12.13",
+            created_by_delibra=True, updated_at="t",
+        )
+    )
+    before = load_json_recover(store.manifest_path)
+
+    store.reset_settings()
+
+    after = load_json_recover(store.manifest_path)
+    assert set(after) == {"format", "id", "created_at", "name", "coding"}
+    assert {key: after[key] for key in ("format", "id", "created_at", "name")} == {
+        key: before[key] for key in ("format", "id", "created_at", "name")
+    }
+    policy = store.coding_policy()
+    assert policy.enabled is False
+    assert policy.env == CodingPolicy.from_manifest(before).env
+    assert policy.docker == CodingPolicy.from_manifest(before).docker
+    assert store.use_global_instruction() is True
+    assert store.effective_writable_roots() == []
+    backup = store.manifest_path.with_name("manifest.json.bak")
+    assert json.loads(backup.read_text(encoding="utf-8")) == after
+
+
+@pytest.mark.parametrize(
+    ("setup", "message"),
+    [
+        (lambda store: store.set_coding_env(CodingEnvState(status="creating", updated_at="t")),
+         "Python environment is being created"),
+        (lambda store: store.set_coding_docker(DockerPolicy(enabled=True, status="preparing", updated_at="t")),
+         "Docker is preparing"),
+    ],
+)
+def test_reset_settings_waits_for_env_and_docker_work(tmp_path: Path, setup, message: str) -> None:
+    store = _reset_store(tmp_path)
+    store.set_use_global_instruction(False)
+    setup(store)
+
+    with pytest.raises(ConflictError, match=message):
+        store.reset_settings()
+
+    assert store.use_global_instruction() is False

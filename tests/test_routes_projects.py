@@ -2237,8 +2237,17 @@ def test_reset_clears_exactly_its_scope(
         assert (session.cli_session_id is None) is cleared
 
 
+@pytest.mark.parametrize(
+    ("scope", "prefix_text"),
+    [
+        ("all", "Could not clear"),
+        ("history", "Nothing was cleared"),
+        ("agents", "Nothing was cleared"),
+        ("full", "Nothing was cleared"),
+    ],
+)
 def test_reset_is_refused_whole_while_auto_is_active(
-    tmp_path: Path, reserve_auto_run
+    tmp_path: Path, reserve_auto_run, scope: str, prefix_text: str
 ) -> None:
     app, settings = project_app(tmp_path)
     project, store, questions = _reset_project(tmp_path, settings)
@@ -2247,13 +2256,80 @@ def test_reset_is_refused_whole_while_auto_is_active(
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store, auto_id="f" * 32)
         page = client.get(f"{prefix}/settings")
-        response = client.post(f"{prefix}/reset", data={"scope": "all"})
+        response = client.post(f"{prefix}/reset", data={"scope": scope})
 
     assert response.status_code == 409
+    assert f"data-page-alert>{prefix_text}: " in response.text
+    assert not (store.root / "archive").exists()
     assert questions.load().find("Q1").status == "open"
     assert len(NoteStore(store.root).load().notes) == 1
     assert all(session.cli_session_id for session in store.list_sessions())
-    assert re.search(r"<button[^>]*disabled[^>]*>Start new phase</button>", page.text)
+    for label in ("Start new phase", "Full reset"):
+        assert re.search(rf"<button[^>]*disabled[^>]*>{label}</button>", page.text)
+
+
+@pytest.mark.parametrize(
+    ("scope", "agents_left", "global_instruction"),
+    [("history", 2, False), ("agents", 0, False), ("full", 0, True)],
+)
+def test_clear_levels_archive_then_clear_their_scope(
+    tmp_path: Path, scope: str, agents_left: int, global_instruction: bool
+) -> None:
+    app, settings = project_app(tmp_path)
+    project, store, questions = _reset_project(tmp_path, settings)
+    store.set_use_global_instruction(False)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(f"{prefix}/reset", data={"scope": scope}, follow_redirects=False)
+        page = client.get(f"{prefix}/settings")
+
+    assert response.status_code == 303
+    assert response.headers["location"].endswith("/settings")
+    assert page.status_code == 200
+    assert len(list((store.root / "archive").glob(f"*-{scope}-*.zip"))) == 1
+    assert questions.load().questions == []
+    assert NoteStore(store.root).load().notes == []
+    fresh = ProjectStore(project)
+    assert len(fresh.list_sessions()) == agents_left
+    assert all(session.cli_session_id is None for session in fresh.list_sessions())
+    assert fresh.use_global_instruction() is global_instruction
+
+
+def test_reset_area_shows_refresh_then_clear_and_reset(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project, _, _ = _reset_project(tmp_path, settings)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings").text
+
+    section = page[page.index('id="reset-heading"') : page.index("<h2>Sessions</h2>")]
+    assert ">Reset</h2>" in section
+    order = [
+        "Refresh (new phase)", "Start new phase", "Clear and reset",
+        "Clear discussion history", "Clear history and agents", "Full reset",
+    ]
+    assert [section.index(text) for text in order] == sorted(section.index(text) for text in order)
+    for scope in ("questions", "notes", "context", "all", "history", "agents", "full"):
+        assert f'name="scope" value="{scope}"' in section
+    assert "New phase</h2>" not in page
+
+
+def test_a_busy_agent_refuses_a_clear_level_with_a_page_alert(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project, store, questions = _reset_project(tmp_path, settings)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        config = store.load_session("1" * 32)
+        config.status = "running"
+        store.save_session(config)
+        response = client.post(f"{prefix}/reset", data={"scope": "history"})
+
+    assert response.status_code == 409
+    assert "data-page-alert>Nothing was cleared: Session already has a running agent<" in response.text
+    assert not (store.root / "archive").exists()
+    assert len(questions.load().questions) == 1
 
 
 def test_reset_rejects_an_unknown_scope(tmp_path: Path) -> None:

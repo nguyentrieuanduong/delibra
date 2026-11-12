@@ -745,3 +745,24 @@ def test_dismiss_all_hides_every_visible_question_and_keeps_history(tmp_path: Pa
     assert json.loads(questions.view_path.read_text(encoding="utf-8"))["questions"] == []
     assert questions.restore("Q2").status == "answered"
     assert questions.dismiss_all() == 1
+
+
+def test_clear_removes_every_question_and_never_reuses_an_id(tmp_path: Path) -> None:
+    questions = store(tmp_path)
+    questions.add(
+        [ProposedQuestion(text, "", False) for text in ("A?", "B?")],
+        asked_by="s", asked_by_name="Alpha", auto_run=1, cycle=1, round_n=1,
+    )
+    questions.dismiss("Q1")
+
+    assert questions.clear() == 2
+
+    assert questions.load().questions == []
+    assert json.loads(questions.view_path.read_text(encoding="utf-8"))["questions"] == []
+    backup = questions.history_path.with_name(f"{questions.history_path.name}.bak")
+    assert json.loads(backup.read_text(encoding="utf-8"))["questions"] == []
+    added = questions.add(
+        [ProposedQuestion("C?", "", False)],
+        asked_by="s", asked_by_name="Alpha", auto_run=2, cycle=1, round_n=2,
+    )
+    assert added[0].id == "Q3"

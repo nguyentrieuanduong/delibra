@@ -505,6 +505,16 @@ class QuestionStore:
             self._save(book)
         return len(visible)
 
+    def clear(self) -> int:
+        """Remove every question, dismissed ones too; ids are never reused."""
+
+        book = self.load()
+        count = len(book.questions)
+        book.questions = []
+        # Replace the backup too, or recovery could resurrect the questions.
+        self._save(book, replace_recovery=True)
+        return count
+
     def mark_duplicate(self, question_id: str, original_id: str) -> Question:
         def change(book: QuestionBook, question: Question) -> None:
             self._require_visible(question, "mark")
