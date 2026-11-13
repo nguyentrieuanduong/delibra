@@ -142,6 +142,16 @@ class Fetcher:
 
     async def fetch(self, url: str, *, check_first: bool, project_root: Path, folder: str,
                     filename: str | None, request_id: str, budget: Budget) -> FetchResult:
+        # httpx's timeout bounds each read; this bounds the whole download, so
+        # a slow-drip server cannot hold a download slot for ever.
+        try:
+            async with asyncio.timeout(DOWNLOAD_TIMEOUT):
+                return await self._fetch(url, check_first, project_root, folder, filename, request_id, budget)
+        except TimeoutError as exc:
+            raise FetchError("download timed out") from exc
+
+    async def _fetch(self, url: str, check_first: bool, project_root: Path, folder: str,
+                     filename: str | None, request_id: str, budget: Budget) -> FetchResult:
         current = url
         timeout = httpx.Timeout(DOWNLOAD_TIMEOUT, connect=CONNECT_TIMEOUT)
         async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=timeout,
@@ -161,6 +171,7 @@ class Fetcher:
                     "GET", target, headers={"Host": host},
                     extensions={"sni_hostname": host} if https else {},
                 )
+                client.cookies.clear()  # no cookie follows a redirect to another host
                 try:
                     response = await client.send(request, stream=True)
                 except httpx.HTTPError as exc:

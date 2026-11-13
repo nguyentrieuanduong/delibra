@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
-from app.download_store import DownloadStore
+from app.download_store import DownloadBook, DownloadStore
 from app.models import Project
 from app.project_routing import request_project
 from app.security import is_loopback_client
@@ -22,10 +22,17 @@ _DOWNLOAD_ID = re.compile(r"D[1-9][0-9]{0,8}")
 def downloads_panel_context(request: Request, project: Project) -> dict:
     store = ProjectStore(project)
     # Awaiting first (they need the user), then newest first; sorted() is stable.
-    book = DownloadStore(store.root).load()
+    try:
+        book = DownloadStore(store.root).load()
+    except StorageError:
+        # Never take the Chat page down with it; Auto turns commits off (B5).
+        book, unreadable = DownloadBook(), True
+    else:
+        unreadable = False
     records = sorted(reversed(book.requests), key=lambda record: record.state != "awaiting")
     return {
         "project": project,
+        "unreadable": unreadable,
         "revision": book.revision,
         "downloads": records,
         "awaiting_count": sum(1 for r in records if r.state == "awaiting"),

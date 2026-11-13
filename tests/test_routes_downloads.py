@@ -88,3 +88,14 @@ def test_awaiting_requests_come_first_then_newest(tmp_path):
         panel = client.get(f"{base(project)}/downloads").text
     order = [panel.index(f'id="download-D{n}"') for n in (3, 1, 4, 2)]
     assert order == sorted(order)
+
+
+def test_unreadable_records_do_not_break_the_chat_page(tmp_path):
+    app, project, store = downloads_app(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text("{")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        chat = client.get(f"{base(project)}/chat")
+        panel = client.get(f"{base(project)}/downloads")
+    assert chat.status_code == 200 and panel.status_code == 200
+    assert "Download records are unreadable" in chat.text

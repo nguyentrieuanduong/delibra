@@ -1,4 +1,4 @@
-import asyncio, hashlib, threading
+import asyncio, hashlib, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import pytest
@@ -128,3 +128,44 @@ async def test_a_symlinked_host_folder_is_never_written_through(project, tmp_pat
     with pytest.raises(FetchError, match="folder"):
         await fetch(fetcher, project, "http://files.test/p.pdf")
     assert list(outside.iterdir()) == []
+
+
+class SlowDripServer:
+    """Sends a byte every 0.1 s: each read is quick, the whole download never ends."""
+
+    def __init__(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "1000000")
+                self.end_headers()
+                try:
+                    for _ in range(600):
+                        self.wfile.write(b"a")
+                        self.wfile.flush()
+                        time.sleep(0.1)
+                except OSError:
+                    pass
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+
+@pytest.mark.asyncio
+async def test_a_download_is_bounded_in_total_not_only_per_read(project, monkeypatch):
+    server = SlowDripServer()
+
+    async def resolve(host, port):
+        return [("127.0.0.1", server.port)]
+
+    monkeypatch.setattr("app.download_fetch.DOWNLOAD_TIMEOUT", 0.5)
+    fetcher = Fetcher(resolve=resolve, address_allowed=lambda a: True)
+    budget = Budget(10**9)
+    with pytest.raises(FetchError, match="timed out"):
+        await fetch(fetcher, project, "http://files.test/slow", budget=budget)
+    assert 10**9 - budget.left < 100  # only the bytes received stay charged
+    assert not any(p.name.startswith(".part") for p in (project / "raw" / "files.test").iterdir())
