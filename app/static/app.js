@@ -325,25 +325,90 @@ function restoreConversationScroll(timeline, snapshot) {
   return false;
 }
 
-function syncConversationDisclosure(timeline) {
+// The reader's own open/closed choices outlive swaps and reloads
+// (user, 2026-11-13): id → boolean, oldest first, capped.
+const AGENT_DISCLOSURE_KEY = "delibra.agentDisclosure";
+const MESSAGE_DISCLOSURE_KEY = "delibra.messageDisclosure";
+const DISCLOSURE_LIMIT = 200;
+
+// Reading window.localStorage itself throws when storage is blocked.
+function browserStorage(win) {
+  try {
+    return win ? win.localStorage || null : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function readDisclosureChoices(storage, key) {
+  let parsed = null;
+  try {
+    parsed = storage ? JSON.parse(storage.getItem(key)) : null;
+  } catch (_error) {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+  const choices = {};
+  Object.keys(parsed).forEach(function (id) {
+    if (typeof parsed[id] === "boolean") {
+      choices[id] = parsed[id];
+    }
+  });
+  return choices;
+}
+
+function rememberDisclosureChoice(storage, key, id, open) {
+  if (!storage) {
+    return false;
+  }
+  const choices = readDisclosureChoices(storage, key);
+  delete choices[id];
+  choices[id] = Boolean(open);
+  const ids = Object.keys(choices);
+  ids.slice(0, Math.max(0, ids.length - DISCLOSURE_LIMIT)).forEach(function (old) {
+    delete choices[old];
+  });
+  try {
+    storage.setItem(key, JSON.stringify(choices));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+// A message is open as the reader left it, else only when it is the newest.
+function syncConversationDisclosure(timeline, choices = {}) {
   const messages = Array.from(
     timeline.querySelectorAll(".round, .live-round")
   );
-  messages.forEach(function (message) {
+  let newestOpen = false;
+  messages.forEach(function (message, index) {
     const details = message.querySelector(".round-details");
-    if (details) {
-      details.open = false;
+    if (!details) {
+      return;
     }
+    const newest = index === messages.length - 1;
+    const chosen = Object.prototype.hasOwnProperty.call(choices, message.id);
+    details.open = chosen ? choices[message.id] : newest;
+    newestOpen = newest && details.open;
   });
-  const lastMessage = messages[messages.length - 1];
-  const lastDetails = lastMessage
-    ? lastMessage.querySelector(".round-details")
-    : null;
-  if (!lastDetails) {
-    return false;
-  }
-  lastDetails.open = true;
-  return true;
+  return newestOpen;
+}
+
+// Agent information is closed unless the reader opened it.
+function syncAgentDisclosure(root, choices) {
+  let opened = 0;
+  Array.from(root.querySelectorAll(".agent-card[data-session-id]")).forEach(function (card) {
+    const details = card.querySelector(".agent-details");
+    if (!details) {
+      return;
+    }
+    details.open = choices[card.dataset.sessionId] === true;
+    opened += details.open ? 1 : 0;
+  });
+  return opened;
 }
 
 // The conversation runs oldest → newest, so the last in DOM order is newest.
@@ -1431,6 +1496,13 @@ if (typeof module !== "undefined" && module.exports) {
     streamRetryDelay,
     syncAutoOrderControls,
     syncConversationDisclosure,
+    syncAgentDisclosure,
+    browserStorage,
+    readDisclosureChoices,
+    rememberDisclosureChoice,
+    DISCLOSURE_LIMIT,
+    AGENT_DISCLOSURE_KEY,
+    MESSAGE_DISCLOSURE_KEY,
     syncAutoDisabledControls,
     syncAutoNotesAvailability,
     syncComposerAvailability,
@@ -1450,14 +1522,57 @@ if (typeof document !== "undefined") {
 
   initializeDynamicPresentation(document);
 
+  const disclosureStorage = browserStorage(window);
+  const applyAgentChoices = function () {
+    syncAgentDisclosure(
+      document,
+      readDisclosureChoices(disclosureStorage, AGENT_DISCLOSURE_KEY)
+    );
+  };
+  const applyMessageChoices = function (timeline) {
+    syncConversationDisclosure(
+      timeline,
+      readDisclosureChoices(disclosureStorage, MESSAGE_DISCLOSURE_KEY)
+    );
+  };
   syncLatestButton(document);
   renderMermaidBlocks(document);
   localizeTimes(document);
+  applyAgentChoices();
+  const bootTimeline = document.getElementById("chat-timeline");
+  if (bootTimeline) {
+    applyMessageChoices(bootTimeline);
+  }
   // After settle, not afterSwap: an outerHTML swap's event target is the
   // replaced element, and OOB swaps land elsewhere. One scan finds them all.
   document.addEventListener("htmx:afterSettle", function () {
     renderMermaidBlocks(document);
     localizeTimes(document);
+    applyAgentChoices();
+  });
+  // A click on the summary itself is the reader's choice; it runs before the
+  // toggle, so the new state is the opposite of the current one.
+  document.addEventListener("click", function (event) {
+    const summary = event.target.closest ? event.target.closest("summary") : null;
+    const details = summary ? summary.parentElement : null;
+    if (!details || details.tagName !== "DETAILS") {
+      return;
+    }
+    if (details.classList.contains("agent-details")) {
+      const card = details.closest(".agent-card[data-session-id]");
+      if (card) {
+        rememberDisclosureChoice(
+          disclosureStorage, AGENT_DISCLOSURE_KEY, card.dataset.sessionId, !details.open
+        );
+      }
+    } else if (details.classList.contains("round-details")) {
+      const message = details.closest(".round[id], .live-round[id]");
+      if (message) {
+        rememberDisclosureChoice(
+          disclosureStorage, MESSAGE_DISCLOSURE_KEY, message.id, !details.open
+        );
+      }
+    }
   });
   document.addEventListener("click", function (event) {
     if (event.target.closest && event.target.closest("[data-timeline-latest]")) {
@@ -1659,11 +1774,14 @@ if (typeof document !== "undefined") {
       return;
     }
     initializeDynamicPresentation(event.target);
+    // Here as well as after settle: settling comes ~20ms later, long enough
+    // for a re-rendered card to flash closed.
+    applyAgentChoices();
     openQuestionsPanelForNew(target, detail.xhr ? detail.xhr.responseText : "");
     const timeline = conversationTimelineForSwap(target, event.target);
     if (timeline) {
       removeConversationEmptyState(timeline);
-      syncConversationDisclosure(timeline);
+      applyMessageChoices(timeline);
       const snapshot = detail.xhr
         ? conversationScrollSnapshots.get(detail.xhr)
         : null;
@@ -1810,10 +1928,10 @@ if (typeof document !== "undefined") {
   });
 
   const notesDisclosure = document.querySelector("[data-notes-disclosure]");
-  if (notesDisclosure && window.localStorage) {
-    restoreNotesDisclosure(notesDisclosure, window.localStorage);
+  if (notesDisclosure && disclosureStorage) {
+    restoreNotesDisclosure(notesDisclosure, disclosureStorage);
     notesDisclosure.addEventListener("toggle", function () {
-      rememberNotesDisclosure(notesDisclosure, window.localStorage);
+      rememberNotesDisclosure(notesDisclosure, disclosureStorage);
     });
   }
 
