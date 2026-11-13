@@ -31,6 +31,7 @@ from app.coding import (
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
+from app.download_store import DownloadStore
 from app.global_instruction import GlobalInstructionError, read_global_instruction
 from app.models import Project
 from app.notes import NoteStore, chat_note_store
@@ -483,10 +484,15 @@ async def save_coding(
             _start_env_creation(request.app, resolved_project_id, token)
     if enabled:
         try:
+            try:
+                used_folders = DownloadStore(ProjectStore(project).root).used_folders()
+            except StorageError:
+                # Only `git status` noise: build commits fail closed on their own.
+                used_folders = set()
             await ensure_local_excludes(
                 ProjectStore(project).project_path,
                 updated.git_exclude,
-                trailing=download_excludes(updated),
+                trailing=download_excludes(updated, used_folders),
             )
         except OSError:
             LOGGER.warning(

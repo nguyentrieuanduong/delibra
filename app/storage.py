@@ -530,6 +530,9 @@ def _open_project_directory(root: Path, parts: tuple[str, ...]) -> Iterator[int]
             os.close(descriptor)
 
 
+open_project_directory = _open_project_directory
+
+
 def list_project_directory(root: Path, relative_path: str) -> list[ProjectFileEntry]:
     parts = project_path_parts(relative_path)
     with _open_project_directory(root, parts) as descriptor:

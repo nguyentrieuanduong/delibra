@@ -17,6 +17,9 @@ import tempfile
 from app.models import AutoBuildGit
 
 PATHSPEC = ["--", ".", ":(exclude)envs", ":(exclude).delibra"]
+# Download folders are known only from Delibra's download records; without
+# them, commits fail closed rather than risk committing an old folder.
+DOWNLOADS_UNREADABLE = "download records are unreadable"
 SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false"]
 COMMAND_TIMEOUT_SECONDS = 30
 # The commit runs under the participant's session lock, which Stop also
