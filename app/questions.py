@@ -728,12 +728,14 @@ def scan_spool(spool_dir: Path) -> list[SpoolEntry]:
     return entries
 
 
-def read_spool_file(spool_dir: Path, name: str) -> bytes | None:
+def read_spool_file(
+    spool_dir: Path, name: str, limit: int = SPOOL_FILE_MAX_BYTES
+) -> bytes | None:
     """Read one spool file, one byte past the limit; None when it is gone."""
 
     descriptor = _open_spool(spool_dir)
     try:
-        return _read_outbox(descriptor, name, SPOOL_FILE_MAX_BYTES)
+        return _read_outbox(descriptor, name, limit)
     finally:
         os.close(descriptor)
 
