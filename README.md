@@ -141,7 +141,10 @@ conversation stay in the center, while project-file browsing/reading stays in th
 narrower right rail. Select an agent name to route the composer and highlight that
 card; unsent text stays in the composer when you pick, create or edit an agent. A
 floating **↓ Latest** button appears when the newest message is out of view and
-jumps to its start. Recorded rounds and opened files use the shared
+jumps to its start. Each message header shows, in small text and this
+browser's timezone, when it ran: `2026-11-13 14:05:09 – 14:12:30 +07`, both
+dates when it ran past midnight, and the start alone while it runs. Recorded
+rounds and opened files use the shared
 keyboard-accessible focus dialog. Its toolbar holds **Fit width**, which widens
 the dialog to the browser tab, **Fit window**, which fills the tab's width and
 height, and **Close**; press an active fit button again for the default size.
@@ -698,6 +701,13 @@ also asked to list the notes it read in `questions/notes-read.json`
 turn start or marked read, so a note read mid-turn counts at once. Marks
 are the agent's own claim; an invalid file or unknown ID adds a turn
 warning, and the list shows who marked each note.
+
+Each note shows one time on its title line: when it was posted or last
+edited. While no agent runs anywhere in the project (no Auto run and no chat
+reply or compaction), a pending note that no agent has received or marked
+read has an **Edit** button; it opens a dialog, and **Save** replaces the
+note's text in the history and in the file agents read. A save made once an
+agent has started is refused with a pop-up, and the dialog keeps your text.
 
 A run that converges, reaches its cycle limit or fails while a note is
 still pending keeps that outcome. The note stays pending: the run's status
