@@ -308,6 +308,13 @@ textarea { min-height: 7rem; }
   justify-content: space-between;
 }
 .round-header h2 { margin: 0; }
+/* Message times: small, beside the header text, in the reader's timezone. */
+.msg-time { font-size: .75rem; font-weight: normal; margin-left: .5rem; opacity: .7; white-space: nowrap; }
+/* A note's title and time share one line; a title too long for the column is
+   cut (full text on hover), never the time. */
+.auto-note-meta { align-items: baseline; display: flex; white-space: nowrap; }
+.auto-note-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.auto-note-meta .msg-time { flex: none; }
 .focus-round { flex: 0 0 auto; }
 .round-details { margin-top: .5rem; }
 .round-prompt { margin-bottom: .75rem; }

@@ -513,3 +513,40 @@ def test_only_this_machine_may_edit_a_build_run_note(tmp_path: Path) -> None:
     assert refused.status_code == 403
     assert accepted.status_code == 200
     assert NoteStore(store.root).load().find("N1").text == "Run lint"
+
+
+def test_note_meta_shows_its_latest_change_on_the_title_line(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="c" * 32, status="stopped", publish=False)
+    NoteStore(store.root).add("one", auto_run=record.number)
+    other = NoteStore(store.root).add("two", auto_run=record.number)
+    with TestClient(app, base_url="http://localhost") as client:
+        html = client.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "uno"}).text
+    edited = NoteStore(store.root).load().find("N1")
+    flat = re.sub(r"\s+", " ", html)
+    assert "N1 · pending" in flat
+    # One time per note, its latest change, on the title's line.
+    assert flat.count('class="msg-time"') == 2
+    assert re.search(
+        r'<p class="auto-note-meta"><span class="auto-note-title"[^>]*>N1 · pending[^<]*'
+        r'(<span[^>]*>[^<]*</span>)?</span><time class="msg-time" datetime="'
+        + re.escape(edited.posted_at),
+        flat,
+    )
+    assert f'datetime="{other.posted_at}" title="{other.posted_at}" data-local-time' in html
+
+
+def test_chat_note_meta_shows_its_latest_change_on_the_title_line(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    chat_note_store(store, ALPHA).add("one", name="Alpha")
+    with TestClient(app, base_url="http://localhost") as client:
+        html = client.post(
+            f"{base(project)}/sessions/{ALPHA}/chat-notes/N1/edit", data={"text": "uno"}
+        ).text
+    edited = chat_note_store(store, ALPHA).load().find("N1")
+    flat = re.sub(r"\s+", " ", html)
+    assert flat.count('class="msg-time"') == 1
+    assert (
+        '<span class="auto-note-title" title="N1 · pending">N1 · pending</span>'
+        f'<time class="msg-time" datetime="{edited.posted_at}"'
+    ) in flat

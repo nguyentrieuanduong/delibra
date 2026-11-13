@@ -303,7 +303,9 @@ async def pass_round(
         context={
             "project": project,
             "key": key,
-            "session": sessions[target_session_id],
+            # Reloaded: the copy read before the start lacks the new round,
+            # whose start time the header shows.
+            "session": store.load_session(target_session_id),
             "dom_id": round_dom_id(target_session_id, key.round_n),
             "chat_view": view == "chat",
         },
