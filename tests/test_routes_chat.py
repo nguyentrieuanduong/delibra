@@ -1986,3 +1986,73 @@ def test_the_composer_names_the_box_message_and_describes_the_agent(tmp_path: Pa
     assert 'aria-describedby="composer-agent"' in textarea[0]
     assert '<label for="chat-composer-prompt">Message</label>' in page.text
     assert re.search(r'id="composer-agent"[^>]*>\s*sending as Alpha · claude', page.text)
+
+
+def test_local_time_javascript_contract_runs_under_node() -> None:
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+
+        pytest.skip("Node unavailable; local time unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_local_time.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _header(html: str, dom_id: str) -> str:
+    match = re.search(rf'id="{dom_id}".*?</h2>', html, flags=re.DOTALL)
+    assert match is not None, f"no header for {dom_id}"
+    return match.group()
+
+
+def test_round_headers_show_start_and_finish_in_utc_before_the_browser_localises(
+    tmp_path: Path,
+) -> None:
+    same_day = replace(
+        record(1, "2026-11-13T07:05:09.25Z"), finished_at="2026-11-13T07:12:30.5Z"
+    )
+    overnight = replace(
+        record(2, "2026-11-13T23:59:01Z"), finished_at="2026-11-14T00:03:40Z"
+    )
+    alpha = session("a" * 32, "Alpha", rounds=[same_day, overnight])
+    app, project, _ = setup_project(tmp_path, [alpha])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+
+    first = _header(page.text, f"round-{alpha.id}-1")
+    assert (
+        'data-local-range data-start="2026-11-13T07:05:09.25Z" '
+        'data-finish="2026-11-13T07:12:30.5Z"'
+    ) in first
+    assert ">2026-11-13 07:05:09 – 07:12:30 +00</span>" in first
+    second = _header(page.text, f"round-{alpha.id}-2")
+    assert ">2026-11-13 23:59:01 +00 – 2026-11-14 00:03:40 +00</span>" in second
+    assert 'title="2026-11-13T23:59:01Z – 2026-11-14T00:03:40Z"' in second
+
+
+def test_a_running_round_header_shows_its_start(tmp_path: Path) -> None:
+    alpha = session("a" * 32, "Alpha")
+    app, project, store = setup_project(tmp_path, [alpha])
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{alpha.id}"
+
+    with TestClient(app, base_url="http://localhost") as client:
+        started = client.post(f"{base}/run?view=chat", data={"prompt": "Hi"})
+        with client.stream("GET", f"{base}/rounds/1/stream") as response:
+            response.read()
+        page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
+
+    begun = store.load_session(alpha.id).rounds[0]
+    live = _header(started.text, f"round-{alpha.id}-1")
+    assert "running" in live
+    assert (
+        f'<time class="msg-time" datetime="{begun.started_at}" title="{begun.started_at}" '
+        "data-local-time>"
+    ) in live
+    done = _header(page.text, f"round-{alpha.id}-1")
+    assert f'data-start="{begun.started_at}" data-finish="{begun.finished_at}"' in done

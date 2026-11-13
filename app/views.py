@@ -298,6 +298,15 @@ def chat_reply_running(session: SessionConfig) -> bool:
     )
 
 
+def project_idle(store: ProjectStore) -> bool:
+    """Nothing runs, as stored: no Auto run and no agent mid-turn. The note
+    edit routes also check the in-memory runners, under the lock."""
+
+    return store.active_auto_run_id() is None and not any(
+        session.status == "running" for session in store.list_sessions()
+    )
+
+
 def chat_notes_context(
     store: ProjectStore,
     session: SessionConfig | None,
@@ -321,6 +330,7 @@ def chat_notes_context(
             "chat_notes_revision": 0,
             "chat_notes_replying": False,
             "chat_notes_shown": shown,
+            "chat_notes_edit_open": False,
         }
     book = chat_note_store(store, session.id).load()
     return {
@@ -330,6 +340,7 @@ def chat_notes_context(
         "chat_notes_revision": book.revision,
         "chat_notes_replying": replying,
         "chat_notes_shown": shown,
+        "chat_notes_edit_open": project_idle(store),
     }
 
 
@@ -373,6 +384,7 @@ def auto_notes_context(store: ProjectStore, record: AutoRunRecord | None) -> dic
         # Pending notes of an ended run reach agents only on Continue Auto.
         "notes_waiting": record is not None and record.status in TERMINAL_AUTO_STATUSES,
         "note_max": NOTE_MAX_CHARS,
+        "notes_edit_open": project_idle(store),
     }
 
 

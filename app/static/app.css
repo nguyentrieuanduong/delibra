@@ -212,6 +212,11 @@ textarea { min-height: 7rem; }
 .auto-notes-list ul { list-style: none; margin: .25rem 0 0; max-height: 15vh; overflow: auto; padding: 0; }
 .auto-note-meta, .auto-note form { margin: 0; }
 .auto-note form { justify-items: start; }
+.auto-note-actions { align-items: center; display: flex; gap: .5rem; }
+.note-edit-dialog { box-sizing: border-box; max-width: min(40rem, 90vw); width: 100%; }
+.note-edit-dialog h2 { font-size: 1.1rem; margin: 0 0 .5rem; }
+.note-edit-dialog textarea { box-sizing: border-box; resize: vertical; width: 100%; }
+.note-edit-actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .5rem; }
 .auto-note-text { margin: .25rem 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .auto-note.delivered, .auto-note.deleted, .auto-note.undelivered { opacity: .7; }
 /* Red: a note that waits for Continue Auto, or that no agent will read. */
@@ -308,6 +313,13 @@ textarea { min-height: 7rem; }
   justify-content: space-between;
 }
 .round-header h2 { margin: 0; }
+/* Message times: small, beside the header text, in the reader's timezone. */
+.msg-time { font-size: .75rem; font-weight: normal; margin-left: .5rem; opacity: .7; white-space: nowrap; }
+/* A note's title and time share one line; a title too long for the column is
+   cut (full text on hover), never the time. */
+.auto-note-meta { align-items: baseline; display: flex; white-space: nowrap; }
+.auto-note-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.auto-note-meta .msg-time { flex: none; }
 .focus-round { flex: 0 0 auto; }
 .round-details { margin-top: .5rem; }
 .round-prompt { margin-bottom: .75rem; }

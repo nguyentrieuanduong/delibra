@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
@@ -21,6 +24,8 @@ from app.views import accepts_notes, auto_notes_context, chat_notes_context
 
 
 router = APIRouter()
+
+IDLE_ONLY = "Notes can be edited only while no agent is running"
 
 
 def _render_list(request: Request, project: Project) -> HTMLResponse:
@@ -79,6 +84,49 @@ async def delete_note(request: Request, project_id: str, note_id: str) -> HTMLRe
     return _render_list(request, project)
 
 
+def _require_project_idle(request: Request, store: ProjectStore, project_id: str) -> None:
+    if (
+        request.app.state.manager.has_active_project(project_id)
+        or request.app.state.auto_manager.has_active_project(project_id)
+    ):
+        raise ConflictError(IDLE_ONLY)
+    try:
+        request.app.state.manager.require_all_quiescent_locked(store, project_id)
+    except ConflictError as exc:
+        raise ConflictError(IDLE_ONLY) from exc
+
+
+@asynccontextmanager
+async def _idle_project(request: Request, project: Project) -> AsyncIterator[ProjectStore]:
+    """Every lock a turn takes to start, held while nothing runs: no agent
+    can read a note halfway through its edit."""
+
+    session_ids = [session.id for session in ProjectStore(project).list_sessions()]
+    async with request.app.state.locks.registry_project_sessions(project.id, session_ids):
+        store = ProjectStore(request.app.state.registry.get(project.id))
+        if sorted(session.id for session in store.list_sessions()) != sorted(session_ids):
+            raise ConflictError("Agents changed while editing; try again")
+        _require_project_idle(request, store, project.id)
+        yield store
+
+
+@router.post("/projects/{project_id}/auto-notes/{note_id}/edit", response_class=HTMLResponse)
+async def edit_note(
+    request: Request, project_id: str, note_id: str, text: str = Form(...)
+) -> HTMLResponse:
+    if not NOTE_ID.fullmatch(note_id):
+        raise NotFoundError("note not found")
+    text = validate_field(text, "Note", maximum=NOTE_MAX_CHARS)
+    project = request_project(request, project_id)
+    async with _idle_project(request, project) as store:
+        record = project_auto_record(request, project.id).record
+        if record is not None and record.kind == "build":
+            # The rule that guards posting a note to a build run.
+            require_loopback_client(request)
+        NoteStore(store.root).edit(note_id, text)
+    return _render_list(request, project)
+
+
 def _render_chat_list(request: Request, project: Project, session_id: str) -> HTMLResponse:
     store = ProjectStore(project)
     record = project_auto_record(request, project.id).record
@@ -129,4 +177,22 @@ async def delete_chat_note(
     project = request_project(request, project_id)
     async with request.app.state.locks.sessions(project.id, [session_id]):
         chat_note_store(ProjectStore(project), session_id).delete(note_id)
+    return _render_chat_list(request, project, session_id)
+
+
+@router.post(
+    "/projects/{project_id}/sessions/{session_id}/chat-notes/{note_id}/edit",
+    response_class=HTMLResponse,
+)
+async def edit_chat_note(
+    request: Request, project_id: str, session_id: str, note_id: str, text: str = Form(...)
+) -> HTMLResponse:
+    validate_id(session_id, "session id")
+    if not NOTE_ID.fullmatch(note_id):
+        raise NotFoundError("note not found")
+    text = validate_field(text, "Note", maximum=NOTE_MAX_CHARS)
+    project = request_project(request, project_id)
+    async with _idle_project(request, project) as store:
+        store.load_session(session_id)  # an unknown agent is a 404
+        chat_note_store(store, session_id).edit(note_id, text)
     return _render_chat_list(request, project, session_id)

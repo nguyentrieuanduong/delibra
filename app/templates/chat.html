@@ -27,7 +27,7 @@
       <div class="conversation-top" data-conversation-top>
         <div class="conversation-input">
           {% include "_composer.html" %}
-          {% with notes=notes_box.notes, note_counts=notes_box.note_counts, note_marked=notes_box.note_marked, note_participants=notes_box.note_participants, notes_revision=notes_box.notes_revision, notes_open=notes_box.notes_open, notes_waiting=notes_box.notes_waiting, note_max=notes_box.note_max, chat_notes=chat_notes_box.chat_notes, chat_notes_session_id=chat_notes_box.chat_notes_session_id, chat_notes_agent=chat_notes_box.chat_notes_agent, chat_notes_revision=chat_notes_box.chat_notes_revision, chat_notes_replying=chat_notes_box.chat_notes_replying, chat_notes_shown=chat_notes_box.chat_notes_shown %}
+          {% with notes=notes_box.notes, note_counts=notes_box.note_counts, note_marked=notes_box.note_marked, note_participants=notes_box.note_participants, notes_revision=notes_box.notes_revision, notes_open=notes_box.notes_open, notes_waiting=notes_box.notes_waiting, note_max=notes_box.note_max, chat_notes=chat_notes_box.chat_notes, chat_notes_session_id=chat_notes_box.chat_notes_session_id, chat_notes_agent=chat_notes_box.chat_notes_agent, chat_notes_revision=chat_notes_box.chat_notes_revision, chat_notes_replying=chat_notes_box.chat_notes_replying, chat_notes_shown=chat_notes_box.chat_notes_shown, notes_edit_open=notes_box.notes_edit_open, chat_notes_edit_open=chat_notes_box.chat_notes_edit_open %}
             {% include "_auto_notes.html" %}
           {% endwith %}
         </div>
@@ -104,5 +104,18 @@
         <p>Select Focus on a recorded round or opened file to inspect it.</p>
       </div>
     </div>
+  </dialog>
+  {# Outside the notes lists, which are replaced out-of-band: a status update
+     cannot wipe what is being typed here. #}
+  <dialog id="note-edit-dialog" class="note-edit-dialog" aria-labelledby="note-edit-title">
+    <form method="dialog" data-note-edit-form>
+      <h2 id="note-edit-title">Edit <span data-note-edit-id></span></h2>
+      <label for="note-edit-text">Note</label>
+      <textarea id="note-edit-text" name="text" rows="6" maxlength="{{ notes_box.note_max }}" required></textarea>
+      <div class="note-edit-actions">
+        <button type="submit">Save</button>
+        <button type="button" data-note-edit-cancel>Cancel</button>
+      </div>
+    </form>
   </dialog>
 {% endblock %}

@@ -9,7 +9,7 @@ from app.main import create_app
 from app.models import SessionConfig
 from app.notes import NoteStore
 from app.storage import ProjectStore, RegistryStore
-from app.views import auto_notes_context
+from app.views import auto_notes_context, chat_notes_context
 from tests.test_auto import seed_durable_auto
 
 
@@ -394,3 +394,208 @@ def test_the_notes_list_sits_in_a_disclosure_with_a_count(tmp_path: Path) -> Non
     # Both lists live inside it, so a collapsed section hides either one.
     inner = page[page.index("data-notes-disclosure"):page.index("</details>", page.index("data-notes-disclosure"))]
     assert 'id="auto-notes-list"' in inner and 'id="chat-notes-list"' in inner
+
+
+BETA = "2" * 32
+
+
+def _mark_running(store: ProjectStore, session_id: str) -> None:
+    session = store.load_session(session_id)
+    session.status = "running"
+    store.save_session(session)
+
+
+def test_an_unread_auto_note_is_edited_while_every_agent_is_idle(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="c" * 32, status="stopped", publish=False)
+    NoteStore(store.root).add("Prefer SQLite", auto_run=record.number)
+    with TestClient(app, base_url="http://localhost") as client:
+        edited = client.post(
+            f"{base(project)}/auto-notes/N1/edit", data={"text": "<b>Prefer</b> Postgres"}
+        )
+        unknown = client.post(f"{base(project)}/auto-notes/zz/edit", data={"text": "x"})
+        missing = client.post(f"{base(project)}/auto-notes/N9/edit", data={"text": "x"})
+
+    assert edited.status_code == 200
+    assert 'id="auto-notes-list"' in edited.text
+    assert 'hx-swap-oob="outerHTML"' in edited.text
+    assert "&lt;b&gt;Prefer&lt;/b&gt; Postgres" in edited.text
+    assert unknown.status_code == 404
+    assert missing.status_code == 404
+    assert NoteStore(store.root).load().find("N1").text == "<b>Prefer</b> Postgres"
+
+
+def test_a_note_edit_is_refused_while_any_agent_works_in_memory(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="c" * 32, status="stopped", publish=False)
+    NoteStore(store.root).add("Prefer SQLite", auto_run=record.number)
+    chat_note_store(store, ALPHA).add("one", name="Alpha")
+    with TestClient(app, base_url="http://localhost") as client:
+        app.state.manager.has_active_project = lambda project_id: True
+        auto = client.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "x"})
+        chat = client.post(
+            f"{base(project)}/sessions/{ALPHA}/chat-notes/N1/edit", data={"text": "x"}
+        )
+
+    for response in (auto, chat):
+        assert response.status_code == 409
+        assert "Notes can be edited only while no agent is running" in response.text
+    assert NoteStore(store.root).load().find("N1").text == "Prefer SQLite"
+    assert chat_note_store(store, ALPHA).load().find("N1").text == "one"
+
+
+def test_a_note_edit_is_refused_while_another_agent_is_running(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    chat_note_store(store, ALPHA).add("one", name="Alpha")
+    with TestClient(app, base_url="http://localhost") as client:
+        _mark_running(store, BETA)
+        response = client.post(
+            f"{base(project)}/sessions/{ALPHA}/chat-notes/N1/edit", data={"text": "x"}
+        )
+
+    assert response.status_code == 409
+    assert "Notes can be edited only while no agent is running" in response.text
+    assert chat_note_store(store, ALPHA).load().find("N1").text == "one"
+
+
+def test_an_unread_chat_note_is_edited_and_a_reached_one_is_refused(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    notes = chat_note_store(store, ALPHA)
+    notes.add("one", name="Alpha")
+    notes.add("two", name="Alpha")
+    notes.apply_credit(ALPHA, ["N2"], [])  # N2 reached Alpha and retired
+    with TestClient(app, base_url="http://localhost") as client:
+        edited = client.post(
+            f"{base(project)}/sessions/{ALPHA}/chat-notes/N1/edit", data={"text": "uno"}
+        )
+        closed = client.post(
+            f"{base(project)}/sessions/{ALPHA}/chat-notes/N2/edit", data={"text": "dos"}
+        )
+        stranger = client.post(
+            f"{base(project)}/sessions/{'9' * 32}/chat-notes/N1/edit", data={"text": "x"}
+        )
+
+    assert edited.status_code == 200
+    assert 'id="chat-notes-list"' in edited.text
+    assert "uno" in edited.text
+    assert closed.status_code == 409
+    assert "N2 is already delivered" in closed.text
+    assert stranger.status_code == 404
+
+
+def test_notes_are_editable_only_while_the_project_is_idle(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="c" * 32, status="stopped", publish=False)
+    assert auto_notes_context(store, record)["notes_edit_open"] is True
+    assert chat_notes_context(
+        store, store.load_session(ALPHA), auto_active=False, auto_open=True
+    )["chat_notes_edit_open"] is True
+    _mark_running(store, BETA)
+    assert auto_notes_context(store, record)["notes_edit_open"] is False
+    assert chat_notes_context(
+        store, store.load_session(ALPHA), auto_active=False, auto_open=True
+    )["chat_notes_edit_open"] is False
+
+
+def test_only_this_machine_may_edit_a_build_run_note(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="8" * 32, status="stopped", publish=False)
+    build = store.load_auto_run(record.id)
+    build.kind = "build"
+    store.save_auto_run(build)
+    NoteStore(store.root).add("Run tests", auto_run=record.number)
+
+    with TestClient(app, base_url="http://localhost", client=("192.168.1.20", 5000)) as lan:
+        refused = lan.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "Run this"})
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 5000)) as local:
+        accepted = local.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "Run lint"})
+
+    assert refused.status_code == 403
+    assert accepted.status_code == 200
+    assert NoteStore(store.root).load().find("N1").text == "Run lint"
+
+
+def test_note_meta_shows_its_latest_change_on_the_title_line(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="c" * 32, status="stopped", publish=False)
+    NoteStore(store.root).add("one", auto_run=record.number)
+    other = NoteStore(store.root).add("two", auto_run=record.number)
+    with TestClient(app, base_url="http://localhost") as client:
+        html = client.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "uno"}).text
+    edited = NoteStore(store.root).load().find("N1")
+    flat = re.sub(r"\s+", " ", html)
+    assert "N1 · pending" in flat
+    # One time per note, its latest change, on the title's line.
+    assert flat.count('class="msg-time"') == 2
+    assert re.search(
+        r'<p class="auto-note-meta"><span class="auto-note-title"[^>]*>N1 · pending[^<]*'
+        r'(<span[^>]*>[^<]*</span>)?</span><time class="msg-time" datetime="'
+        + re.escape(edited.posted_at),
+        flat,
+    )
+    assert f'datetime="{other.posted_at}" title="{other.posted_at}" data-local-time' in html
+
+
+def test_chat_note_meta_shows_its_latest_change_on_the_title_line(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    chat_note_store(store, ALPHA).add("one", name="Alpha")
+    with TestClient(app, base_url="http://localhost") as client:
+        html = client.post(
+            f"{base(project)}/sessions/{ALPHA}/chat-notes/N1/edit", data={"text": "uno"}
+        ).text
+    edited = chat_note_store(store, ALPHA).load().find("N1")
+    flat = re.sub(r"\s+", " ", html)
+    assert flat.count('class="msg-time"') == 1
+    assert (
+        '<span class="auto-note-title" title="N1 · pending">N1 · pending</span>'
+        f'<time class="msg-time" datetime="{edited.posted_at}"'
+    ) in flat
+
+
+def test_the_edit_button_shows_only_for_unread_notes_of_an_idle_project(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="c" * 32, status="stopped", publish=False)
+    notes = NoteStore(store.root)
+    notes.add("one", auto_run=record.number)
+    notes.add("two", auto_run=record.number)
+    notes.record_delivery(record.number, ALPHA, ["N2"], {ALPHA, BETA})
+    with TestClient(app, base_url="http://localhost") as client:
+        html = client.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "uno"}).text
+        idle_page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+        _mark_running(store, BETA)
+        busy_page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+
+    assert f'data-note-edit-url="{base(project)}/auto-notes/N1/edit"' in html
+    assert 'aria-label="Edit N1"' in html
+    assert "/auto-notes/N2/edit" not in html
+    assert 'id="note-edit-dialog"' in idle_page
+    assert f'data-note-edit-url="{base(project)}/auto-notes/N1/edit"' in idle_page
+    assert "data-note-edit-url" not in busy_page
+
+
+def test_the_chat_edit_button_shows_for_an_unread_chat_note(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    chat_note_store(store, ALPHA).add("one", name="Alpha")
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+
+    assert f'data-note-edit-url="{base(project)}/sessions/{ALPHA}/chat-notes/N1/edit"' in page
+
+
+def test_note_edit_javascript_contract_runs_under_node() -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node unavailable; note edit unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_note_edit.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

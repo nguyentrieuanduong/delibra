@@ -1,21 +1,28 @@
+{% from "_time_macros.html" import stamp %}
 <div id="auto-notes-list" class="auto-notes-list" data-notes-revision="{{ notes_revision }}" data-notes-mode="auto"{% if chat_notes_shown|default(false) %} hidden{% endif %}{% if notes_oob|default(false) %} hx-swap-oob="outerHTML"{% endif %}>
   {% if notes %}
     <ul>
       {% for note in notes %}
         <li class="auto-note {{ note.status }}">
-          <p class="auto-note-meta">
-            {{ note.id }} · {{ note.status }}{% if note.status == 'pending' %} · delivered to {{ note_counts[note.id] }}/{{ note_participants }}{% endif %}{% if note_marked[note.id] %} · marked read by {{ note_marked[note.id]|join(', ') }}{% endif %}{% if note.status == 'pending' and notes_waiting|default(false) %} · <span class="auto-note-waiting">waits for Continue Auto</span>{% endif %}
-          </p>
+          {# One line: a title too long for the column is cut, never the time. #}
+          {% set note_head %}{{ note.id }} · {{ note.status }}{% if note.status == 'pending' %} · delivered to {{ note_counts[note.id] }}/{{ note_participants }}{% endif %}{% if note_marked[note.id] %} · marked read by {{ note_marked[note.id]|join(', ') }}{% endif %}{% endset %}
+          {% set note_waits = note.status == 'pending' and notes_waiting|default(false) %}
+          <p class="auto-note-meta"><span class="auto-note-title" title="{{ note_head }}{% if note_waits %} · waits for Continue Auto{% endif %}">{{ note_head }}{% if note_waits %} · <span class="auto-note-waiting">waits for Continue Auto</span>{% endif %}</span>{{ stamp(note.posted_at) }}</p>
           <pre class="auto-note-text">{{ note.text }}</pre>
           {% if note.status == 'pending' %}
-            <form
-              method="post"
-              action="{{ project_url(project.name, '/auto-notes/' ~ note.id ~ '/delete') }}"
-              hx-post="{{ project_url(project.name, '/auto-notes/' ~ note.id ~ '/delete') }}"
-              hx-swap="none"
-            >
-              <button type="submit" aria-label="Delete {{ note.id }}">Delete</button>
-            </form>
+            <div class="auto-note-actions">
+              {% if notes_edit_open|default(false) and not note.delivered_to and not note.marked_by %}
+                <button type="button" data-note-edit data-note-id="{{ note.id }}" data-note-edit-url="{{ project_url(project.name, '/auto-notes/' ~ note.id ~ '/edit') }}" aria-label="Edit {{ note.id }}">Edit</button>
+              {% endif %}
+              <form
+                method="post"
+                action="{{ project_url(project.name, '/auto-notes/' ~ note.id ~ '/delete') }}"
+                hx-post="{{ project_url(project.name, '/auto-notes/' ~ note.id ~ '/delete') }}"
+                hx-swap="none"
+              >
+                <button type="submit" aria-label="Delete {{ note.id }}">Delete</button>
+              </form>
+            </div>
           {% endif %}
         </li>
       {% endfor %}

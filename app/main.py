@@ -50,6 +50,7 @@ from app.storage import (
     StorageError,
     utc_now,
 )
+from app.timefmt import utc_stamp, utc_stamp_range
 from app.urls import project_url, static_url
 from app.usage import UsageMonitor
 from app.views import project_card
@@ -124,6 +125,8 @@ def create_app(
 
     templates = Jinja2Templates(directory=APP_ROOT / "templates")
     templates.env.filters["md"] = render_markdown
+    templates.env.filters["utc_stamp"] = utc_stamp
+    templates.env.filters["utc_stamp_range"] = utc_stamp_range
     templates.env.globals["project_url"] = project_url
     templates.env.globals["static_url"] = static_url
     templates.env.globals["is_loopback_client"] = is_loopback_client

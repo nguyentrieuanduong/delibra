@@ -283,8 +283,66 @@ def test_the_revision_grows_with_every_change_and_only_then(tmp_path: Path) -> N
     notes.delete("N2")
     changed()
     notes.add("third", auto_run=1)
+    changed()
+    notes.edit("N3", "third!")
+    changed()
     notes.abandon_before(2)
     changed()
+
+
+def test_an_unread_pending_note_can_be_edited_and_the_view_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = NoteStore(tmp_path)
+    notes.add("Prefer SQLite", auto_run=2)
+    before = notes.load().revision
+    monkeypatch.setattr("app.notes.utc_now", lambda: "2026-11-14T00:00:01Z")
+    edited = notes.edit("N1", "  Prefer Postgres  ")
+    assert (edited.text, edited.edits, edited.status) == ("Prefer Postgres", 1, "pending")
+    # One time per note: an edit makes it the note's latest change.
+    assert edited.posted_at == "2026-11-14T00:00:01Z"
+    assert view(notes)["notes"][0] == {
+        "id": "N1", "posted_at": edited.posted_at, "text": "Prefer Postgres"
+    }
+    assert notes.load().revision > before
+    assert notes.load().notes[0].to_dict() == edited.to_dict()
+
+
+def test_edit_refuses_closed_reached_and_bad_text(tmp_path: Path) -> None:
+    notes = NoteStore(tmp_path)
+    notes.add("one", auto_run=1)
+    notes.add("two", auto_run=1)
+    notes.add("three", auto_run=1)
+    notes.delete("N1")
+    notes.record_delivery(1, "a", ["N2"], {"a", "b"})
+    with pytest.raises(ConflictError, match="N1 is already deleted"):
+        notes.edit("N1", "x")
+    with pytest.raises(ConflictError, match="N2 has already reached an agent"):
+        notes.edit("N2", "x")
+    with pytest.raises(NotFoundError):
+        notes.edit("N9", "x")
+    for text in ("", "   ", "x" * (NOTE_MAX_CHARS + 1), "a\x00b"):
+        with pytest.raises(StorageError):
+            notes.edit("N3", text)
+    assert notes.load().find("N3").text == "three"
+
+
+def test_a_marked_note_cannot_be_edited(tmp_path: Path) -> None:
+    notes = NoteStore(tmp_path)
+    notes.add("one", auto_run=1)
+    notes.record_delivery(1, "a", [], {"a", "b"}, marked=["N1"])
+    with pytest.raises(ConflictError, match="N1 has already reached an agent"):
+        notes.edit("N1", "x")
+
+
+def test_an_unedited_note_keeps_its_old_json_shape(tmp_path: Path) -> None:
+    notes = NoteStore(tmp_path)
+    notes.add("one", auto_run=1)
+    stored = json.loads(notes.history_path.read_text())["notes"][0]
+    assert "edits" not in stored
+    notes.edit("N1", "two")
+    stored = json.loads(notes.history_path.read_text())["notes"][0]
+    assert stored["edits"] == 1 and "edited_at" not in stored
 
 
 def test_clear_deletes_every_note_but_never_reuses_an_id(tmp_path: Path) -> None:
@@ -437,3 +495,11 @@ def test_the_chat_wording_of_the_notes_prompt() -> None:
     assert notes_prompt(Path("/v"), live=True, marks_path=None).startswith(
         " Notes the user sent during this run are in /v."
     )
+
+
+def test_a_chat_note_edit_rewrites_the_workspace_view(tmp_path: Path) -> None:
+    chat = _chat(tmp_path)
+    chat.add("Use tables", name="Alpha")
+    chat.edit("N1", "Use lists")
+    shown = json.loads((tmp_path / "s" / "workspace" / CHAT_VIEW_NAME).read_text())
+    assert [item["text"] for item in shown["notes"]] == ["Use lists"]

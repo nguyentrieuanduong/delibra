@@ -484,3 +484,15 @@ def test_per_pass_template_override_renders_without_changing_project_default(
 
     assert contexts[0].user_prompt == "Override Source #1: inputs/round-01/source.md"
     assert store.effective_pass_prompt_template() == saved
+
+
+def test_a_passed_round_shows_its_start_at_once(tmp_path: Path) -> None:
+    app, _, project, store, source, target, _, _ = setup(tmp_path)
+    base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        passed = client.post(f"{base}/pass", data=pass_form_data(target.id, "Review {source_path}."))
+        finish(client, f"/projects/{quote(project.name, safe='')}/sessions/{target.id}", 1)
+
+    started_at = store.load_session(target.id).rounds[0].started_at
+    assert passed.status_code == 202
+    assert f'datetime="{started_at}"' in passed.text

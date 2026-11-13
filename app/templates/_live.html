@@ -1,3 +1,4 @@
+{% from "_time_macros.html" import stamp %}
 <section
   class="live-round"
   id="{{ dom_id }}"
@@ -14,6 +15,8 @@
           <span>Auto</span>
         {% endif %}
     {% endif %}
+    {% set live_record = session.rounds|selectattr('n', 'equalto', key.round_n)|first if session.rounds else none %}
+    {% if live_record %}{{ stamp(live_record.started_at) }}{% endif %}
   </h2>
   <div
     class="timeout-host"
