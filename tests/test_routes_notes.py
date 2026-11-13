@@ -550,3 +550,52 @@ def test_chat_note_meta_shows_its_latest_change_on_the_title_line(tmp_path: Path
         '<span class="auto-note-title" title="N1 · pending">N1 · pending</span>'
         f'<time class="msg-time" datetime="{edited.posted_at}"'
     ) in flat
+
+
+def test_the_edit_button_shows_only_for_unread_notes_of_an_idle_project(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    record = seed_durable_auto(store, auto_id="c" * 32, status="stopped", publish=False)
+    notes = NoteStore(store.root)
+    notes.add("one", auto_run=record.number)
+    notes.add("two", auto_run=record.number)
+    notes.record_delivery(record.number, ALPHA, ["N2"], {ALPHA, BETA})
+    with TestClient(app, base_url="http://localhost") as client:
+        html = client.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "uno"}).text
+        idle_page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+        _mark_running(store, BETA)
+        busy_page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+
+    assert f'data-note-edit-url="{base(project)}/auto-notes/N1/edit"' in html
+    assert 'aria-label="Edit N1"' in html
+    assert "/auto-notes/N2/edit" not in html
+    assert 'id="note-edit-dialog"' in idle_page
+    assert f'data-note-edit-url="{base(project)}/auto-notes/N1/edit"' in idle_page
+    assert "data-note-edit-url" not in busy_page
+
+
+def test_the_chat_edit_button_shows_for_an_unread_chat_note(tmp_path: Path) -> None:
+    app, project, store = notes_app(tmp_path)
+    chat_note_store(store, ALPHA).add("one", name="Alpha")
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(f"{base(project)}/chat?agent={ALPHA}").text
+
+    assert f'data-note-edit-url="{base(project)}/sessions/{ALPHA}/chat-notes/N1/edit"' in page
+
+
+def test_note_edit_javascript_contract_runs_under_node() -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node unavailable; note edit unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_note_edit.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

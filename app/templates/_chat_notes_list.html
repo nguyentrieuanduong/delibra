@@ -8,14 +8,19 @@
           <p class="auto-note-meta"><span class="auto-note-title" title="{{ note_title }}">{{ note_title }}</span>{{ stamp(note.posted_at) }}</p>
           <pre class="auto-note-text">{{ note.text }}</pre>
           {% if note.status == 'pending' %}
-            <form
-              method="post"
-              action="{{ project_url(project.name, '/sessions/' ~ chat_notes_session_id ~ '/chat-notes/' ~ note.id ~ '/delete') }}"
-              hx-post="{{ project_url(project.name, '/sessions/' ~ chat_notes_session_id ~ '/chat-notes/' ~ note.id ~ '/delete') }}"
-              hx-swap="none"
-            >
-              <button type="submit" aria-label="Delete {{ note.id }}">Delete</button>
-            </form>
+            <div class="auto-note-actions">
+              {% if chat_notes_edit_open|default(false) and not note.delivered_to and not note.marked_by %}
+                <button type="button" data-note-edit data-note-id="{{ note.id }}" data-note-edit-url="{{ project_url(project.name, '/sessions/' ~ chat_notes_session_id ~ '/chat-notes/' ~ note.id ~ '/edit') }}" aria-label="Edit {{ note.id }}">Edit</button>
+              {% endif %}
+              <form
+                method="post"
+                action="{{ project_url(project.name, '/sessions/' ~ chat_notes_session_id ~ '/chat-notes/' ~ note.id ~ '/delete') }}"
+                hx-post="{{ project_url(project.name, '/sessions/' ~ chat_notes_session_id ~ '/chat-notes/' ~ note.id ~ '/delete') }}"
+                hx-swap="none"
+              >
+                <button type="submit" aria-label="Delete {{ note.id }}">Delete</button>
+              </form>
+            </div>
           {% endif %}
         </li>
       {% endfor %}

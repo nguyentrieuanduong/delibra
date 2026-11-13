@@ -95,6 +95,47 @@ function localizeTimes(root) {
   return count;
 }
 
+// One dialog edits any unread note; it lives outside the notes lists, which
+// are replaced out-of-band, so a status update cannot wipe the typed text.
+function openNoteEdit(button, doc) {
+  const dialog = doc.getElementById("note-edit-dialog");
+  const item = typeof button.closest === "function" ? button.closest("li") : null;
+  const text = item ? item.querySelector(".auto-note-text") : null;
+  const form = dialog ? dialog.querySelector("[data-note-edit-form]") : null;
+  const field = form ? form.querySelector("textarea") : null;
+  if (!dialog || !text || !form || !field || typeof dialog.showModal !== "function") {
+    return false;
+  }
+  form.dataset.noteEditUrl = button.dataset.noteEditUrl;
+  const label = dialog.querySelector("[data-note-edit-id]");
+  if (label) {
+    label.textContent = button.dataset.noteId || "";
+  }
+  field.value = text.textContent;
+  if (!dialog.open) {
+    dialog.showModal();
+  }
+  field.focus();
+  return true;
+}
+
+// A refusal pops up and keeps what was typed (the UI error pop-up standard).
+function finishNoteEdit(form, detail, alertFn) {
+  if (!form || !detail) {
+    return null;
+  }
+  const dialog = form.closest("dialog");
+  if (detail.successful) {
+    if (dialog && dialog.open) {
+      dialog.close();
+    }
+    return "closed";
+  }
+  const xhr = detail.xhr || {};
+  alertFn(chatErrorMessage(xhr.status || 0, xhr.responseText || ""));
+  return "alerted";
+}
+
 let focusDialogTrigger = null;
 
 function restoreFocusDialogTrigger() {
@@ -1344,6 +1385,7 @@ if (typeof module !== "undefined" && module.exports) {
     conversationTimelineForSwap,
     copyAutoComposerTopic,
     fileViewPath,
+    finishNoteEdit,
     focusAutoHistoryView,
     formatLocalRange,
     formatLocalStamp,
@@ -1365,6 +1407,7 @@ if (typeof module !== "undefined" && module.exports) {
     moveAutoOrderItem,
     openAutoSetup,
     openFocusDialog,
+    openNoteEdit,
     openPathPicker,
     openQuestionsPanelForNew,
     pickerUrl,
@@ -1545,7 +1588,24 @@ if (typeof document !== "undefined") {
     streamRetries.delete(event.target);
   });
 
+  document.addEventListener("submit", function (event) {
+    const form = event.target;
+    if (!form || typeof form.matches !== "function" || !form.matches("[data-note-edit-form]")) {
+      return;
+    }
+    event.preventDefault();
+    htmx.ajax("POST", form.dataset.noteEditUrl, { source: form, swap: "none" });
+  });
+
   document.addEventListener("htmx:responseError", function (event) {
+    const editSource = (event.detail && event.detail.elt) || event.target;
+    if (
+      editSource &&
+      typeof editSource.closest === "function" &&
+      editSource.closest("[data-note-edit-form]")
+    ) {
+      return; // afterRequest pops it up instead
+    }
     const region = document.getElementById("chat-errors");
     const xhr = event.detail && event.detail.xhr;
     if (!region || !xhr) {
@@ -1643,6 +1703,21 @@ if (typeof document !== "undefined") {
   });
 
   document.addEventListener("click", function (event) {
+    const noteEdit =
+      event.target && typeof event.target.closest === "function"
+        ? event.target.closest("[data-note-edit], [data-note-edit-cancel]")
+        : null;
+    if (noteEdit) {
+      if (noteEdit.matches("[data-note-edit]")) {
+        openNoteEdit(noteEdit, document);
+      } else {
+        const editDialog = document.getElementById("note-edit-dialog");
+        if (editDialog && editDialog.open) {
+          editDialog.close();
+        }
+      }
+      return;
+    }
     const pickerControl =
       event.target && typeof event.target.closest === "function"
         ? event.target.closest(
@@ -1775,6 +1850,16 @@ if (typeof document !== "undefined") {
         : null;
     if (timeoutForm) {
       setTimeoutFormPending(timeoutForm, false);
+    }
+    const noteEditForm =
+      source && typeof source.closest === "function"
+        ? source.closest("[data-note-edit-form]")
+        : null;
+    if (noteEditForm) {
+      finishNoteEdit(noteEditForm, event.detail, function (message) {
+        window.alert(message);
+      });
+      return;
     }
     const region = document.getElementById("chat-errors");
     const detail = event.detail;
