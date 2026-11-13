@@ -1,0 +1,7 @@
+<details id="downloads-panel" class="downloads-panel"{% if awaiting_count %} open{% endif %}
+         hx-ext="sse" sse-connect="{{ project_url(project.name, '/downloads/stream') }}">
+  <summary>Downloads{% if awaiting_count %} ({{ awaiting_count }} awaiting){% endif %}</summary>
+  <span hidden hx-get="{{ project_url(project.name, '/downloads/list') }}" hx-trigger="sse:downloads"
+        hx-target="#downloads-list" hx-swap="outerHTML"></span>
+  {% include "_downloads_list.html" %}
+</details>

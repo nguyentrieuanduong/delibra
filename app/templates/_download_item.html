@@ -1,0 +1,21 @@
+{% set url = project_url(project.name, '/downloads/' ~ download.id) %}
+<li id="download-{{ download.id }}" class="download download-{{ download.state }}">
+  <p><strong>{{ download.id }}</strong> · {{ download.agent_name }}{% if download.auto_run %} · Auto {{ download.auto_run }}{% endif %}
+     · <span class="download-state">{{ download.state }}</span></p>
+  <p class="download-url"><code>{{ download.shown_url }}</code>{% if download.masked %} <a href="{{ url }}/url" target="_blank" rel="noopener">Show full URL</a>{% endif %}</p>
+  {% if download.purpose %}<p class="download-purpose">Agent's reason: {{ download.purpose }}</p>{% endif %}
+  {% if download.reason %}<p class="download-reason">{{ download.reason }}</p>{% endif %}
+  {% if download.state == "downloaded" %}
+    <p><a href="{{ project_url(project.name, '/files/view') }}?path={{ download.path|urlencode }}">{{ download.path }}</a> · {{ download.size }} bytes · {{ download.detected_type }} · <code title="SHA-256">{{ download.sha256[:12] }}</code></p>
+  {% endif %}
+  <div class="download-actions">
+    {% if download.state == "awaiting" %}
+      <button type="button" hx-post="{{ url }}/approve" hx-target="#downloads-list" hx-swap="outerHTML">Approve</button>
+      <button type="button" hx-post="{{ url }}/refuse" hx-target="#downloads-list" hx-swap="outerHTML">Refuse</button>
+    {% elif download.state == "refused" and download.reason != "refused by you" %}
+      <button type="button" hx-post="{{ url }}/allow" hx-confirm="Download {{ download.shown_url }} anyway? It was refused: {{ download.reason }}" hx-target="#downloads-list" hx-swap="outerHTML">Allow anyway</button>
+    {% elif download.state == "failed" %}
+      <button type="button" hx-post="{{ url }}/retry" hx-target="#downloads-list" hx-swap="outerHTML">Retry</button>
+    {% endif %}
+  </div>
+</li>

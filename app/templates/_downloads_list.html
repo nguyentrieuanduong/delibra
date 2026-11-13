@@ -1,0 +1,10 @@
+<div id="downloads-list">
+  {% if awaiting_count > 1 %}
+    <button type="button" hx-post="{{ project_url(project.name, '/downloads/approve-all') }}"
+            hx-target="#downloads-list" hx-swap="outerHTML">Approve all ({{ awaiting_count }})</button>
+  {% endif %}
+  {% if not downloads %}
+    <p class="hint">{% if downloads_enabled %}No downloads yet. Build agents request them here.{% else %}Delibra downloads are off for this project (Settings → Coding).{% endif %}</p>
+  {% endif %}
+  <ol class="downloads">{% for download in downloads %}{% include "_download_item.html" %}{% endfor %}</ol>
+</div>
