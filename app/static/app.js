@@ -28,6 +28,73 @@ function renderChatError(region, status, responseText) {
   return message;
 }
 
+function formatOffset(minutesEast) {
+  const sign = minutesEast < 0 ? "-" : "+";
+  const total = Math.abs(minutesEast);
+  const hours = String(Math.floor(total / 60)).padStart(2, "0");
+  const minutes = total % 60;
+  return sign + hours + (minutes ? ":" + String(minutes).padStart(2, "0") : "");
+}
+
+function localStampParts(iso) {
+  const date = iso ? new Date(iso) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const pad = (value) => String(value).padStart(2, "0");
+  return {
+    day: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    time: `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+    offset: formatOffset(-date.getTimezoneOffset()),
+  };
+}
+
+function formatLocalStamp(iso) {
+  const parts = localStampParts(iso);
+  return parts ? `${parts.day} ${parts.time} ${parts.offset}` : null;
+}
+
+// One day and one offset are named once; a round that runs past the reader's
+// midnight names both days. Without a readable finish, the start alone.
+// app/timefmt.py writes the same shapes in UTC for the page before this runs.
+function formatLocalRange(startIso, finishIso) {
+  const start = localStampParts(startIso);
+  if (!start) {
+    return null;
+  }
+  const finish = localStampParts(finishIso);
+  if (!finish) {
+    return `${start.day} ${start.time} ${start.offset}`;
+  }
+  if (start.day === finish.day && start.offset === finish.offset) {
+    return `${start.day} ${start.time} – ${finish.time} ${start.offset}`;
+  }
+  return `${start.day} ${start.time} ${start.offset} – ${finish.day} ${finish.time} ${finish.offset}`;
+}
+
+// The server writes UTC; the reader's clock is the browser's.
+function localizeTimes(root) {
+  if (!root || typeof root.querySelectorAll !== "function") {
+    return 0;
+  }
+  let count = 0;
+  root.querySelectorAll("[data-local-time]").forEach(function (element) {
+    const text = formatLocalStamp(element.getAttribute("datetime"));
+    if (text) {
+      element.textContent = text;
+      count += 1;
+    }
+  });
+  root.querySelectorAll("[data-local-range]").forEach(function (element) {
+    const text = formatLocalRange(element.dataset.start, element.dataset.finish);
+    if (text) {
+      element.textContent = text;
+      count += 1;
+    }
+  });
+  return count;
+}
+
 let focusDialogTrigger = null;
 
 function restoreFocusDialogTrigger() {
@@ -1278,6 +1345,9 @@ if (typeof module !== "undefined" && module.exports) {
     copyAutoComposerTopic,
     fileViewPath,
     focusAutoHistoryView,
+    formatLocalRange,
+    formatLocalStamp,
+    formatOffset,
     formatRemainingSeconds,
     freshStreamElement,
     handleFocusDialogCancel,
@@ -1286,6 +1356,7 @@ if (typeof module !== "undefined" && module.exports) {
     isStalePickerSwap,
     keepComposerText,
     lastPathLine,
+    localizeTimes,
     MERMAID_CACHE_LIMIT,
     mermaidErrorText,
     mermaidFrameSize,
@@ -1338,10 +1409,12 @@ if (typeof document !== "undefined") {
 
   syncLatestButton(document);
   renderMermaidBlocks(document);
+  localizeTimes(document);
   // After settle, not afterSwap: an outerHTML swap's event target is the
   // replaced element, and OOB swaps land elsewhere. One scan finds them all.
   document.addEventListener("htmx:afterSettle", function () {
     renderMermaidBlocks(document);
+    localizeTimes(document);
   });
   document.addEventListener("click", function (event) {
     if (event.target.closest && event.target.closest("[data-timeline-latest]")) {

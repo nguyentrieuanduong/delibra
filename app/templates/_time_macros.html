@@ -1,0 +1,8 @@
+{# Times are written in UTC (app/timefmt.py); app.js rewrites them in the
+   reader's timezone with the same rules (localizeTimes). #}
+{% macro stamp(iso) -%}
+  {%- if iso -%}<time class="msg-time" datetime="{{ iso }}" title="{{ iso }}" data-local-time>{{ iso|utc_stamp }}</time>{%- endif -%}
+{%- endmacro %}
+{% macro stamp_range(start, finish) -%}
+  {%- if start -%}<span class="msg-time" data-local-range data-start="{{ start }}" data-finish="{{ finish or '' }}" title="{{ start }}{% if finish %} – {{ finish }}{% endif %}">{{ start|utc_stamp_range(finish) }}</span>{%- endif -%}
+{%- endmacro %}

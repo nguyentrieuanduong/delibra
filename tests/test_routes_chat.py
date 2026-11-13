@@ -1986,3 +1986,19 @@ def test_the_composer_names_the_box_message_and_describes_the_agent(tmp_path: Pa
     assert 'aria-describedby="composer-agent"' in textarea[0]
     assert '<label for="chat-composer-prompt">Message</label>' in page.text
     assert re.search(r'id="composer-agent"[^>]*>\s*sending as Alpha · claude', page.text)
+
+
+def test_local_time_javascript_contract_runs_under_node() -> None:
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+
+        pytest.skip("Node unavailable; local time unit test not run")
+    result = subprocess.run(
+        [node, "--test", "tests/js/test_local_time.js"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
