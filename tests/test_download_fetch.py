@@ -79,9 +79,10 @@ async def test_same_name_downloads_and_existing_files_are_never_overwritten(proj
 async def test_loopback_is_refused_by_default_and_never_contacted(project):
     server = Server({"/p.pdf": (200, {}, b"x")})
     fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}))
-    with pytest.raises(FetchError, match="non-public"):
+    with pytest.raises(FetchError, match="non-public") as refused:
         await fetch(fetcher, project, "http://files.test/p.pdf", check_first=False)
     assert server.hits == []
+    assert "files.test" not in refused.value.reason
 
 @pytest.mark.asyncio
 async def test_a_redirect_to_a_private_host_is_refused_after_override(project):

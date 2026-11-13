@@ -130,14 +130,15 @@ class Fetcher:
         self._allowed = address_allowed
 
     async def _vetted(self, host: str, port: int) -> tuple[str, int]:
+        # Reasons never name the host: a hidden URL's host can be its payload (B3).
         try:
             pairs = await self._resolve(host, port)
         except OSError as exc:
-            raise FetchError(f"could not resolve {host}") from exc
+            raise FetchError("could not resolve the host") from exc
         if not pairs:
-            raise FetchError(f"could not resolve {host}")
+            raise FetchError("could not resolve the host")
         if not all(self._allowed(address) for address, _ in pairs):
-            raise FetchError(f"{host} resolves to a non-public address")
+            raise FetchError("the host resolves to a non-public address")
         return pairs[0]
 
     async def fetch(self, url: str, *, check_first: bool, project_root: Path, folder: str,
