@@ -6,19 +6,23 @@
 >
   {% set agent = agent_view.session %}
   <div class="agent-card-heading">
-    <h3>
-      <a
-        id="agent-select-{{ agent.id }}"
-        href="{{ project_url(project.name, '/chat?agent=' ~ agent.id) }}"
-        hx-get="{{ project_url(project.name, '/chat/select?agent=' ~ agent.id) }}"
-        hx-target="#agent-sidebar"
-        hx-swap="outerHTML"
-        {% if agent_view.selected %}aria-current="true"{% endif %}
-      >{{ agent.name }}</a>
-    </h3>
+    <div class="agent-card-title">
+      <h3>
+        <a
+          id="agent-select-{{ agent.id }}"
+          href="{{ project_url(project.name, '/chat?agent=' ~ agent.id) }}"
+          hx-get="{{ project_url(project.name, '/chat/select?agent=' ~ agent.id) }}"
+          hx-target="#agent-sidebar"
+          hx-swap="outerHTML"
+          {% if agent_view.selected %}aria-current="true"{% endif %}
+        >{{ agent.name }}</a>
+      </h3>
+      <p class="agent-card-model">{{ agent.model }} · {{ agent.effort }}</p>
+    </div>
     {% with agent_card_oob=false %}{% include "_agent_status.html" %}{% endwith %}
   </div>
-  <details{% if agent_view.selected %} open{% endif %} class="agent-details">
+  {# Collapsed on render; app.js reopens what the reader opened (user, 2026-11-13). #}
+  <details class="agent-details">
     <summary>Agent information</summary>
     <p>{{ agent.agent }} · {{ agent.model }} · {{ agent.effort }}</p>
     <section class="agent-role" aria-label="Role instructions">

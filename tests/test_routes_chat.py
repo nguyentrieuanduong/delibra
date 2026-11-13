@@ -203,7 +203,7 @@ def assert_synchronized_selection_fragment(
     assert response.text.count('id="chat-composer"') == 1
     assert response.text.count('class="agent-card selected"') == 1
     assert response.text.count('aria-current="true"') == 1
-    assert response.text.count('<details open class="agent-details">') == 1
+    assert response.text.count('<details open class="agent-details">') == 0
     assert 'hx-swap-oob="outerHTML:#chat-composer"' in response.text
     assert 'hx-swap-oob="outerHTML:#agent-sidebar"' not in response.text
     assert 'id="chat-agent-select"' not in response.text
@@ -602,6 +602,26 @@ def test_chat_places_the_sole_auto_status_in_the_right_top_panel(
     assert "padding: 0" in auto_status_rule.group(1)
 
 
+def test_agent_card_shows_model_and_effort_under_name(tmp_path: Path) -> None:
+    alpha = session("a" * 32, "Alpha", agent="claude", mode="sonnet-4")
+    app, project, _ = setup_project(tmp_path, [alpha])
+
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
+        stylesheet = client.get("/static/app.css").text
+
+    title = re.search(
+        r'<div class="agent-card-title">(.*?)</div>', response.text, flags=re.DOTALL
+    )
+    assert title is not None
+    assert f'id="agent-select-{alpha.id}"' in title.group(1)
+    assert '<p class="agent-card-model">sonnet-4 · low</p>' in title.group(1)
+    rule = re.search(r"\.agent-card-model \{([^}]*)\}", stylesheet)
+    assert rule is not None
+    assert "font-size: .75rem" in rule.group(1)
+    assert "overflow-wrap: anywhere" in rule.group(1)
+
+
 def test_chat_workspace_renders_four_regions_and_full_agent_information(
     tmp_path: Path,
 ) -> None:
@@ -631,8 +651,8 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
     assert 'id="file-browser-host"' in response.text
     assert 'id="file-reader"' in response.text
     assert 'id="chat-agent-select"' not in response.text
-    assert response.text.count('<details open class="agent-details">') == 1
-    assert response.text.count('<details class="agent-details">') == 1
+    assert response.text.count('<details open class="agent-details">') == 0
+    assert response.text.count('<details class="agent-details">') == 2
     assert "Be rigorous &amp; challenge &lt;claims&gt;." in response.text
     assert "No role instructions" in response.text
     assert "Role instructions are fixed after the first round." not in response.text
@@ -867,8 +887,8 @@ def test_chat_uses_left_agent_selection_and_right_file_rail(tmp_path: Path) -> N
     )
     assert 'hx-target="#agent-sidebar"' in beta_card.group()
     assert 'aria-current="true"' in beta_card.group()
-    assert '<details open class="agent-details">' in beta_card.group()
-    assert response.text.count('<details open class="agent-details">') == 1
+    assert '<details class="agent-details">' in beta_card.group()
+    assert response.text.count('<details open class="agent-details">') == 0
     assert (
         f'<input type="hidden" name="session_id" value="{beta.id}">'
         in response.text
@@ -1092,7 +1112,7 @@ def test_chat_selection_is_deterministic_and_invalid_selection_is_rejected(
         assert response.text.count('id="chat-composer"') == 1
         assert response.text.count('class="agent-card selected"') == 1
         assert response.text.count('aria-current="true"') == 1
-        assert response.text.count('<details open class="agent-details">') == 1
+        assert response.text.count('<details open class="agent-details">') == 0
         assert re.search(
             rf'class="agent-card selected"\s+data-session-id="{selected.id}"\s+'
             r'data-selected="true"',
@@ -1111,7 +1131,7 @@ def test_chat_selection_is_deterministic_and_invalid_selection_is_rejected(
     assert sidebar.text.count('id="chat-composer"') == 0
     assert sidebar.text.count('class="agent-card selected"') == 1
     assert sidebar.text.count('aria-current="true"') == 1
-    assert sidebar.text.count('<details open class="agent-details">') == 1
+    assert sidebar.text.count('<details open class="agent-details">') == 0
     assert 'hx-swap-oob=' not in sidebar.text
     assert '<section class="chat-timeline"' not in sidebar.text
     assert 'class="live-round"' not in sidebar.text

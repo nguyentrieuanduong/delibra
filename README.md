@@ -135,8 +135,12 @@ writable-roots fields browse the project's own folders from any allowed client.
 
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
 Claude or Codex agent, and submit a prompt. The project chat keeps project context
-and agent cards in the wider left rail, with the selected agent's information
-expanded and every unselected agent collapsed. A compact composer and merged
+and agent cards in the wider left rail. Each card shows the agent's model and
+effort in small text under its name; its **Agent information** starts
+collapsed, and choosing an agent does not open it. Agent information and
+**Message contents** you open or close yourself stay that way, in this
+browser, across refreshes, new or finished rounds and reloads; otherwise only
+the newest message is open. A compact composer and merged
 conversation stay in the center, while project-file browsing/reading stays in the
 narrower right rail. Select an agent name to route the composer and highlight that
 card; unsent text stays in the composer when you pick, create or edit an agent. A

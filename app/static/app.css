@@ -293,6 +293,8 @@ textarea { min-height: 7rem; }
   justify-content: space-between;
 }
 .agent-card-heading h3 { margin: 0; }
+.agent-card-title { min-width: 0; }
+.agent-card-model { font-size: .75rem; margin: 0; opacity: .7; overflow-wrap: anywhere; }
 .agent-details > summary { cursor: pointer; }
 .agent-role { border-left: .2rem solid #8885; padding-left: .6rem; }
 .agent-role h4, .agent-role p { margin: .25rem 0; }
