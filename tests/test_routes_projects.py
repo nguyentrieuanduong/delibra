@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.base import AgentEvent, Command, RunContext
-from app.coding import DEFAULT_NETWORK_ALLOWLIST, CodingEnvState, DockerPolicy
+from app.coding import DEFAULT_NETWORK_ALLOWLIST, CodingEnvState, DockerPolicy, DownloadPolicy
 from app.config import GuidancePreset, Settings
 from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
@@ -2663,3 +2663,55 @@ def test_project_writable_roots_refusal_pops_up_and_keeps_input(
     assert "checked" not in create_missing_inputs(response.text)[0]
     assert store.manifest_path.read_bytes() == before
     assert not (project_path / "typed").exists()
+
+
+def test_saving_download_settings(tmp_path: Path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding", data={
+            "enabled": "true", "network_allowlist": "",
+            "downloads_enabled": "true", "downloads_folder": "raw/src",
+            "downloads_approval": "automatic", "downloads_model_check": "true",
+            "downloads_check_provider": "codex", "downloads_check_model": "gpt-5.5-mini",
+        }, follow_redirects=False)
+        wait_env(project, "ready")
+    assert response.status_code == 303
+    downloads = ProjectStore(project).coding_policy().downloads
+    assert (downloads.enabled, downloads.folder, downloads.approval) == (True, "raw/src", "automatic")
+    assert (downloads.check_provider, downloads.check_model) == ("codex", "gpt-5.5-mini")
+
+
+def test_an_older_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, folder="raw")
+    store.replace_coding_policy(policy)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/coding", data={"enabled": "true", "network_allowlist": ""},
+            follow_redirects=False,
+        )
+        wait_env(project, "ready")
+    assert response.status_code == 303
+    assert store.coding_policy().downloads == DownloadPolicy(enabled=True, folder="raw")
+
+
+def test_an_unsafe_download_folder_is_refused(tmp_path: Path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding", data={
+            "enabled": "true", "network_allowlist": "",
+            "downloads_enabled": "true", "downloads_folder": "../out",
+        })
+    assert response.status_code == 422
+    assert "Download folder" in response.text
+    assert ProjectStore(project).coding_policy().downloads.enabled is False
+
+
+def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings").text
+    assert 'name="downloads_folder" value="docs/source/raw"' in page
+    assert 'name="downloads_check_model" value="sonnet"' in page

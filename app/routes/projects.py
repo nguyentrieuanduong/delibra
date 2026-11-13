@@ -19,6 +19,8 @@ from app.coding import (
     CodingPolicy,
     CodingPolicyError,
     DockerPolicy,
+    DownloadPolicy,
+    download_excludes,
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
@@ -374,6 +376,12 @@ async def save_coding(
     guidance_preset: str = Form(""),
     git_exclude: str | None = Form(None),
     git_exclude_preset: str = Form(""),
+    downloads_enabled: bool = Form(False),
+    downloads_folder: str | None = Form(None),
+    downloads_approval: str = Form("manual"),
+    downloads_model_check: bool = Form(False),
+    downloads_check_provider: str = Form("claude"),
+    downloads_check_model: str = Form("sonnet"),
 ):
     require_loopback_client(request)
     # FastAPI gives an emptied box its default (None), so whether a box was
@@ -442,6 +450,17 @@ async def save_coding(
         # Validate every field before writing: a rejected form must not
         # change command network access.
         try:
+            if "downloads_folder" in sent:
+                downloads = DownloadPolicy.from_dict({
+                    "enabled": downloads_enabled,
+                    "folder": downloads_folder or "",
+                    "approval": downloads_approval,
+                    "model_check": downloads_model_check,
+                    "check_provider": downloads_check_provider,
+                    "check_model": downloads_check_model.strip(),
+                })
+            else:
+                downloads = current.downloads  # older forms: keep what is saved
             updated = CodingPolicy(
                 enabled=enabled,
                 network_allowlist=hosts,
@@ -451,6 +470,7 @@ async def save_coding(
                 guidance_skills=normalize_skill_paths(skills),
                 git_exclude=None if exclude is None else normalize_git_exclude(exclude),
                 docker=current.docker,
+                downloads=downloads,
             )
         except CodingPolicyError as exc:
             raise StorageError(str(exc)) from exc
@@ -463,7 +483,11 @@ async def save_coding(
             _start_env_creation(request.app, resolved_project_id, token)
     if enabled:
         try:
-            await ensure_local_excludes(ProjectStore(project).project_path, updated.git_exclude)
+            await ensure_local_excludes(
+                ProjectStore(project).project_path,
+                updated.git_exclude,
+                trailing=download_excludes(updated),
+            )
         except OSError:
             LOGGER.warning(
                 "Could not update .git/info/exclude for project %s",

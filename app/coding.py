@@ -794,6 +794,15 @@ class CodingPolicy:
         }
 
 
+def download_excludes(policy: CodingPolicy, used_folders: Iterable[str] = ()) -> tuple[str, ...]:
+    """Folders Delibra never commits: the current one (when on) and every one used before."""
+
+    folders = set(used_folders)
+    if policy.downloads.enabled:
+        folders.add(policy.downloads.folder)
+    return tuple(sorted(folders))
+
+
 # A version number standing alone: no pre-release or build suffix attached.
 _CLI_VERSION = re.compile(r"(?<![\w.-])(\d+)(?:\.(\d+))?(?:\.(\d+))?(?![\w.-])")
 
