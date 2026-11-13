@@ -168,6 +168,7 @@ def live_server() -> Iterator[LiveServer]:
         port = server.servers[0].sockets[0].getsockname()[1]
         return {
             "base_url": f"http://127.0.0.1:{port}",
+            "app": app,
             "session_ids": session_ids,
             "store": store,
             "dispatched": dispatched,

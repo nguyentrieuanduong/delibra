@@ -1,7 +1,11 @@
+{# The stream lives on the panel, outside the swapped list: replacing it would reconnect. Each event carries the store revision; app.js re-fetches the list only when it is newer than the one shown (plan review S1). #}
 <details id="downloads-panel" class="downloads-panel"{% if awaiting_count %} open{% endif %}
          hx-ext="sse" sse-connect="{{ project_url(project.name, '/downloads/stream') }}">
-  <summary>Downloads{% if awaiting_count %} ({{ awaiting_count }} awaiting){% endif %}</summary>
-  <span hidden hx-get="{{ project_url(project.name, '/downloads/list') }}" hx-trigger="sse:downloads"
+  {% include "_downloads_summary.html" %}
+  <span hidden sse-swap="downloads" data-downloads-signal></span>
+  {# queue last: a change during a refresh still gets a refresh after it. #}
+  <span hidden id="downloads-refresh" hx-get="{{ project_url(project.name, '/downloads/list') }}"
+        hx-trigger="downloads-changed" hx-sync="this:queue last"
         hx-target="#downloads-list" hx-swap="outerHTML"></span>
   {% include "_downloads_list.html" %}
 </details>

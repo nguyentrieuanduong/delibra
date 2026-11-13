@@ -76,3 +76,15 @@ def test_the_reveal_returns_the_model_note(tmp_path):
         reveal = client.get(f"{base(project)}/downloads/D1/url").text
     assert "looks like a token" not in panel and "a.org" not in panel
     assert "https://a.org/x.pdf" in reveal and "looks like a token" in reveal
+
+
+def test_awaiting_requests_come_first_then_newest(tmp_path):
+    app, project, store = downloads_app(tmp_path)
+    add(store, "https://arxiv.org/pdf/1", state="awaiting")
+    add(store, "https://arxiv.org/pdf/2", state="failed")
+    add(store, "https://arxiv.org/pdf/3", state="awaiting")
+    add(store, "https://arxiv.org/pdf/4", state="downloaded")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        panel = client.get(f"{base(project)}/downloads").text
+    order = [panel.index(f'id="download-D{n}"') for n in (3, 1, 4, 2)]
+    assert order == sorted(order)

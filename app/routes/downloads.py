@@ -6,7 +6,7 @@ import json
 import re
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app.download_store import DownloadStore
@@ -21,9 +21,12 @@ _DOWNLOAD_ID = re.compile(r"D[1-9][0-9]{0,8}")
 
 def downloads_panel_context(request: Request, project: Project) -> dict:
     store = ProjectStore(project)
-    records = list(reversed(DownloadStore(store.root).load().requests))
+    # Awaiting first (they need the user), then newest first; sorted() is stable.
+    book = DownloadStore(store.root).load()
+    records = sorted(reversed(book.requests), key=lambda record: record.state != "awaiting")
     return {
         "project": project,
+        "revision": book.revision,
         "downloads": records,
         "awaiting_count": sum(1 for r in records if r.state == "awaiting"),
         "downloads_enabled": store.coding_policy().downloads.enabled,
@@ -63,17 +66,24 @@ async def downloads_panel(request: Request, project_id: str) -> HTMLResponse:
 @router.get("/projects/{project_id}/downloads/list", response_class=HTMLResponse)
 async def downloads_list(request: Request, project_id: str) -> HTMLResponse:
     project = request_project(request, project_id)
-    return _render(request, "_downloads_list.html", downloads_panel_context(request, project))
+    return _render(request, "_downloads_list.html", _list_context(request, project))
 
 
 @router.get("/projects/{project_id}/downloads/stream")
 async def downloads_stream(request: Request, project_id: str) -> EventSourceResponse:
     project = request_project(request, project_id)
     manager = request.app.state.download_manager
+    store = DownloadStore(ProjectStore(project).root)
 
     async def events():
-        # The first event is the current revision (plan review S1).
-        async for revision in manager.subscribe(project.id):
+        # The first event comes on (re)connection (plan review S1). Each
+        # carries the store revision, the one the list renders, so the page
+        # re-fetches only what it has not shown.
+        async for _change in manager.subscribe(project.id):
+            try:
+                revision = store.load().revision
+            except StorageError:
+                continue
             yield {"event": "downloads", "data": json.dumps({"revision": revision})}
 
     return EventSourceResponse(events(), ping=15)
@@ -93,7 +103,12 @@ async def download_full_url(request: Request, project_id: str, rid: str) -> Plai
     return PlainTextResponse(record.url + note)
 
 
-async def _act(request: Request, project_id: str, rid: str | None, action: str) -> HTMLResponse:
+def _list_context(request: Request, project: Project) -> dict:
+    # The summary's awaiting count sits outside the list: refresh it out of band.
+    return {**downloads_panel_context(request, project), "oob_summary": True}
+
+
+async def _act(request: Request, project_id: str, rid: str | None, action: str):
     _require_local(request)
     project = request_project(request, project_id)
     store = ProjectStore(project)
@@ -107,8 +122,8 @@ async def _act(request: Request, project_id: str, rid: str | None, action: str) 
     except NotFoundError:
         raise
     except StorageError as exc:
-        return HTMLResponse(str(exc), status_code=409)
-    return _render(request, "_downloads_list.html", downloads_panel_context(request, project))
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    return _render(request, "_downloads_list.html", _list_context(request, project))
 
 
 @router.post("/projects/{project_id}/downloads/approve-all", response_class=HTMLResponse)
