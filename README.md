@@ -1005,7 +1005,9 @@ outside the sandbox into the project. The sandbox network stays closed.
   (**Retry**), and their unused budget is returned; requests still under
   model check are refused.
 - **Limits of the guarantee.** Agents' transcripts may quote the URLs they
-  requested; WebFetch and hosted search are not checked by this feature.
+  requested; WebFetch and hosted search are not checked by this feature. A
+  hidden URL you allow anyway is saved under `<folder>/<host>/`, so its path
+  names the host.
 
 ## Isolation and security boundary
 
