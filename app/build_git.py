@@ -24,6 +24,16 @@ COMMAND_TIMEOUT_SECONDS = 30
 COMMIT_TIMEOUT_SECONDS = 60
 
 
+def pathspec(extra: Sequence[str] = ()) -> list[str]:
+    """Delibra's commit scope; `extra` folders (downloads) are never committed.
+
+    By pathspec, not ignore rules: tracked files there stay out too, and no
+    ignore negation can bring them back.
+    """
+
+    return [*PATHSPEC, *(f":(exclude){folder}" for folder in extra)]
+
+
 async def _git(root: Path, *args: str) -> tuple[int, str]:
     try:
         process = await asyncio.create_subprocess_exec(
@@ -73,7 +83,7 @@ async def _unsafe_filter_reason(root: Path) -> str | None:
     return "could not inspect Git filters"
 
 
-async def git_preflight(root: Path) -> AutoBuildGit:
+async def git_preflight(root: Path, extra_excludes: Sequence[str] = ()) -> AutoBuildGit:
     code, top = await _git(root, "rev-parse", "--show-toplevel")
     if code != 0:
         return _off(
@@ -95,7 +105,7 @@ async def git_preflight(root: Path) -> AutoBuildGit:
     )
     if any((Path(git_dir) / name).exists() for name in busy):
         return _off("a merge, rebase, cherry-pick, revert or bisect is in progress")
-    code, status = await _git(root, "status", "--porcelain", *PATHSPEC)
+    code, status = await _git(root, "status", "--porcelain", *pathspec(extra_excludes))
     if code != 0 or status:
         return _off("working tree has uncommitted changes")
     code, _ = await _git(root, "diff", "--cached", "--quiet")
@@ -142,7 +152,7 @@ def _scoped(pattern: str, prefix: str) -> str:
 
 
 async def ensure_local_excludes(
-    root: Path, patterns: Sequence[str] | None = None
+    root: Path, patterns: Sequence[str] | None = None, trailing: Sequence[str] = ()
 ) -> list[str]:
     """Write Delibra's managed ignore block into this clone's `.git/info/exclude`.
 
@@ -152,7 +162,8 @@ async def ensure_local_excludes(
     project. It replaces the previous block, so template changes reach
     existing projects; lines outside it are the user's. Returns the block's
     patterns; none when the project is not in a Git repository. `patterns`
-    is the project's own list; None means Delibra's default.
+    is the project's own list; None means Delibra's default. `trailing`
+    folders (downloads) come last, so no earlier negation re-includes them.
     """
 
     code, top = await _git(root, "rev-parse", "--show-toplevel")
@@ -171,9 +182,11 @@ async def ensure_local_excludes(
     if any(character in prefix for character in "*?[]\\!#"):
         return []  # would be read as a pattern, not a path
     template = list(patterns) if patterns is not None else default_git_exclude()
-    body = [f"/{prefix}{name}" for name in LOCAL_EXCLUDES] + [
-        _scoped(line.rstrip(), prefix) for line in template
-    ]
+    body = (
+        [f"/{prefix}{name}" for name in LOCAL_EXCLUDES]
+        + [_scoped(line.rstrip(), prefix) for line in template]
+        + [f"/{prefix}{folder}/" for folder in trailing]
+    )
     block = [_BLOCK_START, *body, _BLOCK_END]
     path = Path(exclude)
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
@@ -190,13 +203,19 @@ async def ensure_local_excludes(
 
 
 async def commit_turn(
-    root: Path, git: AutoBuildGit, subject: str, body: str, trailer: str
+    root: Path,
+    git: AutoBuildGit,
+    subject: str,
+    body: str,
+    trailer: str,
+    extra_excludes: Sequence[str] = (),
 ) -> tuple[AutoBuildGit, str | None]:
     if not git.enabled:
         return git, None
     try:
         return await asyncio.wait_for(
-            _commit_turn(root, git, subject, body, trailer), COMMIT_TIMEOUT_SECONDS
+            _commit_turn(root, git, subject, body, trailer, extra_excludes),
+            COMMIT_TIMEOUT_SECONDS,
         )
     except TimeoutError:
         return _off("commit timed out"), (
@@ -206,7 +225,12 @@ async def commit_turn(
 
 
 async def _commit_turn(
-    root: Path, git: AutoBuildGit, subject: str, body: str, trailer: str
+    root: Path,
+    git: AutoBuildGit,
+    subject: str,
+    body: str,
+    trailer: str,
+    extra_excludes: Sequence[str],
 ) -> tuple[AutoBuildGit, str | None]:
     if reason := await _unsafe_filter_reason(root):
         return _off(reason), f"{reason}; commits disabled"
@@ -224,7 +248,7 @@ async def _commit_turn(
     # same excludes. So list the in-scope changes, then add exactly those.
     code, listed = await _git(
         root, "ls-files", "-z", "--modified", "--deleted", "--others",
-        "--exclude-standard", *PATHSPEC,
+        "--exclude-standard", *pathspec(extra_excludes),
     )
     if code != 0:
         return _off("git ls-files failed"), f"git ls-files failed: {listed[-500:]}"
@@ -249,7 +273,7 @@ async def _commit_turn(
         return _off("git diff failed"), "git diff failed; commits disabled"
     code, out = await _git(
         root, "commit", "--no-verify", "--only", "-m", subject, "-m", body,
-        "-m", trailer, *PATHSPEC
+        "-m", trailer, *pathspec(extra_excludes)
     )
     if code != 0:
         return _off("git commit failed"), f"git commit failed: {out[-500:]}"
