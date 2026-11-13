@@ -33,6 +33,9 @@ HOST_CONCURRENCY = 2
 # Turn end waits this long for the turn's model checks (one batch window
 # plus one CLI timeout, with slack), then refuses what is left (B4).
 SETTLE_SECONDS = 75
+# A broken store must not fail the build turn: it becomes the turn's warning
+# (and Auto turns commits off on its own, plan review B5).
+UNREADABLE_WARNING = "download records are unreadable; download requests were not read"
 
 
 @dataclass(eq=False)
@@ -115,8 +118,15 @@ class DownloadManager:
     # ----- rendering
     def _refresh(self, project_id: str, project_root: Path, store: DownloadStore,
                  record: DownloadRecord | None = None) -> None:
-        records = store.load().requests
         turn = self._turns.get(project_id)
+        try:
+            records = store.load().requests
+        except StorageError:
+            LOGGER.warning("download records under %s are unreadable", store.root, exc_info=True)
+            if turn is not None:
+                turn.warnings.append(UNREADABLE_WARNING)
+            self._publish(project_id)
+            return
         if turn is not None and (record is None or record.auto_run == turn.auto_run):
             try:
                 write_turn_status(turn.temp_dir, render_status([r for r in records if r.auto_run == turn.auto_run]))
@@ -164,6 +174,11 @@ class DownloadManager:
             turn.warnings.append("download requests unreadable: the spool is not a real directory")
             return
         store = DownloadStore(turn.store_root)
+        try:
+            store.load()
+        except StorageError:
+            turn.warnings.append(UNREADABLE_WARNING)  # requests stay in the spool
+            return
         for entry in entries:
             if not entry.valid:
                 if final:
@@ -190,12 +205,17 @@ class DownloadManager:
             if len(turn.ids) >= TURN_MAX_REQUESTS:
                 turn.warnings.append(f"download request {entry.name} refused: over {TURN_MAX_REQUESTS} this turn")
                 continue
-            record = store.add(
-                proposal.url, purpose=proposal.purpose, filename=proposal.filename,
-                flags=url_flags(proposal.url), auto_run=turn.auto_run, cycle=turn.cycle,
-                round_n=turn.round_n, agent=turn.agent, agent_name=turn.agent_name,
-                folder=turn.policy.folder,
-            )
+            try:
+                record = store.add(
+                    proposal.url, purpose=proposal.purpose, filename=proposal.filename,
+                    flags=url_flags(proposal.url), auto_run=turn.auto_run, cycle=turn.cycle,
+                    round_n=turn.round_n, agent=turn.agent, agent_name=turn.agent_name,
+                    folder=turn.policy.folder,
+                )
+            except StorageError:
+                LOGGER.warning("download request %s could not be recorded", entry.name, exc_info=True)
+                turn.warnings.append(f"download request {entry.name} was not recorded: {UNREADABLE_WARNING}")
+                return
             turn.ids.append(record.id)
             if record.state == "checking":
                 if turn.policy.model_check:
@@ -274,15 +294,22 @@ class DownloadManager:
             await asyncio.gather(*pending, return_exceptions=True)
         self._pending.pop(turn, None)
         store = DownloadStore(turn.store_root)
-        for record in store.load().requests:
-            if record.id in turn.ids and record.state == "checking":
-                record = store.update(record.id, state="refused", masked=True,
-                                      reason="model check unavailable: timed out")
-                self._refresh(turn.project_id, turn.project_root, store, record)
+        try:
+            for record in store.load().requests:
+                if record.id in turn.ids and record.state == "checking":
+                    record = store.update(record.id, state="refused", masked=True,
+                                          reason="model check unavailable: timed out")
+                    self._refresh(turn.project_id, turn.project_root, store, record)
+        except StorageError:
+            turn.warnings.append(UNREADABLE_WARNING)
 
     def turn_awaiting(self, turn: DownloadTurn) -> list[str]:
-        store = DownloadStore(turn.store_root)
-        return [r.id for r in store.load().requests if r.id in turn.ids and r.state == "awaiting"]
+        try:
+            records = DownloadStore(turn.store_root).load().requests
+        except StorageError:
+            turn.warnings.append(UNREADABLE_WARNING)
+            return []
+        return [r.id for r in records if r.id in turn.ids and r.state == "awaiting"]
 
     def turn_warnings(self, turn: DownloadTurn) -> list[str]:
         return list(dict.fromkeys(turn.warnings))

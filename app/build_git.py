@@ -124,6 +124,14 @@ async def git_preflight(root: Path, extra_excludes: Sequence[str] = ()) -> AutoB
     return AutoBuildGit(enabled=True, reason=None, branch=branch, head=head)
 
 
+async def guarded_preflight(root: Path, extra_excludes: Sequence[str] | None) -> AutoBuildGit:
+    """Preflight, or commits off when the download folders cannot be known."""
+
+    if extra_excludes is None:
+        return _off(DOWNLOADS_UNREADABLE)
+    return await git_preflight(root, extra_excludes)
+
+
 LOCAL_EXCLUDES = (".delibra/", "envs/")
 # Delibra's own copy of the user's default ignore template (taken from the
 # repository's .gitignore at cdf1587). Never read a project's .gitignore.

@@ -19,7 +19,8 @@ from app.auto import (
     TERMINAL_AUTO_STATUSES,
     reconstruct_resume_cursor,
 )
-from app.build_git import git_preflight
+from app.build_git import guarded_preflight
+from app.download_store import project_download_excludes
 from app.models import (
     AutoContextPolicy,
     AutoRunRecord,
@@ -553,7 +554,9 @@ async def with_build_git_preview(context: dict, store: ProjectStore) -> dict:
     """
 
     context["build_git"] = (
-        await git_preflight(store.project_path) if context["build_available"] else None
+        await guarded_preflight(store.project_path, project_download_excludes(store))
+        if context["build_available"]
+        else None
     )
     return context
 

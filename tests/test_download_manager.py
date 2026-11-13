@@ -185,3 +185,19 @@ async def test_a_late_approval_is_charged_to_its_run(tmp_path):
     manager.approve(turn.project_root, turn.store_root, "D1"); await drain(manager)
     book = DownloadStore(turn.store_root).load()
     assert book.run_bytes == {"1": 3} and book.reservations == {}
+
+
+@pytest.mark.asyncio
+async def test_unreadable_records_warn_instead_of_failing_the_turn(tmp_path):
+    manager, turn = setup(tmp_path)
+    (turn.store_root / "downloads").mkdir()
+    (turn.store_root / "downloads" / "requests.json").write_text("{")
+    manager.begin_turn(turn)
+    drop(turn, "a", url="https://a.org/x.pdf")
+    await manager.stop_watch(turn)
+    manager.harvest(turn, final=True)
+    await manager.settle(turn)
+    assert manager.turn_awaiting(turn) == []
+    assert any("download records are unreadable" in w for w in manager.turn_warnings(turn))
+    # The request file stays for a later look; nothing was recorded.
+    assert (turn.spool / "a.json").exists()

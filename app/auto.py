@@ -15,12 +15,13 @@ from typing import AsyncIterator, Literal, Sequence, TYPE_CHECKING
 import unicodedata
 from uuid import uuid4
 
-from app.build_git import commit_turn, git_preflight
+from app.build_git import DOWNLOADS_UNREADABLE, commit_turn, guarded_preflight
 from app.build_handover import HANDOVER_PARTIAL_LIMIT, modified_files_since, render_handover
 from app.coding import (
     GUIDANCE_MAX_BYTES,
     CodingPolicyError,
     DockerPolicy,
+    DownloadPolicy,
     build_capable,
     cli_newer_than_verified,
     docker_capable,
@@ -28,6 +29,9 @@ from app.coding import (
 )
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
+from app.download_manager import DownloadManager, DownloadTurn
+from app.download_rules import DOWNLOAD_SPOOL, DOWNLOADS_DIR, STATUS_NAME, downloads_prompt
+from app.download_store import project_download_excludes
 from app.docker_backend import DockerController, DockerStopFailed, DockerUnavailable
 from app.health import probe_build_version
 from app.live_questions import LiveQuestions, watch_spool
@@ -39,6 +43,7 @@ from app.models import (
     AutoBuildDocker,
     AutoHandover,
     AutoBaselineEntry,
+    AutoBuildGit,
     AutoCompactionAttempt,
     AutoContextPolicy,
     AutoParticipant,
@@ -588,8 +593,10 @@ class AutoManager:
         runner: RunManager,
         provider_commands: dict[str, str] | None = None,
         docker: DockerController | None = None,
+        downloads: DownloadManager | None = None,
     ) -> None:
         self.registry = registry
+        self.downloads = downloads
         self.locks = locks
         self.settings = settings
         self.runner = runner
@@ -647,7 +654,14 @@ class AutoManager:
 
         project = self.registry.get(project_id)
         # Subprocesses run before any lock is held.
-        git_state = await git_preflight(ProjectStore(project).project_path) if kind == "build" else None
+        git_state = (
+            await guarded_preflight(
+                ProjectStore(project).project_path,
+                project_download_excludes(ProjectStore(project)),
+            )
+            if kind == "build"
+            else None
+        )
         discovered = ProjectStore(project).list_sessions()
         build_versions = (
             await self._build_versions(
@@ -2322,6 +2336,8 @@ class AutoManager:
         context_source, context_digest = store.write_auto_context(record.id, context)
         participant = record.participants[record.next_participant]
         outbox_root = self._outbox_root(store, record, participant.session_id)
+        download_policy, download_unavailable = self._download_policy(store, record, participant)
+        downloads_dir = self.settings.build_tmp_root / participant.session_id / DOWNLOADS_DIR
         view: QuestionView | None = None
         notes_view: NoteView | None = None
         unavailable: str | None = None
@@ -2399,6 +2415,15 @@ class AutoManager:
                                     else ""
                                 )
                                 + disagreement_note(spool_dir is not None)
+                                + (
+                                    downloads_prompt(
+                                        downloads_dir / STATUS_NAME,
+                                        downloads_dir / DOWNLOAD_SPOOL,
+                                        manual=download_policy.approval == "manual",
+                                    )
+                                    if download_policy is not None
+                                    else ""
+                                )
                             )
                             if current.kind == "build"
                             else (
@@ -2422,6 +2447,7 @@ class AutoManager:
                         ) + notes_prompt(notes_path, live=notes_live, marks_path=marks_path),
                         build=current.kind == "build",
                         docker=lease[0] if lease is not None else None,
+                        downloads=download_policy is not None,
                         initial_timeout_seconds=current.future_turn_timeout_seconds,
                         preserve_native_session=False,
                         ignore_returned_session=True,
@@ -2456,10 +2482,29 @@ class AutoManager:
         # after this round finishes and the timeline can never render it live.
         self.publish_current_status(record.project_id, record.id)
         watch = self._start_question_watch(record, participant.session_id, live)
+        download_turn = None
+        if download_policy is not None and self.downloads is not None:
+            download_turn = DownloadTurn(
+                project_id=record.project_id, project_root=store.project_path,
+                store_root=store.root, temp_dir=downloads_dir.parent,
+                auto_run=record.number, cycle=turn_cycle, round_n=key.round_n,
+                agent=participant.session_id, agent_name=participant.name,
+                policy=download_policy,
+            )
+            self.downloads.begin_turn(download_turn)
         try:
             result = await self.runner.wait(key)
         finally:
             await self._stop_question_watch(watch)
+            if download_turn is not None:
+                await self.downloads.stop_watch(download_turn)
+                # Every outcome keeps what the agent requested, as for questions.
+                self.downloads.harvest(download_turn, final=True)
+                self.downloads.end_turn(download_turn)
+        if download_turn is not None and result.status == "complete":
+            # Only a completed turn decides a pause; a stopped or failed one
+            # is not held up by slow model checks (they finish in background).
+            await self.downloads.settle(download_turn)
         outcome: Literal["done", "retry"] = "done"
         async with self.locks.project_sessions(record.project_id, [participant.session_id]):
             current = store.load_auto_run(record.id)
@@ -2523,6 +2568,12 @@ class AutoManager:
                             for item in (
                                 build_warning,
                                 unavailable,
+                                download_unavailable,
+                                *(
+                                    self.downloads.turn_warnings(download_turn)
+                                    if download_turn is not None
+                                    else ()
+                                ),
                                 *(live.warnings if live is not None else ()),
                                 marks_warning,
                                 note_warning,
@@ -2542,6 +2593,10 @@ class AutoManager:
                 current.active_timeout = None
                 self._advance_discussion_locked(store, current)
                 self._pause_for_blocking_questions_locked(store, current, participant, asked)
+                if download_turn is not None:
+                    self._pause_for_download_approval_locked(
+                        store, current, participant, self.downloads.turn_awaiting(download_turn)
+                    )
         self._publish_status(current)
         return outcome
 
@@ -3142,6 +3197,46 @@ class AutoManager:
             f"paused: {participant.name} needs input ({', '.join(blocking)})",
         )
 
+    def _pause_for_download_approval_locked(
+        self,
+        store: ProjectStore,
+        record: AutoRunRecord,
+        participant: AutoParticipant,
+        awaiting: list[str],
+    ) -> None:
+        # Same exception as blocking questions: a converged or cycle-limited
+        # turn keeps its outcome; the requests stay approvable (design S4).
+        if (
+            not awaiting
+            or not record.pause_on_blocking_questions
+            or record.status not in ACTIVE_AUTO_STATUSES
+        ):
+            return
+        self._transition_terminal_locked(
+            store,
+            record,
+            "stopped",
+            f"paused: {participant.name} waiting for download approval ({', '.join(awaiting)})",
+        )
+
+    def _download_policy(
+        self, store: ProjectStore, record: AutoRunRecord, participant: AutoParticipant
+    ) -> tuple[DownloadPolicy | None, str | None]:
+        """The turn's download policy, or None with a warning when the spool cannot be granted."""
+
+        if self.downloads is None or record.kind != "build":
+            return None, None
+        policy = store.coding_policy().downloads
+        if not policy.enabled:
+            return None, None
+        spool = self.settings.build_tmp_root / participant.session_id / DOWNLOADS_DIR / DOWNLOAD_SPOOL
+        if participant.agent == "claude" and not outbox_rule_expressible(spool):
+            return None, (
+                "downloads unavailable: the build temp path cannot be expressed "
+                "in a Claude permission rule"
+            )
+        return policy, None
+
     @staticmethod
     def _available_positions(record: AutoRunRecord) -> list[int]:
         gone = {item.session_id for item in record.unavailable}
@@ -3392,6 +3487,13 @@ class AutoManager:
 
         if record.git is None or not record.git.enabled:
             return None
+        excludes = project_download_excludes(store)
+        if excludes is None:
+            # Earlier download folders are unknown: never risk committing one (B5).
+            record.git = AutoBuildGit(
+                enabled=False, reason=DOWNLOADS_UNREADABLE, branch=None, head=None
+            )
+            return f"{DOWNLOADS_UNREADABLE}; commits disabled"
         lines = [line for line in output.decode("utf-8", "replace").splitlines() if line.strip()]
         record.git, warning = await commit_turn(
             store.project_path,
@@ -3399,6 +3501,7 @@ class AutoManager:
             f"Auto build {record.number} · cycle {record.current_cycle} · {participant.name}",
             "\n".join(lines[-3:]) or "(no output)",
             f"Delibra-Auto-Run: {record.id}",
+            extra_excludes=excludes,
         )
         return warning
 
