@@ -9,6 +9,11 @@ from pathlib import PurePosixPath
 import re
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+# Per build turn, in the turn's temp dir: the agent writes request files in
+# downloads/requests/; Delibra writes downloads/status.json.
+DOWNLOADS_DIR = "downloads"
+DOWNLOAD_SPOOL = "requests"
+STATUS_NAME = "status.json"
 REQUEST_FILE_MAX_BYTES = 16 * 1024
 URL_MAX_CHARS = 4_096
 PURPOSE_MAX_CHARS = 500

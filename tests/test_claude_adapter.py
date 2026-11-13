@@ -763,3 +763,18 @@ def test_a_build_turn_carries_the_global_instruction_before_the_role() -> None:
 def test_a_build_turn_without_a_global_instruction_keeps_the_role_exactly() -> None:
     argv = ClaudeAdapter(executable="claude").build_command(config(), build_context()).argv
     assert argv[argv.index("--append-system-prompt") + 1] == "Begin with ROLE-CLAUDE-OK."
+
+
+def test_build_argv_grants_the_download_spool_only_when_on() -> None:
+    off_context = build_context()
+    on_context = replace(off_context, coding=replace(off_context.coding, downloads=True))
+    off = ClaudeAdapter(executable="claude").build_command(config(), off_context).argv
+    on = ClaudeAdapter(executable="claude").build_command(config(), on_context).argv
+    temp = off_context.coding.temp_dir.as_posix()
+    rule = f"Edit(/{temp}/downloads/requests/**)"
+    allowed_off = off[off.index("--allowedTools") + 1]
+    assert rule not in allowed_off
+    assert on[on.index("--allowedTools") + 1] == allowed_off + "," + rule
+    assert [a for a in on if a != on[on.index("--allowedTools") + 1]] == [
+        a for a in off if a != allowed_off
+    ]

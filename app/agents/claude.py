@@ -19,6 +19,7 @@ from app.agents.errors import (
     classify_text,
 )
 from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsage
+from app.download_rules import DOWNLOAD_SPOOL, DOWNLOADS_DIR
 from app.questions import QUESTIONS_DIR, outbox_rule_expressible
 from app.storage import epoch_instant
 
@@ -284,6 +285,13 @@ class ClaudeAdapter:
             if outbox_rule_expressible(questions_dir)
             else ""
         )
+        # Only the request spool: status.json beside it is Delibra's to write.
+        downloads_dir = coding.temp_dir / DOWNLOADS_DIR / DOWNLOAD_SPOOL
+        downloads_rule = (
+            f",Edit(/{downloads_dir.as_posix()}/**)"
+            if coding.downloads and outbox_rule_expressible(downloads_dir)
+            else ""
+        )
         argv = [
             self.executable,
             "-p",
@@ -306,7 +314,7 @@ class ClaudeAdapter:
             # are in-process and not covered by the sandbox allowlist.
             "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch",
             "--allowedTools",
-            "Read(/**),Edit(/**),Bash,WebSearch,WebFetch" + questions_rule,
+            "Read(/**),Edit(/**),Bash,WebSearch,WebFetch" + questions_rule + downloads_rule,
             "--disallowedTools",
             "Edit(/.delibra/**),Edit(/.git/**)",
             "--settings",
