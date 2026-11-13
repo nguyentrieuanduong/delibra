@@ -15,6 +15,7 @@ from app.coding import (
     CodingPolicy,
     CodingPolicyError,
     DockerPolicy,
+    DownloadPolicy,
     build_capable,
     cli_newer_than_verified,
     cli_version_compatible,
@@ -22,6 +23,8 @@ from app.coding import (
     expand_guidance_picks,
     guidance_file_size,
     guidance_snapshot_size,
+    normalize_check_model,
+    normalize_download_folder,
     normalize_git_exclude,
     normalize_guidance_paths,
     normalize_network_allowlist,
@@ -630,3 +633,41 @@ def test_a_preset_skill_that_is_gone_is_named(tmp_path) -> None:
         f"Guidance preset 's': {str(gone)!r} must be an existing regular file reached "
         "without symlinks"
     )
+
+
+def test_a_manifest_without_downloads_loads_defaults() -> None:
+    policy = CodingPolicy.from_manifest({"coding": {"enabled": True}})
+    assert policy.downloads == DownloadPolicy()
+    assert policy.downloads.folder == "docs/source/raw"
+    assert policy.downloads.approval == "manual"
+    assert policy.downloads.model_check is False
+    assert "downloads" in policy.to_dict()
+
+
+def test_downloads_round_trip() -> None:
+    policy = CodingPolicy(downloads=DownloadPolicy(
+        enabled=True, folder="raw", approval="automatic", model_check=True,
+        check_provider="codex", check_model="gpt-5.5-mini",
+    ))
+    assert CodingPolicy.from_manifest({"coding": policy.to_dict()}) == policy
+
+
+@pytest.mark.parametrize("value", ["", "/abs", "../x", ".delibra/x", ".git", "envs/raw", "a,b"])
+def test_download_folder_rejects_unsafe_values(value: str) -> None:
+    with pytest.raises(CodingPolicyError, match="Download folder"):
+        normalize_download_folder(value)
+
+
+def test_download_folder_is_canonical() -> None:
+    assert normalize_download_folder("docs/./source/raw/") == "docs/source/raw"
+
+
+@pytest.mark.parametrize("value", ["", "-x", "a b", "x" * 201, "a\tb"])
+def test_check_model_rejects_unsafe_values(value: str) -> None:
+    with pytest.raises(CodingPolicyError, match="Model check model"):
+        normalize_check_model(value)
+
+
+def test_invalid_download_fields_are_rejected_on_load() -> None:
+    with pytest.raises(CodingPolicyError):
+        CodingPolicy.from_manifest({"coding": {"downloads": {"approval": "sometimes"}}})
