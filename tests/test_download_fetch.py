@@ -1,7 +1,3 @@
-import pytest
-
-pytestmark = pytest.mark.asyncio
-
 import asyncio, hashlib, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -45,6 +41,7 @@ async def fetch(fetcher, project, url, budget=None, check_first=True, name=None)
 def project(tmp_path):
     root = tmp_path / "project"; root.mkdir(); return root
 
+@pytest.mark.asyncio
 async def test_a_pdf_downloads_with_hash_and_type(project):
     body = b"%PDF-1.7 hello"
     server = Server({"/p.pdf": (200, {}, body)})
@@ -54,6 +51,7 @@ async def test_a_pdf_downloads_with_hash_and_type(project):
     assert (project / result.path).read_bytes() == body
     assert result.sha256 == hashlib.sha256(body).hexdigest() and result.detected_type == "pdf"
 
+@pytest.mark.asyncio
 async def test_collisions_get_a_suffix(project):
     server = Server({"/p.pdf": (200, {}, b"%PDF-1")})
     fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
@@ -61,6 +59,7 @@ async def test_collisions_get_a_suffix(project):
     second = await fetch(fetcher, project, "http://files.test/p.pdf")
     assert (first.path, second.path) == ("raw/files.test/p.pdf", "raw/files.test/p-2.pdf")
 
+@pytest.mark.asyncio
 async def test_same_name_downloads_and_existing_files_are_never_overwritten(project):
     # Plan review B2: the final name is taken with an atomic no-replace link.
     server = Server({"/p.pdf": (200, {}, b"%PDF-1")})
@@ -76,6 +75,7 @@ async def test_same_name_downloads_and_existing_files_are_never_overwritten(proj
     assert (project / "raw" / "files.test" / "p.pdf").read_bytes() == b"mine"
     assert not any(p.name.startswith(".part") for p in (project / "raw" / "files.test").iterdir())
 
+@pytest.mark.asyncio
 async def test_loopback_is_refused_by_default_and_never_contacted(project):
     server = Server({"/p.pdf": (200, {}, b"x")})
     fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}))
@@ -83,6 +83,7 @@ async def test_loopback_is_refused_by_default_and_never_contacted(project):
         await fetch(fetcher, project, "http://files.test/p.pdf", check_first=False)
     assert server.hits == []
 
+@pytest.mark.asyncio
 async def test_a_redirect_to_a_private_host_is_refused_after_override(project):
     server = Server({"/r": (302, {"Location": "http://inside.test/x"}, b""), "/x": (200, {}, b"x")})
     mapping = {"files.test": "127.0.0.1", "inside.test": "10.0.0.5"}
@@ -91,12 +92,14 @@ async def test_a_redirect_to_a_private_host_is_refused_after_override(project):
         await fetch(fetcher, project, "http://files.test/r", check_first=False)
     assert server.hits == ["/r"]
 
+@pytest.mark.asyncio
 async def test_a_redirect_carrying_a_secret_is_refused(project):
     server = Server({"/r": (302, {"Location": "/x?k=ghp_" + "A1b2" * 9}, b"")})
     fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
     with pytest.raises(FetchError, match="secret"):
         await fetch(fetcher, project, "http://files.test/r")
 
+@pytest.mark.asyncio
 async def test_executables_and_oversized_files_are_refused(project, monkeypatch):
     server = Server({"/e": (200, {}, b"\x7fELF...."), "/big": (200, {}, b"a" * 2048)})
     fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
@@ -107,6 +110,7 @@ async def test_executables_and_oversized_files_are_refused(project, monkeypatch)
         await fetch(fetcher, project, "http://files.test/big")
     assert not any(p.name.startswith(".part") for p in (project / "raw" / "files.test").iterdir())
 
+@pytest.mark.asyncio
 async def test_the_budget_stops_a_download_and_returns_the_rest(project):
     server = Server({"/p": (200, {}, b"a" * 5000)})
     fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
@@ -114,6 +118,7 @@ async def test_the_budget_stops_a_download_and_returns_the_rest(project):
     with pytest.raises(FetchError, match="budget"):
         await fetch(fetcher, project, "http://files.test/p", budget=budget)
 
+@pytest.mark.asyncio
 async def test_a_symlinked_host_folder_is_never_written_through(project, tmp_path):
     outside = tmp_path / "outside"; outside.mkdir()
     (project / "raw").mkdir()
