@@ -75,14 +75,15 @@ def _ids(data: dict[str, Any], key: str) -> list[str]:
 class Note:
     id: str
     auto_run: int
+    # The note's latest change: when it was posted, or last edited.
     posted_at: str
     text: str
     status: str = "pending"
     delivered_to: list[str] = field(default_factory=list)
     marked_by: list[str] = field(default_factory=list)
     closed_at: str | None = None
-    # Set only by an edit, which is allowed while no agent has the note.
-    edited_at: str | None = None
+    # How many edits; only the revision counts them. An edit is allowed
+    # while no agent has the note.
     edits: int = 0
 
     @property
@@ -106,7 +107,6 @@ class Note:
             delivered_to=_ids(data, "delivered_to"),
             marked_by=_ids(data, "marked_by"),
             closed_at=None if data.get("closed_at") is None else _text(data, "closed_at"),
-            edited_at=None if data.get("edited_at") is None else _text(data, "edited_at"),
             edits=0 if data.get("edits") is None else _int(data, "edits"),
         )
         if not NOTE_ID.fullmatch(note.id):
@@ -130,7 +130,6 @@ class Note:
         }
         # Unedited notes keep the shape they had before edits existed.
         if self.edits:
-            data["edited_at"] = self.edited_at
             data["edits"] = self.edits
         return data
 
@@ -311,7 +310,7 @@ class NoteStore:
         if not note_unread(note):
             raise ConflictError(f"{note.id} has already reached an agent")
         note.text = text
-        note.edited_at = utc_now()
+        note.posted_at = utc_now()
         note.edits += 1
         self._save(book, note.auto_run)
         return note

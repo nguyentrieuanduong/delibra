@@ -290,14 +290,20 @@ def test_the_revision_grows_with_every_change_and_only_then(tmp_path: Path) -> N
     changed()
 
 
-def test_an_unread_pending_note_can_be_edited_and_the_view_follows(tmp_path: Path) -> None:
+def test_an_unread_pending_note_can_be_edited_and_the_view_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     notes = NoteStore(tmp_path)
     notes.add("Prefer SQLite", auto_run=2)
     before = notes.load().revision
+    monkeypatch.setattr("app.notes.utc_now", lambda: "2026-11-14T00:00:01Z")
     edited = notes.edit("N1", "  Prefer Postgres  ")
     assert (edited.text, edited.edits, edited.status) == ("Prefer Postgres", 1, "pending")
-    assert edited.edited_at is not None
-    assert view(notes)["notes"][0]["text"] == "Prefer Postgres"
+    # One time per note: an edit makes it the note's latest change.
+    assert edited.posted_at == "2026-11-14T00:00:01Z"
+    assert view(notes)["notes"][0] == {
+        "id": "N1", "posted_at": edited.posted_at, "text": "Prefer Postgres"
+    }
     assert notes.load().revision > before
     assert notes.load().notes[0].to_dict() == edited.to_dict()
 
@@ -333,10 +339,10 @@ def test_an_unedited_note_keeps_its_old_json_shape(tmp_path: Path) -> None:
     notes = NoteStore(tmp_path)
     notes.add("one", auto_run=1)
     stored = json.loads(notes.history_path.read_text())["notes"][0]
-    assert "edited_at" not in stored and "edits" not in stored
+    assert "edits" not in stored
     notes.edit("N1", "two")
     stored = json.loads(notes.history_path.read_text())["notes"][0]
-    assert stored["edits"] == 1 and isinstance(stored["edited_at"], str)
+    assert stored["edits"] == 1 and "edited_at" not in stored
 
 
 def test_clear_deletes_every_note_but_never_reuses_an_id(tmp_path: Path) -> None:
