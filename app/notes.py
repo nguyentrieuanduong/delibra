@@ -81,6 +81,9 @@ class Note:
     delivered_to: list[str] = field(default_factory=list)
     marked_by: list[str] = field(default_factory=list)
     closed_at: str | None = None
+    # Set only by an edit, which is allowed while no agent has the note.
+    edited_at: str | None = None
+    edits: int = 0
 
     @property
     def number(self) -> int:
@@ -103,15 +106,19 @@ class Note:
             delivered_to=_ids(data, "delivered_to"),
             marked_by=_ids(data, "marked_by"),
             closed_at=None if data.get("closed_at") is None else _text(data, "closed_at"),
+            edited_at=None if data.get("edited_at") is None else _text(data, "edited_at"),
+            edits=0 if data.get("edits") is None else _int(data, "edits"),
         )
         if not NOTE_ID.fullmatch(note.id):
             raise ValueError("note id is invalid")
         if note.status not in NOTE_STATUSES:
             raise ValueError("note status is invalid")
+        if note.edits < 0:
+            raise ValueError("note edits must not be negative")
         return note
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "id": self.id,
             "auto_run": self.auto_run,
             "posted_at": self.posted_at,
@@ -121,6 +128,11 @@ class Note:
             "marked_by": list(self.marked_by),
             "closed_at": self.closed_at,
         }
+        # Unedited notes keep the shape they had before edits existed.
+        if self.edits:
+            data["edited_at"] = self.edited_at
+            data["edits"] = self.edits
+        return data
 
 
 @dataclass
@@ -137,11 +149,14 @@ class NoteBook:
     @property
     def revision(self) -> int:
         """Grows with every change to any note and never shrinks, so two
-        renderings of the list can be ordered: ids issued, deliveries, marks
-        and closures each add one."""
+        renderings of the list can be ordered: ids issued, deliveries, marks,
+        edits and closures each add one."""
 
         return self.next_id + sum(
-            len(note.delivered_to) + len(note.marked_by) + (note.status != "pending")
+            len(note.delivered_to)
+            + len(note.marked_by)
+            + note.edits
+            + (note.status != "pending")
             for note in self.notes
         )
 
@@ -171,6 +186,19 @@ class NoteBook:
             "next_id": self.next_id,
             "notes": [note.to_dict() for note in self.notes],
         }
+
+
+def note_unread(note: Note) -> bool:
+    """Pending and not yet in any agent's hands: the only note the user may edit."""
+
+    return note.status == "pending" and not note.delivered_to and not note.marked_by
+
+
+def _clean_text(text: str) -> str:
+    text = text.strip()
+    if not text or len(text) > NOTE_MAX_CHARS or "\x00" in text:
+        raise StorageError(f"a note must be 1 to {NOTE_MAX_CHARS} characters")
+    return text
 
 
 @dataclass(frozen=True)
@@ -258,9 +286,7 @@ class NoteStore:
     def add(self, text: str, *, auto_run: int, undelivered: bool = False) -> Note:
         """``undelivered`` keeps a note for a run that can never read it."""
 
-        text = text.strip()
-        if not text or len(text) > NOTE_MAX_CHARS or "\x00" in text:
-            raise StorageError(f"a note must be 1 to {NOTE_MAX_CHARS} characters")
+        text = _clean_text(text)
         book = self.load()
         if not undelivered and len(book.pending(auto_run)) >= MAX_PENDING_NOTES:
             raise ConflictError(
@@ -272,6 +298,22 @@ class NoteStore:
         book.next_id += 1
         book.notes.append(note)
         self._save(book, auto_run)
+        return note
+
+    def edit(self, note_id: str, text: str) -> Note:
+        """Replace an unread pending note's text; no agent saw the old one."""
+
+        text = _clean_text(text)
+        book = self.load()
+        note = book.find(note_id)
+        if note.status != "pending":
+            raise ConflictError(f"{note.id} is already {note.status}")
+        if not note_unread(note):
+            raise ConflictError(f"{note.id} has already reached an agent")
+        note.text = text
+        note.edited_at = utc_now()
+        note.edits += 1
+        self._save(book, note.auto_run)
         return note
 
     def delete(self, note_id: str) -> Note:
@@ -417,6 +459,9 @@ class ChatNoteStore:
         if len(self.load().pending(CHAT_NOTES_RUN)) >= MAX_PENDING_NOTES:
             raise ConflictError(f"{name} already has {MAX_PENDING_NOTES} pending notes")
         return self._store.add(text, auto_run=CHAT_NOTES_RUN)
+
+    def edit(self, note_id: str, text: str) -> Note:
+        return self._store.edit(note_id, text)
 
     def delete(self, note_id: str) -> Note:
         return self._store.delete(note_id)
