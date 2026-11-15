@@ -34,7 +34,9 @@ def pathspec(extra: Sequence[str] = ()) -> list[str]:
     ignore negation can bring them back.
     """
 
-    return [*PATHSPEC, *(f":(exclude){folder}" for folder in extra)]
+    # icase: on a case-insensitive disk the setting's case can differ from
+    # the tracked paths', and :(exclude) alone would let them through.
+    return [*PATHSPEC, *(f":(exclude,icase){folder}" for folder in extra)]
 
 
 async def _git(root: Path, *args: str) -> tuple[int, str]:

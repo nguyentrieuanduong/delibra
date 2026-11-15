@@ -242,8 +242,13 @@ def create_app(
             for task in docker_tasks:
                 task.cancel()
             await asyncio.gather(*docker_tasks, return_exceptions=True)
+            # Checks and downloads stop first, so no settling turn holds Auto's
+            # shutdown (and a finished turn records before Auto interrupts);
+            # Auto's cancelled turns then harvest the spool, and the second
+            # call stops whatever that started.
             await download_manager.shutdown()
             await auto_manager.shutdown()
+            await download_manager.shutdown()
             await manager.shutdown()
 
     app = FastAPI(lifespan=lifespan)

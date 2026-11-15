@@ -50,7 +50,7 @@
       {% with questions=questions_panel.questions, omitted=questions_panel.omitted, open_count=questions_panel.open_count, cursor=questions_panel.cursor, answer_max=questions_panel.answer_max %}
         {% include "_questions_panel.html" %}
       {% endwith %}
-      {% with downloads=downloads_panel.downloads, awaiting_count=downloads_panel.awaiting_count, downloads_enabled=downloads_panel.downloads_enabled, revision=downloads_panel.revision, unreadable=downloads_panel.unreadable %}
+      {% with downloads=downloads_panel.downloads, awaiting_count=downloads_panel.awaiting_count, downloads_enabled=downloads_panel.downloads_enabled, revision=downloads_panel.revision, epoch=downloads_panel.epoch, unreadable=downloads_panel.unreadable %}
         {% include "_downloads_panel.html" %}
       {% endwith %}
       <div id="auto-setup-host">

@@ -63,3 +63,31 @@ def test_a_change_made_elsewhere_reaches_the_open_panel_by_its_stream(
     assert response.ok
     expect(page.locator("#download-D2 .download-state")).to_have_text("downloaded", timeout=5_000)
     expect(summary).to_contain_text("1 awaiting")
+
+
+@pytest.mark.browser
+def test_the_panel_follows_a_recreated_records_file(
+    live_server: LiveServer, page: Any, tmp_path: Path
+) -> None:
+    # Review 2026-11-15: a new requests.json restarts revisions at 1; the
+    # panel used to ignore every change below the revision it showed.
+    app = live_server(["success"], tmp_path)
+    downloads = DownloadStore(app["store"].root)
+    record = downloads.add("https://arxiv.org/pdf/old", purpose="old", filename=None, flags=[],
+                           auto_run=1, cycle=1, round_n=1, agent="a" * 32, agent_name="Alpha",
+                           folder="raw")
+    for _ in range(20):
+        downloads.update(record.id, state="awaiting", reason="waiting for your approval")
+    app["app"].state.download_manager.fetcher = StubFetcher()
+    page.goto(f"{app['base_url']}/projects/Verify/chat")
+    expect(page.locator("#download-D1")).to_contain_text("arxiv.org/pdf/old", timeout=10_000)
+
+    downloads.path.unlink()
+    record = downloads.add("https://arxiv.org/pdf/new", purpose="new", filename=None, flags=[],
+                           auto_run=1, cycle=1, round_n=1, agent="a" * 32, agent_name="Alpha",
+                           folder="raw")
+    downloads.update(record.id, state="awaiting", reason="waiting for your approval")
+    response = page.request.post(f"{app['base_url']}/projects/Verify/downloads/D1/approve")
+    assert response.ok
+    expect(page.locator("#download-D1")).to_contain_text("arxiv.org/pdf/new", timeout=5_000)
+    expect(page.locator("#download-D1 .download-state")).to_have_text("downloaded", timeout=5_000)

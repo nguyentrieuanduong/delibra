@@ -153,11 +153,17 @@ function alertDownloadsError(source, xhr, alertFn) {
 // The Downloads list is re-fetched on every stream event and replaced by
 // every action; responses can land out of order, so an older store revision
 // never replaces a newer one (the last refresh is queued, so it converges).
+// Revisions only compare within one epoch: a recreated records file starts
+// again at 1.
 function staleDownloadsList(target, responseText) {
   if (!target || target.id !== "downloads-list" || !target.dataset) {
     return false;
   }
   const incoming = /data-revision="(\d+)"/.exec(responseText || "");
+  const epoch = /data-epoch="([0-9a-f]*)"/.exec(responseText || "");
+  if (epoch && target.dataset.epoch !== undefined && epoch[1] !== target.dataset.epoch) {
+    return false;
+  }
   const shown = Number(target.dataset.revision);
   return Boolean(incoming) && Number.isFinite(shown) && Number(incoming[1]) < shown;
 }
@@ -165,14 +171,21 @@ function staleDownloadsList(target, responseText) {
 // Stream events carry the store revision: re-fetch only when it is newer
 // than the list shown, so connecting (whose first event is the current
 // revision) does not replace a list the user may be clicking in.
-function newerDownloadsRevision(shown, data) {
+function newerDownloadsRevision(shown, data, shownEpoch) {
   let incoming = null;
   try {
-    incoming = JSON.parse(data).revision;
+    incoming = JSON.parse(data);
   } catch (_error) {
     return true;
   }
-  return !Number.isFinite(shown) || typeof incoming !== "number" || incoming > shown;
+  if (!incoming || typeof incoming !== "object") {
+    return true;
+  }
+  if (typeof incoming.epoch === "string" && shownEpoch !== undefined && incoming.epoch !== shownEpoch) {
+    return true;
+  }
+  const revision = incoming.revision;
+  return !Number.isFinite(shown) || typeof revision !== "number" || revision > shown;
 }
 
 // Like a live question: a request that starts waiting for approval opens
@@ -194,7 +207,8 @@ function openDownloadsPanelForNew(list, responseText) {
 function downloadsEventIsNewer(event) {
   const list = document.getElementById("downloads-list");
   const shown = list && list.dataset ? Number(list.dataset.revision) : Number.NaN;
-  return newerDownloadsRevision(shown, event && event.data);
+  const epoch = list && list.dataset ? list.dataset.epoch : undefined;
+  return newerDownloadsRevision(shown, event && event.data, epoch);
 }
 
 let focusDialogTrigger = null;

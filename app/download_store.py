@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field, fields, replace
 import json
 import os
 from pathlib import Path
+import re
+import secrets
 from typing import Any
 import uuid
 
@@ -22,6 +24,7 @@ STATUS_FORMAT = "delibra-downloads-status/1"
 RUN_MAX_BYTES = 2 * 1024**3
 STATES = frozenset({"checking", "awaiting", "queued", "downloading", "downloaded", "failed", "refused"})
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_EPOCH = re.compile(r"[0-9a-f]{0,32}")
 _CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 
 
@@ -73,6 +76,9 @@ class DownloadBook:
     # Bytes each in-flight request holds of its run's budget (plan review S2).
     reservations: dict[str, int] = field(default_factory=dict)
     requests: list[DownloadRecord] = field(default_factory=list)
+    # Random, set when the file is first written: a recreated file restarts
+    # revisions at 1, and the panel tells the two files apart by this.
+    epoch: str = ""
 
 
 class DownloadStore:
@@ -94,7 +100,11 @@ class DownloadStore:
             requests = data.get("requests", [])
             if not isinstance(requests, list):
                 raise TypeError("requests is not a list")
+            epoch = data.get("epoch", "")
+            if not isinstance(epoch, str) or not _EPOCH.fullmatch(epoch):
+                raise TypeError("epoch is not a token")
             return DownloadBook(
+                epoch=epoch,
                 revision=int(data.get("revision", 0)),
                 next_id=int(data.get("next_id", 1)),
                 run_bytes={str(k): int(v) for k, v in dict(data.get("run_bytes", {})).items()},
@@ -106,8 +116,9 @@ class DownloadStore:
 
     def _save(self, book: DownloadBook) -> None:
         book.revision += 1
+        book.epoch = book.epoch or secrets.token_hex(8)
         payload = {
-            "format": STORE_FORMAT, "revision": book.revision, "next_id": book.next_id,
+            "format": STORE_FORMAT, "epoch": book.epoch, "revision": book.revision, "next_id": book.next_id,
             "run_bytes": book.run_bytes, "reservations": book.reservations,
             "requests": [asdict(r) for r in book.requests],
         }
@@ -200,7 +211,7 @@ class DownloadStore:
             if record.state in ("queued", "downloading"):
                 book.requests[index] = replace(record, state="failed", reason="interrupted by restart")
             elif record.state == "checking":
-                book.requests[index] = replace(record, state="refused", reason="model check interrupted")
+                book.requests[index] = replace(record, state="refused", reason="model check interrupted", masked=True)
             else:
                 continue
             changed += 1
@@ -219,14 +230,28 @@ def project_download_excludes(store: ProjectStore) -> tuple[str, ...] | None:
     return download_excludes(store.coding_policy(), used)
 
 
-def render_status(records: list[DownloadRecord]) -> bytes:
-    items = []
+def render_status(records: list[DownloadRecord], requests: dict[str, str] | None = None) -> bytes:
+    """The turn's status.json: one request per line, so a wait loop can grep it.
+
+    `requests` names this turn's request files by id; earlier turns' records
+    carry no name, so a reused name never matches an older request.
+    """
+
+    names = requests or {}
+    lines = []
     for r in records:
-        item: dict[str, Any] = {"id": r.id, "url": r.shown_url, "state": r.state, "reason": r.reason}
+        item: dict[str, Any] = {"id": r.id}
+        if r.id in names:
+            item["request"] = names[r.id]
+        item.update(url=r.shown_url, state=r.state, reason=r.reason)
         if r.state == "downloaded":
             item.update(path=r.path, sha256=r.sha256, size=r.size, detected_type=r.detected_type)
-        items.append(item)
-    return (json.dumps({"format": STATUS_FORMAT, "requests": items}, indent=2) + "\n").encode()
+        lines.append("    " + json.dumps(item))
+    body = ",\n".join(lines)
+    return (
+        f'{{\n  "format": {json.dumps(STATUS_FORMAT)},\n  "requests": [\n'
+        + (body + "\n" if body else "") + "  ]\n}\n"
+    ).encode()
 
 
 def render_index(records: list[DownloadRecord]) -> bytes:

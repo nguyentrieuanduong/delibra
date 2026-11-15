@@ -452,4 +452,24 @@ async def test_trailing_excludes_come_last_and_beat_negations(tmp_path: Path) ->
 
 def test_pathspec_without_extras_is_unchanged() -> None:
     assert pathspec() == ["--", ".", ":(exclude)envs", ":(exclude).delibra"]
-    assert pathspec(("raw",))[-1] == ":(exclude)raw"
+    assert pathspec(("raw",))[-1] == ":(exclude,icase)raw"
+
+
+@pytest.mark.asyncio
+async def test_the_folder_exclusion_ignores_letter_case(tmp_path: Path) -> None:
+    # Review 2026-11-15: on a case-insensitive disk the setting can say
+    # Docs/Source/Raw while git tracks docs/source/raw; :(exclude) alone is
+    # case-sensitive even with core.ignorecase, so the tracked file went in.
+    root = make_repo(tmp_path)
+    raw = root / "docs/source/raw"
+    raw.mkdir(parents=True)
+    (raw / "index.md").write_text("old")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "track")
+    excludes = ("Docs/Source/Raw",)
+    state = await git_preflight(root, extra_excludes=excludes)
+    (raw / "index.md").write_text("new")
+    (root / "notes.md").write_text("x")
+    state, warning = await commit_turn(root, state, "s", "b", "t", extra_excludes=excludes)
+    assert warning is None
+    assert git(root, "show", "--name-only", "--format=", "HEAD").split() == ["notes.md"]

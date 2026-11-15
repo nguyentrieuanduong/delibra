@@ -72,3 +72,14 @@ test("no new awaiting request leaves the panel as the user set it", function () 
   assert.equal(openDownloadsPanelForNew({ id: "questions-list", dataset: {} }, 'data-awaiting="5"'), false);
   assert.equal(panel.open, false);
 });
+
+test("a recreated records file (new epoch) is never stale", function () {
+  const target = { id: "downloads-list", dataset: { revision: "12", epoch: "aaaa" } };
+  assert.equal(staleDownloadsList(target, '<div id="downloads-list" data-revision="1" data-epoch="bbbb">'), false);
+  assert.equal(staleDownloadsList(target, '<div id="downloads-list" data-revision="1" data-epoch="aaaa">'), true);
+});
+
+test("an event from a new epoch re-fetches whatever its revision", function () {
+  assert.equal(newerDownloadsRevision(12, JSON.stringify({ revision: 1, epoch: "bbbb" }), "aaaa"), true);
+  assert.equal(newerDownloadsRevision(12, JSON.stringify({ revision: 1, epoch: "aaaa" }), "aaaa"), false);
+});

@@ -118,6 +118,8 @@ async def test_the_budget_stops_a_download_and_returns_the_rest(project):
     budget = Budget(1000)
     with pytest.raises(FetchError, match="budget"):
         await fetch(fetcher, project, "http://files.test/p", budget=budget)
+    # Nothing was written, so the whole reservation goes back.
+    assert (budget.left, budget.released) == (1000, 1000)
 
 @pytest.mark.asyncio
 async def test_a_symlinked_host_folder_is_never_written_through(project, tmp_path):

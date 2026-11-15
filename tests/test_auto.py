@@ -6918,7 +6918,7 @@ async def test_a_build_turn_prompt_names_the_download_spool_only_when_on(tmp_pat
     prompt = str(factory.calls[first_of_second_run]["prompt"])
     spool = manager.settings.build_tmp_root / session_ids[0] / "downloads" / "requests"
     assert spool.as_posix() in prompt
-    assert "status.json" in prompt and "until grep -q" in prompt and "never a bare sleep" in prompt
+    assert "status.json" in prompt and "until grep -Eq" in prompt and "never a bare sleep" in prompt
 
 
 @pytest.mark.asyncio

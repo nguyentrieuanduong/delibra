@@ -80,10 +80,21 @@ def parse_verdicts(text: str, ids: list[str]) -> dict[str, tuple[str, str]]:
         if not isinstance(item, dict) or item.get("verdict") not in ("allow", "flag") \
                 or item.get("id") not in ids or item["id"] in result:
             raise CheckError("model check unavailable: answer did not match the request")
-        result[item["id"]] = (item["verdict"], str(item.get("reason", ""))[:REASON_MAX_CHARS])
+        # A JSON escape can decode to a lone surrogate, which no page encodes.
+        reason = str(item.get("reason", ""))[:REASON_MAX_CHARS].encode("utf-8", "replace").decode("utf-8")
+        result[item["id"]] = (item["verdict"], reason)
     if set(result) != set(ids):
         raise CheckError("model check unavailable: answer missed a URL")
     return result
+
+
+async def _stop(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
 
 
 async def run_model_check(provider: str, executable: str, model: str,
@@ -109,9 +120,13 @@ async def run_model_check(provider: str, executable: str, model: str,
                 process.communicate(check_prompt(items).encode("utf-8")), CHECK_TIMEOUT_SECONDS
             )
         except TimeoutError as exc:
-            process.kill()
-            await process.wait()
+            await _stop(process)
             raise CheckError("model check unavailable: timed out") from exc
+        except BaseException:
+            # Cancelled by shutdown or settle: never leave the CLI running
+            # (spending quota) in a folder about to be removed.
+            await asyncio.shield(_stop(process))
+            raise
         if process.returncode != 0:
             raise CheckError(f"model check unavailable: exit {process.returncode}")
         ids = [rid for rid, _ in items]

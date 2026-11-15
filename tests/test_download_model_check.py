@@ -55,3 +55,28 @@ async def test_a_failing_or_slow_cli_fails_closed(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr("app.download_model_check.CHECK_TIMEOUT_SECONDS", 0.5)
     with pytest.raises(CheckError, match="timed out"):
         await run_model_check("claude", script(tmp_path, "sleep 5\n"), "m", [("D1", "u")], tmp_path)
+
+@pytest.mark.asyncio
+async def test_a_cancelled_check_kills_the_cli(tmp_path: Path) -> None:
+    # Review 2026-11-15: shutdown or settle cancels checks; the CLI must not
+    # keep running (and spending quota) after Delibra stopped waiting.
+    import asyncio
+    pid_file = tmp_path / "pid"
+    cli = script(tmp_path, f"echo $$ > {pid_file}\nexec sleep 30\n")
+    task = asyncio.create_task(run_model_check("claude", cli, "m", [("D1", "u")], tmp_path))
+    for _ in range(100):
+        if pid_file.exists() and pid_file.read_text().strip():
+            break
+        await asyncio.sleep(0.05)
+    pid = int(pid_file.read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+def test_a_reason_that_cannot_be_utf8_is_made_safe() -> None:
+    # Review 2026-11-15: a lone surrogate in the stored note broke "Show full URL".
+    text = '{"verdicts": [{"id": "D1", "verdict": "flag", "reason": "x\\ud800y"}]}'
+    verdict, reason = parse_verdicts(text, ["D1"])["D1"]
+    assert verdict == "flag" and reason.encode("utf-8") and reason.startswith("x") and reason.endswith("y")
