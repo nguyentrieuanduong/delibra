@@ -227,3 +227,24 @@ async def test_the_wait_pattern_matches_only_this_turns_request(tmp_path):
     manager.approve(later.project_root, later.store_root, "D2"); await drain(manager)
     assert matches()
     await manager.stop_watch(later)
+
+@pytest.mark.asyncio
+async def test_closing_ends_settle_at_once(tmp_path):
+    # Review 2026-11-15: shutdown stops Auto first, and Auto waits on a turn
+    # that sits in settle; settle must not hold shutdown for its 75 s.
+    async def hangs(*args):
+        await asyncio.sleep(3600)
+    manager, turn = setup(tmp_path, approval="automatic", model_check=True, check=hangs)
+    manager.begin_turn(turn); drop(turn, "a", url="https://a.org/x.pdf")
+    manager.harvest(turn, final=True)
+    settling = asyncio.create_task(manager.settle(turn))
+    await asyncio.sleep(0.1)
+    manager.close()
+    await asyncio.wait_for(settling, 2)
+    # A request harvested after closing (Auto's last harvest) is not waited for either.
+    drop(turn, "b", url="https://a.org/y.pdf")
+    manager.harvest(turn, final=True)
+    await asyncio.wait_for(manager.settle(turn), 2)
+    await asyncio.wait_for(manager.shutdown(), 2)
+    records = DownloadStore(turn.store_root).load().requests
+    assert [(r.state, r.masked) for r in records] == [("refused", True), ("refused", True)]

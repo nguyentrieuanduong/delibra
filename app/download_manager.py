@@ -88,6 +88,7 @@ class DownloadManager:
         self._project_slots: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(PROJECT_CONCURRENCY))
         self._host_slots: dict[tuple[str, str], asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(HOST_CONCURRENCY))
         self._tasks: set[asyncio.Task[None]] = set()
+        self._closing = False
         self._revisions: dict[str, int] = defaultdict(int)
         self._subscribers: dict[str, set[asyncio.Queue[int]]] = defaultdict(set)
         self._pending: dict[DownloadTurn, list[str]] = {}
@@ -291,7 +292,9 @@ class DownloadManager:
         """Wait (bounded) for this turn's model checks; refuse what is still checking (B4)."""
 
         if turn.checks:
-            _done, pending = await asyncio.wait(turn.checks, timeout=SETTLE_SECONDS)
+            # Closing: Auto's shutdown waits on this turn, so wait for nothing.
+            timeout = 0 if self._closing else SETTLE_SECONDS
+            _done, pending = await asyncio.wait(turn.checks, timeout=timeout)
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
@@ -416,7 +419,17 @@ class DownloadManager:
         except StorageError:
             LOGGER.exception("download records could not be recovered under %s", store_root)
 
-    async def shutdown(self) -> None:
+    def close(self) -> None:
+        """First half of shutdown: cancel checks and downloads, end settle waits.
+
+        Runs before Auto's shutdown, which waits on turns that may be settling;
+        shutdown() afterwards cancels what Auto's last harvest started.
+        """
+
+        self._closing = True
         for task in list(self._tasks):
             task.cancel()
+
+    async def shutdown(self) -> None:
+        self.close()
         await asyncio.gather(*list(self._tasks), return_exceptions=True)

@@ -80,7 +80,9 @@ def parse_verdicts(text: str, ids: list[str]) -> dict[str, tuple[str, str]]:
         if not isinstance(item, dict) or item.get("verdict") not in ("allow", "flag") \
                 or item.get("id") not in ids or item["id"] in result:
             raise CheckError("model check unavailable: answer did not match the request")
-        result[item["id"]] = (item["verdict"], str(item.get("reason", ""))[:REASON_MAX_CHARS])
+        # A JSON escape can decode to a lone surrogate, which no page encodes.
+        reason = str(item.get("reason", ""))[:REASON_MAX_CHARS].encode("utf-8", "replace").decode("utf-8")
+        result[item["id"]] = (item["verdict"], reason)
     if set(result) != set(ids):
         raise CheckError("model check unavailable: answer missed a URL")
     return result

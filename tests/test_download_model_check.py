@@ -74,3 +74,9 @@ async def test_a_cancelled_check_kills_the_cli(tmp_path: Path) -> None:
         await task
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+def test_a_reason_that_cannot_be_utf8_is_made_safe() -> None:
+    # Review 2026-11-15: a lone surrogate in the stored note broke "Show full URL".
+    text = '{"verdicts": [{"id": "D1", "verdict": "flag", "reason": "x\\ud800y"}]}'
+    verdict, reason = parse_verdicts(text, ["D1"])["D1"]
+    assert verdict == "flag" and reason.encode("utf-8") and reason.startswith("x") and reason.endswith("y")
