@@ -82,7 +82,7 @@ async def test_model_check_flags_and_fails_closed(tmp_path):
     manager, turn = setup(tmp_path, approval="automatic", model_check=True, check=check)
     manager.begin_turn(turn); drop(turn, "a", url="https://a.org/x.pdf")
     manager.harvest(turn, final=True); await manager.settle(turn); await drain(manager)
-    assert status(turn)[0] == {"id": "D1", "url": "(URL hidden)", "state": "refused",
+    assert status(turn)[0] == {"id": "D1", "request": "a.json", "url": "(URL hidden)", "state": "refused",
                                "reason": "flagged by model check"}
     assert DownloadStore(turn.store_root).get("D1").check_note == "looks encoded"
     async def broken(*args): raise CheckError("model check unavailable: timed out")
@@ -147,7 +147,7 @@ async def test_failed_downloads_retry(tmp_path):
     manager, turn = setup(tmp_path, approval="automatic", fetcher=fetcher)
     manager.begin_turn(turn); drop(turn, "a", url="https://a.org/x.pdf")
     manager.harvest(turn, final=True); await drain(manager)
-    assert status(turn)[0] == {"id": "D1", "url": "https://a.org/x.pdf", "state": "failed", "reason": "HTTP 404"}
+    assert status(turn)[0] == {"id": "D1", "request": "a.json", "url": "https://a.org/x.pdf", "state": "failed", "reason": "HTTP 404"}
     fetcher.fail = None
     manager.retry(turn.project_root, turn.store_root, "D1"); await drain(manager)
     assert status(turn)[0]["state"] == "downloaded"
@@ -201,3 +201,29 @@ async def test_unreadable_records_warn_instead_of_failing_the_turn(tmp_path):
     assert any("download records are unreadable" in w for w in manager.turn_warnings(turn))
     # The request file stays for a later look; nothing was recorded.
     assert (turn.spool / "a.json").exists()
+
+@pytest.mark.asyncio
+async def test_the_wait_pattern_matches_only_this_turns_request(tmp_path):
+    # Review 2026-11-15: the old example loop ended on any downloaded record,
+    # e.g. one from an earlier turn of the run with the same file name.
+    import subprocess
+    from app.download_rules import wait_pattern
+    manager, turn = setup(tmp_path, approval="automatic")
+    manager.begin_turn(turn)
+    drop(turn, "d1", url="https://arxiv.org/pdf/1")
+    manager.harvest(turn, final=True); await drain(manager)
+    await manager.stop_watch(turn); manager.end_turn(turn)
+    later = replace(turn, round_n=3, ids=[], files={}, warnings=[], unparsable={}, checks=[], watch=None,
+                    policy=replace(turn.policy, approval="manual"))
+    manager.begin_turn(later)
+    drop(later, "d1", url="https://arxiv.org/pdf/2")
+    manager.harvest(later, final=True); await drain(manager)
+    path = later.temp_dir / "downloads" / "status.json"
+    def matches():
+        return subprocess.run(["grep", "-Eq", wait_pattern("d1.json"), str(path)]).returncode == 0
+    assert [(r["id"], r["state"], r.get("request")) for r in status(later)] == [
+        ("D1", "downloaded", None), ("D2", "awaiting", "d1.json")]
+    assert not matches()
+    manager.approve(later.project_root, later.store_root, "D2"); await drain(manager)
+    assert matches()
+    await manager.stop_watch(later)

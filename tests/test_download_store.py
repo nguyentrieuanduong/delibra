@@ -84,6 +84,8 @@ def test_recovery(tmp_path: Path) -> None:
         ("failed", "interrupted by restart"), ("failed", "interrupted by restart"),
         ("refused", "model check interrupted"), ("awaiting", None),
     ]
+    # Like every other check refusal, it is masked (design, Masking).
+    assert [r.masked for r in store.load().requests] == [False, False, True, False]
 
 @pytest.mark.parametrize("payload", [
     {"format": "delibra-downloads/1", "requests": [{}]},
@@ -131,3 +133,26 @@ def test_index_lists_downloaded_only(tmp_path: Path) -> None:
     add(store)
     text = render_index(store.load().requests).decode()
     assert "D1" in text and "raw/a.org/x.pdf" in text and "D2" not in text
+
+def test_status_puts_each_request_on_one_line_with_its_file_name(tmp_path: Path) -> None:
+    # Review 2026-11-15: a wait loop greps one line for the agent's own request.
+    store = DownloadStore(tmp_path)
+    first, second = add(store), add(store)
+    text = render_status([first, second], requests={second.id: "d1.json"}).decode()
+    lines = [line for line in text.splitlines() if '"id"' in line]
+    assert len(lines) == 2 and '"request"' not in lines[0]
+    assert '"request": "d1.json"' in lines[1] and lines[1].index('"request"') < lines[1].index('"state"')
+    assert json.loads(text)["requests"][1]["request"] == "d1.json"
+
+def test_a_recreated_records_file_gets_a_new_epoch(tmp_path: Path) -> None:
+    # Review 2026-11-15: revisions restart at 1 in a new file; the panel
+    # tells the two apart by the epoch, or it ignores every later change.
+    store = DownloadStore(tmp_path)
+    assert store.load().epoch == ""
+    add(store)
+    epoch = store.load().epoch
+    add(store)
+    assert store.load().epoch == epoch and len(epoch) >= 8
+    store.path.unlink()
+    add(store)
+    assert store.load().epoch not in ("", epoch)

@@ -72,6 +72,13 @@ def parse_request(data: bytes) -> ProposedDownload:
         filename is not None and type(filename) is not str
     ):
         raise RequestError("request fields must be text")
+    try:
+        # JSON escapes can decode to lone surrogates, which no page or file
+        # can encode: one stored record would take the Chat page down.
+        for text in (url, purpose, filename or ""):
+            text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise RequestError("request fields must be valid text") from exc
     url, purpose = url.strip(), purpose.strip()
     filename = filename.strip() if filename else None
     if not url or len(url) > URL_MAX_CHARS:
@@ -188,6 +195,12 @@ def detect_type(head: bytes) -> str:
     return "binary"
 
 
+def wait_pattern(request_file: str) -> str:
+    """grep -E pattern for one request's status line once it has ended."""
+
+    return f'"request": "{request_file}".*"state": "(downloaded|refused|failed)"'
+
+
 def downloads_prompt(status_path: Path, spool_path: Path, *, manual: bool) -> str:
     """The build-turn note: how to request a download and wait for it (spike S4)."""
 
@@ -195,8 +208,8 @@ def downloads_prompt(status_path: Path, spool_path: Path, *, manual: bool) -> st
         "Approval is manual: do not wait for it; continue other work and list pending "
         "request ids in your report."
         if manual
-        else "To wait for a download, poll with a bounded loop, for example "
-        f"until grep -q '\"state\": \"downloaded\"' {status_path.as_posix()} || "
+        else "To wait for a request, poll its own line with a bounded loop, for example for d1.json: "
+        f"until grep -Eq '{wait_pattern('d1.json')}' {status_path.as_posix()} || "
         "[ $SECONDS -ge 110 ]; do sleep 2; done — never a bare sleep; at most 5 minutes in total."
     )
     return (
@@ -211,11 +224,22 @@ def downloads_prompt(status_path: Path, spool_path: Path, *, manual: bool) -> st
     )
 
 
+_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+_EMBEDDED_IPV4 = (ipaddress.IPv6Network("::/96"), ipaddress.IPv6Network("::ffff:0:0:0/96"))
+
+
 def is_public_address(address: str) -> bool:
     try:
         ip = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:
+            # DNS64 gives v4-only hosts these on IPv6-only networks; judge
+            # the IPv4 address inside, which the gateway connects to.
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        elif any(ip in net for net in _EMBEDDED_IPV4):
+            return False  # deprecated forms that some stacks route as IPv4
     return ip.is_global and not ip.is_multicast

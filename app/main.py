@@ -242,8 +242,10 @@ def create_app(
             for task in docker_tasks:
                 task.cancel()
             await asyncio.gather(*docker_tasks, return_exceptions=True)
-            await download_manager.shutdown()
+            # Auto first: its cancelled turns harvest the spool, which can
+            # start download or check tasks the download manager then stops.
             await auto_manager.shutdown()
+            await download_manager.shutdown()
             await manager.shutdown()
 
     app = FastAPI(lifespan=lifespan)

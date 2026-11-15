@@ -86,6 +86,15 @@ def parse_verdicts(text: str, ids: list[str]) -> dict[str, tuple[str, str]]:
     return result
 
 
+async def _stop(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
+
+
 async def run_model_check(provider: str, executable: str, model: str,
                           items: list[tuple[str, str]], work_root: Path) -> dict[str, tuple[str, str]]:
     workdir = work_root / f"download-check-{uuid.uuid4().hex}"
@@ -109,9 +118,13 @@ async def run_model_check(provider: str, executable: str, model: str,
                 process.communicate(check_prompt(items).encode("utf-8")), CHECK_TIMEOUT_SECONDS
             )
         except TimeoutError as exc:
-            process.kill()
-            await process.wait()
+            await _stop(process)
             raise CheckError("model check unavailable: timed out") from exc
+        except BaseException:
+            # Cancelled by shutdown or settle: never leave the CLI running
+            # (spending quota) in a folder about to be removed.
+            await asyncio.shield(_stop(process))
+            raise
         if process.returncode != 0:
             raise CheckError(f"model check unavailable: exit {process.returncode}")
         ids = [rid for rid, _ in items]

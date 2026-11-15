@@ -947,10 +947,12 @@ outside the sandbox into the project. The sandbox network stays closed.
   temp dir; the agent writes one new JSON file per request,
   `{"url": "...", "purpose": "...", "filename": "optional"}` (at most
   16 KiB, 64 per turn). Delibra reads each file as it lands and reports every
-  request of the run in `downloads/status.json` (id, state, reason, and for
-  a download its path, sha256, size and type). Agents wait with a bounded
-  `until grep … || [ $SECONDS -ge 110 ]; do sleep 2; done` loop, never a
-  bare `sleep` (Claude Code blocks those). In Manual mode they do not wait
+  request of the run in `downloads/status.json`, one per line (id, the
+  request file name for this turn's requests, state, reason, and for a
+  download its path, sha256, size and type). Agents wait for their own
+  request with a bounded `until grep -Eq '"request": "d1.json".*"state":
+  "(downloaded|refused|failed)"' … || [ $SECONDS -ge 110 ]; do sleep 2;
+  done` loop, never a bare `sleep` (Claude Code blocks those). In Manual mode they do not wait
   and list pending ids in their report.
 - **Approval.** The **Downloads** panel under Questions on the Chat page
   lists every request, awaiting ones first, and updates live while the page

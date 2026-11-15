@@ -99,3 +99,13 @@ def test_unreadable_records_do_not_break_the_chat_page(tmp_path):
         panel = client.get(f"{base(project)}/downloads")
     assert chat.status_code == 200 and panel.status_code == 200
     assert "Download records are unreadable" in chat.text
+
+def test_every_rendering_of_the_list_carries_the_store_epoch(tmp_path):
+    # Without it the first stream event looks like a new records file and
+    # replaces the list while the user may be clicking in it.
+    app, project, store = downloads_app(tmp_path)
+    add(store, "https://arxiv.org/pdf/1", state="awaiting")
+    stamp = f'data-revision="{store.load().revision}" data-epoch="{store.load().epoch}"'
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        pages = [client.get(f"{base(project)}/{path}").text for path in ("chat", "downloads", "downloads/list")]
+    assert all(stamp in page for page in pages)

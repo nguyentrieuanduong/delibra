@@ -82,3 +82,21 @@ def test_types_are_sniffed_and_executables_refused() -> None:
 ])
 def test_public_addresses(address: str, public: bool) -> None:
     assert is_public_address(address) is public
+
+@pytest.mark.parametrize("field", ["url", "purpose", "filename"])
+def test_text_that_cannot_be_utf8_is_refused(field: str) -> None:
+    # Review 2026-11-15: a lone surrogate (JSON "\ud800") in a stored record
+    # made every page rendering it fail to encode, taking Chat down.
+    fields = {"url": "https://arxiv.org/pdf/1", "purpose": "p", "filename": "f.pdf"}
+    data = json.dumps(fields).replace(f'"{fields[field]}"', f'"{fields[field]}\\ud800"', 1).encode()
+    with pytest.raises(RequestError, match="text"):
+        parse_request(data)
+
+@pytest.mark.parametrize("address, public", [
+    ("::127.0.0.1", False), ("::8.8.8.8", False),          # IPv4-compatible: deprecated
+    ("::ffff:0:7f00:1", False), ("::ffff:0:808:808", False),  # IPv4-translated
+    ("64:ff9b::a00:1", False), ("64:ff9b::7f00:1", False),    # NAT64 to private
+    ("64:ff9b::808:808", True),                             # NAT64 (DNS64) to public
+])
+def test_ipv6_forms_that_embed_ipv4_are_judged_by_it(address: str, public: bool) -> None:
+    assert is_public_address(address) is public

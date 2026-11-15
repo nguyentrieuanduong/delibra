@@ -34,6 +34,7 @@ def downloads_panel_context(request: Request, project: Project) -> dict:
         "project": project,
         "unreadable": unreadable,
         "revision": book.revision,
+        "epoch": book.epoch,
         "downloads": records,
         "awaiting_count": sum(1 for r in records if r.state == "awaiting"),
         "downloads_enabled": store.coding_policy().downloads.enabled,
@@ -88,10 +89,10 @@ async def downloads_stream(request: Request, project_id: str) -> EventSourceResp
         # re-fetches only what it has not shown.
         async for _change in manager.subscribe(project.id):
             try:
-                revision = store.load().revision
+                book = store.load()
             except StorageError:
                 continue
-            yield {"event": "downloads", "data": json.dumps({"revision": revision})}
+            yield {"event": "downloads", "data": json.dumps({"revision": book.revision, "epoch": book.epoch})}
 
     return EventSourceResponse(events(), ping=15)
 

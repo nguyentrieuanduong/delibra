@@ -1,4 +1,4 @@
-<div id="downloads-list" data-revision="{{ revision }}" data-awaiting="{{ awaiting_count }}">
+<div id="downloads-list" data-revision="{{ revision }}" data-epoch="{{ epoch }}" data-awaiting="{{ awaiting_count }}">
   {% if awaiting_count > 1 %}
     <button type="button" hx-post="{{ project_url(project.name, '/downloads/approve-all') }}"
             hx-target="#downloads-list" hx-swap="outerHTML">Approve all ({{ awaiting_count }})</button>

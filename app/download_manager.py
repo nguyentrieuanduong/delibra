@@ -51,6 +51,7 @@ class DownloadTurn:
     agent_name: str
     policy: DownloadPolicy
     ids: list[str] = field(default_factory=list)
+    files: dict[str, str] = field(default_factory=dict)  # id -> this turn's request file
     warnings: list[str] = field(default_factory=list)
     unparsable: dict[str, tuple[int, int]] = field(default_factory=dict)
     checks: list[asyncio.Task[None]] = field(default_factory=list)
@@ -129,7 +130,8 @@ class DownloadManager:
             return
         if turn is not None and (record is None or record.auto_run == turn.auto_run):
             try:
-                write_turn_status(turn.temp_dir, render_status([r for r in records if r.auto_run == turn.auto_run]))
+                write_turn_status(turn.temp_dir, render_status(
+                    [r for r in records if r.auto_run == turn.auto_run], turn.files))
             except OSError:
                 turn.warnings.append("download status could not be written")
         if record is not None and record.state == "downloaded":
@@ -217,6 +219,7 @@ class DownloadManager:
                 turn.warnings.append(f"download request {entry.name} was not recorded: {UNREADABLE_WARNING}")
                 return
             turn.ids.append(record.id)
+            turn.files[record.id] = entry.name
             if record.state == "checking":
                 if turn.policy.model_check:
                     self._queue_check(turn, record.id)
