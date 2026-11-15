@@ -766,3 +766,10 @@ def test_clear_removes_every_question_and_never_reuses_an_id(tmp_path: Path) -> 
         asked_by="s", asked_by_name="Alpha", auto_run=2, cycle=1, round_n=2,
     )
     assert added[0].id == "Q3"
+
+
+def test_read_spool_file_honours_a_custom_limit(tmp_path: Path) -> None:
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "a.json").write_bytes(b"x" * 100)
+    assert len(read_spool_file(spool, "a.json", limit=10)) == 11

@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
+from app.download_manager import DownloadManager
 from app.coding import CodingEnvState, DockerPolicy, build_capable, cli_newer_than_verified
 from app.config import Settings
 from app.docker_backend import DockerController
@@ -30,6 +31,7 @@ from app.routes.projects import router as projects_router
 from app.routes.notes import router as notes_router
 from app.routes.picker import router as picker_router
 from app.routes.settings import router as settings_router
+from app.routes.downloads import router as downloads_router
 from app.routes.questions import router as questions_router
 from app.routes.runs import router as runs_router
 from app.routes.sessions import router as sessions_router
@@ -153,6 +155,7 @@ def create_app(
             codex_executable=commands["codex"],
         )
         docker_controller = docker_controller_override or DockerController(app_settings)
+        download_manager = DownloadManager(app_settings, commands)
         auto_manager = AutoManager(
             registry=registry,
             locks=locks,
@@ -160,11 +163,13 @@ def create_app(
             runner=manager,
             provider_commands=commands,
             docker=docker_controller,
+            downloads=download_manager,
         )
         app.state.registry = registry
         app.state.locks = locks
         app.state.manager = manager
         app.state.auto_manager = auto_manager
+        app.state.download_manager = download_manager
         app.state.docker_controller = docker_controller
         app.state.usage_monitor = usage_monitor
         app.state.health = checking_health(commands)
@@ -193,6 +198,7 @@ def create_app(
                 store = ProjectStore(project)
                 _recover_interrupted_env(store)
                 _recover_interrupted_docker(store, docker_controller)
+                download_manager.recover(store.root)
                 migration = store.migrate_session_directories()
                 if migration.issues:
                     LOGGER.warning(
@@ -236,6 +242,7 @@ def create_app(
             for task in docker_tasks:
                 task.cancel()
             await asyncio.gather(*docker_tasks, return_exceptions=True)
+            await download_manager.shutdown()
             await auto_manager.shutdown()
             await manager.shutdown()
 
@@ -257,6 +264,7 @@ def create_app(
     app.state.locks = None
     app.state.manager = None
     app.state.auto_manager = None
+    app.state.download_manager = None
     app.state.usage_monitor = None
     app.state.templates = templates
     app.state.health = []
@@ -271,6 +279,7 @@ def create_app(
     app.include_router(runs_router)
     app.include_router(usage_router)
     app.include_router(questions_router)
+    app.include_router(downloads_router)
     app.include_router(notes_router)
     app.include_router(settings_router)
     app.include_router(picker_router)

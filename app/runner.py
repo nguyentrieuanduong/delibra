@@ -36,6 +36,7 @@ from app.docker_backend import write_cli_config
 from app.global_instruction import read_global_instruction
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
+from app.download_rules import DOWNLOAD_SPOOL, DOWNLOADS_DIR
 from app.questions import QUESTIONS_DIR, SPOOL_NAME
 from app.models import (
     AutoQuotaOverride,
@@ -209,6 +210,8 @@ class AutoRunRequest:
     build: bool = False
     # Docker build runs only: the run's VM or local socket (design §6).
     docker: DockerAccess | None = None
+    # Build runs with Delibra downloads on: create the request spool.
+    downloads: bool = False
 
 
 class RunManager:
@@ -882,7 +885,7 @@ class RunManager:
         coding_context = None
         if auto_request is not None and auto_request.build:
             coding_context = await self._build_coding_context(
-                store, session_id, auto_request.docker
+                store, session_id, auto_request.docker, downloads=auto_request.downloads
             )
         context = RunContext(
             user_prompt=execution_prompt,
@@ -1335,6 +1338,7 @@ class RunManager:
         store: ProjectStore,
         session_id: str,
         docker: DockerAccess | None = None,
+        downloads: bool = False,
     ) -> CodingContext:
         """Recreate the turn's private temp dir and describe its capabilities.
 
@@ -1359,6 +1363,9 @@ class RunManager:
         # The agent's questions spool; AutoManager harvests it as files land.
         (temp_dir / QUESTIONS_DIR).mkdir(mode=0o700)
         (temp_dir / QUESTIONS_DIR / SPOOL_NAME).mkdir(mode=0o700)
+        if downloads:
+            (temp_dir / DOWNLOADS_DIR).mkdir(mode=0o700)
+            (temp_dir / DOWNLOADS_DIR / DOWNLOAD_SPOOL).mkdir(mode=0o700)
         if docker is not None:
             write_cli_config(temp_dir / "docker", docker.plugin_dirs)
         tools = await self.developer_tools()
@@ -1376,6 +1383,7 @@ class RunManager:
             # Amendment A2: /usr/bin/git shims into the developer tools.
             read_roots=(tools,) if tools is not None else (),
             docker=docker,
+            downloads=downloads,
         )
 
     def _discard_tree(self, path: Path) -> None:

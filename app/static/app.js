@@ -136,6 +136,67 @@ function finishNoteEdit(form, detail, alertFn) {
   return "alerted";
 }
 
+// A refused Downloads action pops up (the UI error pop-up standard).
+function alertDownloadsError(source, xhr, alertFn) {
+  if (
+    !source ||
+    typeof source.closest !== "function" ||
+    !source.closest("#downloads-panel") ||
+    !xhr
+  ) {
+    return false;
+  }
+  alertFn(chatErrorMessage(xhr.status || 0, xhr.responseText || ""));
+  return true;
+}
+
+// The Downloads list is re-fetched on every stream event and replaced by
+// every action; responses can land out of order, so an older store revision
+// never replaces a newer one (the last refresh is queued, so it converges).
+function staleDownloadsList(target, responseText) {
+  if (!target || target.id !== "downloads-list" || !target.dataset) {
+    return false;
+  }
+  const incoming = /data-revision="(\d+)"/.exec(responseText || "");
+  const shown = Number(target.dataset.revision);
+  return Boolean(incoming) && Number.isFinite(shown) && Number(incoming[1]) < shown;
+}
+
+// Stream events carry the store revision: re-fetch only when it is newer
+// than the list shown, so connecting (whose first event is the current
+// revision) does not replace a list the user may be clicking in.
+function newerDownloadsRevision(shown, data) {
+  let incoming = null;
+  try {
+    incoming = JSON.parse(data).revision;
+  } catch (_error) {
+    return true;
+  }
+  return !Number.isFinite(shown) || typeof incoming !== "number" || incoming > shown;
+}
+
+// Like a live question: a request that starts waiting for approval opens
+// the collapsed panel; one the user closed stays closed otherwise.
+function openDownloadsPanelForNew(list, responseText) {
+  if (!list || list.id !== "downloads-list" || !list.dataset) {
+    return false;
+  }
+  const incoming = /data-awaiting="(\d+)"/.exec(responseText || "");
+  const panel = typeof list.closest === "function" ? list.closest("#downloads-panel") : null;
+  if (!incoming || !panel || panel.open || Number(incoming[1]) <= Number(list.dataset.awaiting || 0)) {
+    return false;
+  }
+  panel.open = true;
+  return true;
+}
+
+// `event` is the stream's message (htmx:sseBeforeMessage's detail).
+function downloadsEventIsNewer(event) {
+  const list = document.getElementById("downloads-list");
+  const shown = list && list.dataset ? Number(list.dataset.revision) : Number.NaN;
+  return newerDownloadsRevision(shown, event && event.data);
+}
+
 let focusDialogTrigger = null;
 
 function restoreFocusDialogTrigger() {
@@ -1434,6 +1495,10 @@ function streamRetryDelay(attempts) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    alertDownloadsError,
+    newerDownloadsRevision,
+    openDownloadsPanelForNew,
+    staleDownloadsList,
     appendPickedPaths,
     goToLatestMessage,
     syncLatestButton,
@@ -1721,6 +1786,9 @@ if (typeof document !== "undefined") {
     ) {
       return; // afterRequest pops it up instead
     }
+    if (alertDownloadsError(editSource, event.detail && event.detail.xhr, window.alert.bind(window))) {
+      return;
+    }
     const region = document.getElementById("chat-errors");
     const xhr = event.detail && event.detail.xhr;
     if (!region || !xhr) {
@@ -1901,9 +1969,28 @@ if (typeof document !== "undefined") {
     }
   });
 
+  document.addEventListener("htmx:sseBeforeMessage", function (event) {
+    const panel = event.target;
+    if (!panel || panel.id !== "downloads-panel") {
+      return;
+    }
+    event.preventDefault(); // the data is only a revision; nothing to swap in
+    const refresh = document.getElementById("downloads-refresh");
+    if (refresh && downloadsEventIsNewer(event.detail)) {
+      htmx.trigger(refresh, "downloads-changed");
+    }
+  });
+
   document.addEventListener("htmx:beforeSwap", function (event) {
     if (isStalePickerSwap(event.detail, document)) {
       event.detail.shouldSwap = false;
+    }
+    const detail = event.detail || {};
+    const responseText = detail.xhr && detail.xhr.responseText;
+    if (staleDownloadsList(detail.target, responseText)) {
+      detail.shouldSwap = false;
+    } else if (detail.shouldSwap) {
+      openDownloadsPanelForNew(detail.target, responseText);
     }
   });
 

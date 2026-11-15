@@ -73,6 +73,8 @@ class CodingContext:
     read_roots: tuple[Path, ...] = ()
     # Auto build runs with Docker only (design §6).
     docker: DockerAccess | None = None
+    # Delibra downloads: the request spool exists this turn.
+    downloads: bool = False
 
 
 def build_command_environment(coding: CodingContext) -> dict[str, str]:

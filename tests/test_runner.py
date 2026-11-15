@@ -2717,3 +2717,24 @@ def test_require_all_quiescent_locked_refuses_a_running_agent_and_writes_nothing
     assert sorted(
         config.id for config in manager.require_all_quiescent_locked(store, project_id)
     ) == sorted([session_id, "b" * 32])
+
+
+@pytest.mark.asyncio
+async def test_a_downloads_build_turn_gets_the_request_spool(tmp_path, monkeypatch) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    ready_build_project(store)
+    spawned = record_spawns(monkeypatch)
+    record = create_runner_auto_record(store, session_id, status="discussing")
+    record.kind = "build"
+    store.save_auto_run(record)
+    request = replace(auto_run_request(store, record, phase="discussion"), build=True, downloads=True)
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(project_id, session_id, request)
+    await manager.wait(key)
+    coding = contexts[0].coding
+    assert coding is not None and coding.downloads is True
+    [spawn] = spawned
+    assert spawn["tmp_entries"] == ["downloads", "questions"]
+    temp = manager.settings.build_tmp_root / session_id
+    assert (temp / "downloads" / "requests").stat().st_mode & 0o777 == 0o700

@@ -651,6 +651,78 @@ class DockerPolicy:
         return asdict(self)
 
 
+DOWNLOAD_APPROVALS = ("manual", "automatic")
+CHECK_PROVIDERS = ("claude", "codex")
+DEFAULT_DOWNLOAD_FOLDER = "docs/source/raw"
+
+
+def normalize_download_folder(value: object) -> str:
+    # Local import: storage imports this module.
+    from app.storage import ProjectFileSecurityError, writable_root_parts
+
+    if type(value) is not str:
+        raise CodingPolicyError("Download folder must be text")
+    try:
+        parts = writable_root_parts(value.strip())
+    except ProjectFileSecurityError as exc:
+        raise CodingPolicyError(f"Download folder: {exc}") from exc
+    if parts[0].casefold() == "envs":
+        raise CodingPolicyError("Download folder: must not be inside envs")
+    return "/".join(parts)
+
+
+def normalize_check_model(value: object) -> str:
+    """The model name reaches a CLI argv: no option-like or blank values."""
+
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= 200
+        or value.startswith("-")
+        or any(character.isspace() or ord(character) < 32 for character in value)
+    ):
+        raise CodingPolicyError(
+            "Model check model must be 1-200 characters without spaces and not start with '-'"
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class DownloadPolicy:
+    """Delibra downloads for build turns (design "Settings")."""
+
+    enabled: bool = False
+    folder: str = DEFAULT_DOWNLOAD_FOLDER
+    approval: str = "manual"
+    model_check: bool = False
+    check_provider: str = "claude"
+    check_model: str = "sonnet"
+
+    @classmethod
+    def from_dict(cls, data: object) -> "DownloadPolicy":
+        if not isinstance(data, dict):
+            raise CodingPolicyError("download settings are invalid")
+        default = cls()
+        enabled = data.get("enabled", default.enabled)
+        model_check = data.get("model_check", default.model_check)
+        approval = data.get("approval", default.approval)
+        provider = data.get("check_provider", default.check_provider)
+        if type(enabled) is not bool or type(model_check) is not bool:
+            raise CodingPolicyError("download settings are invalid")
+        if approval not in DOWNLOAD_APPROVALS or provider not in CHECK_PROVIDERS:
+            raise CodingPolicyError("download settings are invalid")
+        return cls(
+            enabled=enabled,
+            folder=normalize_download_folder(data.get("folder", default.folder)),
+            approval=approval,
+            model_check=model_check,
+            check_provider=provider,
+            check_model=normalize_check_model(data.get("check_model", default.check_model)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class CodingPolicy:
     enabled: bool = False
@@ -664,6 +736,7 @@ class CodingPolicy:
     # None follows Delibra's default list (app/build_git_exclude.txt).
     git_exclude: list[str] | None = None
     docker: DockerPolicy = field(default_factory=DockerPolicy)
+    downloads: DownloadPolicy = field(default_factory=DownloadPolicy)
 
     @classmethod
     def from_manifest(cls, manifest: dict[str, Any]) -> "CodingPolicy":
@@ -704,6 +777,7 @@ class CodingPolicy:
                 else normalize_git_exclude(data["git_exclude"])
             ),
             docker=DockerPolicy.from_dict(data.get("docker", {})),
+            downloads=DownloadPolicy.from_dict(data.get("downloads", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -716,7 +790,17 @@ class CodingPolicy:
             "guidance_skills": list(self.guidance_skills),
             "git_exclude": None if self.git_exclude is None else list(self.git_exclude),
             "docker": self.docker.to_dict(),
+            "downloads": self.downloads.to_dict(),
         }
+
+
+def download_excludes(policy: CodingPolicy, used_folders: Iterable[str] = ()) -> tuple[str, ...]:
+    """Folders Delibra never commits: the current one (when on) and every one used before."""
+
+    folders = set(used_folders)
+    if policy.downloads.enabled:
+        folders.add(policy.downloads.folder)
+    return tuple(sorted(folders))
 
 
 # A version number standing alone: no pre-release or build suffix attached.

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.build_git import _git, commit_turn, ensure_local_excludes, git_preflight
+from app.build_git import _git, commit_turn, ensure_local_excludes, git_preflight, pathspec
 
 
 @pytest.fixture(autouse=True)
@@ -416,3 +416,40 @@ async def test_a_cancelled_git_command_stays_cancelled_when_cleanup_is_slow(tmp_
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_a_tracked_file_in_an_excluded_folder_is_not_committed(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    raw = root / "docs/source/raw"
+    raw.mkdir(parents=True)
+    (raw / "paper.pdf").write_bytes(b"old")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "track")
+    state = await git_preflight(root, extra_excludes=("docs/source/raw",))
+    (raw / "paper.pdf").write_bytes(b"new")
+    (root / "notes.md").write_text("x")
+    state, warning = await commit_turn(root, state, "s", "b", "t", extra_excludes=("docs/source/raw",))
+    assert warning is None
+    assert git(root, "show", "--name-only", "--format=", "HEAD").split() == ["notes.md"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_ignores_changes_in_excluded_folders(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / "raw").mkdir()
+    (root / "raw" / "a.pdf").write_bytes(b"x")
+    assert (await git_preflight(root)).enabled is False
+    assert (await git_preflight(root, extra_excludes=("raw",))).enabled is True
+
+
+@pytest.mark.asyncio
+async def test_trailing_excludes_come_last_and_beat_negations(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    body = await ensure_local_excludes(root, ["!docs/source/raw/x.pdf"], trailing=("docs/source/raw",))
+    assert body[-1] == "/docs/source/raw/"
+
+
+def test_pathspec_without_extras_is_unchanged() -> None:
+    assert pathspec() == ["--", ".", ":(exclude)envs", ":(exclude).delibra"]
+    assert pathspec(("raw",))[-1] == ":(exclude)raw"

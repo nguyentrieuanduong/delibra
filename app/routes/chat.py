@@ -14,6 +14,7 @@ from app.routes.auto import (
     projected_auto_setup_context,
     with_build_git_preview,
 )
+from app.routes.downloads import downloads_panel_context
 from app.routes.questions import questions_panel_context
 from app.routes.runs import start_run_fragment
 from app.routes.usage import usage_badge_context
@@ -189,6 +190,7 @@ async def chat_page(
             "auto_active": auto_active,
             "auto_setup": setup_context,
             "questions_panel": questions_panel_context(request, project),
+            "downloads_panel": downloads_panel_context(request, project),
             "notes_box": auto_notes_context(store, auto_record),
             "chat_notes_box": chat_notes_context(
                 store,

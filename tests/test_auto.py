@@ -39,6 +39,7 @@ from app.coding import (
     DOCKER_VERIFIED_VERSIONS,
     CodingEnvState,
     DockerPolicy,
+    DownloadPolicy,
 )
 from app.docker_backend import DockerStopFailed, DockerUnavailable
 from app.config import Settings
@@ -65,6 +66,9 @@ from app.models import (
     SourceDescriptor,
     TimeoutRecord,
 )
+from app.download_fetch import FetchResult
+from app.download_manager import DownloadManager
+from app.download_store import DownloadStore
 from app.notes import NoteStore
 from app.questions import ProposedQuestion, QuestionStore
 from app.runner import RunManager
@@ -472,6 +476,7 @@ class PlannedOutput:
     outbox: str | None = None
     notes_read: str | None = None
     spool: tuple[tuple[str, str], ...] = ()
+    downloads: tuple[tuple[str, str], ...] = ()
 
 
 class RecordingAutoAdapter:
@@ -501,6 +506,11 @@ class RecordingAutoAdapter:
             (outbox_root / "questions" / "outbox" / name).write_text(
                 text, encoding="utf-8"
             )
+        if context.coding is not None and context.coding.downloads:
+            for name, text in self.output.downloads:
+                (context.coding.temp_dir / "downloads" / "requests" / name).write_text(
+                    text, encoding="utf-8"
+                )
         if self.output.notes_read is not None:
             (outbox_root / "questions" / "notes-read.json").write_text(
                 self.output.notes_read, encoding="utf-8"
@@ -6853,3 +6863,182 @@ async def test_adding_cycles_is_bounded_and_needs_a_running_run(
     await wait_for_auto_terminal(manager, project_id, created.id)
     with pytest.raises(ConflictError, match="use Continue Auto"):
         await manager.extend_cycles(project_id, created.id, additional_cycles=1)
+
+
+class StubFetcher:
+    async def fetch(self, url, *, check_first, project_root, folder, filename, request_id, budget):
+        return FetchResult(url, f"{folder}/a.org/x.pdf", "ab" * 32, 3, "pdf")
+
+
+def enable_downloads(store: ProjectStore, **changes) -> None:
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, folder="raw", **changes)
+    store.replace_coding_policy(policy)
+
+
+def request_file(url: str) -> tuple[str, str]:
+    return ("d1.json", json.dumps({"url": url, "purpose": "source"}))
+
+
+def init_git_project(root: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(root.parent / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for args in (("init", "-q", "-b", "main"), ("config", "user.name", "T"),
+                 ("config", "user.email", "t@example.invalid")):
+        subprocess.run(["git", "-C", str(root), *args], check=True)
+    (root / "raw").mkdir()
+    (root / "raw" / "tracked.pdf").write_bytes(b"old")
+    (root / "README.md").write_text("hi\n")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "initial"], check=True)
+    return git_head(root)
+
+
+def git_head(root: Path) -> str:
+    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.mark.asyncio
+async def test_a_build_turn_prompt_names_the_download_spool_only_when_on(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree"),
+                   PlannedOutput("C", "agree"), PlannedOutput("D", "agree")]
+    )
+    enable_build(store, monkeypatch)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    assert "downloads/requests" not in str(factory.calls[0]["prompt"])
+
+    enable_downloads(store, approval="automatic")
+    first_of_second_run = len(factory.calls)
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    prompt = str(factory.calls[first_of_second_run]["prompt"])
+    spool = manager.settings.build_tmp_root / session_ids[0] / "downloads" / "requests"
+    assert spool.as_posix() in prompt
+    assert "status.json" in prompt and "until grep -q" in prompt and "never a bare sleep" in prompt
+
+
+@pytest.mark.asyncio
+async def test_an_awaiting_download_pauses_a_non_terminal_turn(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue", downloads=(request_file("https://arxiv.org/pdf/1"),)),
+                   PlannedOutput("B", "agree")]
+    )
+    enable_build(store, monkeypatch)
+    enable_downloads(store)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    created = await start_build(manager, project_id, session_ids, max_cycles=2)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status == "stopped"
+    assert terminal.terminal_reason == "paused: Agent 1 waiting for download approval (D1)"
+    assert DownloadStore(store.root).get("D1").state == "awaiting"
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_turn_keeps_its_outcome_with_an_awaiting_download(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"),
+                   PlannedOutput("B", "agree", downloads=(request_file("https://arxiv.org/pdf/1"),))]
+    )
+    enable_build(store, monkeypatch)
+    enable_downloads(store)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    created = await start_build(manager, project_id, session_ids, max_cycles=1)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.status != "stopped"
+    assert "download approval" not in (terminal.terminal_reason or "")
+    assert DownloadStore(store.root).get("D1").state == "awaiting"
+
+
+@pytest.mark.asyncio
+async def test_download_warnings_join_the_turn_warning(tmp_path, monkeypatch) -> None:
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree", downloads=(("big.json", "x" * 20000),)),
+                   PlannedOutput("B", "agree")]
+    )
+    enable_build(store, monkeypatch)
+    enable_downloads(store)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert "download request big.json refused" in (terminal.discussion[0].warning or "")
+    assert DownloadStore(store.root).load().requests == []
+
+
+@pytest.mark.asyncio
+async def test_build_commits_exclude_the_download_folder(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    root = store.project_path
+    initial = init_git_project(root, monkeypatch)
+    enable_build(store, monkeypatch)
+    enable_downloads(store)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    original = manager.runner.adapter_factory
+
+    def editing(config):
+        adapter = original(config)
+        (root / "raw" / "tracked.pdf").write_bytes(b"new")
+        (root / "raw" / f"new{factory.created}.pdf").write_bytes(b"%PDF")
+        (root / f"notes{factory.created}.md").write_text("x\n")
+        return adapter
+
+    manager.runner.adapter_factory = editing
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    changed = subprocess.run(
+        ["git", "-C", str(root), "log", "--name-only", "--format=", f"{initial}..HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.split()
+    assert changed and all(name.startswith("notes") for name in changed)
+
+
+@pytest.mark.asyncio
+async def test_unreadable_download_records_turn_build_commits_off(tmp_path, monkeypatch) -> None:
+    # Plan review B5: earlier download folders are unknown, so nothing is committed.
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    root = store.project_path
+    initial = init_git_project(root, monkeypatch)
+    enable_build(store, monkeypatch)
+    enable_downloads(store)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    (store.root / "downloads").mkdir()
+    (store.root / "downloads" / "requests.json").write_text("{")
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert terminal.git is not None and terminal.git.enabled is False
+    assert terminal.git.reason == "download records are unreadable"
+    assert git_head(root) == initial
+
+
+@pytest.mark.asyncio
+async def test_download_records_lost_mid_run_skip_the_turn_commit(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    root = store.project_path
+    initial = init_git_project(root, monkeypatch)
+    enable_build(store, monkeypatch)
+    enable_downloads(store)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    original = manager.runner.adapter_factory
+
+    def corrupting(config):
+        adapter = original(config)
+        (store.root / "downloads").mkdir(exist_ok=True)
+        (store.root / "downloads" / "requests.json").write_text("{")
+        (root / "raw" / "tracked.pdf").write_bytes(b"new")
+        (root / f"notes{factory.created}.md").write_text("x\n")
+        return adapter
+
+    manager.runner.adapter_factory = corrupting
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert "download records are unreadable; commits disabled" in (terminal.discussion[0].warning or "")
+    assert git_head(root) == initial

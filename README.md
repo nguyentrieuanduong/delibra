@@ -926,6 +926,89 @@ Residual risks (the UI repeats them):
 | Project secrets (e.g. `.env`) readable by containers, and sendable through their egress | yes | yes | yes |
 | Container access to host files | project, read-only | project, read-only | anything Docker can mount (`/Users` by default) |
 
+### Delibra downloads (build runs)
+
+Build agents reach only their allowlisted hosts from the shell, and research
+hosts are rarely known in advance. With Settings → Coding → **Delibra
+downloads** on, a build agent asks Delibra to fetch a file instead: Delibra
+checks the URL, waits for your approval (by default), and downloads it from
+outside the sandbox into the project. The sandbox network stays closed.
+
+| Setting | Values | Default |
+|---|---|---|
+| Delibra downloads | on / off | off |
+| Download folder | a project-relative directory, not under `envs` | `docs/source/raw` |
+| Approval | Manual / Automatic after checks | Manual |
+| Model check | on / off | off |
+| Model check provider | Claude / Codex | Claude |
+| Model check model | 1–200 characters, no spaces, not starting with `-` | `sonnet` |
+
+- **Agent protocol.** Each build turn gets `downloads/requests/` in its
+  temp dir; the agent writes one new JSON file per request,
+  `{"url": "...", "purpose": "...", "filename": "optional"}` (at most
+  16 KiB, 64 per turn). Delibra reads each file as it lands and reports every
+  request of the run in `downloads/status.json` (id, state, reason, and for
+  a download its path, sha256, size and type). Agents wait with a bounded
+  `until grep … || [ $SECONDS -ge 110 ]; do sleep 2; done` loop, never a
+  bare `sleep` (Claude Code blocks those). In Manual mode they do not wait
+  and list pending ids in their report.
+- **Approval.** The **Downloads** panel under Questions on the Chat page
+  lists every request, awaiting ones first, and updates live while the page
+  is open, also after the run ended. Manual requests wait for **Approve**
+  (or **Approve all**) or **Refuse**. If a completed turn leaves a request
+  awaiting and the run's "pause on blocking questions" option is on, the run
+  pauses (`paused: <agent> waiting for download approval (D1)`); a turn that
+  converged the run or reached its cycle limit keeps its outcome. Approving
+  after the run ended still downloads, charged to that run.
+- **Checks, always on.** `http`/`https` only, ports 80/443, no `user:pass@`,
+  a DNS name (no IP literal or `localhost`), query plus fragment at most
+  1,024 characters, and no secret-shaped tokens (OpenAI, GitHub, AWS, Slack,
+  Google API keys, JWTs, PEM headers), email addresses, base64-like runs of
+  40+ characters, hex runs longer than a SHA-256, or host labels of 40+
+  characters. A hit refuses the request and names the rule. These are
+  tripwires for accidents and crude exfiltration, not a guarantee.
+- **Masking.** A URL any check refused is shown as `(URL hidden)`
+  everywhere (panel, `status.json`, `index.md`), host included, because a
+  long host label can be the payload. **Show full URL** (this machine only)
+  reveals it with the model check's note. **Allow anyway** downloads such a
+  request after a confirmation; it skips only the URL checks of the approved
+  URL: redirects are still checked, and every address check and limit
+  applies. A request you refused cannot be allowed.
+- **Model check (optional).** One tool-less CLI call per batch (up to 20
+  URLs arriving within 2 s; batches of one window run concurrently) in an
+  empty temp dir: Claude with `--tools ""`, no settings, MCP or slash
+  commands; Codex with its shell and other features disabled, a read-only
+  sandbox and an output schema. It sees ids and URLs only, never the agent's
+  purpose. It fails closed: a missing CLI, a non-zero exit, a 60 s timeout,
+  output that is not the expected JSON, or a missing id refuses the request
+  ("model check unavailable"). A turn waits at most 75 s for its checks, then
+  refuses what is left. Its usage is not counted in the run.
+- **Fetching.** Delibra resolves the host itself and connects only when every
+  address is public (no loopback, private, link-local, CGNAT, multicast or
+  reserved address), pinning the vetted address with TLS checked against the
+  host name. Redirects (at most 5) are re-checked hop by hop. Limits: 100 MB
+  per file, 2 GB per Auto run, 4 downloads at a time per project and 2 per
+  host, 15 s to connect, 10 min per download. Executables (ELF, Mach-O, PE,
+  `#!` scripts) are refused. Nothing is parsed or converted: converting PDFs
+  and similar stays with the agents' own tools in `./envs` and their skills.
+- **Files.** A download is saved as `<folder>/<host>/<name>` through
+  symlink-free directory descriptors, never replacing an existing file (a
+  numeric suffix is added), and `<folder>/index.md` lists every download with
+  its sha256. Treat downloaded files as untrusted material.
+- **Never committed.** Build commits and the clean-tree check exclude the
+  download folder, and every folder used before, by pathspec, so even tracked
+  files there are never committed and no ignore negation brings them back.
+  The folder is also the last line of the managed `.git/info/exclude` block.
+  If Delibra's download records (`.delibra/downloads/requests.json`) are
+  unreadable, build commits turn off until they are repaired.
+- **Restart.** Queued or running downloads become retryable `failed`
+  (**Retry**), and their unused budget is returned; requests still under
+  model check are refused.
+- **Limits of the guarantee.** Agents' transcripts may quote the URLs they
+  requested; WebFetch and hosted search are not checked by this feature. A
+  hidden URL you allow anyway is saved under `<folder>/<host>/`, so its path
+  names the host.
+
 ## Isolation and security boundary
 
 Delibra provides write isolation, not read confidentiality:

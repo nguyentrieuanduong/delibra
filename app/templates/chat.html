@@ -50,6 +50,9 @@
       {% with questions=questions_panel.questions, omitted=questions_panel.omitted, open_count=questions_panel.open_count, cursor=questions_panel.cursor, answer_max=questions_panel.answer_max %}
         {% include "_questions_panel.html" %}
       {% endwith %}
+      {% with downloads=downloads_panel.downloads, awaiting_count=downloads_panel.awaiting_count, downloads_enabled=downloads_panel.downloads_enabled, revision=downloads_panel.revision, unreadable=downloads_panel.unreadable %}
+        {% include "_downloads_panel.html" %}
+      {% endwith %}
       <div id="auto-setup-host">
         {% if auto_setup %}
           {% with project=auto_setup.project, sessions=auto_setup.sessions, topic=auto_setup.topic, topic_source=auto_setup.topic_source, turn_timeout_seconds=auto_setup.turn_timeout_seconds, max_turn_timeout_seconds=auto_setup.max_turn_timeout_seconds, context_interval=auto_setup.context_interval, context_threshold_percent=auto_setup.context_threshold_percent, stateless_history_limit=auto_setup.stateless_history_limit, build_available=auto_setup.build_available, build_git=auto_setup.build_git, pending_notes=auto_setup.pending_notes, pending_notes_run=auto_setup.pending_notes_run %}
