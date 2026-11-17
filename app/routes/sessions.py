@@ -79,6 +79,8 @@ async def create_session(
     role_instructions: str = Form(""),
     writable_roots: str = Form(""),
     create_missing_writable_roots: bool = Form(False),
+    # Only "settings" changes the redirect (to the Agents tab); anything else is ignored.
+    return_to: str = Form(""),
 ):
     name = validate_agent_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
@@ -126,6 +128,8 @@ async def create_session(
                 )
             },
         )
+    if return_to == "settings":
+        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
     return RedirectResponse(
         project_url(project.name, f"/chat?agent={session_id}"),
         status_code=303,
@@ -146,6 +150,7 @@ async def edit_session(
     # Read only with the roots it governs: an unticked box sends nothing, so
     # a form without the roots field must leave the tick alone.
     create_missing_writable_roots: bool = Form(False),
+    return_to: str = Form(""),
     selected_agent: str | None = Query(None, alias="agent"),
 ):
     if writable_roots is None:
@@ -250,6 +255,8 @@ async def edit_session(
             selected_id=selected_agent or session_id,
             composer_oob=True,
         )
+    if return_to == "settings":
+        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
     return RedirectResponse(
         project_url(project.name, f"/sessions/{session_id}"),
         status_code=303,
@@ -262,6 +269,7 @@ async def set_permanent_session_name(
     project_id: str,
     session_id: str,
     name: str = Form(...),
+    return_to: str = Form(""),
 ):
     validate_id(session_id, "session id")
     name = validate_agent_name(name)
@@ -278,6 +286,8 @@ async def set_permanent_session_name(
         if config.status == "running":
             raise ConflictError("cannot name a running session")
         store.set_legacy_session_name(session_id, name)
+    if return_to == "settings":
+        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
     return RedirectResponse(
         project_url(project.name, "/settings"),
         status_code=303,
@@ -309,6 +319,7 @@ async def delete_session(
     request: Request,
     project_id: str,
     session_id: str,
+    return_to: str = Form(""),
 ):
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -320,6 +331,8 @@ async def delete_session(
         store = ProjectStore(project)
         store.require_auto_inactive()
         store.delete_session(session_id)
+    if return_to == "settings":
+        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
     return RedirectResponse(project_url(project.name), status_code=303)
 
 

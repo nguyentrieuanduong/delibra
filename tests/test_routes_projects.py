@@ -470,7 +470,7 @@ def test_legacy_uuid_pass_prompt_redirects_to_canonical_project_name(
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/projects/Route%20Matrix/settings"
+    assert response.headers["location"] == "/projects/Route%20Matrix/settings/prompts"
 
 
 def test_canonical_project_request_resolves_registry_once(
@@ -779,7 +779,7 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
     assert "Review the following document and give your critique." in initial.text
     assert "{source_path}" in initial.text
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"/projects/{quote(project.name, safe='')}/settings"
+    assert saved.headers["location"] == f"/projects/{quote(project.name, safe='')}/settings/prompts"
     assert "&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in rendered.text
     assert "</textarea><script>" not in rendered.text
     assert store.active_auto_run_id() == "f" * 32
@@ -2218,7 +2218,7 @@ def test_reset_clears_exactly_its_scope(
 
     assert "Start new phase" in page.text
     assert response.status_code == 303
-    assert response.headers["location"].endswith("/settings")
+    assert response.headers["location"].endswith("/settings/reset")
     assert (questions.load().find("Q1").status == "dismissed") is dismissed
     assert len(NoteStore(store.root).load().notes) == notes_left
     for session in store.list_sessions():
@@ -2273,7 +2273,7 @@ def test_clear_levels_archive_then_clear_their_scope(
         page = client.get(f"{prefix}/settings")
 
     assert response.status_code == 303
-    assert response.headers["location"].endswith("/settings")
+    assert response.headers["location"].endswith("/settings/reset")
     assert page.status_code == 200
     assert len(list((store.root / "archive").glob(f"*-{scope}-*.zip"))) == 1
     assert questions.load().questions == []
@@ -2909,3 +2909,54 @@ def test_the_lock_fragment_is_inactive_without_auto(tmp_path, monkeypatch) -> No
     assert 'data-auto-active="false"' in fragment.text
     assert "is active:" not in fragment.text
     assert bad.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path, data, tab",
+    [
+        ("/pass-prompt", {"pass_prompt_template": "Read {source_path}"}, "prompts"),
+        ("/pass-prompt/reset", {}, "prompts"),
+        ("/turn-timeout", {"turn_timeout_seconds": "5"}, "general"),
+        ("/global-instruction", {}, "general"),
+        ("/writable-roots", {"writable_roots": ""}, "general"),
+        ("/chat-skills", {"chat_skills": ""}, "general"),
+        ("/reset", {"scope": "notes"}, "reset"),
+        ("/coding/docker", {"enabled": ""}, "coding"),
+    ],
+)
+def test_every_settings_save_returns_to_its_tab(tmp_path, monkeypatch, path, data, tab) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    ProjectStore(project).set_coding_enabled(True)  # the Docker form needs coding on
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    expected = f"{prefix}/settings" if tab == "general" else f"{prefix}/settings/{tab}"
+    assert response.status_code == 303
+    assert response.headers["location"] == expected
+
+
+def test_agent_forms_on_the_settings_page_return_to_agents(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "agents"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Agents", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    form = {"name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high"}
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        created = client.post(f"{prefix}/sessions", data={**form, "return_to": "settings"},
+                              follow_redirects=False)
+        plain = client.post(f"{prefix}/sessions", data={**form, "name": "Beta"},
+                            follow_redirects=False)
+        other = client.post(f"{prefix}/sessions", data={**form, "name": "Gamma", "return_to": "https://evil.example"},
+                            follow_redirects=False)
+        session_id = ProjectStore(project).list_sessions()[0].id
+        edited = client.post(f"{prefix}/sessions/{session_id}/edit",
+                             data={"model": "opus", "return_to": "settings"}, follow_redirects=False)
+        deleted = client.post(f"{prefix}/sessions/{session_id}/delete",
+                              data={"return_to": "settings"}, follow_redirects=False)
+
+    assert created.headers["location"] == f"{prefix}/settings/agents"
+    assert edited.headers["location"] == f"{prefix}/settings/agents"
+    assert deleted.headers["location"] == f"{prefix}/settings/agents"
+    assert plain.headers["location"].startswith(f"{prefix}/chat?agent=")
+    assert other.headers["location"].startswith(f"{prefix}/chat?agent=")

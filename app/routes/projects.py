@@ -290,7 +290,7 @@ async def retry_auto_migration(request: Request, project_id: str):
             status.readable_records,
         )
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "general"),
         status_code=303,
     )
 
@@ -342,7 +342,7 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
         raise
     except PartialClearError as exc:
         return await render_project_settings(
-            request, project, error=str(exc), status_code=500
+            request, project, tab="reset", error=str(exc), status_code=500
         )
     except StorageError as exc:
         message = str(exc)
@@ -350,10 +350,11 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
         return await render_project_settings(
             request,
             project,
+            tab="reset",
             error=f"{lead}: {message[:1].upper()}{message[1:]}",
             status_code=409 if isinstance(exc, ConflictError) else 422,
         )
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "reset"), status_code=303)
 
 
 @router.post("/projects/{project_id}/pass-prompt")
@@ -369,7 +370,7 @@ async def save_pass_prompt(
         project = request.app.state.registry.get(resolved_project_id)
         ProjectStore(project).set_pass_prompt_template(validated)
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "prompts"),
         status_code=303,
     )
 
@@ -405,7 +406,7 @@ async def save_writable_roots(
             status_code=422,
         )
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "general"),
         status_code=303,
     )
 
@@ -683,7 +684,7 @@ async def retry_coding_env(request: Request, project_id: str):
         token = utc_now()
         store.set_coding_env(CodingEnvState(status="creating", updated_at=token))
         _start_env_creation(request.app, resolved_project_id, token)
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "coding"), status_code=303)
 
 
 def _start_docker_preparation(app, project_id: str, token: str) -> None:
@@ -767,7 +768,7 @@ async def save_docker(request: Request, project_id: str, enabled: bool = Form(Fa
             docker.enabled = enabled
             store.set_coding_docker(docker)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/retry")
@@ -779,7 +780,7 @@ async def retry_docker(request: Request, project_id: str):
             raise ConflictError("Docker is not in an error state")
         _begin_preparation(request, store, resolved)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/lima")
@@ -794,7 +795,7 @@ async def switch_docker_to_lima(request: Request, project_id: str):
             raise ConflictError("This project does not use local Docker")
         _begin_preparation(request, store, resolved)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/local")
@@ -826,7 +827,7 @@ async def use_local_docker(request: Request, project_id: str, acknowledge: bool 
         adopted.lima_instance = current.lima_instance  # Delete VM stays possible
         store.set_coding_docker(adopted)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/delete")
@@ -880,7 +881,7 @@ async def delete_docker_vm(request: Request, project_id: str):
             store.set_coding_docker(result)
     if failure is not None:
         raise StorageError(failure)
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/turn-timeout")
@@ -900,7 +901,7 @@ async def save_turn_timeout(
             maximum=request.app.state.settings.max_run_timeout,
         )
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "general"),
         status_code=303,
     )
 
@@ -918,7 +919,7 @@ async def save_global_instruction_use(
         # An unticked checkbox sends nothing; FastAPI refuses a non-boolean
         # value with 422, as for the other checkbox routes here.
         ProjectStore(project).set_use_global_instruction(use_global_instruction)
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)
 
 
 @router.post("/projects/{project_id}/pass-prompt/reset")
@@ -929,7 +930,7 @@ async def reset_pass_prompt(request: Request, project_id: str):
         project = request.app.state.registry.get(resolved_project_id)
         ProjectStore(project).reset_pass_prompt_template()
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "prompts"),
         status_code=303,
     )
 
@@ -1105,4 +1106,4 @@ async def save_chat_skills(
             chat_skills_text=chat_skills,
             status_code=422,
         )
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)

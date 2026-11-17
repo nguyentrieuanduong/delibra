@@ -6,6 +6,7 @@
   <details>
     <summary>Create session</summary>
     <form method="post" action="{{ project_url(project.name, '/sessions') }}" data-session-config-form data-agent="claude">
+      <input type="hidden" name="return_to" value="settings">
       <label>Name
         <input name="name" maxlength="200" required>
         <small>
@@ -44,6 +45,7 @@
           <details>
             <summary>Edit</summary>
             <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/edit') }}" data-session-config-form data-agent="{{ session.agent }}">
+              <input type="hidden" name="return_to" value="settings">
               <p class="immutable-agent-name">{{ session.name }}</p>
               <p class="immutability-hint">Agent name and directory are permanent.</p>
               {% if not session.rounds %}
@@ -85,6 +87,7 @@
               method="post"
               action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/permanent-name') }}"
             >
+              <input type="hidden" name="return_to" value="settings">
               <label>Permanent agent name
                 <input name="name" maxlength="200" value="{{ session.name }}" required>
                 <small>
@@ -95,6 +98,7 @@
             </form>
           {% endif %}
           <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/delete') }}">
+            <input type="hidden" name="return_to" value="settings">
             <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Delete</button>
           </form>
         </article>
