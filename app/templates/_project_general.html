@@ -10,7 +10,7 @@
         type="number"
         min="1"
         max="{{ max_turn_timeout_seconds }}"
-        value="{{ turn_timeout_seconds }}"
+        value="{{ typed.get('turn_timeout_seconds', turn_timeout_seconds) }}"
         required
       >
     </label>

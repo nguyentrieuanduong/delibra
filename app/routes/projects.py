@@ -69,6 +69,12 @@ PROJECT_TABS = (
 PROJECT_TAB_NAMES = frozenset(key for key, _label in PROJECT_TABS)
 
 
+def nothing_saved(reason: str) -> str:
+    """The page alert for a refused settings form (user standard: capitalised)."""
+
+    return f"Nothing was saved: {reason[:1].upper()}{reason[1:]}"
+
+
 def settings_tab_url(project_name: str, tab: str) -> str:
     """General keeps the old /settings URL, so existing links land on it."""
 
@@ -361,14 +367,28 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
 async def save_pass_prompt(
     request: Request,
     project_id: str,
-    pass_prompt_template: str = Form(...),
+    pass_prompt_template: str = Form(""),
 ):
-    validated = validate_pass_prompt_template_field(pass_prompt_template)
     project = request_project(request, project_id)
     resolved_project_id = project.id
-    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-        project = request.app.state.registry.get(resolved_project_id)
-        ProjectStore(project).set_pass_prompt_template(validated)
+    try:
+        validated = validate_pass_prompt_template_field(pass_prompt_template)
+        async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+            project = request.app.state.registry.get(resolved_project_id)
+            ProjectStore(project).set_pass_prompt_template(validated)
+    except NotFoundError:
+        raise
+    except (HTTPException, StorageError) as exc:
+        if isinstance(exc, HTTPException) and exc.status_code != 422:
+            raise
+        return await render_project_settings(
+            request,
+            project,
+            tab="prompts",
+            error=nothing_saved(exc.detail if isinstance(exc, HTTPException) else str(exc)),
+            typed={"pass_prompt_template": pass_prompt_template},
+            status_code=409 if isinstance(exc, ConflictError) else 422,
+        )
     return RedirectResponse(
         settings_tab_url(project.name, "prompts"),
         status_code=303,
@@ -400,7 +420,7 @@ async def save_writable_roots(
         return await render_project_settings(
             request,
             project,
-            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            error=nothing_saved(message),
             writable_roots_text=writable_roots,
             create_missing_writable_roots=create_missing_writable_roots,
             status_code=422,
@@ -477,7 +497,7 @@ async def _save_coding_part(
             request,
             project,
             tab="coding",
-            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            error=nothing_saved(message),
             typed=typed,
             status_code=409 if isinstance(exc, ConflictError) else 422,
         )
@@ -890,17 +910,31 @@ async def delete_docker_vm(request: Request, project_id: str):
 async def save_turn_timeout(
     request: Request,
     project_id: str,
-    turn_timeout_seconds: int = Form(...),
+    turn_timeout_seconds: str = Form(""),
 ):
     project = request_project(request, project_id)
     resolved_project_id = project.id
-    async with request.app.state.locks.registry_project_sessions(
-        resolved_project_id
-    ):
-        project = request.app.state.registry.get(resolved_project_id)
-        ProjectStore(project).set_turn_timeout_seconds(
-            turn_timeout_seconds,
-            maximum=request.app.state.settings.max_run_timeout,
+    text = turn_timeout_seconds.strip()
+    # Not a number: let the store's check word the refusal like any bad value.
+    seconds: object = int(text) if text.isdecimal() else text
+    try:
+        async with request.app.state.locks.registry_project_sessions(
+            resolved_project_id
+        ):
+            project = request.app.state.registry.get(resolved_project_id)
+            ProjectStore(project).set_turn_timeout_seconds(
+                seconds,
+                maximum=request.app.state.settings.max_run_timeout,
+            )
+    except NotFoundError:
+        raise
+    except StorageError as exc:
+        return await render_project_settings(
+            request,
+            project,
+            error=nothing_saved(str(exc)),
+            typed={"turn_timeout_seconds": turn_timeout_seconds},
+            status_code=409 if isinstance(exc, ConflictError) else 422,
         )
     return RedirectResponse(
         settings_tab_url(project.name, "general"),
@@ -1104,7 +1138,7 @@ async def save_chat_skills(
         return await render_project_settings(
             request,
             project,
-            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            error=nothing_saved(message),
             chat_skills_text=chat_skills,
             status_code=422,
         )

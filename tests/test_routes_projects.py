@@ -2987,3 +2987,32 @@ def test_the_exclude_refresh_runs_under_the_project_lock(tmp_path, monkeypatch, 
 
     assert response.status_code == 303
     assert held == [True]
+
+
+@pytest.mark.parametrize(
+    "path, data, tab, kept, sentence",
+    [
+        ("/pass-prompt", {"pass_prompt_template": "No placeholder <here>"}, "Prompts",
+         ">No placeholder &lt;here&gt;</textarea>", "must contain {source_path} exactly once"),
+        ("/pass-prompt", {"pass_prompt_template": ""}, "Prompts", "</textarea>", "Pass prompt must not be empty"),
+        ("/turn-timeout", {"turn_timeout_seconds": "0"}, "General", 'value="0"', "Project turn time limit must be"),
+        ("/turn-timeout", {"turn_timeout_seconds": "seven"}, "General", 'value="seven"', "Project turn time limit must be"),
+    ],
+)
+def test_a_refused_prompt_or_time_limit_save_pops_up_on_its_tab(
+    tmp_path, monkeypatch, path, data, tab, kept, sentence
+) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    store.set_pass_prompt_template("Keep {source_path}")
+    before = store.manifest_path.read_bytes()
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data)
+
+    assert response.status_code == 422
+    alert = response.text.split("<div hidden data-page-alert>Nothing was saved: ", 1)[1].split("</div>", 1)[0]
+    assert alert[:1].isupper() and sentence.split("{")[0] in alert, alert
+    assert f'aria-current="page">{tab}</a>' in response.text
+    assert kept in response.text
+    assert store.manifest_path.read_bytes() == before
+
