@@ -1144,7 +1144,7 @@ the traceback when there is one. Access lines (`GET /… 200`) never reach the f
   (`delibra.log.1` … `delibra.log.4`), so at most 25 MiB.
 - **Privacy.** The directory is `0700` and every file, rotated ones included,
   is `0600`. A symlinked `logs` directory or `delibra.log` is refused, never
-  followed, and stops startup. Delibra's own lines carry ids, run numbers, statuses and error
+  followed, and stops startup; a symlinked `DELIBRA_HOME` itself is fine. Delibra's own lines carry ids, run numbers, statuses and error
   categories, never prompts, agent output, notes or questions; an Auto run's end
   line gives only its status, while the reason stays in the run record. A
   traceback can still quote an exception message, which may contain a path or

@@ -36,12 +36,13 @@ def _formatter() -> logging.Formatter:
 class PrivateRotatingFileHandler(RotatingFileHandler):
     """A rotating file under ``home/logs`` whose current and rotated files only the owner can read.
 
-    Symlinks are refused, never followed: a symlinked ``logs`` directory or log file raises
-    OwnershipError, and a symlinked rotated file is left alone.
+    A symlinked home is resolved first. Below it symlinks are refused, never followed: a symlinked
+    ``logs`` directory or log file raises OwnershipError, and a symlinked rotated file is left alone.
     """
 
     def __init__(self, home: Path, *, max_bytes: int = MAX_BYTES, backups: int = BACKUPS) -> None:
-        logs = ensure_owned_directory(home / LOG_DIRNAME, home)
+        root = home.resolve(strict=True)
+        logs = ensure_owned_directory(root / LOG_DIRNAME, root)
         os.chmod(logs, 0o700)
         path = logs / LOG_FILENAME
         for index in range(1, backups + 1):
@@ -71,9 +72,10 @@ def _make_private_if_regular(path: Path) -> None:
         info = path.lstat()
     except FileNotFoundError:
         return
-    if not stat.S_ISREG(info.st_mode):
+    # Already private needs no open, so an owner-unreadable (0o000) backup never stops startup.
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 == 0:
         return
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         os.fchmod(descriptor, 0o600)
     finally:

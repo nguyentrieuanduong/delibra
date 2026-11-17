@@ -186,3 +186,32 @@ def test_a_symlinked_rotated_file_is_left_alone(home, tmp_path) -> None:
     install_logging(home, None)()
 
     assert outside.read_text(encoding="utf-8") == "keep\n" and mode(outside) == 0o644
+
+
+def test_a_symlinked_home_is_followed_to_its_real_directory(tmp_path) -> None:
+    real = tmp_path / "real-home"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "home-link"
+    link.symlink_to(real)
+
+    uninstall = install_logging(link, None)
+    try:
+        logging.getLogger("app.example").info("through the link")
+    finally:
+        uninstall()
+
+    log = real / "logs" / "delibra.log"
+    assert "through the link" in log.read_text(encoding="utf-8")
+    assert mode(real / "logs") == 0o700 and mode(log) == 0o600
+
+
+def test_an_already_private_backup_is_left_as_it_is(home) -> None:
+    logs = home / "logs"
+    logs.mkdir(mode=0o700)
+    (logs / "delibra.log.1").write_text("old\n", encoding="utf-8")
+    os.chmod(logs / "delibra.log.1", 0o000)
+    try:
+        install_logging(home, None)()
+        assert mode(logs / "delibra.log.1") == 0o000
+    finally:
+        os.chmod(logs / "delibra.log.1", 0o600)
