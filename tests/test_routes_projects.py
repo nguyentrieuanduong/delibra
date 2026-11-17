@@ -2960,3 +2960,30 @@ def test_agent_forms_on_the_settings_page_return_to_agents(tmp_path: Path) -> No
     assert deleted.headers["location"] == f"{prefix}/settings/agents"
     assert plain.headers["location"].startswith(f"{prefix}/chat?agent=")
     assert other.headers["location"].startswith(f"{prefix}/chat?agent=")
+
+
+@pytest.mark.parametrize(
+    "path, data",
+    [
+        ("/coding/git-exclude", {"git_exclude": "out/"}),
+        ("/coding/downloads", {"downloads_folder": "raw", "downloads_enabled": "true"}),
+        ("/coding", {"enabled": "true"}),
+    ],
+)
+def test_the_exclude_refresh_runs_under_the_project_lock(tmp_path, monkeypatch, path, data) -> None:
+    # Build commits read .git/info/exclude under the same lock, and these saves
+    # are allowed during Auto, so the refresh must not run after the lock is released.
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    ProjectStore(project).set_coding_enabled(True)
+    held: list[bool] = []
+
+    async def record(root, patterns=None, trailing=()):
+        held.append(app.state.locks.project_lock(project.id).locked())
+        return []
+
+    monkeypatch.setattr("app.routes.projects.ensure_local_excludes", record)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert held == [True]

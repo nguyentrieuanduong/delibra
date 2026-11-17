@@ -425,7 +425,7 @@ async def _refresh_local_excludes(project: Project, policy: CodingPolicy) -> Non
             policy.git_exclude,
             trailing=download_excludes(policy, used_folders),
         )
-    except OSError:
+    except (OSError, StorageError):
         LOGGER.warning(
             "Could not update .git/info/exclude for project %s", project.id, exc_info=True
         )
@@ -463,6 +463,10 @@ async def _save_coding_part(
             store.replace_coding_policy(updated)
             if token is not None:
                 _start_env_creation(request.app, resolved_project_id, token)
+            if refresh_excludes and updated.enabled:
+                # Under the project lock that build commits also take: they read
+                # this file, and these saves are allowed while Auto runs.
+                await _refresh_local_excludes(project, updated)
     except NotFoundError:
         raise  # A gone project keeps its 404.
     except StorageError as exc:
@@ -477,8 +481,6 @@ async def _save_coding_part(
             typed=typed,
             status_code=409 if isinstance(exc, ConflictError) else 422,
         )
-    if refresh_excludes and updated.enabled:
-        await _refresh_local_excludes(project, updated)
     return RedirectResponse(settings_tab_url(project.name, "coding"), status_code=303)
 
 

@@ -12,9 +12,11 @@ from collections.abc import Sequence
 import os
 from pathlib import Path
 import signal
+import stat
 import tempfile
 
 from app.models import AutoBuildGit
+from app.storage import atomic_write_bytes
 
 PATHSPEC = ["--", ".", ":(exclude)envs", ":(exclude).delibra"]
 # Download folders are known only from Delibra's download records; without
@@ -209,8 +211,10 @@ async def ensure_local_excludes(
         lines[starts[0] : ends[0] + 1] = block
     else:
         lines.extend(block)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Whole-file replace: a concurrent `git ls-files --exclude-standard` sees the
+    # old file or the new one, never a half-written one. Keeps the file's mode.
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+    atomic_write_bytes(path, ("\n".join(lines) + "\n").encode("utf-8"), mode=mode)
     return [line for line in body if line.strip() and not line.startswith("#")]
 
 
