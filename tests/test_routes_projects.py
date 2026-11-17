@@ -3048,9 +3048,19 @@ def test_refused_agent_forms_on_the_agents_tab_pop_up_and_keep_the_input(tmp_pat
     store = ProjectStore(project)
     prefix = f"/projects/{quote(project.name, safe='')}"
     form = {"agent": "claude", "model": "sonnet", "effort": "high", "return_to": "settings"}
+    (project_dir / "src").mkdir()
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        client.post(f"{prefix}/sessions", data={**form, "name": "Alpha"}, follow_redirects=False)
+        client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "Alpha", "writable_roots": "src", "role_instructions": "Old role"},
+            follow_redirects=False,
+        )
         alpha = store.list_sessions()[0].id
+        # Emptied boxes reach FastAPI as None; the page must still show them empty.
+        emptied_edit = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "m" * 201, "role_instructions": "", "writable_roots": "", "return_to": "settings"},
+        )
         bad_name = client.post(
             f"{prefix}/sessions",
             data={**form, "name": "bad/name", "model": "my-model", "role_instructions": "Typed role"},
@@ -3074,6 +3084,10 @@ def test_refused_agent_forms_on_the_agents_tab_pop_up_and_keep_the_input(tmp_pat
     assert ">Typed role</textarea>" in bad_name.text
     assert _agents_refusal(bad_edit, 422).startswith("Model")
     assert ">Edited role</textarea>" in bad_edit.text
+    _agents_refusal(emptied_edit, 422)
+    assert f'id="session-writable-roots-{alpha}" name="writable_roots" maxlength="65536"></textarea>' in emptied_edit.text
+    assert 'name="role_instructions" maxlength="20000"></textarea>' in emptied_edit.text.split(f'/sessions/{alpha}/edit', 1)[1]
+    assert store.load_session(alpha).writable_roots == ["src"]
     assert "Auto run is active" in _agents_refusal(locked_create, 409)
     assert 'value="Beta"' in locked_create.text
     assert "Auto run is active" in _agents_refusal(locked_delete, 409)

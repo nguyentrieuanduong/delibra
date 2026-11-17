@@ -228,15 +228,14 @@ async def edit_session(
     except (HTTPException, StorageError) as exc:
         if return_to != "settings" or not _agents_tab_refusal(exc):
             raise
+        # From the form itself: FastAPI hands an emptied box over as None.
+        sent = await request.form()
         typed = {
-            key: value
-            for key, value in (
-                ("agent", agent), ("model", model), ("effort", effort),
-                ("role_instructions", role_instructions), ("writable_roots", writable_roots),
-            )
-            if value is not None
+            key: str(sent[key])
+            for key in ("agent", "model", "effort", "role_instructions", "writable_roots")
+            if key in sent
         }
-        if writable_roots is not None:
+        if "writable_roots" in sent:
             typed["create_missing_writable_roots"] = "true" if create_missing_writable_roots else ""
         return await _refused_on_agents_tab(
             request, project_id, exc, {"form": f"edit:{session_id}", **typed}
