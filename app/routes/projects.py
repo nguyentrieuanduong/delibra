@@ -940,8 +940,9 @@ async def save_turn_timeout(
     project = request_project(request, project_id)
     resolved_project_id = project.id
     text = turn_timeout_seconds.strip()
-    # Not a number: let the store's check word the refusal like any bad value.
-    seconds: object = int(text) if text.isdecimal() else text
+    # Not a number, or longer than any limit (int() refuses over 4300 digits):
+    # let the store's check word the refusal like any bad value.
+    seconds: object = int(text) if text.isdecimal() and len(text) <= 18 else text
     try:
         async with request.app.state.locks.registry_project_sessions(
             resolved_project_id

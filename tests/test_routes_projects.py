@@ -3011,6 +3011,8 @@ def test_the_exclude_refresh_runs_under_the_project_lock(tmp_path, monkeypatch, 
         ("/pass-prompt", {"pass_prompt_template": ""}, "Prompts", "</textarea>", "Pass prompt must not be empty"),
         ("/turn-timeout", {"turn_timeout_seconds": "0"}, "General", 'value="0"', "Project turn time limit must be"),
         ("/turn-timeout", {"turn_timeout_seconds": "seven"}, "General", 'value="seven"', "Project turn time limit must be"),
+        # Over Python's int-parsing digit limit: still the normal refusal, never a 500.
+        ("/turn-timeout", {"turn_timeout_seconds": "9" * 5000}, "General", 'value="999', "Project turn time limit must be"),
     ],
 )
 def test_a_refused_prompt_or_time_limit_save_pops_up_on_its_tab(
