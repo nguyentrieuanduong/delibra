@@ -71,6 +71,7 @@ from app.storage import (
     atomic_write_text,
     ensure_owned_directory,
     first_unsafe_writable_root_character,
+    merge_writable_roots,
     read_codex_rollout_state,
     read_latest_codex_rollout_state,
     safe_copy_file,
@@ -141,6 +142,10 @@ class ActiveRun:
     # A chat reply's turn-start notes view; None for Auto and compaction turns.
     chat_notes_seen: tuple[str, ...] | None = None
     resumed: bool = False
+    # The effective writable roots (project-relative) this turn started with.
+    # Roots may be saved mid-turn (design 2026-11-15), which resets the native
+    # session on disk; finalize must not write the old id back.
+    start_roots: tuple[str, ...] | None = None
     task: asyncio.Task[None] | None = None
     captured: bytearray = field(default_factory=bytearray)
     stderr_tail: bytearray = field(default_factory=bytearray)
@@ -605,6 +610,7 @@ class RunManager:
 
         # Re-creates flagged missing roots first (design 2026-11-09).
         writable_roots = store.prepare_session_writable_roots(session_id)
+        start_roots = self._effective_roots(store, config)
         # Read per turn, so a Settings edit reaches the next turn, running
         # Auto runs included (design 2026-11-03). Before allocate_round: an
         # unreadable file refuses the turn without leaving a round behind.
@@ -936,6 +942,7 @@ class RunManager:
             chat_notes_seen=chat_notes_seen,
             resumed=resume_id is not None,
             warnings=list(record.warnings),
+            start_roots=start_roots,
         )
         self._active[key] = active
         try:
@@ -1847,6 +1854,15 @@ class RunManager:
             if not active.completion.done():
                 active.completion.set_exception(exc)
 
+    @staticmethod
+    def _effective_roots(store: ProjectStore, config: SessionConfig) -> tuple[str, ...] | None:
+        """Project plus agent roots; None when they cannot be read (treated as changed)."""
+
+        try:
+            return tuple(merge_writable_roots(store.effective_writable_roots(), config.writable_roots))
+        except (StorageError, OSError):
+            return None
+
     async def _finalize_locked(
         self,
         active: ActiveRun,
@@ -1963,6 +1979,11 @@ class RunManager:
             # summarization request, so a failed compaction that adopted it
             # would silently rebind the conversation to that request.
             active.config.cli_session_id = active.cli_session_id
+        current_roots = self._effective_roots(active.store, active.config)
+        if current_roots is None or current_roots != active.start_roots:
+            # The provider session (old or just returned) was made with other
+            # roots; the next turn starts a fresh one, as a save between turns does.
+            active.config.cli_session_id = None
         if active.compact and status == "complete":
             # Before the save, so the artifact and the new boundary commit
             # together or not at all.

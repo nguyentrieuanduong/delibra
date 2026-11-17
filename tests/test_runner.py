@@ -2670,3 +2670,60 @@ async def test_a_failed_turn_logs_a_warning_without_its_text(tmp_path, caplog) -
         f"category {record.error_category}"
     ) in lines
     assert not any("SECRET" in line for line in lines)
+
+
+def _save_roots_mid_turn(monkeypatch: pytest.MonkeyPatch, store: ProjectStore, roots: list[str]) -> None:
+    """Save project writable roots while the turn's process streams (no lock held)."""
+
+    real = FakeAdapter.parse_line
+    done: list[bool] = []
+
+    def parse_line(self, line):
+        if not done:
+            done.append(True)
+            store.set_writable_roots(roots)
+        return real(self, line)
+
+    monkeypatch.setattr(FakeAdapter, "parse_line", parse_line)
+
+
+@pytest.mark.asyncio
+async def test_a_roots_save_during_a_turn_still_resets_the_native_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    (store.project_path / "out").mkdir()
+    first = await manager.wait(await manager.start(project_id, session_id, "One"))
+    assert first.status == "complete"
+    assert store.load_session(session_id).cli_session_id is not None
+
+    _save_roots_mid_turn(monkeypatch, store, ["out"])
+    second = await manager.wait(await manager.start(project_id, session_id, "Two"))
+    assert second.status == "complete"
+    # The id this turn returned was made with the old roots: never resumed.
+    assert store.load_session(session_id).cli_session_id is None
+
+    await manager.wait(await manager.start(project_id, session_id, "Three"))
+    assert contexts[-1].resume_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_roots_save_during_an_auto_turn_still_resets_the_native_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    (store.project_path / "out").mkdir()
+    config = store.load_session(session_id)
+    config.cli_session_id = "preserved-native-session"
+    store.save_session(config)
+    auto_record = create_runner_auto_record(store, session_id, status="preparing")
+
+    _save_roots_mid_turn(monkeypatch, store, ["out"])
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(
+            project_id, session_id, auto_run_request(store, auto_record, phase="preparation")
+        )
+    await manager.wait(key)
+
+    assert store.load_session(session_id).cli_session_id is None
