@@ -3203,3 +3203,22 @@ def test_every_docker_action_button_locks_live_with_auto(tmp_path, monkeypatch, 
         assert "data-disable-during-auto" in button, label
         assert ("disabled" in button.replace("data-disable-during-auto", "")) is auto_active, label
         assert ('data-auto-disabled="true"' in button) is auto_active, label
+
+
+def test_the_coding_tab_orders_its_sections(tmp_path, monkeypatch) -> None:
+    # User decision 2026-11-18: mode and its environment, Docker, guidance and
+    # skills, Git ignore list, downloads, network access.
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings/coding").text
+
+    markers = [
+        'id="coding-mode-heading"', 'class="coding-env-status"', 'id="docker-heading"',
+        'id="coding-guidance-heading"', 'id="coding-git-exclude-heading"',
+        'id="coding-downloads-heading"', 'id="coding-network-heading"',
+    ]
+    positions = [page.index(marker) for marker in markers]
+    assert positions == sorted(positions), list(zip(markers, positions))
+    mode_form_end = page.index("</form>", positions[0])
+    # The environment line sits right under the coding mode form.
+    assert page[mode_form_end + len("</form>"):positions[1]].strip().startswith("<p")
