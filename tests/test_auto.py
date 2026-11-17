@@ -7202,3 +7202,58 @@ async def test_an_os_error_in_the_turn_skills_refresh_becomes_the_turn_warning(
     warnings = [turn.warning or "" for turn in terminal.discussion]
     assert any(w.startswith("Skills were not refreshed: ") for w in warnings), warnings
     assert (store.root / "skills" / "build").is_dir()
+
+@pytest.mark.asyncio
+async def test_discussion_and_preparation_turns_pick_up_chat_skills_saved_mid_run(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("P1", "agree"), PlannedOutput("P2", "agree"),
+                   PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("C", "agree")]
+    )
+    chat = _chat_skill_file(tmp_path, "Old.")
+    store.set_chat_skills([str(chat)])
+    started = asyncio.Event()
+    factory.on_call = lambda index: started.set() if index == 0 else None
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=2, preparation_enabled=True,
+    )
+    await started.wait()
+    chat.write_text("---\nname: vi\ndescription: New.\n---\n")  # changed while preparation 1 runs
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert b"Old." in factory.calls[0]["material"]
+    assert b"New." in factory.calls[1]["material"]  # the second preparation turn
+    assert all(b"New." in call["material"] for call in factory.calls[2:])  # discussion turns
+
+
+@pytest.mark.asyncio
+async def test_the_skills_refresh_precedes_the_compaction_decision(tmp_path, monkeypatch) -> None:
+    # The decision may render and freeze the turn's context, Skills index included.
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree"),
+                   PlannedOutput("B", "agree")]
+    )
+    store.set_chat_skills([str(_chat_skill_file(tmp_path, "Skill."))])
+    order: list[str] = []
+    refresh, decision = manager._refresh_turn_skills, manager._compaction_decision
+
+    async def recorded_refresh(*args):
+        order.append("refresh")
+        return await refresh(*args)
+
+    def recorded_decision(*args):
+        order.append("decision")
+        return decision(*args)
+
+    monkeypatch.setattr(manager, "_refresh_turn_skills", recorded_refresh)
+    monkeypatch.setattr(manager, "_compaction_decision", recorded_decision)
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=2, preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    decisions = [index for index, step in enumerate(order) if step == "decision"]
+    assert len(decisions) == len(terminal.discussion)
+    assert all(index > 0 and order[index - 1] == "refresh" for index in decisions), order
