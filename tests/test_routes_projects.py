@@ -2808,19 +2808,28 @@ def test_a_refused_coding_form_pops_up_and_keeps_the_typed_text(tmp_path, monkey
 
 
 @pytest.mark.parametrize(
-    "path, data",
+    "path, field, value, saved",
     [
-        ("/writable-roots", {"writable_roots": "out"}),
-        ("/coding/network", {"network_allowlist": "example.org"}),
-        ("/coding/downloads", {"downloads_folder": "other/raw", "downloads_enabled": "true"}),
-        ("/coding/guidance", {"guidance_files": ""}),
-        ("/chat-skills", {"chat_skills": ""}),
-        ("/coding/git-exclude", {"git_exclude": "out/"}),
+        ("/writable-roots", "writable_roots", "out", lambda s, t: s.effective_writable_roots() == ["out"]),
+        ("/coding/network", "network_allowlist", "example.org",
+         lambda s, t: s.coding_policy().network_allowlist == ["example.org"]),
+        ("/coding/downloads", "downloads_folder", "other/raw",
+         lambda s, t: (s.coding_policy().downloads.folder, s.coding_policy().downloads.enabled) == ("other/raw", True)),
+        ("/coding/guidance", "guidance_files", "{guide}",
+         lambda s, t: s.coding_policy().guidance_files == [str(t / "guide.md")]),
+        ("/chat-skills", "chat_skills", "{guide}", lambda s, t: s.chat_skills() == [str(t / "guide.md")]),
+        ("/coding/git-exclude", "git_exclude", "out/", lambda s, t: s.coding_policy().git_exclude == ["out/"]),
     ],
 )
-def test_next_turn_settings_save_while_auto_and_agents_run(tmp_path, monkeypatch, path, data) -> None:
+def test_next_turn_settings_save_while_auto_and_agents_run(
+    tmp_path, monkeypatch, path, field, value, saved
+) -> None:
     app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
     (project_dir / "out").mkdir()
+    (tmp_path / "guide.md").write_text("# Guide\n")
+    data = {field: value.format(guide=tmp_path / "guide.md")}
+    if field == "downloads_folder":
+        data["downloads_enabled"] = "true"
 
     def active(_self) -> None:
         raise ConflictError("an Auto run is active")
@@ -2832,6 +2841,7 @@ def test_next_turn_settings_save_while_auto_and_agents_run(tmp_path, monkeypatch
         response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
 
     assert response.status_code == 303
+    assert saved(ProjectStore(project), tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -2842,7 +2852,11 @@ def test_next_turn_settings_save_while_auto_and_agents_run(tmp_path, monkeypatch
     ],
 )
 def test_locked_settings_refuse_while_auto_runs(tmp_path, monkeypatch, path, data) -> None:
-    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    if path == "/coding/docker":
+        store.set_coding_enabled(True)  # so only the lock can refuse it
+    before = store.manifest_path.read_bytes()
 
     def active(_self) -> None:
         raise ConflictError("an Auto run is active")
@@ -2852,7 +2866,7 @@ def test_locked_settings_refuse_while_auto_runs(tmp_path, monkeypatch, path, dat
         response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
 
     assert response.status_code == 409
-
+    assert store.manifest_path.read_bytes() == before  # nothing written (AC 3)
 
 
 def test_a_download_policy_saved_mid_run_reaches_the_next_turn(tmp_path, monkeypatch) -> None:
