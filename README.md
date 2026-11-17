@@ -112,12 +112,15 @@ than silently falling back to the restrictive default.
   WAN/any-network setting, which gives up DNS-rebinding protection entirely.
   Use a named entry or a range unless you genuinely cannot.
 
-The **Settings** page (header link, this machine only) edits both lists and the
-build guidance presets, writes `config.json`, and applies the change to the
+The **Settings** page (header link, this machine only) has three tabs, each
+its own page with its own Save button: **Access** (`/settings`, both lists),
+**Instruction** (`/settings/instruction`, the global instruction below) and
+**Presets** (`/settings/presets`, build guidance presets). Access and Presets
+each write only their own keys of `config.json` and apply the change to the
 next request without a restart. A list whose environment variable is set is
 shown read-only. Hand edits to `config.json` still need a restart.
 
-**Global instruction.** Settings also holds one instruction text (at most
+**Global instruction.** The **Instruction** tab holds one instruction text (at most
 64 KB, saved to `$DELIBRA_HOME/instructions.md`) added to the system prompt
 of every agent turn (chat, Auto discussion and Auto build) before the
 agent's role instructions. Delibra runs Claude without its setting sources
@@ -125,7 +128,7 @@ and Codex with its own `CODEX_HOME`, so `~/.claude/CLAUDE.md` and
 `~/.codex/AGENTS.md` never reach Delibra agents; put what they should
 follow here. It is read when each turn starts, so an edit reaches running
 Auto runs from their next turn. A project can switch it off under
-**Global instruction** in its settings. If the file is unreadable (over
+**Global instruction** on its General settings tab. If the file is unreadable (over
 64 KB or not UTF-8), turns in projects that use it are refused until it is
 fixed.
 
@@ -153,8 +156,42 @@ keyboard-accessible focus dialog. Its toolbar holds **Fit width**, which widens
 the dialog to the browser tab, **Fit window**, which fills the tab's width and
 height, and **Close**; press an active fit button again for the default size.
 Each time the dialog opens, it starts at the default size. **Manage** opens
-project and agent settings. The footer starts in a checking state, then reports missing CLIs and version drift
+the project's settings (see "Project settings"). The footer starts in a checking state, then reports missing CLIs and version drift
 without delaying or preventing the rest of the UI from loading.
+
+## Project settings
+
+A project's settings are split into tabs, each its own page:
+
+| Tab | URL | Holds |
+|---|---|---|
+| General | `/projects/<name>/settings` (also `/settings/general`) | Default message turn time limit, writable project directories, use of the global instruction, skills for chat and discussion |
+| Prompts | `/settings/prompts` | Default Pass prompt |
+| Coding | `/settings/coding` | Coding mode, Git ignore list, environment, build guidance and skills, command network access, Delibra downloads, Docker |
+| Agents | `/settings/agents` | Create agent, agent cards (edit, delete, permanent name) |
+| Reset | `/settings/reset` | Refresh (new phase), Clear and reset |
+
+Every save returns to the tab of its form. A refused save stays on that tab,
+keeps what you typed and pops up the reason as a browser alert ("Nothing was
+saved: …"). Leaving a tab with an edited, unsaved form asks first. The Coding
+tab has one form per part (coding mode, Git ignore list, build guidance and
+skills, network access, downloads), so saving one part never changes another.
+
+Each section says when a change takes effect:
+
+| Rule | Line shown | Settings |
+|---|---|---|
+| Now | Applies from its next use. | Access lists; presets (copied only when a Use button is pressed); Default Pass prompt; default turn time limit (new messages and new Auto runs) |
+| Next turn | A running Auto run uses this from its next turn. | Use of the global instruction; the global instruction text; writable project directories; command network access; downloads (all fields, folder included); chat skills; build skills |
+| Next commit | A running Auto run uses this from its next build commit. | Git ignore list |
+| Next run | A running Auto run keeps what it started with; new runs use this. | Build guidance files |
+| Locked | Locked while an Auto run is active. | Coding on/off; Docker (all actions); creating, editing and deleting agents; Reset |
+
+While an Auto run is active, the Coding, Agents and Reset tabs show which of
+their settings are locked ("Auto run #N is active: … locked until it ends.").
+The line checks every 5 seconds while the tab is visible and appears and clears
+without a reload; those checks are left out of the terminal's access log. A
+turn already running keeps what it started with.
 
 ## Workflow and storage
 
@@ -478,7 +515,7 @@ nothing. Both operations require the session idle and no Auto running, and the
 next Auto run honours them: cleared rounds do not return to `baseline.md`, and a
 compacted session contributes its summary instead of the rounds it replaced.
 
-**Reset** on the Manage page has two parts. **Refresh (new phase)** clears
+The **Reset** tab of project settings has two parts. **Refresh (new phase)** clears
 earlier work without archiving it: **Dismiss all questions** dismisses every
 open and answered question (restorable, answers kept), **Delete all notes**
 deletes the notes history and every agent's chat notes, **Clear all context**
@@ -733,7 +770,9 @@ Settings preset that has skills. Coding mode does not need to be on. Chat
 replies and Auto discussion runs (discussion and preparation turns) read it
 from `.delibra/skills/chat/`. A chat reply rewrites that folder when a file
 changed, unless another agent of the project is running a turn at that moment.
-Then it uses the current copy, and a later reply catches up. Chat replies are
+Then it uses the current copy, and a later reply catches up. An Auto discussion
+run refreshes it at the start of every turn, so the list can be saved while a
+run is active. Chat replies are
 told about the index through their system instructions, so the recorded prompt
 stays what you typed. In chat you approve a skill's steps yourself. In
 discussion runs the other agents stand in, as in build runs. Build runs never
@@ -742,7 +781,7 @@ characters Claude's read rules cannot express cannot save a chat list.
 
 ## Coding mode and build runs
 
-Each project has a **Coding** setting on its Settings page. It is off by default,
+Each project has a **Coding** tab in its settings. Coding mode is off by default,
 and only this machine (a loopback client) can change it. While it is off, every
 agent keeps the capabilities described in "Isolation and security boundary".
 
@@ -775,18 +814,22 @@ Turning it on does three things:
   files and 256 KB) are pasted into every build turn, so they cost tokens on
   every turn. **Skills agents can read** (at most 512 files and 4 MB) are
   copied read-only into `.delibra/skills/build/` (never committed; rewritten
-  at a run's start or Continue only when a listed file changed; runs made
+  at the start of every Auto turn when a listed file changed; runs made
   before 2026-11-02 keep their own copy) with an index of each skill's name,
   path and description; agents
   read a skill when they need it, and a skill's `references/` files sit beside
   its `SKILL.md`. For a skill suite with a router skill, paste the router (for
-  code-craft, `using-code-craft/SKILL.md`) and list the rest as skills. Both
-  lists are snapshotted when a run starts. Approval steps in them (for example
+  code-craft, `using-code-craft/SKILL.md`) and list the rest as skills. Guidance
+  files are snapshotted when a run starts. Skills may change during a run: the
+  folder is rebuilt beside the old one and swapped in at the next turn's start,
+  so a running turn keeps its files; if the rebuild fails (a file removed, or
+  the index too large) the old folder stays and that turn shows
+  `Skills were not refreshed: <reason>`. Approval steps in them (for example
   "wait for the user to approve the design") are taken by the other agents;
   you are asked, as a blocking question, only if they have not agreed within
   3 cycles. Leave out finishing-work and using-git-worktrees: they merge,
   push or work outside the project, and Delibra makes the build commits.
-  Presets made on **Settings** (header link, this machine only) add a **Use
+  Presets made on the **Presets** tab of **Settings** (header link, this machine only) add a **Use
   <name> guidance** button that sets both lists. A preset holds fixed lists:
   **Choose pasted files…** and **Choose skills…** browse this machine's
   folders, where you tick files or folders and add them; a folder adds the
@@ -869,7 +912,9 @@ Known limits:
   and OS files) until edited. Saving with coding on in a Git repository writes
   `/.delibra/`, `/envs/` and that list to `.git/info/exclude` (local to the
   clone, never committed). The list lives between `# >>> Delibra coding mode`
-  and `# <<< Delibra coding mode` markers and is rewritten on every Coding save;
+  and `# <<< Delibra coding mode` markers and is rewritten when coding mode, the
+  Git ignore list or downloads are saved with coding on (a list saved during a
+  run applies from its next build commit);
   lines outside the markers are left alone. For a project below the repository
   root, the patterns are confined to the project. Ignored files are never
   committed by build turns, and `git status` hides them in that clone too; this
@@ -922,7 +967,7 @@ Residual risks (the UI repeats them):
 ### Delibra downloads (build runs)
 
 Build agents reach only their allowlisted hosts from the shell, and research
-hosts are rarely known in advance. With Settings → Coding → **Delibra
+hosts are rarely known in advance. With project settings → Coding → **Delibra
 downloads** on, a build agent asks Delibra to fetch a file instead: Delibra
 checks the URL, waits for your approval (by default), and downloads it from
 outside the sandbox into the project. The sandbox network stays closed.
