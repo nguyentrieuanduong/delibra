@@ -7170,8 +7170,16 @@ async def test_the_turn_skills_refresh_runs_under_the_project_lock_and_skips_a_h
     assert await manager._refresh_turn_skills(store, terminal) is None  # converged: halted
     stopping = store.load_auto_run(created.id)
     stopping.status, stopping.stop_requested = "discussing", True
+    store.save_auto_run(stopping)
     assert await manager._refresh_turn_skills(store, stopping) is None
     assert held == []
+    # Stop after this turn can still be withdrawn ("Keep going") before the
+    # guard runs, so the refresh must not be skipped for it.
+    graceful = store.load_auto_run(created.id)
+    graceful.stop_requested, graceful.stop_after_turn = False, True
+    store.save_auto_run(graceful)
+    await manager._refresh_turn_skills(store, graceful)
+    assert held == [True]
 
 
 @pytest.mark.asyncio

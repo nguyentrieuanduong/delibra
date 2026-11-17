@@ -3408,11 +3408,12 @@ class AutoManager:
             return None  # a run from before the shared folders keeps its own copy
         async with self.locks.project_sessions(record.project_id):
             current = store.load_auto_run(record.id)
+            # Not stop_after_turn: "Keep going" can withdraw it before the turn's
+            # guard runs, and that turn must not read stale skills.
             if (
                 self._quiescing
                 or current.status not in ("preparing", "discussing")
                 or current.stop_requested
-                or current.stop_after_turn
             ):
                 return None
             try:
