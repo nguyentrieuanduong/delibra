@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import types
 from urllib.parse import quote
 
 import httpx
@@ -1244,7 +1245,7 @@ def test_project_writable_roots_union_cap_is_atomic_for_existing_agent(
 
 
 @pytest.mark.parametrize("manager_name", ["manager", "auto_manager"])
-def test_project_writable_roots_reject_in_memory_work(
+def test_project_writable_roots_save_during_in_memory_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     manager_name: str,
@@ -1254,7 +1255,6 @@ def test_project_writable_roots_reject_in_memory_work(
     (project_path / "src").mkdir(parents=True)
     project = RegistryStore(settings.home).register("Writable", project_path)
     store = ProjectStore(project)
-    before = store.manifest_path.read_bytes()
 
     with TestClient(app, base_url="http://localhost") as client:
         manager = getattr(app.state, manager_name)
@@ -1265,8 +1265,8 @@ def test_project_writable_roots_reject_in_memory_work(
             follow_redirects=False,
         )
 
-    assert response.status_code == 409
-    assert store.manifest_path.read_bytes() == before
+    assert response.status_code == 303
+    assert store.effective_writable_roots() == ["src"]
 
 
 def test_project_writable_roots_update_and_clear_around_stale_agent_addition(
@@ -2805,3 +2805,74 @@ def test_a_refused_coding_form_pops_up_and_keeps_the_typed_text(tmp_path, monkey
     assert ">https://pypi.org</textarea>" in response.text
     assert 'aria-current="page">Coding</a>' in response.text
     assert ProjectStore(project).coding_policy().network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
+
+
+@pytest.mark.parametrize(
+    "path, data",
+    [
+        ("/writable-roots", {"writable_roots": "out"}),
+        ("/coding/network", {"network_allowlist": "example.org"}),
+        ("/coding/downloads", {"downloads_folder": "other/raw", "downloads_enabled": "true"}),
+        ("/coding/guidance", {"guidance_files": ""}),
+        ("/chat-skills", {"chat_skills": ""}),
+        ("/coding/git-exclude", {"git_exclude": "out/"}),
+    ],
+)
+def test_next_turn_settings_save_while_auto_and_agents_run(tmp_path, monkeypatch, path, data) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    (project_dir / "out").mkdir()
+
+    def active(_self) -> None:
+        raise ConflictError("an Auto run is active")
+
+    monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        # The lifespan creates the managers, so patch them once the client is up.
+        monkeypatch.setattr(type(app.state.manager), "has_active_project", lambda _self, _pid: True)
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    assert response.status_code == 303
+
+
+@pytest.mark.parametrize(
+    "path, data",
+    [
+        ("/coding", {"enabled": "true"}),
+        ("/coding/docker", {"enabled": "true"}),
+    ],
+)
+def test_locked_settings_refuse_while_auto_runs(tmp_path, monkeypatch, path, data) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+
+    def active(_self) -> None:
+        raise ConflictError("an Auto run is active")
+
+    monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    assert response.status_code == 409
+
+
+
+def test_a_download_policy_saved_mid_run_reaches_the_next_turn(tmp_path, monkeypatch) -> None:
+    from app.auto import AutoManager
+
+    _app, project, _dir, _prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, folder="raw", approval="manual")
+    store.replace_coding_policy(policy)
+    manager = types.SimpleNamespace(
+        downloads=object(), settings=types.SimpleNamespace(build_tmp_root=tmp_path / "build")
+    )
+    record = types.SimpleNamespace(kind="build")
+    participant = types.SimpleNamespace(session_id="d" * 32, agent="codex")
+
+    first, _ = AutoManager._download_policy(manager, store, record, participant)
+    policy.downloads = DownloadPolicy(enabled=True, folder="other", approval="automatic")
+    store.replace_coding_policy(policy)
+    second, _ = AutoManager._download_policy(manager, store, record, participant)
+
+    assert (first.folder, first.approval) == ("raw", "manual")
+    assert (second.folder, second.approval) == ("other", "automatic")

@@ -164,3 +164,52 @@ def test_a_project_without_a_skills_folder_has_no_index(tmp_path: Path) -> None:
     assert read_skill_index(root, "chat") is None
     assert read_skill_index(root, "build") is None
     assert not (root / "skills").exists()
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    skills = root / "skills"
+    return {
+        str(path.relative_to(skills)): path.read_bytes()
+        for path in sorted(skills.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_an_oversized_new_index_leaves_the_old_folder_untouched(tmp_path: Path) -> None:
+    root = _delibra(tmp_path)
+    paths = _suite(tmp_path / "src")
+    refresh_skill_folder(root, "build", paths[:1])
+    before = _tree(root)
+
+    with pytest.raises(StorageError, match="would exceed 10 bytes"):
+        refresh_skill_folder(root, "build", paths, max_index_bytes=10)
+
+    assert _tree(root) == before
+
+
+def test_a_copy_failure_after_the_first_file_leaves_the_old_folder_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.skill_folders as module
+
+    root = _delibra(tmp_path)
+    paths = _suite(tmp_path / "src")
+    refresh_skill_folder(root, "build", paths[:1])
+    before = _tree(root)
+    real = module.atomic_write_bytes
+    writes: list[Path] = []
+
+    def fail_second(path: Path, data: bytes, *args: object, **kwargs: object) -> None:
+        writes.append(path)
+        if len(writes) == 2:
+            raise OSError("disk full")
+        real(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(module, "atomic_write_bytes", fail_second)
+    with pytest.raises(StorageError, match="disk full"):
+        refresh_skill_folder(root, "build", paths)
+
+    assert _tree(root) == before
+    assert sorted(path.name for path in (root / "skills").iterdir()) == [
+        "build", "build-index.md", "build.sha256"
+    ]

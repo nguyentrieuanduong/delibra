@@ -1431,7 +1431,10 @@ class AutoManager:
                     if not record.preparation_enabled:
                         await self._begin_discussion(record)
                     elif record.next_participant < len(record.participants):
-                        await self._run_preparation(record)
+                        skills_warning = await self._refresh_turn_skills(
+                            ProjectStore(self.registry.get(project_id)), record
+                        )
+                        await self._run_preparation(record, skills_warning=skills_warning)
                     else:
                         await self._begin_discussion(record)
                     continue
@@ -1447,6 +1450,9 @@ class AutoManager:
                     # A sibling step, never inside the post-turn locked block:
                     # that block must not make provider calls.
                     store = ProjectStore(self.registry.get(project_id))
+                    # Before any rendering below, so the turn's Skills index
+                    # and the folder it names agree.
+                    skills_warning = await self._refresh_turn_skills(store, record)
                     if record.kind == "build":
                         due, frozen = await self._build_compaction_due(store, record), None
                     else:
@@ -1454,7 +1460,9 @@ class AutoManager:
                     if due:
                         await self._run_context_operation(record)
                         continue
-                    await self._run_discussion(record, context=frozen)
+                    await self._run_discussion(
+                        record, context=frozen, skills_warning=skills_warning
+                    )
                     continue
                 return
             await self._transition_terminal(
@@ -1606,7 +1614,9 @@ class AutoManager:
             return True
         return False
 
-    async def _run_preparation(self, record: AutoRunRecord) -> None:
+    async def _run_preparation(
+        self, record: AutoRunRecord, *, skills_warning: str | None = None
+    ) -> None:
         from app.runner import AutoRunRequest
 
         project = self.registry.get(record.project_id)
@@ -1717,6 +1727,7 @@ class AutoManager:
                         cycle=None,
                         position=current.next_participant,
                         output_sha256=digest,
+                        warning=skills_warning,
                         timeout=deepcopy(result.timeout),
                     )
                 )
@@ -2217,6 +2228,7 @@ class AutoManager:
         record: AutoRunRecord,
         *,
         context: bytes | None = None,
+        skills_warning: str | None = None,
     ) -> None:
         attempt = 0
         while True:
@@ -2226,6 +2238,7 @@ class AutoManager:
                 record,
                 attempt,
                 context if attempt == 0 else None,
+                skills_warning=skills_warning,
             ) != "retry":
                 return
             attempt += 1
@@ -2254,6 +2267,8 @@ class AutoManager:
         record: AutoRunRecord,
         attempt: int,
         frozen_context: bytes | None = None,
+        *,
+        skills_warning: str | None = None,
     ) -> Literal["done", "retry"]:
         from app.runner import AutoRunRequest
 
@@ -2508,6 +2523,7 @@ class AutoManager:
                         warning="; ".join(
                             item
                             for item in (
+                                skills_warning,
                                 build_warning,
                                 unavailable,
                                 download_unavailable,
@@ -3374,6 +3390,28 @@ class AutoManager:
             _untrusted_section("Skills", turn_skills[1]) if turn_skills is not None else b""
         )
         return section + self._discussion_context(store, record, reserve=len(section))
+
+    async def _refresh_turn_skills(self, store: ProjectStore, record: AutoRunRecord) -> str | None:
+        """Bring the run's skill folder up to the saved list before a turn reads it.
+
+        User decision 2026-11-16: skills may change during a run. Between Auto turns no
+        turn reads the folder (manual sends are refused while Auto is active), so the
+        swap is safe here. Returns a turn warning when the refresh fails; the refresh is
+        all or nothing (Task 5.6a), so the previous folder and index stay byte-identical.
+        """
+
+        if store.skills_dir(record.id).is_dir():
+            return None  # a run from before the shared folders keeps its own copy
+        mode = skill_mode(record.kind)
+        paths = store.coding_policy().guidance_skills if mode == "build" else store.chat_skills()
+        try:
+            await asyncio.to_thread(
+                refresh_skill_folder, store.root, mode, paths,
+                rewrite=True, max_index_bytes=SKILLS_INDEX_MAX_BYTES,
+            )
+        except StorageError as exc:
+            return f"Skills were not refreshed: {exc}"
+        return None
 
     def _turn_skills(
         self, store: ProjectStore, record: AutoRunRecord

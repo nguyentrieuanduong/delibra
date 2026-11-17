@@ -39,7 +39,7 @@
     </label>
     {{ browse_button(project_url(project.name, "/browse"), "project-writable-roots") }}
     <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if create_missing_writable_roots %} checked{% endif %}> Create directories that don't exist</label>
-    <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Save writable roots</button>
+    <button type="submit">Save writable roots</button>
   </form>
 </section>
 <section aria-labelledby="global-instruction-heading">

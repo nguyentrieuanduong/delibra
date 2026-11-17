@@ -352,17 +352,16 @@ async def save_writable_roots(
     project = request_project(request, project_id)
     resolved_project_id = project.id
     try:
+        # Next turn (design 2026-11-15/16): turns read these when they start.
         async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-            _reject_in_memory_work(request, resolved_project_id)
             project = request.app.state.registry.get(resolved_project_id)
             store = ProjectStore(project)
-            store.require_auto_inactive()
             store.set_writable_roots(
                 _writable_roots_field(writable_roots),
                 create_missing=create_missing_writable_roots,
             )
     except (ConflictError, NotFoundError):
-        raise  # Active work, Auto, or a gone project keep their 409/404.
+        raise  # A conflict or a gone project keep their 409/404.
     except StorageError as exc:
         message = str(exc)
         return await render_project_settings(
@@ -1047,11 +1046,10 @@ async def save_chat_skills(
             paths = (await asyncio.to_thread(preset_guidance_lists, preset))[1]
         else:
             paths = await asyncio.to_thread(normalize_skill_paths, lines)
+        # Next turn (design 2026-11-15/16): turns read these when they start.
         async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-            _reject_in_memory_work(request, resolved_project_id)
             project = request.app.state.registry.get(resolved_project_id)
             store = ProjectStore(project)
-            store.require_auto_inactive()
             store.set_chat_skills(paths)
     except (CodingPolicyError, StorageError) as exc:
         message = str(exc)

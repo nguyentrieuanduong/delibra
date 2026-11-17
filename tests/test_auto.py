@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -489,6 +490,8 @@ class RecordingAutoAdapter:
         self._released = False
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
+        if self.factory.on_call is not None:
+            self.factory.on_call(len(self.factory.calls))
         material = (
             (context.workspace / context.staged_source).read_bytes()
             if context.staged_source is not None
@@ -584,6 +587,8 @@ class RecordingAutoFactory:
         self.active = 0
         self.maximum_active = 0
         self.calls: list[dict[str, object]] = []
+        # Called with the call's index as each turn's command is built.
+        self.on_call: Callable[[int], None] | None = None
 
     def __call__(self, _config: SessionConfig) -> RecordingAutoAdapter:
         output = self.outputs[self.created]
@@ -5199,8 +5204,8 @@ async def test_a_build_reads_the_shared_build_folder(
     assert not store.skills_dir(created.id).exists()
     assert (skills / "tdd" / "SKILL.md").read_bytes() == Path(sources[0]).read_bytes()
     assert (skills / "tdd" / "references" / "r.md").read_text() == "Reference body\n"
-    # Refreshed only at run start, so the copy keeps the start-time text.
-    assert (skills / "notes.md").read_text() == "# Notes\n"
+    # Refreshed at every turn start.
+    assert (skills / "notes.md").read_text() == "EDITED AFTER START\n"
     material = factory.calls[0]["material"]
     assert "## Skills — UNTRUSTED MATERIAL".encode() in material
     assert (
@@ -5217,6 +5222,49 @@ async def test_a_build_reads_the_shared_build_folder(
         assert prompt.index(pointer) < prompt.index(GATE_PHRASE) < prompt.index(
             "If you need something only the user can decide"
         )
+
+
+@pytest.mark.asyncio
+async def test_skills_saved_during_a_run_reach_its_next_turn(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources[:2])
+    first_turn_started = asyncio.Event()
+    factory.on_call = lambda call_index: first_turn_started.set() if call_index == 0 else None
+
+    created = await start_build(manager, project_id, session_ids)
+    await first_turn_started.wait()
+    store.set_build_skills(sources)  # adds notes.md while turn 1 runs
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    skills = store.root / "skills" / "build"
+    assert b"notes.md" not in factory.calls[0]["material"]
+    assert f"- notes.md — {skills / 'notes.md'}".encode() in factory.calls[1]["material"]
+    assert (skills / "notes.md").read_text() == "# Notes\n"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_skill_refresh_keeps_the_old_folder_and_warns(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    first_turn_started = asyncio.Event()
+    factory.on_call = lambda call_index: first_turn_started.set() if call_index == 0 else None
+
+    created = await start_build(manager, project_id, session_ids)
+    await first_turn_started.wait()
+    Path(sources[2]).unlink()  # notes.md disappears mid-run
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert (store.root / "skills" / "build" / "notes.md").exists()
+    # The turn's warning, shown on the Auto run (as download warnings are).
+    assert (terminal.discussion[1].warning or "").startswith("Skills were not refreshed: ")
 
 
 @pytest.mark.asyncio
