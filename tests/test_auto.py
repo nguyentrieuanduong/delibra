@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import logging
 from pathlib import Path
 import re
 import subprocess
@@ -7042,3 +7043,40 @@ async def test_download_records_lost_mid_run_skip_the_turn_commit(tmp_path, monk
     terminal = await wait_for_auto_terminal(manager, project_id, created.id)
     assert "download records are unreadable; commits disabled" in (terminal.discussion[0].warning or "")
     assert git_head(root) == initial
+
+
+@pytest.mark.asyncio
+async def test_auto_runs_log_their_start_and_end_without_content(tmp_path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="app.auto")
+    manager, _factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("SECRET-A", "agree"), PlannedOutput("SECRET-B", "agree")]
+    )
+    created = await manager.create(
+        project_id, topic="SECRET topic", participant_ids=session_ids,
+        agreement_policy="first_agree", max_cycles=2, preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    lines = [record.getMessage() for record in caplog.records if record.name == "app.auto"]
+    assert f"Auto run {project_id} #{created.number} started: discussion, 2 participants" in lines
+    assert f"Auto run {project_id} #{created.number} ended: {terminal.status}" in lines
+    assert not any("SECRET" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_the_end_line_never_carries_the_provider_error_text(tmp_path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="app.auto")
+    manager, _factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("fails", provider_error=True)]
+    )
+    created = await manager.create(
+        project_id, topic="Failure", participant_ids=session_ids,
+        agreement_policy="first_agree", max_cycles=2, preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    # fake_cli's provider error text reaches the reason, so a leak would show here
+    assert "provider rejected request" in (terminal.terminal_reason or "")
+    lines = [record.getMessage() for record in caplog.records if record.name == "app.auto"]
+    assert f"Auto run {project_id} #{created.number} ended: error" in lines
+    assert not any("provider rejected request" in line for line in lines)

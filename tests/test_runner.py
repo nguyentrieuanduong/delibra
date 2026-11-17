@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import logging
 import os
 from pathlib import Path
 import shlex
@@ -2738,3 +2739,18 @@ async def test_a_downloads_build_turn_gets_the_request_spool(tmp_path, monkeypat
     assert spawn["tmp_entries"] == ["downloads", "questions"]
     temp = manager.settings.build_tmp_root / session_id
     assert (temp / "downloads" / "requests").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_logs_a_warning_without_its_text(tmp_path, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="app.runner")
+    manager, project_id, session_id, _store = setup_manager(tmp_path, mode="provider-error")
+
+    record = await manager.wait(await manager.start(project_id, session_id, "SECRET question"))
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "app.runner"]
+    assert (
+        f"Turn failed: project {project_id}, agent {session_id}, round {record.n}, "
+        f"category {record.error_category}"
+    ) in lines
+    assert not any("SECRET" in line for line in lines)

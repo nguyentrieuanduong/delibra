@@ -2082,6 +2082,11 @@ class RunManager:
         if output_persisted and metadata_persisted:
             active.partial_path.unlink(missing_ok=True)
         if record.status == "error":
+            # The category, never record.error: that text can quote agent output.
+            LOGGER.warning(
+                "Turn failed: project %s, agent %s, round %s, category %s",
+                active.key.project_id, active.key.session_id, record.n, record.error_category,
+            )
             self._publish(active, "error", record.error or "agent run failed")
         self._publish(active, "done", record.status)
 
