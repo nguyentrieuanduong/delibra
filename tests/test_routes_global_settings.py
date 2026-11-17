@@ -44,11 +44,13 @@ def test_only_this_machine_may_open_or_save_global_settings(tmp_path) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LAN) as client:
         page = client.get("/settings")
-        saved = client.post("/settings", data=form())
+        saved_access = client.post("/settings/access", data=form())
+        saved_presets = client.post("/settings/presets", data=form())
         index = client.get("/").text
 
     assert page.status_code == 403
-    assert saved.status_code == 403
+    assert saved_access.status_code == 403
+    assert saved_presets.status_code == 403
     assert page.json()["detail"] == "Only this machine may view or change global settings"
     assert 'href="/settings"' not in index
     assert not (tmp_path / "home" / "config.json").exists()
@@ -64,11 +66,12 @@ def test_the_page_shows_current_values_and_one_empty_preset(tmp_path, monkeypatc
         guidance_presets=(GuidancePreset("code-craft", ("~/skills/a.md", "/opt/delibra-gone.md")),),
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get("/settings").text
+        access = client.get("/settings").text
+        page = client.get("/settings/presets").text
         index = client.get("/").text
 
     assert 'href="/settings"' in index
-    assert ">192.168.1.0/24</textarea>" in page
+    assert ">192.168.1.0/24</textarea>" in access
     assert 'name="preset_name_0" value="code-craft"' in page
     assert (
         'id="preset-files-0" name="preset_files_0" value="~/skills/a.md\n/opt/delibra-gone.md"'
@@ -116,21 +119,25 @@ def test_saving_writes_config_keeps_other_keys_and_applies_presets(tmp_path, mon
     (home / "config.json").write_text(json.dumps({"extra": 1}), encoding="utf-8")
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved_access = client.post(
+            "/settings/access",
+            data={"allowed_clients": "", "allowed_hosts": "my-mac.local\n\n192.168.1.0/24"},
+            follow_redirects=False,
+        )
         saved = client.post(
-            "/settings",
-            data=form(
-                allowed_hosts="my-mac.local\n\n192.168.1.0/24",
-                preset_count="2",
-                preset_name_0=" zeta ",
-                preset_files_0=f"~/skills/a.md\n{tmp_path / 'b.md'}\n",
-                preset_name_1="",
-                preset_files_1="",
-            ),
+            "/settings/presets",
+            data={
+                "preset_count": "2",
+                "preset_name_0": " zeta ",
+                "preset_files_0": f"~/skills/a.md\n{tmp_path / 'b.md'}\n",
+                "preset_name_1": "",
+                "preset_files_1": "",
+            },
             follow_redirects=False,
         )
 
-    assert saved.status_code == 303
-    assert saved.headers["location"] == "/settings"
+    assert (saved_access.status_code, saved_access.headers["location"]) == (303, "/settings")
+    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/presets")
     assert config(tmp_path) == {
         "extra": 1,
         "allowed_clients": [],
@@ -150,7 +157,7 @@ def test_saved_client_list_applies_without_restart(tmp_path) -> None:
         # Shares the running app's state; only the peer address differs.
         peer = TestClient(app, base_url="http://localhost", client=("10.0.0.5", 5000))
         before = peer.get("/")
-        local.post("/settings", data=form(allowed_clients="10.0.0.0/8"))
+        local.post("/settings/access", data=form(allowed_clients="10.0.0.0/8"))
         after = peer.get("/")
 
     assert before.status_code == 403
@@ -162,7 +169,7 @@ def test_an_environment_variable_keeps_its_list_read_only(tmp_path, monkeypatch)
     app = make_app(tmp_path, allowed_hosts=("10.0.0.9",))
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get("/settings").text
-        client.post("/settings", data=form(allowed_hosts="evil.example"))
+        client.post("/settings/access", data=form(allowed_hosts="evil.example"))
 
     assert 'name="allowed_hosts" rows="4" maxlength="65536" disabled' in page
     assert "DELIBRA_ALLOWED_HOSTS is set and overrides this list" in page
@@ -195,7 +202,8 @@ def test_invalid_input_changes_nothing(tmp_path, fields, detail) -> None:
     (home / "config.json").write_text(original, encoding="utf-8")
     app = make_app(tmp_path, allowed_clients=("192.168.1.0/24",))
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post("/settings", data=form(**fields))
+        target = "/settings/access" if "allowed_clients" in fields else "/settings/presets"
+        response = client.post(target, data=form(**fields))
 
     assert response.status_code == 422
     sentence = detail[:1].upper() + detail[1:]
@@ -208,7 +216,7 @@ def test_invalid_input_changes_nothing(tmp_path, fields, detail) -> None:
 def test_a_preset_count_the_page_never_sends_is_refused(tmp_path) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post("/settings", data=form(preset_count="34"))
+        response = client.post("/settings/presets", data=form(preset_count="34"))
 
     assert response.status_code == 422
     assert response.json()["detail"] == "preset_count must be between 0 and 33"
@@ -225,9 +233,8 @@ def test_a_refused_save_shows_the_page_with_what_was_typed_and_chosen(
     app = make_app(tmp_path, guidance_presets=(GuidancePreset("old", ("~/skills/b.md",)),))
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            "/settings",
+            "/settings/presets",
             data=form(
-                allowed_hosts="my-mac.local",
                 preset_count="2",
                 preset_name_0="old",
                 preset_files_0="~/skills/b.md",
@@ -241,7 +248,6 @@ def test_a_refused_save_shows_the_page_with_what_was_typed_and_chosen(
     assert response.status_code == 422
     assert not (tmp_path / "home" / "config.json").exists()
     assert app.state.settings.guidance_presets == (GuidancePreset("old", ("~/skills/b.md",)),)
-    assert ">my-mac.local</textarea>" in page
     assert 'name="preset_remove_0" value="true" checked' in page
     assert 'id="preset-files-1" name="preset_files_1" value="~/skills/a.md"' in page
     assert "<code>~/skills/a.md</code> 2 KB" in page
@@ -264,7 +270,7 @@ def test_a_ticked_remove_drops_the_preset(tmp_path) -> None:
     app = make_app(tmp_path, guidance_presets=(GuidancePreset("old", ("/opt/a.md",)),))
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
-            "/settings",
+            "/settings/presets",
             data=form(preset_name_0="old", preset_files_0="/opt/a.md", preset_remove_0="true"),
         )
 
@@ -280,7 +286,7 @@ def test_a_preset_keeps_its_skills_list(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            "/settings",
+            "/settings/presets",
             data=form(
                 preset_name_0="suite",
                 preset_files_0="~/router.md",
@@ -288,9 +294,9 @@ def test_a_preset_keeps_its_skills_list(tmp_path, monkeypatch) -> None:
             ),
             follow_redirects=False,
         )
-        page = client.get("/settings").text
+        page = client.get("/settings/presets").text
         refused = client.post(
-            "/settings",
+            "/settings/presets",
             data=form(
                 preset_name_0="suite",
                 preset_files_0="~/router.md",
@@ -314,16 +320,16 @@ def test_an_unchanged_preset_with_a_missing_file_does_not_block_saving(tmp_path)
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            "/settings",
-            data=form(
-                allowed_hosts="my-mac.local",
-                preset_name_0="old",
-                preset_files_0="/opt/delibra-gone.md",
-            ),
+            "/settings/presets",
+            data=form(preset_name_0="old", preset_files_0="/opt/delibra-gone.md"),
             follow_redirects=False,
         )
+        # Saving the other tab is not blocked by the preset's missing file either.
+        access = client.post(
+            "/settings/access", data=form(allowed_hosts="my-mac.local"), follow_redirects=False
+        )
 
-    assert saved.status_code == 303
+    assert saved.status_code == 303 and access.status_code == 303
     assert config(tmp_path)["guidance_presets"] == {"old": {"files": ["/opt/delibra-gone.md"]}}
     assert app.state.settings.allowed_hosts == ("my-mac.local",)
 
@@ -490,7 +496,7 @@ def test_a_failed_config_write_shows_the_page_and_changes_nothing(tmp_path, monk
     monkeypatch.setattr(settings_routes, "write_config_file", full_disk)
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post("/settings", data=form(allowed_hosts="my-mac.local"))
+        response = client.post("/settings/access", data=form(allowed_hosts="my-mac.local"))
 
     assert response.status_code == 422
     assert ">my-mac.local</textarea>" in response.text
@@ -502,7 +508,7 @@ def test_a_failed_config_write_shows_the_page_and_changes_nothing(tmp_path, monk
 def test_an_access_list_longer_than_the_box_allows_is_refused(tmp_path, field) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post("/settings", data=form(**{field: "a" * 65537}))
+        response = client.post("/settings/access", data=form(**{field: "a" * 65537}))
 
     label = "Allowed clients" if field == "allowed_clients" else "Allowed hosts"
     assert response.status_code == 422
@@ -515,17 +521,17 @@ def test_an_access_list_longer_than_the_box_allows_is_refused(tmp_path, field) -
 def test_the_global_instruction_saves_and_shows(tmp_path) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        empty = client.get("/settings").text
+        empty = client.get("/settings/instruction").text
         saved = client.post(
             "/settings/global-instruction",
             data={"global_instruction": "Be concise.\r\n"},
             follow_redirects=False,
         )
-        page = client.get("/settings").text
+        page = client.get("/settings/instruction").text
 
     assert '<textarea name="global_instruction" rows="12" maxlength="65536"></textarea>' in empty
     assert saved.status_code == 303
-    assert saved.headers["location"] == "/settings"
+    assert saved.headers["location"] == "/settings/instruction"
     assert (tmp_path / "home" / "instructions.md").read_text() == "Be concise.\n"
     assert ">Be concise.\n</textarea>" in page
     assert not (tmp_path / "home" / "config.json").exists()
@@ -551,7 +557,7 @@ def test_an_unreadable_global_instruction_is_reported_on_the_page(tmp_path) -> N
     (tmp_path / "home").mkdir(parents=True, exist_ok=True)
     (tmp_path / "home" / "instructions.md").write_bytes(b"\xff")
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get("/settings").text
+        page = client.get("/settings/instruction").text
 
     assert "<div hidden data-page-alert>The global instruction is not valid UTF-8</div>" in page
     assert '<textarea name="global_instruction" rows="12" maxlength="65536"></textarea>' in page
@@ -564,3 +570,41 @@ def test_only_this_machine_may_save_the_global_instruction(tmp_path) -> None:
 
     assert response.status_code == 403
     assert not (tmp_path / "home" / "instructions.md").exists()
+
+
+def test_global_settings_has_access_instruction_and_presets_tabs(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        access = client.get("/settings").text
+        same = client.get("/settings/access").text
+        instruction = client.get("/settings/instruction").text
+        presets = client.get("/settings/presets").text
+        unknown = client.get("/settings/other")
+
+    assert access == same
+    assert 'id="access-heading"' in access and 'id="presets-heading"' not in access
+    assert 'id="global-instruction-heading"' in instruction and 'id="access-heading"' not in instruction
+    assert 'id="presets-heading"' in presets and 'id="global-instruction-heading"' not in presets
+    assert '<a href="/settings/instruction" aria-current="page">Instruction</a>' in instruction
+    assert unknown.status_code == 404
+
+
+def test_access_and_presets_save_independently(tmp_path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.json").write_text(json.dumps({
+        "allowed_clients": ["10.0.0.0/8"], "guidance_presets": {}, "other": 1,
+    }), encoding="utf-8")
+    app = make_app(tmp_path, allowed_clients=("10.0.0.0/8",))
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        access = client.post("/settings/access", data={"allowed_clients": "192.168.1.0/24", "allowed_hosts": ""},
+                             follow_redirects=False)
+        presets = client.post("/settings/presets", data={"preset_count": "0"}, follow_redirects=False)
+        old = client.post("/settings", data=form())
+
+    saved = config(tmp_path)
+    assert (access.status_code, access.headers["location"]) == (303, "/settings")
+    assert (presets.status_code, presets.headers["location"]) == (303, "/settings/presets")
+    assert saved["allowed_clients"] == ["192.168.1.0/24"]
+    assert saved["other"] == 1
+    assert old.status_code == 405

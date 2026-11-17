@@ -37,9 +37,9 @@ def _set_preset_files(page: Any, row: int, value: str) -> None:
 
 
 def _save(page: Any) -> None:
-    # POST /settings answers 303 to /settings; wait for that page to load.
+    # POST /settings/presets answers 303 to /settings/presets; wait for that page to load.
     with page.expect_navigation():
-        page.click("button:has-text('Save global settings')")
+        page.click("button:has-text('Save presets')")
 
 
 @pytest.mark.browser
@@ -50,7 +50,7 @@ def test_choose_files_builds_a_fixed_list_that_save_stores(
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
     page.set_viewport_size({"width": 1400, "height": 1000})
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.fill("input[name='preset_name_0']", "suite")
     assert page.locator("textarea[name^='preset_']").count() == 0
 
@@ -87,7 +87,7 @@ def test_a_refused_save_keeps_the_chosen_files_and_marks_the_preset(
     monkeypatch.setenv("HOME", str(tmp_path))
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.click("[data-picker-target='preset-files-0']")
     dialog = page.locator("#path-picker")
     _settled(dialog, "picker-files").get_by_text("No files yet.").wait_for()
@@ -135,7 +135,7 @@ def test_choose_skills_fills_the_second_list(
     (tmp_path / "skills" / "tdd" / "references").mkdir()
     (tmp_path / "skills" / "tdd" / "references" / "r.md").write_text("ref\n")
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.fill("input[name='preset_name_0']", "suite")
     _set_preset_files(page, 0, "~/skills/a.md")
 
@@ -175,7 +175,7 @@ def test_remove_all_empties_the_list_in_one_click(
     monkeypatch.setenv("HOME", str(tmp_path))
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     _set_preset_files(page, 0, "~/skills/a.md\n~/skills/tdd/SKILL.md")
     page.click("[data-picker-target='preset-files-0']")
     dialog = page.locator("#path-picker")
@@ -200,7 +200,7 @@ def test_dialog_checkboxes_share_a_line_with_their_names(
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
     page.set_viewport_size({"width": 1400, "height": 1000})
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     _set_preset_files(page, 0, "~/skills/a.md")
     page.click("[data-picker-target='preset-files-0']")
     page.locator("#path-picker input[data-picker-value='~/skills/a.md']").wait_for()
@@ -259,7 +259,7 @@ def test_a_reopened_picker_never_shows_or_applies_an_earlier_listing(
     monkeypatch.setenv("HOME", str(tmp_path))
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.fill("input[name='preset_name_0']", "suite")
     _set_preset_files(page, 0, "~/skills/tdd/SKILL.md")
     _save(page)
