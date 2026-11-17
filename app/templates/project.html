@@ -21,19 +21,6 @@
       </form>
     </section>
   {% endif %}
-  <section aria-labelledby="shared-context-heading">
-    <h2 id="shared-context-heading">Shared context</h2>
-    {% if shared_markdown_path %}
-      <p><code>{{ shared_markdown_path }}</code></p>
-      {% if shared_markdown_available %}
-        <p>Shared context is available.</p>
-      {% else %}
-        <p class="file-warning">Shared context is unavailable.</p>
-      {% endif %}
-    {% else %}
-      <p>No shared context selected.</p>
-    {% endif %}
-  </section>
   <section aria-labelledby="pass-prompt-heading">
     <h2 id="pass-prompt-heading">Default Pass prompt</h2>
     <form method="post" action="{{ project_url(project.name, '/pass-prompt') }}">

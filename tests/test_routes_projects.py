@@ -292,27 +292,6 @@ def test_unregister_degraded_storage_checks_in_memory_only(
         RegistryStore(settings.home).get(project.id)
 
 
-def test_project_settings_reports_selected_and_broken_shared_markdown(
-    tmp_path: Path,
-) -> None:
-    app, settings = project_app(tmp_path)
-    project_path = tmp_path / "settings-project"
-    project_path.mkdir()
-    source = project_path / "brief.md"
-    source.write_text("brief", encoding="utf-8")
-    project = RegistryStore(settings.home).register("Settings", project_path)
-    ProjectStore(project).select_shared_markdown("brief.md", 512 * 1024)
-
-    with TestClient(app, base_url="http://localhost") as client:
-        selected = client.get(f"/projects/{quote(project.name, safe='')}/settings")
-        source.unlink()
-        broken = client.get(f"/projects/{quote(project.name, safe='')}/settings")
-
-    assert "brief.md" in selected.text
-    assert "Shared context is available" in selected.text
-    assert "Shared context is unavailable" in broken.text
-
-
 def test_project_crud_path_validation_canonicalization_import_and_invalid_metadata(
     tmp_path: Path,
 ) -> None:
@@ -2715,3 +2694,4 @@ def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) 
         page = client.get(f"{prefix}/settings").text
     assert 'name="downloads_folder" value="docs/source/raw"' in page
     assert 'name="downloads_check_model" value="sonnet"' in page
+

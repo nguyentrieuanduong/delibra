@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from pathlib import Path
 import sys
 from urllib.parse import parse_qs, quote, urlsplit
@@ -501,13 +500,11 @@ def test_delete_rejects_running_session_and_removes_idle_owned_session(
     assert not (store.sessions_root / "Researcher").exists()
 
 
-def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_files(
+def test_active_auto_reservation_blocks_session_mutations(
     tmp_path: Path,
     reserve_auto_run,
 ) -> None:
     client, project, store = seeded_client(tmp_path)
-    shared = Path(project.path) / "shared.md"
-    shared.write_text("Original shared context", encoding="utf-8")
     with client:
         first = created_session_id(create_session(client, project.id, name="Alpha"))
         create_session(client, project.id, name="Beta", agent="codex", effort="low")
@@ -524,24 +521,6 @@ def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_file
             follow_redirects=False,
         ).status_code == 409
 
-        selected = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/select",
-            data={"path": "shared.md"},
-        )
-        assert selected.status_code == 200
-        saved = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/save",
-            data={
-                "path": "shared.md",
-                "expected_sha256": sha256(
-                    b"Original shared context"
-                ).hexdigest(),
-                "text": "Updated during Auto",
-            },
-        )
-        assert saved.status_code == 200
-
-    assert shared.read_text(encoding="utf-8") == "Updated during Auto"
     assert len(store.list_sessions()) == 2
 
 

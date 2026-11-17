@@ -47,8 +47,6 @@ from app.security import (
 from app.storage import (
     ConflictError,
     NotFoundError,
-    ProjectFileDisplayError,
-    ProjectFileSecurityError,
     ProjectStore,
     StorageError,
     normalize_project_name,
@@ -795,17 +793,6 @@ async def render_project_settings(
 
     store = ProjectStore(project)
     sessions = store.list_sessions()
-    shared_markdown_path = store.selected_shared_markdown_path()
-    shared_markdown_available: bool | None = None
-    if shared_markdown_path is not None:
-        try:
-            store.read_selected_shared_markdown(
-                request.app.state.settings.file_view_limit
-            )
-        except (ProjectFileDisplayError, ProjectFileSecurityError):
-            shared_markdown_available = False
-        else:
-            shared_markdown_available = True
     migration = store.session_migration_status()
     migration_issue_lists: dict[str, list[str]] = {}
     for issue in migration.issues:
@@ -840,8 +827,6 @@ async def render_project_settings(
         context={
             "project": project,
             "sessions": sessions,
-            "shared_markdown_path": shared_markdown_path,
-            "shared_markdown_available": shared_markdown_available,
             "health": request.app.state.health,
             "effort_levels": {
                 "claude": ClaudeAdapter.EFFORT_LEVELS,

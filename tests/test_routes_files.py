@@ -19,7 +19,6 @@ from app.main import create_app
 from app.storage import (
     ProjectFileDisplayError,
     ProjectFileSecurityError,
-    ProjectStore,
     RegistryStore,
     list_project_directory,
     project_path_parts,
@@ -94,7 +93,7 @@ def test_canonical_project_name_file_urls_and_forms(
 
     assert response.status_code == 200
     assert f'hx-get="{project_prefix}/files/focus?path=brief.md"' in response.text
-    assert f'action="{project_prefix}/files/shared/select"' in response.text
+    assert "/files/shared/" not in response.text
 
 
 def test_project_path_parser_handles_generated_safe_and_unsafe_inputs() -> None:
@@ -183,100 +182,25 @@ def test_file_view_renders_markdown_safely_and_escapes_plain_text(
     assert "<pre>value = &#39;&lt;b&gt;literal&lt;/b&gt;&#39;</pre>" in plain.text
 
 
-def test_user_selects_edits_and_clears_shared_markdown(tmp_path: Path) -> None:
-    app, project, project_path = setup_file_project(tmp_path)
-    source = project_path / "brief.md"
-    source.write_text("# Initial\n\n<script>unsafe</script>", encoding="utf-8")
-
+@pytest.mark.parametrize("action", ["select", "save", "clear"])
+def test_shared_markdown_routes_are_gone(tmp_path: Path, action: str) -> None:
+    app, project, _path = setup_file_project(tmp_path)
     with TestClient(app, base_url="http://localhost") as client:
-        opened = client.get(
+        response = client.post(
+            f"/projects/{quote(project.name, safe='')}/files/shared/{action}",
+            data={"path": "brief.md"},
+        )
+    assert response.status_code in (404, 405)
+
+
+def test_a_markdown_file_view_offers_no_shared_context(tmp_path: Path) -> None:
+    app, project, project_path = setup_file_project(tmp_path)
+    (project_path / "brief.md").write_text("# Brief\n", encoding="utf-8")
+    with TestClient(app, base_url="http://localhost") as client:
+        page = client.get(
             f"/projects/{quote(project.name, safe='')}/files/view", params={"path": "brief.md"}
-        )
-        assert "Use as shared context" in opened.text
-        selected = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/select",
-            data={"path": "brief.md"},
-        )
-        digest = re.search(
-            r'name="expected_sha256" value="([0-9a-f]{64})"', selected.text
-        )
-        assert digest is not None
-        assert "Selected as shared context" in selected.text
-        assert "<script>" not in selected.text
-        focused = client.get(
-            f"/projects/{quote(project.name, safe='')}/files/focus",
-            params={"path": "brief.md"},
-        )
-        assert "/files/shared/" not in focused.text
-        saved = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/save",
-            data={
-                "path": "brief.md",
-                "expected_sha256": digest.group(1),
-                "text": "# Updated\n",
-            },
-        )
-        assert saved.status_code == 200
-        assert "Shared context saved" in saved.text
-        cleared = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/clear",
-            data={"path": "brief.md"},
-        )
-
-    assert source.read_text() == "# Updated\n"
-    assert "Use as shared context" in cleared.text
-    assert ProjectStore(project).selected_shared_markdown_path() is None
-
-
-def test_shared_markdown_save_rejects_external_edit_and_reserved_selection(
-    tmp_path: Path,
-) -> None:
-    app, project, project_path = setup_file_project(tmp_path)
-    source = project_path / "brief.md"
-    source.write_text("one", encoding="utf-8")
-    (project_path / "other.md").write_text("other", encoding="utf-8")
-    (project_path / ".delibra" / "owned.md").write_text(
-        "owned", encoding="utf-8"
-    )
-
-    with TestClient(app, base_url="http://localhost") as client:
-        selected = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/select",
-            data={"path": "brief.md"},
-        )
-        digest = re.search(
-            r'name="expected_sha256" value="([0-9a-f]{64})"', selected.text
-        )
-        assert digest is not None
-        source.write_text("external", encoding="utf-8")
-        stale = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/save",
-            data={
-                "path": "brief.md",
-                "expected_sha256": digest.group(1),
-                "text": "lost",
-            },
-        )
-        reserved = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/select",
-            data={"path": ".delibra/owned.md"},
-        )
-        client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/select",
-            data={"path": "other.md"},
-        )
-        stale_clear = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/clear",
-            data={"path": "brief.md"},
-        )
-
-    assert stale.status_code == 409
-    assert source.read_text() == "external"
-    assert reserved.status_code == 422
-    assert reserved.json() == {"detail": "invalid shared Markdown path"}
-    assert "owned" not in reserved.text
-    assert stale_clear.status_code == 409
-    assert ProjectStore(project).selected_shared_markdown_path() == "other.md"
+        ).text
+    assert "shared context" not in page.casefold()
 
 
 def test_generated_structured_file_values_are_pretty_and_safe(

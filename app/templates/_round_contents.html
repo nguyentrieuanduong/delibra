@@ -37,13 +37,6 @@
       · SHA-256 {{ round.record.source.source_sha256 }}
     </p>
   {% endif %}
-  {% if round.record.shared_context %}
-    <p class="provenance">
-      Shared context {{ round.record.shared_context.path }}
-      · staged {{ round.record.shared_context.staged_file }}
-      · SHA-256 {{ round.record.shared_context.sha256 }}
-    </p>
-  {% endif %}
   {% if round.record.retry_of %}
     <p class="provenance">Retry of round {{ round.record.retry_of }}</p>
   {% endif %}

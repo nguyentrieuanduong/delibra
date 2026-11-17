@@ -98,9 +98,6 @@ textarea { min-height: 7rem; }
 .file-view-actions { display: flex; flex: 0 0 auto; gap: .35rem; margin-left: auto; }
 .file-view pre { overflow: auto; white-space: pre-wrap; }
 .file-view pre.structured-data { tab-size: 2; white-space: pre; }
-.shared-context-editor textarea { min-height: 16rem; font-family: ui-monospace, monospace; }
-.shared-context-actions { align-items: baseline; display: flex; gap: .5rem; }
-.shared-context-actions form { margin: 0; }
 .workspace-conversation {
   display: grid;
   gap: 0;

@@ -167,7 +167,7 @@ deletes the user directory. Delibra owns only these locations:
 <project>/.delibra/sessions/<immutable-agent-name>/
 <project>/.delibra/auto-runs/.index.json
 <project>/.delibra/auto-runs/<number>/config.json
-<project>/.delibra/auto-runs/<number>/{topic.md,baseline.md,shared-context.md}
+<project>/.delibra/auto-runs/<number>/{topic.md,baseline.md}
 <project>/.delibra/auto-runs/<number>/preparations/<session-id>.md
 ```
 
@@ -208,8 +208,9 @@ names may encode to at most 200 UTF-8 bytes and may not themselves look like
 32-character hexadecimal session UUIDs in any letter case. Unrelated dotfiles and
 non-directory files under the sessions root are ignored.
 
-The existing project manifest stores `shared_markdown_path` when shared context is
-selected and `active_auto_run_id` while Auto owns the project reservation.
+The existing project manifest stores `active_auto_run_id` while Auto owns the project
+reservation. An older manifest's `shared_markdown_path` (the removed shared-context
+feature) is ignored and dropped on the next write.
 
 Project settings may grant default writable roots to every agent, and agent
 settings may add roots for that agent. A writable root is always stored relative
@@ -243,16 +244,9 @@ same-descriptor copy at `workspace/inputs/round-NN/source.md`, records its SHA-2
 and leaves the source round immutable. Every app-owned path recorded inside a
 session is relative to that session, so moving a project never invalidates one.
 
-A project owner may select one existing `.md` or `.markdown` file as shared
-project context. The project-relative path is stored in the existing manifest.
-Delibra can edit only that selected, non-reserved file, and Save requires the
-SHA-256 digest loaded by the editor so a newer external edit is not overwritten.
-Every new round receives its own bounded, hashed workspace snapshot; changing the
-shared file affects future rounds, not one already running.
-
 Error rounds offer Retry. Retry preserves the failed round, starts a linked new
-stateless round from completed local history, uses the latest shared-context
-snapshot, and re-verifies pass-to source bytes against their recorded digest.
+stateless round from completed local history and re-verifies pass-to source
+bytes against their recorded digest.
 
 Project settings provide a **Default Pass prompt** containing the complete text
 sent to the receiving agent. `{source_path}` is required exactly once;
@@ -350,8 +344,7 @@ new discussion topic.
 
 Auto starts discussion directly by default. Select **Prepare agents
 independently first** when every chosen agent should receive one independent
-preparation call containing only the original topic and the creation-time
-shared Markdown snapshot. When selected, all preparations finish before they
+preparation call containing only the original topic. When selected, all preparations finish before they
 enter discussion context. Active preparations stream as labeled **Auto
 preparation** messages in the merged conversation and remain there when
 complete. This browser visibility does not add a preparation to another
@@ -525,7 +518,7 @@ the delta to the cumulative `max_cycles` stored on the run and its resumption
 audit record. Participant name and provider are immutable and a drift
 is rejected, while model and effort are refreshed from the live agent
 configuration. Every artifact the next turn will read — topic, preparations,
-baseline, prior discussion outputs, and shared context — is digest-verified
+baseline, and prior discussion outputs — is digest-verified
 before the run restarts. Each grant is recorded durably in `resumptions`.
 
 A creation-time cap of 20 cycles still applies to the setup box. Continue Auto
@@ -1041,9 +1034,7 @@ Delibra provides write isolation, not read confidentiality:
   quota running agents that write to it, so exposing it is exposing code execution
   as your user. See "Reaching Delibra from another machine" before binding it
   anywhere but `127.0.0.1`.
-- Project-file browsing remains read-only except for explicit, digest-guarded
-  saves to the currently selected `.md` or `.markdown` shared-context file.
-  `.delibra/`, `.git/`, `.hg/`, and `.svn/` are never selectable or writable.
+- Project-file browsing is read-only.
   The browser still exposes allowed text files below the entire registered project
   directory through the localhost HTTP service; register only directories whose
   contents may cross that boundary.
