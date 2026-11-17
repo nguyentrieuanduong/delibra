@@ -2369,7 +2369,7 @@ def test_build_acceptance_enable_handover_commit_and_lan_guard(tmp_path: Path, m
     with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
         assert local.post(
             f"{prefix}/coding",
-            data={"enabled": "true", "network_allowlist": "pypi.org"},
+            data={"enabled": "true"},
             follow_redirects=False,
         ).status_code == 303
         for _ in range(100):

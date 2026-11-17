@@ -11,6 +11,7 @@ import time
 from urllib.parse import quote
 
 import httpx
+from markupsafe import escape
 import pytest
 from fastapi.testclient import TestClient
 
@@ -1364,15 +1365,16 @@ def wait_env(project, status: str, timeout: float = 5.0) -> CodingEnvState:
 def test_enabling_coding_creates_env_and_persists_allowlist(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        saved = client.post(
-            f"{prefix}/coding",
-            data={"enabled": "true", "network_allowlist": "pypi.org\nfiles.pythonhosted.org"},
+        saved = client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
+        network = client.post(
+            f"{prefix}/coding/network",
+            data={"network_allowlist": "pypi.org\nfiles.pythonhosted.org"},
             follow_redirects=False,
         )
         state = wait_env(project, "ready")
         page = client.get(f"{prefix}/settings/coding")
 
-    assert saved.status_code == 303
+    assert saved.status_code == 303 and network.status_code == 303
     policy = ProjectStore(project).coding_policy()
     assert policy.enabled is True
     assert policy.network_allowlist == ["pypi.org", "files.pythonhosted.org"]
@@ -1385,10 +1387,10 @@ def test_enabling_coding_creates_env_and_persists_allowlist(tmp_path, monkeypatc
 def test_invalid_allowlist_is_rejected_and_nothing_is_stored(tmp_path, monkeypatch, allowlist) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": allowlist})
+        response = client.post(f"{prefix}/coding/network", data={"network_allowlist": allowlist})
 
     assert response.status_code == 422
-    assert ProjectStore(project).coding_policy().enabled is False
+    assert ProjectStore(project).coding_policy().network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
 
 
 def test_lan_client_cannot_change_coding(tmp_path, monkeypatch) -> None:
@@ -1425,7 +1427,7 @@ def test_private_resolution_warning_is_stored_and_shown(tmp_path, monkeypatch) -
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
+            f"{prefix}/coding/network",
             data={"network_allowlist": "intranet.example.com"},
             follow_redirects=False,
         )
@@ -1495,8 +1497,8 @@ def test_guidance_files_are_saved_from_the_textarea(tmp_path, monkeypatch) -> No
     guide.write_text("# Guide\n")
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_files": str(guide)},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": str(guide)},
             follow_redirects=False,
         )
         page = client.get(f"{prefix}/settings/coding")
@@ -1524,8 +1526,8 @@ def test_guidance_preset_saves_its_files_without_reading_folders(tmp_path, monke
     monkeypatch.setattr("app.coding._scan", no_scan)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_preset": "suite"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "suite"},
             follow_redirects=False,
         )
 
@@ -1548,23 +1550,24 @@ def test_guidance_preset_with_a_missing_file_is_refused_and_keeps_guidance(
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_files": str(guide)},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": str(guide)},
             follow_redirects=False,
         )
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "guidance_preset": "suite"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "suite"},
         )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
+    sentence = (
         f"Guidance preset 'suite': {str(absent)!r} must be an existing regular file reached "
         "without symlinks; guidance was not changed"
     )
+    assert f"<div hidden data-page-alert>Nothing was saved: {escape(sentence)}</div>" in response.text
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_files == [str(guide)]
-    assert policy.network_allowlist == ["pypi.org"]
+    assert policy.network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
 
 
 def _skill_files(root: Path) -> list[str]:
@@ -1579,20 +1582,20 @@ def test_skills_are_saved_from_the_coding_form_and_kept_without_it(tmp_path, mon
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": "\n".join(skills) + "\n\n"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_skills": "\n".join(skills) + "\n\n"},
             follow_redirects=False,
         )
+        # A guidance form without the skills box keeps the saved skills.
         kept = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": ""},
             follow_redirects=False,
         )
 
     assert saved.status_code == 303 and kept.status_code == 303
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_skills == skills
-    assert policy.network_allowlist == ["example.org"]
 
 
 def test_the_coding_page_shows_the_skills_box(tmp_path, monkeypatch) -> None:
@@ -1618,22 +1621,22 @@ def test_an_invalid_skill_list_is_refused_and_keeps_settings(tmp_path, monkeypat
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": skills[0]},
+            f"{prefix}/coding/guidance",
+            data={"guidance_skills": skills[0]},
             follow_redirects=False,
         )
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "guidance_skills": f"{skills[0]}\n{clash}"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_skills": f"{skills[0]}\n{clash}"},
         )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
+    sentence = (
         f"Skill files {skills[0]!r} and {str(clash)!r} would both be copied as 'tdd/SKILL.md'"
     )
+    assert f"<div hidden data-page-alert>Nothing was saved: {escape(sentence)}</div>" in response.text
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_skills == [skills[0]]
-    assert policy.network_allowlist == ["pypi.org"]
 
 
 def test_guidance_preset_sets_both_lists(tmp_path, monkeypatch) -> None:
@@ -1652,8 +1655,8 @@ def test_guidance_preset_sets_both_lists(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("app.coding._scan", no_scan)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_preset": "suite", "guidance_skills": ""},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "suite", "guidance_skills": ""},
             follow_redirects=False,
         )
 
@@ -1669,14 +1672,13 @@ def test_unknown_guidance_preset_is_refused(tmp_path, monkeypatch) -> None:
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "guidance_preset": "code-craft"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "code-craft"},
         )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "Unknown guidance preset 'code-craft'; guidance was not changed"
-    )
+    sentence = "Unknown guidance preset 'code-craft'; guidance was not changed"
+    assert f"<div hidden data-page-alert>Nothing was saved: {escape(sentence)}</div>" in response.text
     assert ProjectStore(project).coding_policy().network_allowlist == list(
         DEFAULT_NETWORK_ALLOWLIST
     )
@@ -1686,8 +1688,8 @@ def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_files": "relative.md"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": "relative.md"},
         )
 
     assert response.status_code == 422
@@ -1709,8 +1711,8 @@ def test_each_guidance_preset_gets_a_button_in_config_order(tmp_path, monkeypatc
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get(f"{prefix}/settings/coding").text
 
-    zeta = page.index('name="guidance_preset" value="zeta" data-disable-during-auto')
-    escaped = page.index('name="guidance_preset" value="a&lt;b" data-disable-during-auto')
+    zeta = page.index('name="guidance_preset" value="zeta"')
+    escaped = page.index('name="guidance_preset" value="a&lt;b"')
     assert zeta < escaped
     assert ">Use zeta guidance</button>" in page
     assert "Add guidance presets in" not in page
@@ -1735,11 +1737,11 @@ def test_enabling_coding_in_a_git_project_adds_local_excludes(tmp_path, monkeypa
     subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
     exclude = project_dir / ".git" / "info" / "exclude"
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        client.post(f"{prefix}/coding", data={"network_allowlist": "pypi.org"}, follow_redirects=False)
+        client.post(f"{prefix}/coding", data={}, follow_redirects=False)
         assert "/envs/" not in exclude.read_text()
         client.post(
             f"{prefix}/coding",
-            data={"enabled": "true", "network_allowlist": "pypi.org"},
+            data={"enabled": "true"},
             follow_redirects=False,
         )
         wait_env(project, "ready")
@@ -1755,14 +1757,21 @@ def test_git_ignore_list_is_configurable_per_project(tmp_path, monkeypatch) -> N
     app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
     subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
     exclude = project_dir / ".git" / "info" / "exclude"
-    form = {"enabled": "true", "network_allowlist": "pypi.org"}
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        client.post(f"{prefix}/coding", data={**form, "git_exclude": "custom-out/\r\n*.tmp\r\n"}, follow_redirects=False)
+        client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
+        client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude": "custom-out/\r\n*.tmp\r\n"},
+            follow_redirects=False,
+        )
         custom, custom_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
-        client.post(f"{prefix}/coding", data=form, follow_redirects=False)
+        # The coding mode form never touches the list.
+        client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
         kept = ProjectStore(project).coding_policy().git_exclude
         page = client.get(f"{prefix}/settings/coding").text
-        client.post(f"{prefix}/coding", data={**form, "git_exclude_preset": "default"}, follow_redirects=False)
+        client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude_preset": "default"},
+            follow_redirects=False,
+        )
         reset, default_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
 
     assert custom == kept == ["custom-out/", "*.tmp"]
@@ -1779,8 +1788,8 @@ def test_submitting_the_default_ignore_list_keeps_following_it(tmp_path, monkeyp
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "git_exclude": "\r\n".join(default_git_exclude())},
+            f"{prefix}/coding/git-exclude",
+            data={"git_exclude": "\r\n".join(default_git_exclude())},
             follow_redirects=False,
         )
         page = client.get(f"{prefix}/settings/coding").text
@@ -1793,8 +1802,8 @@ def test_an_invalid_git_ignore_list_changes_nothing(tmp_path, monkeypatch) -> No
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "git_exclude": "ok/\n# >>> Delibra coding mode"},
+            f"{prefix}/coding/git-exclude",
+            data={"git_exclude": "ok/\n# >>> Delibra coding mode"},
         )
 
     assert response.status_code == 422
@@ -1892,7 +1901,7 @@ def wait_docker(project, status: str, timeout: float = 5.0) -> DockerPolicy:
 
 
 def enable_coding(client, prefix, project) -> None:
-    client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": "pypi.org"})
+    client.post(f"{prefix}/coding", data={"enabled": "true"})
     wait_env(project, "ready")
 
 
@@ -1952,7 +1961,7 @@ def test_saving_coding_settings_keeps_docker_state(tmp_path, monkeypatch) -> Non
         enable_coding(client, prefix, project)
         client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
         before = wait_docker(project, "ready")
-        client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": "github.com"})
+        client.post(f"{prefix}/coding", data={"enabled": "true"})
 
     assert ProjectStore(project).coding_policy().docker == before
 
@@ -2329,18 +2338,16 @@ def test_an_emptied_skills_or_git_exclude_box_clears_the_saved_list(tmp_path, mo
     skills = _skill_files(tmp_path / "skills")
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": skills[0], "git_exclude": "out/"},
-            follow_redirects=False,
+        client.post(f"{prefix}/coding/guidance", data={"guidance_skills": skills[0]}, follow_redirects=False)
+        client.post(f"{prefix}/coding/git-exclude", data={"git_exclude": "out/"}, follow_redirects=False)
+        cleared_skills = client.post(
+            f"{prefix}/coding/guidance", data={"guidance_skills": ""}, follow_redirects=False
         )
-        cleared = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": "", "git_exclude": ""},
-            follow_redirects=False,
+        cleared_exclude = client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude": ""}, follow_redirects=False
         )
 
-    assert cleared.status_code == 303
+    assert cleared_skills.status_code == 303 and cleared_exclude.status_code == 303
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_skills == []
     assert policy.git_exclude == []
@@ -2647,20 +2654,18 @@ def test_project_writable_roots_refusal_pops_up_and_keeps_input(
 def test_saving_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding", data={
-            "enabled": "true", "network_allowlist": "",
+        response = client.post(f"{prefix}/coding/downloads", data={
             "downloads_enabled": "true", "downloads_folder": "raw/src",
             "downloads_approval": "automatic", "downloads_model_check": "true",
             "downloads_check_provider": "codex", "downloads_check_model": "gpt-5.5-mini",
         }, follow_redirects=False)
-        wait_env(project, "ready")
     assert response.status_code == 303
     downloads = ProjectStore(project).coding_policy().downloads
     assert (downloads.enabled, downloads.folder, downloads.approval) == (True, "raw/src", "automatic")
     assert (downloads.check_provider, downloads.check_model) == ("codex", "gpt-5.5-mini")
 
 
-def test_an_older_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> None:
+def test_the_coding_mode_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     store = ProjectStore(project)
     policy = store.coding_policy()
@@ -2668,7 +2673,7 @@ def test_an_older_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> N
     store.replace_coding_policy(policy)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding", data={"enabled": "true", "network_allowlist": ""},
+            f"{prefix}/coding", data={"enabled": "true"},
             follow_redirects=False,
         )
         wait_env(project, "ready")
@@ -2679,12 +2684,12 @@ def test_an_older_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> N
 def test_an_unsafe_download_folder_is_refused(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding", data={
-            "enabled": "true", "network_allowlist": "",
+        response = client.post(f"{prefix}/coding/downloads", data={
             "downloads_enabled": "true", "downloads_folder": "../out",
         })
     assert response.status_code == 422
-    assert "Download folder" in response.text
+    assert "<div hidden data-page-alert>Nothing was saved: Download folder" in response.text
+    assert 'name="downloads_folder" value="../out"' in response.text
     assert ProjectStore(project).coding_policy().downloads.enabled is False
 
 
@@ -2745,3 +2750,58 @@ def test_general_tab_orders_its_sections(tmp_path: Path) -> None:
         page.index('id="chat-skills-heading"'),
     ]
     assert positions == sorted(positions)
+
+
+def test_each_coding_form_saves_only_its_own_fields(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    guide = tmp_path / "guide.md"
+    guide.write_text("# Guide\n")
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        guidance = client.post(
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": str(guide), "guidance_skills": skills[0]},
+            follow_redirects=False,
+        )
+        network = client.post(
+            f"{prefix}/coding/network", data={"network_allowlist": "example.org"},
+            follow_redirects=False,
+        )
+        downloads = client.post(
+            f"{prefix}/coding/downloads",
+            data={"downloads_enabled": "true", "downloads_folder": "raw",
+                  "downloads_approval": "automatic", "downloads_check_provider": "claude",
+                  "downloads_check_model": "sonnet"},
+            follow_redirects=False,
+        )
+        mode = client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude": "out/"}, follow_redirects=False
+        )
+
+    assert [r.status_code for r in (guidance, network, downloads, mode)] == [303] * 4
+    assert {r.headers["location"] for r in (guidance, network, downloads, mode)} == {
+        f"{prefix}/settings/coding"
+    }
+    policy = ProjectStore(project).coding_policy()
+    assert policy.guidance_files == [str(guide)]
+    assert policy.guidance_skills == [skills[0]]
+    assert policy.network_allowlist == ["example.org"]
+    assert (policy.downloads.enabled, policy.downloads.folder, policy.downloads.approval) == (
+        True, "raw", "automatic",
+    )
+    assert policy.git_exclude == ["out/"]
+    assert policy.enabled is False
+
+
+def test_a_refused_coding_form_pops_up_and_keeps_the_typed_text(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/coding/network", data={"network_allowlist": "https://pypi.org"}
+        )
+
+    assert response.status_code == 422
+    assert "<div hidden data-page-alert>Nothing was saved: " in response.text
+    assert ">https://pypi.org</textarea>" in response.text
+    assert 'aria-current="page">Coding</a>' in response.text
+    assert ProjectStore(project).coding_policy().network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)

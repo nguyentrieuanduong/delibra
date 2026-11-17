@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import replace
 import logging
 from pathlib import Path
 import shutil
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
@@ -378,140 +379,249 @@ async def save_writable_roots(
     )
 
 
+async def _refresh_local_excludes(project: Project, policy: CodingPolicy) -> None:
+    """Keep .git/info/exclude in step with coding mode and the download folders."""
+
+    try:
+        try:
+            used_folders = DownloadStore(ProjectStore(project).root).used_folders()
+        except StorageError:
+            # Only `git status` noise: build commits fail closed on their own.
+            used_folders = set()
+        await ensure_local_excludes(
+            ProjectStore(project).project_path,
+            policy.git_exclude,
+            trailing=download_excludes(policy, used_folders),
+        )
+    except OSError:
+        LOGGER.warning(
+            "Could not update .git/info/exclude for project %s", project.id, exc_info=True
+        )
+
+
+async def _save_coding_part(
+    request: Request,
+    project_id: str,
+    change: Callable[[CodingPolicy], CodingPolicy],
+    *,
+    locked: bool,
+    typed: dict[str, str],
+    refresh_excludes: bool,
+) -> Response:
+    """Save one Coding form: replace its fields, keep every other saved field."""
+
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    try:
+        async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+            project = request.app.state.registry.get(resolved_project_id)
+            store = ProjectStore(project)
+            if locked:
+                _reject_in_memory_work(request, resolved_project_id)
+                store.require_auto_inactive()
+            current = store.coding_policy()
+            try:
+                updated = change(current)
+            except CodingPolicyError as exc:
+                raise StorageError(str(exc)) from exc
+            token = None
+            if updated.enabled and current.env.status == "absent":
+                token = utc_now()
+                updated.env = CodingEnvState(status="creating", updated_at=token)
+            store.replace_coding_policy(updated)
+            if token is not None:
+                _start_env_creation(request.app, resolved_project_id, token)
+    except NotFoundError:
+        raise  # A gone project keeps its 404.
+    except StorageError as exc:
+        # A locked form saved just before the 5-second lock poll noticed Auto
+        # starting gets the same pop-up, with 409 (ConflictError) instead of 422.
+        message = str(exc)
+        return await render_project_settings(
+            request,
+            project,
+            tab="coding",
+            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            typed=typed,
+            status_code=409 if isinstance(exc, ConflictError) else 422,
+        )
+    if refresh_excludes and updated.enabled:
+        await _refresh_local_excludes(project, updated)
+    return RedirectResponse(settings_tab_url(project.name, "coding"), status_code=303)
+
+
 @router.post("/projects/{project_id}/coding")
-async def save_coding(
+async def save_coding_mode(
     request: Request,
     project_id: str,
     enabled: bool = Form(False),
-    network_allowlist: str = Form(""),
-    guidance_files: str = Form(""),
-    guidance_skills: str | None = Form(None),
-    guidance_preset: str = Form(""),
+):
+    require_loopback_client(request)
+    return await _save_coding_part(
+        request, project_id, lambda current: replace(current, enabled=enabled),
+        locked=True, typed={}, refresh_excludes=True,
+    )
+
+
+@router.post("/projects/{project_id}/coding/git-exclude")
+async def save_git_exclude(
+    request: Request,
+    project_id: str,
     git_exclude: str | None = Form(None),
     git_exclude_preset: str = Form(""),
+):
+    require_loopback_client(request)
+    sent = await request.form()
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        if git_exclude_preset == "default":
+            exclude = None
+        elif "git_exclude" not in sent:
+            exclude = current.git_exclude
+        else:
+            lines = (git_exclude or "").splitlines()
+            # Unchanged from the default: keep following Delibra's list.
+            exclude = None if lines == default_git_exclude() else lines
+        return replace(
+            current,
+            git_exclude=None if exclude is None else normalize_git_exclude(exclude),
+        )
+
+    # Never locked (user decision 2026-11-16): the save and a build commit both take
+    # the project lock, so the next commit simply reads the new exclude block.
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={"git_exclude": git_exclude or ""} if "git_exclude" in sent else {},
+        refresh_excludes=True,
+    )
+
+
+@router.post("/projects/{project_id}/coding/guidance")
+async def save_coding_guidance(
+    request: Request,
+    project_id: str,
+    guidance_files: str | None = Form(None),
+    guidance_skills: str | None = Form(None),
+    guidance_preset: str = Form(""),
+):
+    require_loopback_client(request)
+    sent = await request.form()
+    typed = {
+        key: value or ""
+        for key, value in (("guidance_files", guidance_files), ("guidance_skills", guidance_skills))
+        if key in sent
+    }
+    # Off the event loop and before the lock: each file is opened one
+    # component at a time, which must not hold the project's sessions.
+    preset_guidance: tuple[list[str], list[str]] | None = None
+    preset_error: str | None = None
+    if guidance_preset:
+        preset = next(
+            (item for item in request.app.state.settings.guidance_presets
+             if item.name == guidance_preset),
+            None,
+        )
+        if preset is None:
+            preset_error = f"Unknown guidance preset {guidance_preset!r}; guidance was not changed"
+        else:
+            try:
+                preset_guidance = await asyncio.to_thread(preset_guidance_lists, preset)
+            except CodingPolicyError as exc:
+                preset_error = f"{exc}; guidance was not changed"
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        if preset_error is not None:
+            raise StorageError(preset_error)
+        if preset_guidance is not None:
+            files, skills = preset_guidance
+        else:
+            files = (
+                [line for line in (guidance_files or "").splitlines() if line.strip()]
+                if "guidance_files" in sent
+                else current.guidance_files
+            )
+            skills = (
+                [line for line in (guidance_skills or "").splitlines() if line.strip()]
+                if "guidance_skills" in sent
+                else current.guidance_skills
+            )
+        return replace(
+            current,
+            guidance_files=normalize_guidance_paths(files),
+            guidance_skills=normalize_skill_paths(skills),
+        )
+
+    # Never locked (user decision 2026-11-16): skills reach a running run from its
+    # next turn, guidance files from its next run.
+    return await _save_coding_part(
+        request, project_id, change, locked=False, typed=typed, refresh_excludes=False
+    )
+
+
+@router.post("/projects/{project_id}/coding/network")
+async def save_coding_network(
+    request: Request,
+    project_id: str,
+    network_allowlist: str = Form(""),
+):
+    require_loopback_client(request)
+    lines = network_allowlist.splitlines() if network_allowlist.strip() else []
+    try:
+        hosts = normalize_network_allowlist(lines)
+    except CodingPolicyError as exc:
+        hosts, host_error = None, str(exc)
+    else:
+        host_error = None
+    warnings: list[str] = []
+    if hosts is not None:
+        # DNS before the lock, with a budget: a slow resolver must not hold
+        # the project's sessions. Timing out only replaces the warning.
+        try:
+            warnings = await asyncio.wait_for(
+                asyncio.to_thread(private_resolution_warnings, hosts), timeout=5
+            )
+        except TimeoutError:
+            warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        if host_error is not None:
+            raise StorageError(host_error)
+        return replace(current, network_allowlist=hosts, network_warnings=warnings)
+
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={"network_allowlist": network_allowlist}, refresh_excludes=False,
+    )
+
+
+@router.post("/projects/{project_id}/coding/downloads")
+async def save_coding_downloads(
+    request: Request,
+    project_id: str,
+    downloads_folder: str = Form(...),
     downloads_enabled: bool = Form(False),
-    downloads_folder: str | None = Form(None),
     downloads_approval: str = Form("manual"),
     downloads_model_check: bool = Form(False),
     downloads_check_provider: str = Form("claude"),
     downloads_check_model: str = Form("sonnet"),
 ):
     require_loopback_client(request)
-    # FastAPI gives an emptied box its default (None), so whether a box was
-    # on the page is read from the form itself (already parsed, so cached).
-    sent = await request.form()
-    project = request_project(request, project_id)
-    resolved_project_id = project.id
-    lines = network_allowlist.splitlines() if network_allowlist.strip() else []
-    try:
-        hosts = normalize_network_allowlist(lines)
-    except CodingPolicyError as exc:
-        raise StorageError(str(exc)) from exc
-    # DNS before the lock, with a budget: a slow resolver must not hold
-    # the project's sessions. Timing out only replaces the warning.
-    try:
-        warnings = await asyncio.wait_for(
-            asyncio.to_thread(private_resolution_warnings, hosts), timeout=5
-        )
-    except TimeoutError:
-        warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
-    # Checked before the lock, off the event loop: each file is opened one
-    # component at a time, which must not hold the project's sessions.
-    preset_guidance: tuple[list[str], list[str]] | None = None
-    if guidance_preset:
-        preset = next(
-            (
-                item
-                for item in request.app.state.settings.guidance_presets
-                if item.name == guidance_preset
-            ),
-            None,
-        )
-        if preset is None:
-            raise StorageError(
-                f"Unknown guidance preset {guidance_preset!r}; guidance was not changed"
-            )
-        try:
-            preset_guidance = await asyncio.to_thread(preset_guidance_lists, preset)
-        except CodingPolicyError as exc:
-            raise StorageError(f"{exc}; guidance was not changed") from exc
-    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-        _reject_in_memory_work(request, resolved_project_id)
-        project = request.app.state.registry.get(resolved_project_id)
-        store = ProjectStore(project)
-        store.require_auto_inactive()
-        current = store.coding_policy()
-        if preset_guidance is not None:
-            guidance, skills = preset_guidance
-        else:
-            guidance = guidance_files.splitlines() if guidance_files.strip() else []
-            # A form without the box (older pages) keeps the saved skills.
-            skills = (
-                [line for line in (guidance_skills or "").splitlines() if line.strip()]
-                if "guidance_skills" in sent
-                else current.guidance_skills
-            )
-        if git_exclude_preset == "default":
-            exclude = None
-        elif "git_exclude" not in sent:
-            exclude = current.git_exclude  # older forms: keep what is saved
-        else:
-            lines = (git_exclude or "").splitlines()
-            # Unchanged from the default: keep following Delibra's list.
-            exclude = None if lines == default_git_exclude() else lines
 
-        # Validate every field before writing: a rejected form must not
-        # change command network access.
-        try:
-            if "downloads_folder" in sent:
-                downloads = DownloadPolicy.from_dict({
-                    "enabled": downloads_enabled,
-                    "folder": downloads_folder or "",
-                    "approval": downloads_approval,
-                    "model_check": downloads_model_check,
-                    "check_provider": downloads_check_provider,
-                    "check_model": downloads_check_model.strip(),
-                })
-            else:
-                downloads = current.downloads  # older forms: keep what is saved
-            updated = CodingPolicy(
-                enabled=enabled,
-                network_allowlist=hosts,
-                env=current.env,
-                network_warnings=warnings,
-                guidance_files=normalize_guidance_paths(guidance),
-                guidance_skills=normalize_skill_paths(skills),
-                git_exclude=None if exclude is None else normalize_git_exclude(exclude),
-                docker=current.docker,
-                downloads=downloads,
-            )
-        except CodingPolicyError as exc:
-            raise StorageError(str(exc)) from exc
-        token = None
-        if enabled and current.env.status == "absent":
-            token = utc_now()
-            updated.env = CodingEnvState(status="creating", updated_at=token)
-        store.replace_coding_policy(updated)
-        if token is not None:
-            _start_env_creation(request.app, resolved_project_id, token)
-    if enabled:
-        try:
-            try:
-                used_folders = DownloadStore(ProjectStore(project).root).used_folders()
-            except StorageError:
-                # Only `git status` noise: build commits fail closed on their own.
-                used_folders = set()
-            await ensure_local_excludes(
-                ProjectStore(project).project_path,
-                updated.git_exclude,
-                trailing=download_excludes(updated, used_folders),
-            )
-        except OSError:
-            LOGGER.warning(
-                "Could not update .git/info/exclude for project %s",
-                resolved_project_id, exc_info=True,
-            )
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    def change(current: CodingPolicy) -> CodingPolicy:
+        return replace(current, downloads=DownloadPolicy.from_dict({
+            "enabled": downloads_enabled,
+            "folder": downloads_folder,
+            "approval": downloads_approval,
+            "model_check": downloads_model_check,
+            "check_provider": downloads_check_provider,
+            "check_model": downloads_check_model.strip(),
+        }))
+
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={"downloads_folder": downloads_folder, "downloads_check_model": downloads_check_model},
+        refresh_excludes=True,
+    )
 
 
 @router.post("/projects/{project_id}/coding/env/retry")
