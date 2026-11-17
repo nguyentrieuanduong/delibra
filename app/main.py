@@ -21,6 +21,7 @@ from app.coding import CodingEnvState, DockerPolicy, build_capable, cli_newer_th
 from app.config import Settings
 from app.docker_backend import DockerController
 from app.health import checking_health, probe_all
+from app.log_setup import LOG_DIRNAME, LOG_FILENAME, install_logging
 from app.markdown import render_markdown
 from app.project_list import DEFAULT_SORT, SORTS, list_projects
 from app.project_routing import CanonicalProjectMiddleware, request_project
@@ -139,117 +140,126 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        registry = RegistryStore(app_settings.home)
-        locks = LockCoordinator()
-        # One account-wide quota view: it can change because of a run in any
-        # project, so every component reads the same instance.
-        usage_monitor = UsageMonitor(settings=app_settings)
-        manager = RunManager(
-            registry=registry,
-            locks=locks,
-            settings=app_settings,
-            adapter_factory=adapter_factory,
-            usage_monitor=usage_monitor,
-            # The account quota read is a Codex CLI invocation like any other,
-            # so it resolves through the same command.
-            codex_executable=commands["codex"],
-        )
-        docker_controller = docker_controller_override or DockerController(app_settings)
-        download_manager = DownloadManager(app_settings, commands)
-        auto_manager = AutoManager(
-            registry=registry,
-            locks=locks,
-            settings=app_settings,
-            runner=manager,
-            provider_commands=commands,
-            docker=docker_controller,
-            downloads=download_manager,
-        )
-        app.state.registry = registry
-        app.state.locks = locks
-        app.state.manager = manager
-        app.state.auto_manager = auto_manager
-        app.state.download_manager = download_manager
-        app.state.docker_controller = docker_controller
-        app.state.usage_monitor = usage_monitor
-        app.state.health = checking_health(commands)
-
-        async def refresh_health() -> None:
-            try:
-                app.state.health = await probe_all(commands)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                LOGGER.exception("Background CLI health probe failed")
-
-        health_task = asyncio.create_task(
-            refresh_health(),
-            name="delibra-health-probe",
-        )
-        for project in registry.list_projects():
-            try:
-                ProjectStore(project).sync_manifest_name(project.name)
-            except StorageError:
-                LOGGER.exception(
-                    "Project name carrier synchronization failed for project %s",
-                    project.id,
-                )
-            try:
-                store = ProjectStore(project)
-                _recover_interrupted_env(store)
-                _recover_interrupted_docker(store, docker_controller)
-                download_manager.recover(store.root)
-                migration = store.migrate_session_directories()
-                if migration.issues:
-                    LOGGER.warning(
-                        "Agent directory migration needs input for project %s: %s",
-                        project.id,
-                        ", ".join(issue.session_id for issue in migration.issues),
-                    )
-                for session in store.list_sessions():
-                    store.reconcile_session(session.id)
-                auto_migration = await auto_manager.reconcile_project(project.id)
-                if auto_migration.issues:
-                    LOGGER.warning(
-                        "Auto directory migration needs input for project %s: %s",
-                        project.id,
-                        ", ".join(
-                            issue.child for issue in auto_migration.issues
-                        ),
-                    )
-            except StorageError:
-                LOGGER.exception("Startup reconciliation failed for project %s", project.id)
-        # A crash can leave VMs running; no build run is active yet, and
-        # stop_all skips any VM a fresh run acquires meanwhile.
-        docker_recovery = asyncio.create_task(
-            docker_controller.stop_all(), name="delibra-docker-recovery"
+        uninstall_logging = install_logging(app_settings.home, app_settings.log_level)
+        LOGGER.info(
+            "Delibra started: home %s, log %s",
+            app_settings.home, app_settings.home / LOG_DIRNAME / LOG_FILENAME,
         )
         try:
-            yield
-        finally:
-            health_task.cancel()
+            registry = RegistryStore(app_settings.home)
+            locks = LockCoordinator()
+            # One account-wide quota view: it can change because of a run in any
+            # project, so every component reads the same instance.
+            usage_monitor = UsageMonitor(settings=app_settings)
+            manager = RunManager(
+                registry=registry,
+                locks=locks,
+                settings=app_settings,
+                adapter_factory=adapter_factory,
+                usage_monitor=usage_monitor,
+                # The account quota read is a Codex CLI invocation like any other,
+                # so it resolves through the same command.
+                codex_executable=commands["codex"],
+            )
+            docker_controller = docker_controller_override or DockerController(app_settings)
+            download_manager = DownloadManager(app_settings, commands)
+            auto_manager = AutoManager(
+                registry=registry,
+                locks=locks,
+                settings=app_settings,
+                runner=manager,
+                provider_commands=commands,
+                docker=docker_controller,
+                downloads=download_manager,
+            )
+            app.state.registry = registry
+            app.state.locks = locks
+            app.state.manager = manager
+            app.state.auto_manager = auto_manager
+            app.state.download_manager = download_manager
+            app.state.docker_controller = docker_controller
+            app.state.usage_monitor = usage_monitor
+            app.state.health = checking_health(commands)
+
+            async def refresh_health() -> None:
+                try:
+                    app.state.health = await probe_all(commands)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    LOGGER.exception("Background CLI health probe failed")
+
+            health_task = asyncio.create_task(
+                refresh_health(),
+                name="delibra-health-probe",
+            )
+            for project in registry.list_projects():
+                try:
+                    ProjectStore(project).sync_manifest_name(project.name)
+                except StorageError:
+                    LOGGER.exception(
+                        "Project name carrier synchronization failed for project %s",
+                        project.id,
+                    )
+                try:
+                    store = ProjectStore(project)
+                    _recover_interrupted_env(store)
+                    _recover_interrupted_docker(store, docker_controller)
+                    download_manager.recover(store.root)
+                    migration = store.migrate_session_directories()
+                    if migration.issues:
+                        LOGGER.warning(
+                            "Agent directory migration needs input for project %s: %s",
+                            project.id,
+                            ", ".join(issue.session_id for issue in migration.issues),
+                        )
+                    for session in store.list_sessions():
+                        store.reconcile_session(session.id)
+                    auto_migration = await auto_manager.reconcile_project(project.id)
+                    if auto_migration.issues:
+                        LOGGER.warning(
+                            "Auto directory migration needs input for project %s: %s",
+                            project.id,
+                            ", ".join(
+                                issue.child for issue in auto_migration.issues
+                            ),
+                        )
+                except StorageError:
+                    LOGGER.exception("Startup reconciliation failed for project %s", project.id)
+            # A crash can leave VMs running; no build run is active yet, and
+            # stop_all skips any VM a fresh run acquires meanwhile.
+            docker_recovery = asyncio.create_task(
+                docker_controller.stop_all(), name="delibra-docker-recovery"
+            )
             try:
-                await asyncio.wait_for(health_task, timeout=2)
-            except asyncio.CancelledError:
-                pass
-            except TimeoutError:
-                LOGGER.error("CLI health probe did not stop within the shutdown bound")
-            env_tasks = list(app.state.coding_env_tasks.values())
-            for task in env_tasks:
-                task.cancel()
-            await asyncio.gather(*env_tasks, return_exceptions=True)
-            docker_tasks = [docker_recovery, *app.state.coding_docker_tasks.values()]
-            for task in docker_tasks:
-                task.cancel()
-            await asyncio.gather(*docker_tasks, return_exceptions=True)
-            # Checks and downloads stop first, so no settling turn holds Auto's
-            # shutdown (and a finished turn records before Auto interrupts);
-            # Auto's cancelled turns then harvest the spool, and the second
-            # call stops whatever that started.
-            await download_manager.shutdown()
-            await auto_manager.shutdown()
-            await download_manager.shutdown()
-            await manager.shutdown()
+                yield
+            finally:
+                health_task.cancel()
+                try:
+                    await asyncio.wait_for(health_task, timeout=2)
+                except asyncio.CancelledError:
+                    pass
+                except TimeoutError:
+                    LOGGER.error("CLI health probe did not stop within the shutdown bound")
+                env_tasks = list(app.state.coding_env_tasks.values())
+                for task in env_tasks:
+                    task.cancel()
+                await asyncio.gather(*env_tasks, return_exceptions=True)
+                docker_tasks = [docker_recovery, *app.state.coding_docker_tasks.values()]
+                for task in docker_tasks:
+                    task.cancel()
+                await asyncio.gather(*docker_tasks, return_exceptions=True)
+                # Checks and downloads stop first, so no settling turn holds Auto's
+                # shutdown (and a finished turn records before Auto interrupts);
+                # Auto's cancelled turns then harvest the spool, and the second
+                # call stops whatever that started.
+                await download_manager.shutdown()
+                await auto_manager.shutdown()
+                await download_manager.shutdown()
+                await manager.shutdown()
+        finally:
+            LOGGER.info("Delibra stopped")
+            uninstall_logging()
 
     app = FastAPI(lifespan=lifespan)
     app.add_middleware(CanonicalProjectMiddleware)
