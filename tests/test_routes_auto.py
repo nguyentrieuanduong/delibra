@@ -1100,7 +1100,7 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
         session_page = client.get(
             f"/projects/{quote(project.name, safe='')}/sessions/{active.active_key.session_id}"
         )
-        settings_page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        settings_page = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
         index = client.get("/")
         active_deep_link = client.get(
             f"/projects/{quote(project.name, safe='')}/chat?auto_setup=true"

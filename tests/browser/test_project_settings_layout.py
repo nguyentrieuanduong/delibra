@@ -18,10 +18,7 @@ def test_coding_and_docker_checkboxes_share_a_line_with_their_text(
 ) -> None:
     app = live_server(["success"], tmp_path)
     page.set_viewport_size({"width": 1400, "height": 1000})
-    page.goto(f"{app['base_url']}/projects/Verify/settings")
-
-    rows = page.evaluate(
-        """() => ["/coding", "/coding/docker", "/global-instruction", "/writable-roots"].map((path) => {
+    measure = """(paths) => paths.map((path) => {
           const label = document.querySelector(`form[action$="${path}"] label.auto-choice`);
           const box = label.querySelector("input[type=checkbox]").getBoundingClientRect();
           const range = document.createRange();
@@ -34,7 +31,11 @@ def test_coding_and_docker_checkboxes_share_a_line_with_their_text(
             boxMiddle: (box.top + box.bottom) / 2,
           };
         })"""
-    )
+    # Coding and Docker are on the Coding tab; the other two on General.
+    page.goto(f"{app['base_url']}/projects/Verify/settings/coding")
+    rows = page.evaluate(measure, ["/coding", "/coding/docker"])
+    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    rows += page.evaluate(measure, ["/global-instruction", "/writable-roots"])
     assert [row["text"] for row in rows] == [
         "Enable coding (Auto build runs)",
         "Let build agents use Docker (a Lima VM per project)",

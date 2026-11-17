@@ -708,7 +708,7 @@ def test_project_chat_is_primary_and_settings_remains_available(tmp_path: Path) 
     with TestClient(app, base_url="http://localhost") as client:
         primary = client.get(f"/projects/{quote(project.name, safe='')}", follow_redirects=False)
         chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
-        management = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        management = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
         created = client.post(
             f"/projects/{quote(project.name, safe='')}/sessions",
             data={
@@ -762,13 +762,13 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
 
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store, auto_id="f" * 32)
-        initial = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        initial = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
         saved = client.post(
             f"/projects/{quote(project.name, safe='')}/pass-prompt",
             data={"pass_prompt_template": custom},
             follow_redirects=False,
         )
-        rendered = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        rendered = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
         reset = client.post(
             f"/projects/{quote(project.name, safe='')}/pass-prompt/reset",
             follow_redirects=False,
@@ -785,7 +785,7 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
     assert store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
 
     with TestClient(app, base_url="http://localhost") as client:
-        after_reset = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        after_reset = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
     assert "Review the following document" in after_reset.text
 
 
@@ -1370,7 +1370,7 @@ def test_enabling_coding_creates_env_and_persists_allowlist(tmp_path, monkeypatc
             follow_redirects=False,
         )
         state = wait_env(project, "ready")
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 303
     policy = ProjectStore(project).coding_policy()
@@ -1396,7 +1396,7 @@ def test_lan_client_cannot_change_coding(tmp_path, monkeypatch) -> None:
     with TestClient(app, base_url="http://localhost", client=LAN) as client:
         saved = client.post(f"{prefix}/coding", data={"enabled": "true"})
         retry = client.post(f"{prefix}/coding/env/retry")
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 403
     assert retry.status_code == 403
@@ -1429,7 +1429,7 @@ def test_private_resolution_warning_is_stored_and_shown(tmp_path, monkeypatch) -
             data={"network_allowlist": "intranet.example.com"},
             follow_redirects=False,
         )
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 303
     assert ProjectStore(project).coding_policy().network_warnings == [warning]
@@ -1443,7 +1443,7 @@ def test_startup_turns_interrupted_creation_into_retryable_error(tmp_path, monke
     store.set_coding_env(CodingEnvState(status="creating", updated_at="2026-10-15T00:00:00Z"))
 
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     state = ProjectStore(project).coding_policy().env
     assert state.status == "error"
@@ -1499,7 +1499,7 @@ def test_guidance_files_are_saved_from_the_textarea(tmp_path, monkeypatch) -> No
             data={"network_allowlist": "pypi.org", "guidance_files": str(guide)},
             follow_redirects=False,
         )
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 303
     assert ProjectStore(project).coding_policy().guidance_files == [str(guide)]
@@ -1600,7 +1600,7 @@ def test_the_coding_page_shows_the_skills_box(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     ProjectStore(project).set_build_skills(skills)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert (
         '<textarea id="coding-guidance-skills" name="guidance_skills" maxlength="262144">'
@@ -1707,7 +1707,7 @@ def test_each_guidance_preset_gets_a_button_in_config_order(tmp_path, monkeypatc
         ),
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     zeta = page.index('name="guidance_preset" value="zeta" data-disable-during-auto')
     escaped = page.index('name="guidance_preset" value="a&lt;b" data-disable-during-auto')
@@ -1720,12 +1720,12 @@ def test_each_guidance_preset_gets_a_button_in_config_order(tmp_path, monkeypatc
 def test_no_guidance_presets_links_to_global_settings(tmp_path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        local = client.get(f"{prefix}/settings").text
+        local = client.get(f"{prefix}/settings/coding").text
     with TestClient(app, base_url="http://localhost", client=LAN) as client:
-        lan = client.get(f"{prefix}/settings").text
+        lan = client.get(f"{prefix}/settings/coding").text
 
     assert 'name="guidance_preset"' not in local
-    assert 'Add guidance presets in <a href="/settings">Settings</a>.' in local
+    assert 'Add guidance presets in <a href="/settings/presets">Settings</a>.' in local
     assert 'href="/settings"' not in lan
     assert "Guidance presets are set on this machine's Settings page." in lan
 
@@ -1743,7 +1743,7 @@ def test_enabling_coding_in_a_git_project_adds_local_excludes(tmp_path, monkeypa
             follow_redirects=False,
         )
         wait_env(project, "ready")
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     text = exclude.read_text()
     assert "/.delibra/\n" in text and "/envs/\n" in text
@@ -1761,7 +1761,7 @@ def test_git_ignore_list_is_configurable_per_project(tmp_path, monkeypatch) -> N
         custom, custom_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
         client.post(f"{prefix}/coding", data=form, follow_redirects=False)
         kept = ProjectStore(project).coding_policy().git_exclude
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
         client.post(f"{prefix}/coding", data={**form, "git_exclude_preset": "default"}, follow_redirects=False)
         reset, default_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
 
@@ -1783,7 +1783,7 @@ def test_submitting_the_default_ignore_list_keeps_following_it(tmp_path, monkeyp
             data={"network_allowlist": "pypi.org", "git_exclude": "\r\n".join(default_git_exclude())},
             follow_redirects=False,
         )
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert ProjectStore(project).coding_policy().git_exclude is None
     assert "(Delibra&#39;s default)" in page
@@ -1806,7 +1806,7 @@ def test_an_invalid_git_ignore_list_changes_nothing(tmp_path, monkeypatch) -> No
 def test_coding_hint_does_not_claim_the_browser_is_unlimited(tmp_path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
     assert "web fetch, browser) are not limited" not in page
     assert "browser features are off in build turns" in page
 
@@ -1903,7 +1903,7 @@ def test_enabling_docker_prepares_the_lima_vm(tmp_path, monkeypatch) -> None:
         enable_coding(client, prefix, project)
         saved = client.post(f"{prefix}/coding/docker", data={"enabled": "true"}, follow_redirects=False)
         state = wait_docker(project, "ready")
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 303
     assert controller.prepared == [project_dir.resolve()]
@@ -2058,7 +2058,7 @@ def test_settings_never_call_lima_isolated_and_disclose_every_risk(tmp_path, mon
         controller.lima_available = False
         client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
         controller.lima_available = True
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert "Switch to a Lima VM</button>" in page
     assert "(isolated)" not in page
@@ -2150,7 +2150,7 @@ def test_settings_offer_local_docker_only_with_its_risks_when_lima_failed(tmp_pa
         enable_coding(client, prefix, project)
         client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
         wait_docker(project, "error")
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert "Lima is unavailable: limactl is not on PATH" in page
     assert "coding/docker/local" in page
@@ -2204,7 +2204,7 @@ def test_reset_clears_exactly_its_scope(
     prefix = f"/projects/{quote(project.name, safe='')}"
 
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/reset")
         response = client.post(f"{prefix}/reset", data={"scope": scope}, follow_redirects=False)
 
     assert "Start new phase" in page.text
@@ -2234,7 +2234,7 @@ def test_reset_is_refused_whole_while_auto_is_active(
 
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store, auto_id="f" * 32)
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/reset")
         response = client.post(f"{prefix}/reset", data={"scope": scope})
 
     assert response.status_code == 409
@@ -2280,9 +2280,9 @@ def test_reset_area_shows_refresh_then_clear_and_reset(tmp_path: Path) -> None:
     project, _, _ = _reset_project(tmp_path, settings)
 
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"/projects/{quote(project.name, safe='')}/settings").text
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings/reset").text
 
-    section = page[page.index('id="reset-heading"') : page.index("<h2>Sessions</h2>")]
+    section = page[page.index('id="reset-heading"') : page.index("</section>", page.index('id="reset-heading"'))]
     assert ">Reset</h2>" in section
     order = [
         "Refresh (new phase)", "Start new phase", "Clear and reset",
@@ -2468,8 +2468,8 @@ def test_a_preset_button_copies_its_skills_into_the_chat_list(tmp_path, monkeypa
             follow_redirects=False,
         )
 
-    zeta = page.index('name="chat_preset" value="zeta" data-disable-during-auto')
-    escaped = page.index('name="chat_preset" value="a&lt;b" data-disable-during-auto')
+    zeta = page.index('name="chat_preset" value="zeta"')
+    escaped = page.index('name="chat_preset" value="a&lt;b"')
     assert zeta < escaped
     assert ">Use zeta skills</button>" in page
     assert 'name="chat_preset" value="files-only"' not in page
@@ -2517,7 +2517,7 @@ def test_no_preset_with_skills_links_to_global_settings_from_the_chat_section(
 
     section = page.split('id="chat-skills-heading"', 1)[1].split("</section>", 1)[0]
     assert 'name="chat_preset"' not in section
-    assert 'Add presets with skills in <a href="/settings">Settings</a>.' in section
+    assert 'Add presets with skills in <a href="/settings/presets">Settings</a>.' in section
 
 
 def test_the_project_global_instruction_switch_renders_and_saves(tmp_path: Path) -> None:
@@ -2691,7 +2691,57 @@ def test_an_unsafe_download_folder_is_refused(tmp_path: Path, monkeypatch) -> No
 def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
     assert 'name="downloads_folder" value="docs/source/raw"' in page
     assert 'name="downloads_check_model" value="sonnet"' in page
 
+
+SETTINGS_TABS = {
+    "general": ("Default message turn time limit", "Writable project directories",
+                "Use the global instruction in this project", "Skills for chat and discussion"),
+    "prompts": ("Default Pass prompt",),
+    "coding": ('id="coding-heading"', "Docker for build runs"),
+    "agents": ("Create session",),
+    "reset": ('id="reset-heading"',),
+}
+
+
+def test_each_settings_tab_is_its_own_page(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "tabs"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Tabs", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        pages = {tab: client.get(f"{prefix}/settings/{tab}") for tab in SETTINGS_TABS}
+        root = client.get(f"{prefix}/settings").text
+        unknown = client.get(f"{prefix}/settings/everything")
+
+    for tab, markers in SETTINGS_TABS.items():
+        assert pages[tab].status_code == 200
+        for marker in markers:
+            assert marker in pages[tab].text, (tab, marker)
+        for other, other_markers in SETTINGS_TABS.items():
+            if other != tab:
+                assert other_markers[0] not in pages[tab].text, (tab, other)
+        assert f'href="{prefix}/settings{"" if tab == "general" else "/" + tab}" aria-current="page"' in pages[tab].text
+    assert root == pages["general"].text
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "Unknown settings tab"
+
+
+def test_general_tab_orders_its_sections(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "order"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Order", project_dir)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings").text
+
+    positions = [
+        page.index('id="turn-timeout-heading"'),
+        page.index('id="writable-roots-heading"'),
+        page.index('id="global-instruction-heading"'),
+        page.index('id="chat-skills-heading"'),
+    ]
+    assert positions == sorted(positions)

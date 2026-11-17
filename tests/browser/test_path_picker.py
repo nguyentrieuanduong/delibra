@@ -327,7 +327,7 @@ def test_browse_adds_markdown_to_coding_guidance(
     (guides / "a.md").write_text("# A\n")
     (guides / "b.md").write_text("# B\n")
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    page.goto(f"{app['base_url']}/projects/Verify/settings/coding")
 
     page.click("[data-picker-target='coding-guidance-files']")
     dialog = page.locator("#path-picker")
@@ -345,10 +345,11 @@ def test_browse_adds_project_folders_to_writable_roots(
 ) -> None:
     app = live_server(["success"], tmp_path)
     (tmp_path / "project" / "src" / "app").mkdir(parents=True)
-    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    page.goto(f"{app['base_url']}/projects/Verify/settings/agents")
     edit_target = f"session-writable-roots-{app['session_ids'][0]}"
     assert page.locator(f"[data-picker-target='{edit_target}']").count() == 1
 
+    page.goto(f"{app['base_url']}/projects/Verify/settings")
     page.click("[data-picker-target='project-writable-roots']")
     dialog = page.locator("#path-picker")
     _open_folder(dialog, "src/")
@@ -367,11 +368,13 @@ def test_a_listing_opened_for_one_field_never_fills_another(
     (tmp_path / "guides" / "a.md").write_text("# A\n")
     app = live_server(["success"], tmp_path)
     (tmp_path / "project" / "src").mkdir(parents=True)
+    # General holds a /browse?mode=guidance field (chat skills) beside the
+    # project-folder field, so both listings can race on one page.
     page.goto(f"{app['base_url']}/projects/Verify/settings")
-    guidance_before = page.input_value("#coding-guidance-files")
+    guidance_before = page.input_value("#chat-skills")
     dialog = page.locator("#path-picker")
 
-    page.click("[data-picker-target='coding-guidance-files']")
+    page.click("[data-picker-target='chat-skills']")
     dialog.locator("[data-path-picker-add]").wait_for()
     dialog.get_by_role("button", name="Cancel").click()
 
@@ -387,7 +390,7 @@ def test_a_listing_opened_for_one_field_never_fills_another(
     dialog.locator("[data-path-picker-add]").click()
 
     assert page.input_value("#project-writable-roots").splitlines()[-1] == "src"
-    assert page.input_value("#coding-guidance-files") == guidance_before
+    assert page.input_value("#chat-skills") == guidance_before
 
 
 @pytest.mark.browser
@@ -399,7 +402,7 @@ def test_browse_adds_markdown_to_the_skills_box(
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# TDD\n")
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    page.goto(f"{app['base_url']}/projects/Verify/settings/coding")
 
     page.click("[data-picker-target='coding-guidance-skills']")
     dialog = page.locator("#path-picker")

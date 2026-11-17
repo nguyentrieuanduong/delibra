@@ -218,7 +218,7 @@ def test_create_session_validates_provider_specific_effort_and_renders_controls(
             client, project.id, role_instructions="x" * 20_001
         ).status_code == 422
 
-        page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
     sessions = store.list_sessions()
     assert {(item.agent, item.effort) for item in sessions} == {
         ("codex", "minimal"),
@@ -606,7 +606,7 @@ def test_project_settings_explains_a_blocked_legacy_migration(
     create_legacy_session(store, legacy)
 
     with client:
-        response = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
 
     assert response.status_code == 200
     assert "agent name must be one directory component" in response.text
@@ -638,7 +638,7 @@ def test_project_settings_escapes_migration_issue_messages(
                 ),
             ),
         )
-        response = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
 
     assert response.status_code == 200
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
@@ -720,7 +720,7 @@ def test_session_writable_roots_persist_clear_and_render_in_both_forms(
         )
         session_id = created_session_id(created)
         settings_page = client.get(
-            f"/projects/{quote(project.name, safe='')}/settings"
+            f"/projects/{quote(project.name, safe='')}/settings/agents"
         )
         chat_page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
         cleared = client.post(
@@ -977,7 +977,7 @@ def test_agent_writable_roots_tick_creates_missing_on_create_and_edit(
         assert (store.project_path / "new" / "dir").is_dir()
         assert store.load_session(session_id).create_missing_writable_roots is True
 
-        settings_page = client.get(f"{url}/settings")
+        settings_page = client.get(f"{url}/settings/agents")
         chat_page = client.get(f"{url}/chat")
 
         # An edit that does not submit the roots leaves the tick alone.

@@ -428,3 +428,7 @@ textarea { min-height: 7rem; }
 .project-list-controls input[type="search"] { min-width: 18rem; }
 .pagination { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1rem 0; }
 .pagination [aria-current="page"] { font-weight: bold; }
+.settings-tabs { border-bottom: 1px solid #ccc; display: flex; flex-wrap: wrap; gap: .25rem; margin: 1rem 0; }
+.settings-tabs a { border: 1px solid transparent; border-bottom: none; padding: .4rem .8rem; text-decoration: none; }
+.settings-tabs a[aria-current="page"] { border-color: #ccc; border-radius: .3rem .3rem 0 0; font-weight: 600; margin-bottom: -1px; background: Canvas; }
+.takes-effect { font-size: .85rem; margin: 0 0 .5rem; opacity: .75; }

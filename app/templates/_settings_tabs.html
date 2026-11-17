@@ -1,0 +1,5 @@
+<nav class="settings-tabs" aria-label="Settings sections">
+  {% for key, label, url in settings_tabs %}
+    <a href="{{ url }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>

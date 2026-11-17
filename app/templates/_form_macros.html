@@ -5,3 +5,7 @@
     </optgroup>
   {% endfor %}
 {%- endmacro %}
+
+{% macro takes_effect(rule) -%}
+  <p class="takes-effect">{% if rule == "now" %}Applies from its next use.{% elif rule == "next_turn" %}A running Auto run uses this from its next turn.{% elif rule == "next_run" %}A running Auto run keeps what it started with; new runs use this.{% elif rule == "next_commit" %}A running Auto run uses this from its next build commit.{% else %}Locked while an Auto run is active.{% endif %}</p>
+{%- endmacro %}

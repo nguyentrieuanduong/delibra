@@ -58,6 +58,20 @@ from app.urls import project_url
 
 router = APIRouter()
 RESET_SCOPES = frozenset({"questions", "notes", "context", "all", *CLEAR_SCOPES})
+PROJECT_TABS = (
+    ("general", "General"),
+    ("prompts", "Prompts"),
+    ("coding", "Coding"),
+    ("agents", "Agents"),
+    ("reset", "Reset"),
+)
+PROJECT_TAB_NAMES = frozenset(key for key, _label in PROJECT_TABS)
+
+
+def settings_tab_url(project_name: str, tab: str) -> str:
+    """General keeps the old /settings URL, so existing links land on it."""
+
+    return project_url(project_name, "/settings" if tab == "general" else f"/settings/{tab}")
 
 
 def _project_path(value: str) -> Path:
@@ -783,10 +797,12 @@ async def render_project_settings(
     request: Request,
     project: Project,
     *,
+    tab: str = "general",
     error: str | None = None,
     chat_skills_text: str | None = None,
     writable_roots_text: str | None = None,
     create_missing_writable_roots: bool | None = None,
+    typed: dict[str, str] | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     """The project settings page; a refused form passes its text and error back."""
@@ -868,6 +884,12 @@ async def render_project_settings(
             "use_global_instruction": store.use_global_instruction(),
             "global_instruction_state": global_instruction_state,
             "error": error,
+            "tab": tab,
+            "tab_label": dict(PROJECT_TABS)[tab],
+            "settings_tabs": [
+                (key, label, settings_tab_url(project.name, key)) for key, label in PROJECT_TABS
+            ],
+            "typed": typed or {},
         },
         status_code=status_code,
     )
@@ -876,6 +898,13 @@ async def render_project_settings(
 @router.get("/projects/{project_id}/settings", response_class=HTMLResponse)
 async def project_settings(request: Request, project_id: str) -> HTMLResponse:
     return await render_project_settings(request, request_project(request, project_id))
+
+
+@router.get("/projects/{project_id}/settings/{tab}", response_class=HTMLResponse)
+async def project_settings_tab(request: Request, project_id: str, tab: str) -> HTMLResponse:
+    if tab not in PROJECT_TAB_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown settings tab")
+    return await render_project_settings(request, request_project(request, project_id), tab=tab)
 
 
 @router.post("/projects/{project_id}/chat-skills")
