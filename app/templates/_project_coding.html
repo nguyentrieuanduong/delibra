@@ -122,24 +122,24 @@
   {% if docker.status == 'error' %}
     <pre class="coding-docker-error">{{ docker.error }}</pre>
     <form method="post" action="{{ project_url(project.name, '/coding/docker/retry') }}">
-      <button type="submit"{% if not coding_local %} disabled{% endif %}>Retry Docker</button>
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Retry Docker</button>
     </form>
   {% endif %}
   {% if docker.enabled and docker.backend != 'local' and (docker.status == 'error' or (docker_lima and not docker_lima.available)) %}
     <form method="post" action="{{ project_url(project.name, '/coding/docker/local') }}" class="coding-docker-local">
       <p class="warning">Local Docker is not isolated. Any container the agents start can bind-mount your files (for example ~/.ssh, or write ~/.zshrc), reach this machine's 127.0.0.1 including Delibra, and reach your network. Use it only if you accept that.</p>
       <label class="auto-choice"><input type="checkbox" name="acknowledge" value="true"> I understand; use local Docker for this project</label>
-      <button type="submit"{% if not coding_local %} disabled{% endif %}>Use local Docker (not isolated)</button>
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Use local Docker (not isolated)</button>
     </form>
   {% endif %}
   {% if docker.backend == 'local' and docker_lima and docker_lima.available %}
     <form method="post" action="{{ project_url(project.name, '/coding/docker/lima') }}">
-      <button type="submit"{% if not coding_local %} disabled{% endif %}>Switch to a Lima VM</button>
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Switch to a Lima VM</button>
     </form>
   {% endif %}
   {% if docker.lima_instance %}
     <form method="post" action="{{ project_url(project.name, '/coding/docker/delete') }}" onsubmit="return confirm('Delete this project\'s Docker VM? Its images, volumes and caches are lost.')">
-      <button type="submit"{% if not coding_local or auto_active %} disabled{% endif %}>Delete Docker VM</button>
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Delete Docker VM</button>
     </form>
   {% endif %}
 </section>

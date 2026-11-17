@@ -3160,3 +3160,46 @@ def test_a_refused_downloads_save_keeps_every_field(tmp_path, monkeypatch) -> No
     assert 'name="downloads_check_model" value="typed-model"' in page
     assert 'name="downloads_folder" value="../out"' in page
     assert ProjectStore(project).coding_policy().downloads.enabled is False
+
+
+@pytest.mark.parametrize("auto_active", [False, True])
+def test_every_docker_action_button_locks_live_with_auto(tmp_path, monkeypatch, auto_active) -> None:
+    def buttons(page: str) -> dict[str, str]:
+        found = {}
+        for label in ("Retry Docker", "Use local Docker (not isolated)", "Switch to a Lima VM", "Delete Docker VM"):
+            match = re.search(rf"<button[^>]*>{re.escape(label)}</button>", page)
+            if match:
+                found[label] = match.group(0)
+        return found
+
+    if auto_active:
+        monkeypatch.setattr(ProjectStore, "active_auto_run_id", lambda _self: "a" * 32)
+        monkeypatch.setattr(
+            ProjectStore, "load_auto_run", lambda _self, _id: types.SimpleNamespace(number=3)
+        )
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    store = ProjectStore(project)
+    store.set_coding_enabled(True)
+    pages = []
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        store.set_coding_docker(DockerPolicy(
+            enabled=True, backend="lima", status="error", error="boom", lima_instance="delibra-0123456789",
+        ))
+        controller.lima_available = False
+        pages.append(client.get(f"{prefix}/settings/coding").text)
+        store.set_coding_docker(DockerPolicy(
+            enabled=True, backend="local", status="ready", local_endpoint="/var/run/docker.sock",
+            local_acknowledged_at="t", docker_version="29.0.0", updated_at="t",
+        ))
+        controller.lima_available = True
+        pages.append(client.get(f"{prefix}/settings/coding").text)
+
+    found = {**buttons(pages[0]), **buttons(pages[1])}
+    assert sorted(found) == sorted(
+        ["Retry Docker", "Use local Docker (not isolated)", "Switch to a Lima VM", "Delete Docker VM"]
+    )
+    for label, button in found.items():
+        assert "data-disable-during-auto" in button, label
+        assert ("disabled" in button.replace("data-disable-during-auto", "")) is auto_active, label
+        assert ('data-auto-disabled="true"' in button) is auto_active, label
