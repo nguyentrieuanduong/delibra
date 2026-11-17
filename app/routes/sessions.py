@@ -5,20 +5,26 @@ from __future__ import annotations
 from uuid import uuid4
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
-from app.models import SessionConfig
+from app.models import Project, SessionConfig
 from app.project_routing import request_project
 from app.routes.auto import project_auto_record
 from app.routes.chat import sidebar_response
-from app.routes.projects import _writable_roots_field
+from app.routes.projects import (
+    _writable_roots_field,
+    nothing_saved,
+    render_project_settings,
+    settings_tab_url,
+)
 from app.security import validate_agent_name, validate_field
 from app.storage import (
     ConflictError,
     NotFoundError,
     ProjectStore,
+    StorageError,
     merge_writable_roots,
     utc_now,
     validate_id,
@@ -68,6 +74,40 @@ def _validated_configuration(
     return agent, model, effort, role_instructions
 
 
+def _back_to_agents_tab(project: Project) -> RedirectResponse:
+    """Agent forms on the settings page send return_to=settings and land on Agents."""
+
+    return RedirectResponse(settings_tab_url(project.name, "agents"), status_code=303)
+
+
+def _agents_tab_refusal(exc: HTTPException | StorageError) -> bool:
+    """A refusal the Agents tab shows as its pop-up; anything else keeps its answer."""
+
+    if isinstance(exc, HTTPException):
+        return exc.status_code in (409, 422)
+    return not isinstance(exc, NotFoundError)
+
+
+async def _refused_on_agents_tab(
+    request: Request,
+    project_id: str,
+    exc: HTTPException | StorageError,
+    typed: dict[str, str],
+) -> HTMLResponse:
+    if isinstance(exc, HTTPException):
+        reason, status = str(exc.detail), exc.status_code
+    else:
+        reason, status = str(exc), 409 if isinstance(exc, ConflictError) else 422
+    return await render_project_settings(
+        request,
+        request_project(request, project_id),
+        tab="agents",
+        error=nothing_saved(reason),
+        typed=typed,
+        status_code=status,
+    )
+
+
 @router.post("/projects/{project_id}/sessions")
 async def create_session(
     request: Request,
@@ -81,6 +121,33 @@ async def create_session(
     create_missing_writable_roots: bool = Form(False),
     # Only "settings" changes the redirect (to the Agents tab); anything else is ignored.
     return_to: str = Form(""),
+):
+    try:
+        return await _create_session(
+            request, project_id, name, agent, model, effort, role_instructions,
+            writable_roots, create_missing_writable_roots, return_to,
+        )
+    except (HTTPException, StorageError) as exc:
+        if return_to != "settings" or not _agents_tab_refusal(exc):
+            raise
+        return await _refused_on_agents_tab(request, project_id, exc, {
+            "form": "create", "name": name, "agent": agent, "model": model, "effort": effort,
+            "role_instructions": role_instructions, "writable_roots": writable_roots,
+            "create_missing_writable_roots": "true" if create_missing_writable_roots else "",
+        })
+
+
+async def _create_session(
+    request: Request,
+    project_id: str,
+    name: str,
+    agent: str,
+    model: str,
+    effort: str,
+    role_instructions: str,
+    writable_roots: str,
+    create_missing_writable_roots: bool,
+    return_to: str,
 ):
     name = validate_agent_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
@@ -129,7 +196,7 @@ async def create_session(
             },
         )
     if return_to == "settings":
-        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
+        return _back_to_agents_tab(project)
     return RedirectResponse(
         project_url(project.name, f"/chat?agent={session_id}"),
         status_code=303,
@@ -152,6 +219,43 @@ async def edit_session(
     create_missing_writable_roots: bool = Form(False),
     return_to: str = Form(""),
     selected_agent: str | None = Query(None, alias="agent"),
+):
+    try:
+        return await _edit_session(
+            request, project_id, session_id, name, agent, model, effort, role_instructions,
+            writable_roots, create_missing_writable_roots, return_to, selected_agent,
+        )
+    except (HTTPException, StorageError) as exc:
+        if return_to != "settings" or not _agents_tab_refusal(exc):
+            raise
+        typed = {
+            key: value
+            for key, value in (
+                ("agent", agent), ("model", model), ("effort", effort),
+                ("role_instructions", role_instructions), ("writable_roots", writable_roots),
+            )
+            if value is not None
+        }
+        if writable_roots is not None:
+            typed["create_missing_writable_roots"] = "true" if create_missing_writable_roots else ""
+        return await _refused_on_agents_tab(
+            request, project_id, exc, {"form": f"edit:{session_id}", **typed}
+        )
+
+
+async def _edit_session(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    name: str | None,
+    agent: str | None,
+    model: str | None,
+    effort: str | None,
+    role_instructions: str | None,
+    writable_roots: str | None,
+    create_missing_writable_roots: bool,
+    return_to: str,
+    selected_agent: str | None,
 ):
     if writable_roots is None:
         submitted_form = await request.form()
@@ -256,7 +360,7 @@ async def edit_session(
             composer_oob=True,
         )
     if return_to == "settings":
-        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
+        return _back_to_agents_tab(project)
     return RedirectResponse(
         project_url(project.name, f"/sessions/{session_id}"),
         status_code=303,
@@ -270,6 +374,23 @@ async def set_permanent_session_name(
     session_id: str,
     name: str = Form(...),
     return_to: str = Form(""),
+):
+    try:
+        return await _set_permanent_session_name(request, project_id, session_id, name, return_to)
+    except (HTTPException, StorageError) as exc:
+        if return_to != "settings" or not _agents_tab_refusal(exc):
+            raise
+        return await _refused_on_agents_tab(
+            request, project_id, exc, {"form": f"name:{session_id}", "name": name}
+        )
+
+
+async def _set_permanent_session_name(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    name: str,
+    return_to: str,
 ):
     validate_id(session_id, "session id")
     name = validate_agent_name(name)
@@ -287,7 +408,7 @@ async def set_permanent_session_name(
             raise ConflictError("cannot name a running session")
         store.set_legacy_session_name(session_id, name)
     if return_to == "settings":
-        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
+        return _back_to_agents_tab(project)
     return RedirectResponse(
         project_url(project.name, "/settings"),
         status_code=303,
@@ -321,6 +442,20 @@ async def delete_session(
     session_id: str,
     return_to: str = Form(""),
 ):
+    try:
+        return await _delete_session(request, project_id, session_id, return_to)
+    except (HTTPException, StorageError) as exc:
+        if return_to != "settings" or not _agents_tab_refusal(exc):
+            raise
+        return await _refused_on_agents_tab(request, project_id, exc, {})
+
+
+async def _delete_session(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    return_to: str,
+):
     project = request_project(request, project_id)
     resolved_project_id = project.id
     async with request.app.state.locks.project_sessions(
@@ -332,7 +467,7 @@ async def delete_session(
         store.require_auto_inactive()
         store.delete_session(session_id)
     if return_to == "settings":
-        return RedirectResponse(project_url(project.name, "/settings/agents"), status_code=303)
+        return _back_to_agents_tab(project)
     return RedirectResponse(project_url(project.name), status_code=303)
 
 

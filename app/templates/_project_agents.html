@@ -3,79 +3,84 @@
 <section aria-labelledby="agents-heading">
   <h2 id="agents-heading">Sessions</h2>
   {{ takes_effect("locked") }}
-  <details>
+  {# A refused agent form comes back open, with what was typed (typed.form names it). #}
+  {% set c = typed if typed.get('form') == 'create' else {} %}
+  {% set c_agent = c.get('agent', 'claude') %}
+  <details{% if c %} open{% endif %}>
     <summary>Create session</summary>
-    <form method="post" action="{{ project_url(project.name, '/sessions') }}" data-session-config-form data-agent="claude">
+    <form method="post" action="{{ project_url(project.name, '/sessions') }}" data-session-config-form data-agent="{{ c_agent }}">
       <input type="hidden" name="return_to" value="settings">
       <label>Name
-        <input name="name" maxlength="200" required>
+        <input name="name" maxlength="200" value="{{ c.get('name', '') }}" required>
         <small>
           Up to 200 UTF-8 bytes; non-ASCII characters may use multiple bytes.
         </small>
       </label>
       <label>Agent
         <select name="agent" required data-agent-select>
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
+          <option value="claude"{% if c_agent == 'claude' %} selected{% endif %}>Claude</option>
+          <option value="codex"{% if c_agent == 'codex' %} selected{% endif %}>Codex</option>
         </select>
       </label>
-      <label>Model <input name="model" maxlength="200" value="sonnet" required></label>
+      <label>Model <input name="model" maxlength="200" value="{{ c.get('model', 'sonnet') }}" required></label>
       <label>Effort
         <select name="effort" required data-effort-select>
-          {{ effort_options(effort_levels, 'claude', 'high') }}
+          {{ effort_options(effort_levels, c_agent, c.get('effort', 'high')) }}
         </select>
       </label>
       <label>Role instructions
-        <textarea name="role_instructions" maxlength="20000"></textarea>
+        <textarea name="role_instructions" maxlength="20000">{{ c.get('role_instructions', '') }}</textarea>
       </label>
       <label>Additional writable roots
-        <textarea id="new-session-writable-roots" name="writable_roots" maxlength="65536"></textarea>
+        <textarea id="new-session-writable-roots" name="writable_roots" maxlength="65536">{{ c.get('writable_roots', '') }}</textarea>
       </label>
       {{ browse_button(project_url(project.name, "/browse"), "new-session-writable-roots") }}
-      <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"> Create directories that don't exist</label>
+      <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if c.get('create_missing_writable_roots') %} checked{% endif %}> Create directories that don't exist</label>
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create session</button>
     </form>
   </details>
   {% if sessions %}
     <div class="sessions">
       {% for session in sessions %}
+        {% set e = typed if typed.get('form') == 'edit:' ~ session.id else {} %}
+        {% set e_agent = e.get('agent', session.agent) %}
         <article class="session-card">
           <h3><a href="{{ project_url(project.name, '/sessions/' ~ session.id) }}">{{ session.name }}</a></h3>
           <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
-          <details>
+          <details{% if e %} open{% endif %}>
             <summary>Edit</summary>
-            <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/edit') }}" data-session-config-form data-agent="{{ session.agent }}">
+            <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/edit') }}" data-session-config-form data-agent="{{ e_agent }}">
               <input type="hidden" name="return_to" value="settings">
               <p class="immutable-agent-name">{{ session.name }}</p>
               <p class="immutability-hint">Agent name and directory are permanent.</p>
               {% if not session.rounds %}
                 <label>Agent
                   <select name="agent" data-agent-select>
-                    <option value="claude"{% if session.agent == 'claude' %} selected{% endif %}>Claude</option>
-                    <option value="codex"{% if session.agent == 'codex' %} selected{% endif %}>Codex</option>
+                    <option value="claude"{% if e_agent == 'claude' %} selected{% endif %}>Claude</option>
+                    <option value="codex"{% if e_agent == 'codex' %} selected{% endif %}>Codex</option>
                   </select>
                 </label>
               {% else %}
                 <p>Agent: {{ session.agent }} (fixed after the first round)</p>
               {% endif %}
-                <label>Model <input name="model" maxlength="200" value="{{ session.model }}" required></label>
+                <label>Model <input name="model" maxlength="200" value="{{ e.get('model', session.model) }}" required></label>
                 <label>Effort
                   <select name="effort" required data-effort-select>
-                    {{ effort_options(effort_levels, session.agent, session.effort) }}
+                    {{ effort_options(effort_levels, e_agent, e.get('effort', session.effort)) }}
                   </select>
                 </label>
               {% if not session.rounds %}
                 <label>Role instructions
-                  <textarea name="role_instructions" maxlength="20000">{{ session.role_instructions }}</textarea>
+                  <textarea name="role_instructions" maxlength="20000">{{ e.get('role_instructions', session.role_instructions) }}</textarea>
                 </label>
               {% else %}
                 <p>Role instructions are fixed after the first round.</p>
               {% endif %}
               <label>Additional writable roots
-                <textarea id="session-writable-roots-{{ session.id }}" name="writable_roots" maxlength="65536">{{ session.writable_roots|join('\n') }}</textarea>
+                <textarea id="session-writable-roots-{{ session.id }}" name="writable_roots" maxlength="65536">{{ e.get('writable_roots', session.writable_roots|join('\n')) }}</textarea>
               </label>
               {{ browse_button(project_url(project.name, "/browse"), "session-writable-roots-" ~ session.id) }}
-              <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if session.create_missing_writable_roots %} checked{% endif %}> Create directories that don't exist</label>
+              <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if (e.get('create_missing_writable_roots') if 'create_missing_writable_roots' in e else session.create_missing_writable_roots) %} checked{% endif %}> Create directories that don't exist</label>
               <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
             </form>
           </details>
@@ -89,7 +94,7 @@
             >
               <input type="hidden" name="return_to" value="settings">
               <label>Permanent agent name
-                <input name="name" maxlength="200" value="{{ session.name }}" required>
+                <input name="name" maxlength="200" value="{{ typed.get('name', session.name) if typed.get('form') == 'name:' ~ session.id else session.name }}" required>
                 <small>
                   Up to 200 UTF-8 bytes; non-ASCII characters may use multiple bytes.
                 </small>

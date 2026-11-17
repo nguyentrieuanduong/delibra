@@ -3016,3 +3016,72 @@ def test_a_refused_prompt_or_time_limit_save_pops_up_on_its_tab(
     assert kept in response.text
     assert store.manifest_path.read_bytes() == before
 
+def _agents_refusal(response, status: int) -> str:
+    assert response.status_code == status, response.text[:300]
+    assert 'aria-current="page">Agents</a>' in response.text
+    alert = response.text.split("<div hidden data-page-alert>Nothing was saved: ", 1)[1].split("</div>", 1)[0]
+    assert alert[:1].isupper(), alert
+    return alert
+
+
+def test_refused_agent_forms_on_the_agents_tab_pop_up_and_keep_the_input(tmp_path, monkeypatch) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "agents"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Agents", project_dir)
+    store = ProjectStore(project)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    form = {"agent": "claude", "model": "sonnet", "effort": "high", "return_to": "settings"}
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data={**form, "name": "Alpha"}, follow_redirects=False)
+        alpha = store.list_sessions()[0].id
+        bad_name = client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "bad/name", "model": "my-model", "role_instructions": "Typed role"},
+        )
+        bad_edit = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "m" * 201, "role_instructions": "Edited role", "return_to": "settings"},
+        )
+        chat_page = client.post(f"{prefix}/sessions", data={**form, "name": "bad/name", "return_to": ""})
+
+        def active(_self) -> None:
+            raise ConflictError("an Auto run is active")
+
+        monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+        locked_create = client.post(f"{prefix}/sessions", data={**form, "name": "Beta"})
+        locked_delete = client.post(f"{prefix}/sessions/{alpha}/delete", data={"return_to": "settings"})
+
+    _agents_refusal(bad_name, 422)
+    assert 'name="name" maxlength="200" value="bad/name"' in bad_name.text
+    assert 'name="model" maxlength="200" value="my-model"' in bad_name.text
+    assert ">Typed role</textarea>" in bad_name.text
+    assert _agents_refusal(bad_edit, 422).startswith("Model")
+    assert ">Edited role</textarea>" in bad_edit.text
+    assert "Auto run is active" in _agents_refusal(locked_create, 409)
+    assert 'value="Beta"' in locked_create.text
+    assert "Auto run is active" in _agents_refusal(locked_delete, 409)
+    # Without return_to (the chat page) the answer is unchanged.
+    assert chat_page.status_code == 422 and "detail" in chat_page.json()
+    assert [s.name for s in store.list_sessions()] == ["Alpha"]
+    assert store.load_session(alpha).model == "sonnet"
+
+
+def test_a_refused_permanent_name_pops_up_on_the_agents_tab(tmp_path, monkeypatch) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "named"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Named", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    def active(_self) -> None:
+        raise ConflictError("an Auto run is active")
+
+    monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/sessions/{'a' * 32}/permanent-name",
+            data={"name": "Kept name", "return_to": "settings"},
+        )
+
+    assert "Auto run is active" in _agents_refusal(response, 409)
