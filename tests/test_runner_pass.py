@@ -133,14 +133,6 @@ async def test_invalid_pass_template_fails_before_any_content_staging(
 ) -> None:
     manager, project_id, store, _, target, descriptor, _ = manager_setup(tmp_path)
 
-    def unexpected_shared_read(*args, **kwargs):
-        pytest.fail("shared Markdown must not be read before Pass-template preflight")
-
-    monkeypatch.setattr(
-        ProjectStore,
-        "read_selected_shared_markdown",
-        unexpected_shared_read,
-    )
     monkeypatch.setattr(
         "app.runner.safe_copy_file",
         lambda *args, **kwargs: pytest.fail(

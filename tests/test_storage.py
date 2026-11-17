@@ -20,7 +20,6 @@ from app.models import (
     Project,
     RoundRecord,
     SessionConfig,
-    SharedContextDescriptor,
     SourceDescriptor,
     TurnUsage,
     total_turn_usage,
@@ -301,7 +300,7 @@ def test_project_store_rejects_invalid_persisted_turn_timeout(
         ProjectStore(project)
 
 
-def test_round_record_shared_context_and_retry_fields_are_backward_compatible() -> None:
+def test_round_record_ignores_a_legacy_shared_context_and_keeps_retry_fields() -> None:
     legacy_data = {
         "n": 1,
         "status": "error",
@@ -313,23 +312,19 @@ def test_round_record_shared_context_and_retry_fields_are_backward_compatible() 
         "started_at": "2026-07-19T00:00:00Z",
         "finished_at": "2026-07-19T00:00:01Z",
         "source": {"type": "user"},
+        "shared_context": {
+            "path": "brief.md",
+            "staged_file": "inputs/round-01/shared-context.md",
+            "sha256": "a" * 64,
+        },
     }
 
     legacy = RoundRecord.from_dict(legacy_data)
-    assert legacy.shared_context is None
-    assert legacy.retry_of is None
+    assert not hasattr(legacy, "shared_context")
     assert "shared_context" not in legacy.to_dict()
-    assert "retry_of" not in legacy.to_dict()
-
-    legacy.shared_context = SharedContextDescriptor(
-        path="brief.md",
-        staged_file="inputs/round-01/shared-context.md",
-        sha256="a" * 64,
-    )
+    assert legacy.retry_of is None
     legacy.retry_of = 1
-    restored = RoundRecord.from_dict(legacy.to_dict())
-    assert restored.shared_context == legacy.shared_context
-    assert restored.retry_of == 1
+    assert RoundRecord.from_dict(legacy.to_dict()).retry_of == 1
 
 
 @pytest.mark.parametrize(

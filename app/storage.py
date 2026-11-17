@@ -2521,7 +2521,7 @@ class ProjectStore:
         if len(session_ids) != len(set(session_ids)):
             raise OwnershipError("Auto participants are duplicated")
         for artifact in (
-            record.topic, record.baseline, record.shared_context, record.guidance, record.skills
+            record.topic, record.baseline, record.guidance, record.skills
         ):
             if artifact is not None and not SHA256_PATTERN.fullmatch(artifact.sha256):
                 raise OwnershipError("Auto artifact digest is invalid")
@@ -2619,7 +2619,6 @@ class ProjectStore:
         *,
         topic: bytes,
         baseline: bytes,
-        shared_context: bytes | None = None,
         guidance: bytes | None = None,
         skills_index: bytes | None = None,
     ) -> AutoRunRecord:
@@ -2646,14 +2645,6 @@ class ProjectStore:
             raise OwnershipError("Auto topic digest does not match")
         if sha256(baseline).hexdigest() != record.baseline.sha256:
             raise OwnershipError("Auto baseline digest does not match")
-        if (record.shared_context is None) != (shared_context is None):
-            raise OwnershipError("Auto shared-context metadata does not match")
-        if (
-            record.shared_context is not None
-            and shared_context is not None
-            and sha256(shared_context).hexdigest() != record.shared_context.sha256
-        ):
-            raise OwnershipError("Auto shared-context digest does not match")
 
         self.require_auto_migration_complete()
         index = self._load_or_rebuild_auto_index()
@@ -2683,15 +2674,6 @@ class ProjectStore:
                 self._auto_artifact_path(temporary, record.baseline, "baseline.md"),
                 baseline,
             )
-            if record.shared_context is not None and shared_context is not None:
-                atomic_write_bytes(
-                    self._auto_artifact_path(
-                        temporary,
-                        record.shared_context,
-                        "shared-context.md",
-                    ),
-                    shared_context,
-                )
             if record.guidance is not None and guidance is not None:
                 atomic_write_bytes(
                     self._auto_artifact_path(temporary, record.guidance, "guidance.md"),
@@ -2779,7 +2761,7 @@ class ProjectStore:
         if maximum_bytes < 1:
             raise ValueError("Auto artifact limit must be positive")
         if artifact.path not in {
-            "topic.md", "baseline.md", "shared-context.md", "guidance.md", "skills.md"
+            "topic.md", "baseline.md", "guidance.md", "skills.md"
         } and not CONTINUE_SKILLS_ARTIFACT.fullmatch(artifact.path):
             raise OwnershipError("Auto artifact path is invalid")
         if not SHA256_PATTERN.fullmatch(artifact.sha256):

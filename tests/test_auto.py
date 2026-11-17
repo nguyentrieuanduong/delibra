@@ -291,8 +291,6 @@ def _resume_record(
         topic=AutoArtifact("topic.md", digest),
         baseline=AutoArtifact("baseline.md", digest),
         baseline_entries=[],
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=list(discussion or []),
         active_key=None,
@@ -532,11 +530,6 @@ class RecordingAutoAdapter:
                 "prompt": context.user_prompt,
                 "docker": context.coding.docker if context.coding is not None else None,
                 "material": material,
-                "shared": (
-                    (context.workspace / context.staged_shared_context).read_bytes()
-                    if context.staged_shared_context is not None
-                    else None
-                ),
             }
         )
         mode = (
@@ -743,8 +736,6 @@ def seed_durable_auto(
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(baseline).hexdigest()),
         baseline_entries=[],
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=[],
         active_key=None,
@@ -844,9 +835,6 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
         tmp_path,
         outputs,
     )
-    shared = store.project_path / "shared.md"
-    shared.write_text("Frozen shared", encoding="utf-8")
-    store.select_shared_markdown("shared.md", manager.settings.file_view_limit)
 
     created = await manager.create(
         project_id,
@@ -870,7 +858,6 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
     assert b"Preparation B" in discussion_material
     assert terminal.preparations[0].output_sha256.encode() in discussion_material
     assert terminal.preparations[1].output_sha256.encode() in discussion_material
-    assert all(call["shared"] == b"Frozen shared" for call in factory.calls)
     assert all(
         store.load_session(session_id).cli_session_id is None
         for session_id in session_ids
@@ -1204,8 +1191,6 @@ def _seed_retirement_auto(
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(bytes(baseline)).hexdigest()),
         baseline_entries=entries,
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=[],
         active_key=None,
@@ -3112,8 +3097,6 @@ def test_auto_manager_lifecycle_is_wired_and_reconciles_restart(tmp_path: Path) 
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(baseline).hexdigest()),
         baseline_entries=[],
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=[],
         active_key=None,

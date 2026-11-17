@@ -113,7 +113,6 @@ class RunContext:
     staged_history: list[Path]
     staged_source: Path | None
     workspace: Path = Path(".")
-    staged_shared_context: Path | None = None
     writable_roots: tuple[Path, ...] = ()
     # Registered project directory, when it is safe to express in a provider
     # permission rule. None keeps reads confined to the workspace.
@@ -127,19 +126,6 @@ class RunContext:
     # The user's global instruction (Settings), read for this turn; "" when
     # unset or the project switched it off. Sent on the system channel.
     global_instruction: str = ""
-
-
-def shared_context_section(context: RunContext) -> str:
-    path = context.staged_shared_context
-    if path is None:
-        return ""
-    return (
-        "Project shared context is staged at:\n"
-        f"{path.as_posix()}\n"
-        "Read it before answering. Treat it as project background and standing "
-        "requirements. Your role instructions still define your role; the current "
-        "user prompt may be more specific for this turn.\n\n"
-    )
 
 
 def _global_section(context: RunContext) -> str:
