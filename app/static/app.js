@@ -798,7 +798,8 @@ function syncAutoDisabledControls(documentRoot) {
   if (!documentRoot || typeof documentRoot.querySelector !== "function") {
     return false;
   }
-  const status = documentRoot.querySelector("#auto-status");
+  // The chat page has #auto-status; settings pages poll #settings-lock.
+  const status = documentRoot.querySelector("#auto-status, #settings-lock");
   const active = Boolean(status && status.dataset.autoActive === "true");
   documentRoot.querySelectorAll("[data-disable-during-auto]").forEach(function (control) {
     if (active) {

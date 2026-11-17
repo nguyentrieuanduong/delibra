@@ -2876,3 +2876,36 @@ def test_a_download_policy_saved_mid_run_reaches_the_next_turn(tmp_path, monkeyp
 
     assert (first.folder, first.approval) == ("raw", "manual")
     assert (second.folder, second.approval) == ("other", "automatic")
+
+
+def test_the_lock_line_names_what_is_locked_on_each_tab(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(ProjectStore, "active_auto_run_id", lambda _self: "a" * 32)
+    monkeypatch.setattr(
+        ProjectStore, "load_auto_run", lambda _self, _id: types.SimpleNamespace(number=7)
+    )
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        coding = client.get(f"{prefix}/settings/coding").text
+        prompts = client.get(f"{prefix}/settings/prompts").text
+        fragment = client.get(f"{prefix}/settings-lock", params={"tab": "agents"}).text
+
+    assert (
+        "Auto run #7 is active: coding on/off and Docker are locked "
+        "until it ends."
+    ) in coding
+    assert 'id="settings-lock" data-auto-active="true"' in coding
+    assert "is active:" not in prompts
+    assert "Git ignore" not in coding.split('id="settings-lock"', 1)[1].split("</", 1)[0]
+    assert "creating, editing and deleting agents is locked until it ends." in fragment
+    assert "hx-trigger=\"every 5s [document.visibilityState === 'visible']\"" in fragment
+
+
+def test_the_lock_fragment_is_inactive_without_auto(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        fragment = client.get(f"{prefix}/settings-lock", params={"tab": "coding"})
+        bad = client.get(f"{prefix}/settings-lock", params={"tab": "nope"})
+
+    assert 'data-auto-active="false"' in fragment.text
+    assert "is active:" not in fragment.text
+    assert bad.status_code == 404

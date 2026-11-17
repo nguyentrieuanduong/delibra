@@ -63,6 +63,16 @@ LOGGER = logging.getLogger(__name__)
 APP_ROOT = Path(__file__).resolve().parent
 
 
+class QuietPollFilter(logging.Filter):
+    """Drop uvicorn access lines for the settings lock poll (every 5 s per open tab)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        return not (
+            isinstance(args, tuple) and len(args) >= 3 and "/settings-lock" in str(args[2])
+        )
+
+
 def _recover_interrupted_env(store: ProjectStore) -> None:
     """A "creating" state at startup means the server died mid-creation."""
 
@@ -125,6 +135,10 @@ def create_app(
         raise ValueError(f"unknown agent: {config.agent}")
 
     adapter_factory = adapter_factory_override or built_in_adapter
+    # Once per process: create_app may run more than once (tests, reloads).
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, QuietPollFilter) for item in access.filters):
+        access.addFilter(QuietPollFilter())
 
     templates = Jinja2Templates(directory=APP_ROOT / "templates")
     templates.env.filters["md"] = render_markdown

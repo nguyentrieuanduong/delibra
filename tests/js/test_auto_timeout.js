@@ -43,7 +43,7 @@ test("Auto status disables and restores only controls it owns", function () {
   const status = { dataset: { autoActive: "true" } };
   const documentRoot = {
     querySelector(selector) {
-      assert.equal(selector, "#auto-status");
+      assert.equal(selector, "#auto-status, #settings-lock");
       return status;
     },
     querySelectorAll(selector) {

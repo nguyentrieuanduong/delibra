@@ -142,3 +142,32 @@ def test_settings_read_the_log_level_from_the_environment(tmp_path, monkeypatch)
     assert Settings.from_env().log_level == "warning"
     monkeypatch.delenv("DELIBRA_LOG_LEVEL")
     assert Settings.from_env().log_level is None
+
+
+def test_the_settings_lock_poll_is_not_access_logged() -> None:
+    import logging
+
+    from app.main import QuietPollFilter
+
+    def access(path: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1:5000", "GET", path, "1.1", 200), None,
+        )
+
+    quiet = QuietPollFilter()
+    assert quiet.filter(access("/projects/P/settings-lock?tab=coding")) is False
+    assert quiet.filter(access("/projects/P/settings/coding")) is True
+    assert quiet.filter(logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "plain", None, None)) is True
+
+
+def test_create_app_installs_the_quiet_poll_filter(tmp_path) -> None:
+    import logging
+
+    from app.main import QuietPollFilter
+
+    create_app(
+        settings_override=Settings(home=tmp_path / "home", run_timeout=2),
+        provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
+    )
+    assert any(isinstance(f, QuietPollFilter) for f in logging.getLogger("uvicorn.access").filters)

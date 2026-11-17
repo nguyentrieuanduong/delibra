@@ -75,6 +75,38 @@ def settings_tab_url(project_name: str, tab: str) -> str:
     return project_url(project_name, "/settings" if tab == "general" else f"/settings/{tab}")
 
 
+LOCKED_ON_TAB: dict[str, tuple[str, str] | None] = {
+    "general": None,
+    "prompts": None,
+    "coding": ("coding on/off and Docker", "are"),
+    "agents": ("creating, editing and deleting agents", "is"),
+    "reset": ("resets", "are"),
+}
+
+
+def _settings_lock_context(store: ProjectStore, tab: str) -> dict[str, object]:
+    auto_id = store.active_auto_run_id()
+    number: int | None = None
+    if auto_id is not None:
+        try:
+            number = store.load_auto_run(auto_id).number
+        except StorageError:
+            number = None
+    locked = LOCKED_ON_TAB[tab]
+    return {
+        "lock_active": auto_id is not None,
+        "lock_line": (
+            f"Auto run #{number} is active: {locked[0]} {locked[1]} locked until it ends."
+            if auto_id is not None and locked is not None and number is not None
+            else (
+                f"An Auto run is active: {locked[0]} {locked[1]} locked until it ends."
+                if auto_id is not None and locked is not None
+                else None
+            )
+        ),
+    }
+
+
 def _project_path(value: str) -> Path:
     value = validate_field(value, "Path", maximum=4_096)
     candidate = Path(value)
@@ -999,6 +1031,7 @@ async def render_project_settings(
                 (key, label, settings_tab_url(project.name, key)) for key, label in PROJECT_TABS
             ],
             "typed": typed or {},
+            **_settings_lock_context(store, tab),
         },
         status_code=status_code,
     )
@@ -1007,6 +1040,18 @@ async def render_project_settings(
 @router.get("/projects/{project_id}/settings", response_class=HTMLResponse)
 async def project_settings(request: Request, project_id: str) -> HTMLResponse:
     return await render_project_settings(request, request_project(request, project_id))
+
+
+@router.get("/projects/{project_id}/settings-lock", response_class=HTMLResponse)
+async def settings_lock(request: Request, project_id: str, tab: str = "general") -> HTMLResponse:
+    if tab not in PROJECT_TAB_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown settings tab")
+    project = request_project(request, project_id)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_settings_lock.html",
+        context={"project": project, "tab": tab, **_settings_lock_context(ProjectStore(project), tab)},
+    )
 
 
 @router.get("/projects/{project_id}/settings/{tab}", response_class=HTMLResponse)
