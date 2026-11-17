@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from uuid import uuid4
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
@@ -13,12 +14,7 @@ from app.models import Project, SessionConfig
 from app.project_routing import request_project
 from app.routes.auto import project_auto_record
 from app.routes.chat import sidebar_response
-from app.routes.projects import (
-    _writable_roots_field,
-    nothing_saved,
-    render_project_settings,
-    settings_tab_url,
-)
+from app.routes.projects import _writable_roots_field, render_refusal, settings_tab_url
 from app.security import validate_agent_name, validate_field
 from app.storage import (
     ConflictError,
@@ -80,32 +76,30 @@ def _back_to_agents_tab(project: Project) -> RedirectResponse:
     return RedirectResponse(settings_tab_url(project.name, "agents"), status_code=303)
 
 
-def _agents_tab_refusal(exc: HTTPException | StorageError) -> bool:
-    """A refusal the Agents tab shows as its pop-up; anything else keeps its answer."""
-
-    if isinstance(exc, HTTPException):
-        return exc.status_code in (409, 422)
-    return not isinstance(exc, NotFoundError)
-
-
-async def _refused_on_agents_tab(
+async def _on_agents_tab(
     request: Request,
     project_id: str,
-    exc: HTTPException | StorageError,
+    return_to: str,
     typed: dict[str, str],
-) -> HTMLResponse:
-    if isinstance(exc, HTTPException):
-        reason, status = str(exc.detail), exc.status_code
-    else:
-        reason, status = str(exc), 409 if isinstance(exc, ConflictError) else 422
-    return await render_project_settings(
-        request,
-        request_project(request, project_id),
-        tab="agents",
-        error=nothing_saved(reason),
-        typed=typed,
-        status_code=status,
-    )
+    action: Awaitable[Response],
+) -> Response:
+    """Run an agent form; from the Agents tab (return_to=settings) a refusal
+    re-renders that tab with the pop-up and `typed`. Elsewhere (the chat page)
+    every answer is unchanged, and a gone project or other HTTP error keeps its own."""
+
+    try:
+        return await action
+    except (HTTPException, StorageError) as exc:
+        shown = (
+            exc.status_code in (409, 422)
+            if isinstance(exc, HTTPException)
+            else not isinstance(exc, NotFoundError)
+        )
+        if return_to != "settings" or not shown:
+            raise
+        return await render_refusal(
+            request, request_project(request, project_id), "agents", exc, typed
+        )
 
 
 @router.post("/projects/{project_id}/sessions")
@@ -122,19 +116,15 @@ async def create_session(
     # Only "settings" changes the redirect (to the Agents tab); anything else is ignored.
     return_to: str = Form(""),
 ):
-    try:
-        return await _create_session(
-            request, project_id, name, agent, model, effort, role_instructions,
-            writable_roots, create_missing_writable_roots, return_to,
-        )
-    except (HTTPException, StorageError) as exc:
-        if return_to != "settings" or not _agents_tab_refusal(exc):
-            raise
-        return await _refused_on_agents_tab(request, project_id, exc, {
-            "form": "create", "name": name, "agent": agent, "model": model, "effort": effort,
-            "role_instructions": role_instructions, "writable_roots": writable_roots,
-            "create_missing_writable_roots": "true" if create_missing_writable_roots else "",
-        })
+    typed = {
+        "form": "create", "name": name, "agent": agent, "model": model, "effort": effort,
+        "role_instructions": role_instructions, "writable_roots": writable_roots,
+        "create_missing_writable_roots": "true" if create_missing_writable_roots else "",
+    }
+    return await _on_agents_tab(request, project_id, return_to, typed, _create_session(
+        request, project_id, name, agent, model, effort, role_instructions,
+        writable_roots, create_missing_writable_roots, return_to,
+    ))
 
 
 async def _create_session(
@@ -220,26 +210,19 @@ async def edit_session(
     return_to: str = Form(""),
     selected_agent: str | None = Query(None, alias="agent"),
 ):
-    try:
-        return await _edit_session(
-            request, project_id, session_id, name, agent, model, effort, role_instructions,
-            writable_roots, create_missing_writable_roots, return_to, selected_agent,
-        )
-    except (HTTPException, StorageError) as exc:
-        if return_to != "settings" or not _agents_tab_refusal(exc):
-            raise
-        # From the form itself: FastAPI hands an emptied box over as None.
-        sent = await request.form()
-        typed = {
-            key: str(sent[key])
-            for key in ("agent", "model", "effort", "role_instructions", "writable_roots")
-            if key in sent
-        }
-        if "writable_roots" in sent:
-            typed["create_missing_writable_roots"] = "true" if create_missing_writable_roots else ""
-        return await _refused_on_agents_tab(
-            request, project_id, exc, {"form": f"edit:{session_id}", **typed}
-        )
+    # From the form itself: FastAPI hands an emptied box over as None.
+    sent = await request.form()
+    typed = {"form": f"edit:{session_id}"} | {
+        key: str(sent[key])
+        for key in ("agent", "model", "effort", "role_instructions", "writable_roots")
+        if key in sent
+    }
+    if "writable_roots" in sent:
+        typed["create_missing_writable_roots"] = "true" if create_missing_writable_roots else ""
+    return await _on_agents_tab(request, project_id, return_to, typed, _edit_session(
+        request, project_id, session_id, name, agent, model, effort, role_instructions,
+        writable_roots, create_missing_writable_roots, return_to, selected_agent,
+    ))
 
 
 async def _edit_session(
@@ -374,14 +357,10 @@ async def set_permanent_session_name(
     name: str = Form(...),
     return_to: str = Form(""),
 ):
-    try:
-        return await _set_permanent_session_name(request, project_id, session_id, name, return_to)
-    except (HTTPException, StorageError) as exc:
-        if return_to != "settings" or not _agents_tab_refusal(exc):
-            raise
-        return await _refused_on_agents_tab(
-            request, project_id, exc, {"form": f"name:{session_id}", "name": name}
-        )
+    return await _on_agents_tab(
+        request, project_id, return_to, {"form": f"name:{session_id}", "name": name},
+        _set_permanent_session_name(request, project_id, session_id, name, return_to),
+    )
 
 
 async def _set_permanent_session_name(
@@ -441,12 +420,10 @@ async def delete_session(
     session_id: str,
     return_to: str = Form(""),
 ):
-    try:
-        return await _delete_session(request, project_id, session_id, return_to)
-    except (HTTPException, StorageError) as exc:
-        if return_to != "settings" or not _agents_tab_refusal(exc):
-            raise
-        return await _refused_on_agents_tab(request, project_id, exc, {})
+    return await _on_agents_tab(
+        request, project_id, return_to, {},
+        _delete_session(request, project_id, session_id, return_to),
+    )
 
 
 async def _delete_session(

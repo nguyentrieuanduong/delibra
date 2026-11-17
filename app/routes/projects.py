@@ -381,13 +381,8 @@ async def save_pass_prompt(
     except (HTTPException, StorageError) as exc:
         if isinstance(exc, HTTPException) and exc.status_code != 422:
             raise
-        return await render_project_settings(
-            request,
-            project,
-            tab="prompts",
-            error=nothing_saved(exc.detail if isinstance(exc, HTTPException) else str(exc)),
-            typed={"pass_prompt_template": pass_prompt_template},
-            status_code=409 if isinstance(exc, ConflictError) else 422,
+        return await render_refusal(
+            request, project, "prompts", exc, {"pass_prompt_template": pass_prompt_template}
         )
     return RedirectResponse(
         settings_tab_url(project.name, "prompts"),
@@ -492,15 +487,7 @@ async def _save_coding_part(
     except StorageError as exc:
         # A locked form saved just before the 5-second lock poll noticed Auto
         # starting gets the same pop-up, with 409 (ConflictError) instead of 422.
-        message = str(exc)
-        return await render_project_settings(
-            request,
-            project,
-            tab="coding",
-            error=nothing_saved(message),
-            typed=typed,
-            status_code=409 if isinstance(exc, ConflictError) else 422,
-        )
+        return await render_refusal(request, project, "coding", exc, typed)
     return RedirectResponse(settings_tab_url(project.name, "coding"), status_code=303)
 
 
@@ -955,12 +942,8 @@ async def save_turn_timeout(
     except NotFoundError:
         raise
     except StorageError as exc:
-        return await render_project_settings(
-            request,
-            project,
-            error=nothing_saved(str(exc)),
-            typed={"turn_timeout_seconds": turn_timeout_seconds},
-            status_code=409 if isinstance(exc, ConflictError) else 422,
+        return await render_refusal(
+            request, project, "general", exc, {"turn_timeout_seconds": turn_timeout_seconds}
         )
     return RedirectResponse(
         settings_tab_url(project.name, "general"),
@@ -1097,6 +1080,27 @@ async def render_project_settings(
             **_settings_lock_context(store, tab),
         },
         status_code=status_code,
+    )
+
+
+async def render_refusal(
+    request: Request,
+    project: Project,
+    tab: str,
+    exc: HTTPException | StorageError,
+    typed: dict[str, str] | None = None,
+) -> HTMLResponse:
+    """A refused settings form: its tab again, the pop-up, and what was typed.
+
+    A conflict (an Auto run or busy agent) answers 409, a validation refusal 422.
+    """
+
+    if isinstance(exc, HTTPException):
+        reason, status = str(exc.detail), exc.status_code
+    else:
+        reason, status = str(exc), 409 if isinstance(exc, ConflictError) else 422
+    return await render_project_settings(
+        request, project, tab=tab, error=nothing_saved(reason), typed=typed, status_code=status
     )
 
 
