@@ -79,22 +79,27 @@
   <h3 id="coding-downloads-heading">Delibra downloads</h3>
   {{ takes_effect("next_turn") }}
   <form method="post" action="{{ project_url(project.name, '/coding/downloads') }}">
+    {# A refused save shows what was sent (typed); otherwise the saved policy. #}
+    {% set dl_enabled = typed.get('downloads_enabled') if 'downloads_enabled' in typed else coding.downloads.enabled %}
+    {% set dl_model_check = typed.get('downloads_model_check') if 'downloads_model_check' in typed else coding.downloads.model_check %}
+    {% set dl_approval = typed.get('downloads_approval', coding.downloads.approval) %}
+    {% set dl_provider = typed.get('downloads_check_provider', coding.downloads.check_provider) %}
     <fieldset class="coding-downloads">
       <legend>Delibra downloads</legend>
-      <label class="auto-choice"><input type="checkbox" name="downloads_enabled" value="true"{% if coding.downloads.enabled %} checked{% endif %}> Let Delibra download files build agents request</label>
+      <label class="auto-choice"><input type="checkbox" name="downloads_enabled" value="true"{% if dl_enabled %} checked{% endif %}> Let Delibra download files build agents request</label>
       <label>Download folder <input name="downloads_folder" value="{{ typed.get('downloads_folder', coding.downloads.folder) }}" maxlength="4096" required></label>
       <p class="hint">Inside the project. Delibra never commits this folder, even files already tracked there.</p>
       <label>Approval
         <select name="downloads_approval">
-          <option value="manual"{% if coding.downloads.approval == 'manual' %} selected{% endif %}>Manual: I approve each download</option>
-          <option value="automatic"{% if coding.downloads.approval == 'automatic' %} selected{% endif %}>Automatic after checks</option>
+          <option value="manual"{% if dl_approval == 'manual' %} selected{% endif %}>Manual: I approve each download</option>
+          <option value="automatic"{% if dl_approval == 'automatic' %} selected{% endif %}>Automatic after checks</option>
         </select>
       </label>
-      <label class="auto-choice"><input type="checkbox" name="downloads_model_check" value="true"{% if coding.downloads.model_check %} checked{% endif %}> Model check of each URL</label>
+      <label class="auto-choice"><input type="checkbox" name="downloads_model_check" value="true"{% if dl_model_check %} checked{% endif %}> Model check of each URL</label>
       <label>Model check provider
         <select name="downloads_check_provider">
-          <option value="claude"{% if coding.downloads.check_provider == 'claude' %} selected{% endif %}>Claude</option>
-          <option value="codex"{% if coding.downloads.check_provider == 'codex' %} selected{% endif %}>Codex</option>
+          <option value="claude"{% if dl_provider == 'claude' %} selected{% endif %}>Claude</option>
+          <option value="codex"{% if dl_provider == 'codex' %} selected{% endif %}>Codex</option>
         </select>
       </label>
       <label>Model check model <input name="downloads_check_model" value="{{ typed.get('downloads_check_model', coding.downloads.check_model) }}" maxlength="200" required></label>

@@ -616,10 +616,19 @@ async def save_coding_guidance(
 async def save_coding_network(
     request: Request,
     project_id: str,
-    network_allowlist: str = Form(""),
+    network_allowlist: str | None = Form(None),
 ):
     require_loopback_client(request)
-    lines = network_allowlist.splitlines() if network_allowlist.strip() else []
+    # An emptied box arrives as None, so presence is read from the form itself.
+    sent = await request.form()
+    if "network_allowlist" not in sent:
+        # A form without the box keeps the saved list (and its warnings).
+        return await _save_coding_part(
+            request, project_id, lambda current: current, locked=False,
+            typed={}, refresh_excludes=False,
+        )
+    text = network_allowlist or ""
+    lines = text.splitlines() if text.strip() else []
     try:
         hosts = normalize_network_allowlist(lines)
     except CodingPolicyError as exc:
@@ -644,8 +653,15 @@ async def save_coding_network(
 
     return await _save_coding_part(
         request, project_id, change, locked=False,
-        typed={"network_allowlist": network_allowlist}, refresh_excludes=False,
+        typed={"network_allowlist": text}, refresh_excludes=False,
     )
+
+
+DOWNLOAD_TEXT_FIELDS = (
+    ("downloads_approval", "approval"),
+    ("downloads_check_provider", "check_provider"),
+    ("downloads_check_model", "check_model"),
+)
 
 
 @router.post("/projects/{project_id}/coding/downloads")
@@ -654,26 +670,35 @@ async def save_coding_downloads(
     project_id: str,
     downloads_folder: str = Form(...),
     downloads_enabled: bool = Form(False),
-    downloads_approval: str = Form("manual"),
     downloads_model_check: bool = Form(False),
-    downloads_check_provider: str = Form("claude"),
-    downloads_check_model: str = Form("sonnet"),
 ):
     require_loopback_client(request)
+    sent = await request.form()
+    # Text and select fields missing from the form keep their saved values;
+    # checkboxes are read as sent (an unticked box sends nothing).
+    sent_text = {
+        field: str(sent[field]) for field, _key in DOWNLOAD_TEXT_FIELDS if field in sent
+    }
 
     def change(current: CodingPolicy) -> CodingPolicy:
+        saved = current.downloads.to_dict()
+        values = {key: sent_text.get(field, saved[key]) for field, key in DOWNLOAD_TEXT_FIELDS}
         return replace(current, downloads=DownloadPolicy.from_dict({
+            **values,
             "enabled": downloads_enabled,
             "folder": downloads_folder,
-            "approval": downloads_approval,
             "model_check": downloads_model_check,
-            "check_provider": downloads_check_provider,
-            "check_model": downloads_check_model.strip(),
+            "check_model": str(values["check_model"]).strip(),
         }))
 
     return await _save_coding_part(
         request, project_id, change, locked=False,
-        typed={"downloads_folder": downloads_folder, "downloads_check_model": downloads_check_model},
+        typed={
+            **sent_text,
+            "downloads_folder": downloads_folder,
+            "downloads_enabled": "true" if downloads_enabled else "",
+            "downloads_model_check": "true" if downloads_model_check else "",
+        },
         refresh_excludes=True,
     )
 

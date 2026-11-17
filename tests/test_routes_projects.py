@@ -3085,3 +3085,64 @@ def test_a_refused_permanent_name_pops_up_on_the_agents_tab(tmp_path, monkeypatc
         )
 
     assert "Auto run is active" in _agents_refusal(response, 409)
+
+
+def test_a_coding_form_without_a_text_field_keeps_its_saved_value(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.network_allowlist = ["example.org"]
+    policy.downloads = DownloadPolicy(
+        enabled=True, folder="raw", approval="automatic", model_check=True,
+        check_provider="codex", check_model="gpt-5.5-mini",
+    )
+    store.replace_coding_policy(policy)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        network = client.post(f"{prefix}/coding/network", data={}, follow_redirects=False)
+        downloads = client.post(
+            f"{prefix}/coding/downloads", data={"downloads_folder": "other"}, follow_redirects=False
+        )
+        emptied = client.post(
+            f"{prefix}/coding/network", data={"network_allowlist": ""}, follow_redirects=False
+        )
+
+    assert [r.status_code for r in (network, downloads, emptied)] == [303] * 3
+    saved = store.coding_policy()
+    assert saved.network_allowlist == []  # an emptied box is sent, and means no network
+    kept = saved.downloads
+    assert (kept.folder, kept.approval, kept.check_provider, kept.check_model) == (
+        "other", "automatic", "codex", "gpt-5.5-mini",
+    )
+    # Checkboxes are read as sent: an unticked box sends nothing.
+    assert (kept.enabled, kept.model_check) == (False, False)
+
+
+def test_a_network_form_without_its_field_keeps_the_allowlist(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    store.set_network_allowlist(["example.org"])
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding/network", data={}, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert store.coding_policy().network_allowlist == ["example.org"]
+
+
+def test_a_refused_downloads_save_keeps_every_field(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding/downloads", data={
+            "downloads_enabled": "true", "downloads_folder": "../out", "downloads_approval": "automatic",
+            "downloads_model_check": "true", "downloads_check_provider": "codex",
+            "downloads_check_model": "typed-model",
+        })
+
+    page = response.text
+    assert response.status_code == 422
+    assert 'name="downloads_enabled" value="true" checked' in page
+    assert 'name="downloads_model_check" value="true" checked' in page
+    assert '<option value="automatic" selected>' in page
+    assert '<option value="codex" selected>' in page
+    assert 'name="downloads_check_model" value="typed-model"' in page
+    assert 'name="downloads_folder" value="../out"' in page
+    assert ProjectStore(project).coding_policy().downloads.enabled is False
