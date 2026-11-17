@@ -107,3 +107,38 @@ def test_invalid_route_ids_and_missing_round_are_client_errors(tmp_path) -> None
     assert invalid_stream.status_code == 422
     assert missing_stream.status_code == 404
     assert invalid_cancel.status_code == 422
+
+
+def test_the_app_logs_to_its_home_while_it_runs(tmp_path) -> None:
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    from app.config import Settings
+    from app.log_setup import PrivateRotatingFileHandler
+    from app.main import create_app
+
+    home = tmp_path / "home"
+    app = create_app(
+        settings_override=Settings(home=home, run_timeout=2, log_level="DEBUG"),
+        provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
+    )
+    with TestClient(app, base_url="http://localhost"):
+        assert logging.getLogger("app").level == logging.DEBUG
+    text = (home / "logs" / "delibra.log").read_text(encoding="utf-8")
+
+    assert f"Delibra started: home {home}, log {home / 'logs' / 'delibra.log'}" in text
+    assert "Delibra stopped" in text
+    assert home.stat().st_mode & 0o777 == 0o700
+    assert (home / "logs").stat().st_mode & 0o777 == 0o700
+    assert not any(isinstance(h, PrivateRotatingFileHandler) for h in logging.getLogger("app").handlers)
+
+
+def test_settings_read_the_log_level_from_the_environment(tmp_path, monkeypatch) -> None:
+    from app.config import Settings
+
+    monkeypatch.setenv("DELIBRA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DELIBRA_LOG_LEVEL", "warning")
+    assert Settings.from_env().log_level == "warning"
+    monkeypatch.delenv("DELIBRA_LOG_LEVEL")
+    assert Settings.from_env().log_level is None

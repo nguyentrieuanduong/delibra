@@ -249,6 +249,8 @@ class Settings:
     allowed_clients: tuple[str, ...] = ()
     # Named guidance sets for Settings -> Coding; config.json or the Settings page only.
     guidance_presets: tuple[GuidancePreset, ...] = ()
+    # DELIBRA_LOG_LEVEL as given; app/log_setup.py resolves it, falling back to INFO.
+    log_level: str | None = None
     file_view_limit: int = 512 * 1024
     auto_resume_drain_seconds: int = 30
     auto_turn_retries: int = 2
@@ -383,6 +385,7 @@ class Settings:
             allowed_hosts=_allowed_hosts(home),
             allowed_clients=_allowed_clients(home),
             guidance_presets=_guidance_presets(home),
+            log_level=os.environ.get("DELIBRA_LOG_LEVEL") or None,
             run_timeout=_integer("DELIBRA_RUN_TIMEOUT", 900),
             max_run_timeout=_integer("DELIBRA_MAX_RUN_TIMEOUT", 14_400),
             stdout_line_limit=_integer("DELIBRA_STDOUT_LINE_LIMIT", 12 * MIB),

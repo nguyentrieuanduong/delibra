@@ -855,6 +855,10 @@ class AutoManager:
                 raise
 
         self._publish_status(record)
+        LOGGER.info(
+            "Auto run %s #%s started: %s, %d participants",
+            project_id, record.number, record.kind, len(record.participants),
+        )
         task = asyncio.create_task(
             self._drive(project_id, auto_id),
             name=f"delibra-auto-{auto_id}",
@@ -1238,6 +1242,10 @@ class AutoManager:
                 raise
 
         self._publish_status(record)
+        LOGGER.info(
+            "Auto run %s #%s resumed: %s, %d participants",
+            project_id, record.number, record.kind, len(record.participants),
+        )
         task = asyncio.create_task(
             self._drive(project_id, auto_id),
             name=f"delibra-auto-{auto_id}",
@@ -3541,6 +3549,10 @@ class AutoManager:
             record.active_key = None
             record.active_timeout = None
             store.save_auto_run(record)
+            # Never terminal_reason: error reasons quote provider errors and stderr.
+            LOGGER.info(
+                "Auto run %s #%s ended: %s", record.project_id, record.number, record.status
+            )
         elif record.finished_at is None:
             record.finished_at = utc_now()
             if record.terminal_reason is None:

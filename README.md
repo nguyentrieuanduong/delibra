@@ -1126,9 +1126,40 @@ The main environment settings are:
 - `DELIBRA_AUTO_QUESTIONS_LIMIT` (default 98304, i.e. 96 KiB; 8192 through
   1048576) — the byte cap on `.delibra/questions.json`, the questions view
   every Auto turn reads
+- `DELIBRA_LOG_LEVEL` (default `INFO`; `DEBUG`, `INFO`, `WARNING` or `ERROR`) —
+  see [Logs](#logs)
 
 Names/models are capped at 200 characters, role instructions at 20,000, prompts at
 100,000, and pass instructions at 10,000.
+
+## Logs
+
+Delibra writes its own messages and uvicorn's server messages (startup, shutdown,
+errors) to `$DELIBRA_HOME/logs/delibra.log`; the first line of each start names
+the home and the file. Each line reads
+`2026-11-16T09:30:12.345Z WARNING app.runner: …` (UTC, milliseconds), followed by
+the traceback when there is one. Access lines (`GET /… 200`) never reach the file.
+
+- **Size.** The file rotates at 5 MiB and keeps four older files
+  (`delibra.log.1` … `delibra.log.4`), so at most 25 MiB.
+- **Privacy.** The directory is `0700` and every file, rotated ones included,
+  is `0600`. A symlinked `logs` directory or `delibra.log` is refused, never
+  followed, and stops startup; a symlinked `DELIBRA_HOME` itself is fine. Delibra's own lines carry ids, run numbers, statuses and error
+  categories, never prompts, agent output, notes or questions; an Auto run's end
+  line gives only its status, while the reason stays in the run record. A
+  traceback can still quote an exception message, which may contain a path or
+  URL.
+- **Level.** `DELIBRA_LOG_LEVEL` (read once at startup) sets the file level for
+  both Delibra's and uvicorn's lines; the default is `INFO`. `DEBUG` lowers
+  Delibra's own lines; uvicorn's debug lines also need uvicorn's
+  `--log-level debug`. `WARNING` or `ERROR` keeps both quieter. An unknown value
+  falls back to `INFO` and logs one warning saying so.
+- **Terminal.** Delibra's warnings and errors also print to the terminal, with
+  timestamp and logger name; its `INFO` lines go to the file only. Uvicorn's own
+  terminal output is unchanged. The file is open only between application
+  startup and shutdown, so uvicorn's lines outside that span (such as
+  `Started server process` and `Finished server process`) appear in the
+  terminal only.
 
 ## Verification
 
