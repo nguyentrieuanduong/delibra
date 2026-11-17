@@ -213,3 +213,30 @@ def test_a_copy_failure_after_the_first_file_leaves_the_old_folder_untouched(
     assert sorted(path.name for path in (root / "skills").iterdir()) == [
         "build", "build-index.md", "build.sha256"
     ]
+
+
+def test_an_os_error_while_swapping_raises_storage_error_and_keeps_the_old_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.skill_folders as module
+
+    root = _delibra(tmp_path)
+    paths = _suite(tmp_path / "src")
+    refresh_skill_folder(root, "build", paths[:1])
+    before = _tree(root)
+    real = module.os.rename
+
+    def fail_staging(source, destination):
+        if str(source).endswith("-staging"):
+            raise OSError("rename refused")
+        return real(source, destination)
+
+    monkeypatch.setattr(module.os, "rename", fail_staging)
+    with pytest.raises(StorageError, match="rename refused"):
+        refresh_skill_folder(root, "build", paths)
+
+    after = _tree(root)
+    assert {k: v for k, v in after.items() if k != "build.sha256"} == {
+        k: v for k, v in before.items() if k != "build.sha256"
+    }
+    assert sorted(p.name for p in (root / "skills").iterdir() if p.name.startswith(".")) == []

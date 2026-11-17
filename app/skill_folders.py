@@ -5,8 +5,9 @@ chat turns and discussion runs. Beside each folder sit `<mode>-index.md` and
 `<mode>.sha256`. A rewrite builds the new folder beside the old one and swaps
 it in when complete; the digest is removed just before the swap and written
 last, so a crash during the swap makes the next refresh rewrite everything.
-Callers hold a lock under which no turn reads the folder being rewritten, or
-pass `rewrite=False`.
+Callers that rewrite hold the project lock (no other writer) at a moment no
+turn reads the folder: Auto between turns, chat on an idle send. Others pass
+`rewrite=False`. Every failure, OSError included, surfaces as StorageError.
 """
 
 from __future__ import annotations
@@ -131,9 +132,12 @@ def refresh_skill_folder(
     digest_path = _digest_path(delibra_root, mode)
     if not paths:
         if rewrite:
-            retired = _retire(root, folder, mode)
-            digest_path.unlink(missing_ok=True)
-            index_path.unlink(missing_ok=True)
+            try:
+                retired = _retire(root, folder, mode)
+                digest_path.unlink(missing_ok=True)
+                index_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise StorageError(f"skills could not be removed: {exc}") from exc
             if retired is not None:
                 shutil.rmtree(retired, ignore_errors=True)
         return None
@@ -151,8 +155,9 @@ def refresh_skill_folder(
         return SkillSnapshot(shown, current or "") if shown is not None else None
     if max_index_bytes is not None and len(index) > max_index_bytes:
         raise StorageError(f"the skills index would exceed {max_index_bytes} bytes")
-    staging = _clear(root, root / f".{mode}-staging")
+    staging = root / f".{mode}-staging"
     try:
+        _clear(root, staging)
         ensure_owned_directory(staging, root)
         sync_folder(staging, [(destination, contents) for _source, destination, contents in library])
     except (OSError, StorageError) as exc:
@@ -160,11 +165,20 @@ def refresh_skill_folder(
         raise StorageError(f"skills could not be copied: {exc}") from exc
     # Commit. The digest goes first, so a crash from here on makes the next
     # refresh rewrite everything (as before this change).
-    digest_path.unlink(missing_ok=True)
-    retired = _retire(root, folder, mode)
-    os.rename(staging, folder)
-    atomic_write_bytes(index_path, index)
-    atomic_write_bytes(digest_path, digest.encode("ascii"))
+    try:
+        digest_path.unlink(missing_ok=True)
+        retired = _retire(root, folder, mode)
+        try:
+            os.rename(staging, folder)
+        except OSError:
+            if retired is not None:
+                os.rename(retired, folder)  # put the old folder back
+            raise
+        atomic_write_bytes(index_path, index)
+        atomic_write_bytes(digest_path, digest.encode("ascii"))
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise StorageError(f"skills could not be swapped in: {exc}") from exc
     if retired is not None:
         shutil.rmtree(retired, ignore_errors=True)
     return SkillSnapshot(index, digest)

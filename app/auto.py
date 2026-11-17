@@ -160,6 +160,12 @@ def skill_mode(kind: str) -> SkillMode:
     return "build" if kind == "build" else "chat"
 
 
+def skill_paths(store: ProjectStore, kind: str) -> list[str]:
+    """The saved skill list a run of this kind reads (build or chat)."""
+
+    return store.coding_policy().guidance_skills if kind == "build" else store.chat_skills()
+
+
 def guidance_gate_note(can_ask: bool) -> str:
     """Approval steps in guidance, for build turns that carry guidance.
 
@@ -747,7 +753,7 @@ class AutoManager:
                 refresh_skill_folder,
                 store.root,
                 skill_mode(kind),
-                store.coding_policy().guidance_skills if kind == "build" else store.chat_skills(),
+                skill_paths(store, kind),
             )
             skills_index = skill_snapshot.index if skill_snapshot is not None else None
 
@@ -1120,11 +1126,7 @@ class AutoManager:
                     refresh_skill_folder,
                     store.root,
                     skill_mode(record.kind),
-                    (
-                        store.coding_policy().guidance_skills
-                        if record.kind == "build"
-                        else store.chat_skills()
-                    ),
+                    skill_paths(store, record.kind),
                 )
                 if (
                     skill_snapshot is not None
@@ -3395,22 +3397,32 @@ class AutoManager:
         """Bring the run's skill folder up to the saved list before a turn reads it.
 
         User decision 2026-11-16: skills may change during a run. Between Auto turns no
-        turn reads the folder (manual sends are refused while Auto is active), so the
-        swap is safe here. Returns a turn warning when the refresh fails; the refresh is
-        all or nothing (Task 5.6a), so the previous folder and index stay byte-identical.
+        turn reads the folder (manual sends are refused while Auto is active), and the
+        project lock keeps out every other writer of the folder. A halted run (Stop,
+        shutdown, terminal) is left alone: its own guard ends it next. Returns a turn
+        warning when the refresh fails; the refresh is all or nothing, so the previous
+        folder and index stay as they were.
         """
 
         if store.skills_dir(record.id).is_dir():
             return None  # a run from before the shared folders keeps its own copy
-        mode = skill_mode(record.kind)
-        paths = store.coding_policy().guidance_skills if mode == "build" else store.chat_skills()
-        try:
-            await asyncio.to_thread(
-                refresh_skill_folder, store.root, mode, paths,
-                rewrite=True, max_index_bytes=SKILLS_INDEX_MAX_BYTES,
-            )
-        except StorageError as exc:
-            return f"Skills were not refreshed: {exc}"
+        async with self.locks.project_sessions(record.project_id):
+            current = store.load_auto_run(record.id)
+            if (
+                self._quiescing
+                or current.status not in ("preparing", "discussing")
+                or current.stop_requested
+                or current.stop_after_turn
+            ):
+                return None
+            try:
+                await asyncio.to_thread(
+                    refresh_skill_folder, store.root, skill_mode(current.kind),
+                    skill_paths(store, current.kind),
+                    rewrite=True, max_index_bytes=SKILLS_INDEX_MAX_BYTES,
+                )
+            except StorageError as exc:
+                return f"Skills were not refreshed: {exc}"
         return None
 
     def _turn_skills(

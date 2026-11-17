@@ -7139,3 +7139,66 @@ async def test_a_resumed_auto_run_logs_its_resume_without_content(tmp_path, capl
     assert f"Auto run {project_id} #{created.number} resumed: discussion, 2 participants" in lines
     assert f"Auto run {project_id} #{created.number} ended: {terminal.status}" in lines
     assert not any("SECRET" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_the_turn_skills_refresh_runs_under_the_project_lock_and_skips_a_halted_run(
+    tmp_path, monkeypatch
+) -> None:
+    import app.auto as auto_module
+
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    held: list[bool] = []
+    real = auto_module.refresh_skill_folder
+
+    def recorded(*args, **kwargs):
+        if kwargs.get("max_index_bytes") is not None:  # the per-turn refresh
+            held.append(manager.locks.project_lock(project_id).locked())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(auto_module, "refresh_skill_folder", recorded)
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert held and all(held)
+
+    held.clear()
+    assert await manager._refresh_turn_skills(store, terminal) is None  # converged: halted
+    stopping = store.load_auto_run(created.id)
+    stopping.status, stopping.stop_requested = "discussing", True
+    assert await manager._refresh_turn_skills(store, stopping) is None
+    assert held == []
+
+
+@pytest.mark.asyncio
+async def test_an_os_error_in_the_turn_skills_refresh_becomes_the_turn_warning(
+    tmp_path, monkeypatch
+) -> None:
+    import app.skill_folders as folders
+
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources[:2])
+    created = await start_build(manager, project_id, session_ids)
+    store.set_build_skills(sources)  # changed, so the next turn's refresh rewrites
+    real_rename = folders.os.rename
+
+    def failing_rename(source, destination):
+        if str(source).endswith("-staging"):
+            raise OSError("rename refused")
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(folders.os, "rename", failing_rename)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    warnings = [turn.warning or "" for turn in terminal.discussion]
+    assert any(w.startswith("Skills were not refreshed: ") for w in warnings), warnings
+    assert (store.root / "skills" / "build").is_dir()
