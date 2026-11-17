@@ -7080,3 +7080,31 @@ async def test_the_end_line_never_carries_the_provider_error_text(tmp_path, capl
     lines = [record.getMessage() for record in caplog.records if record.name == "app.auto"]
     assert f"Auto run {project_id} #{created.number} ended: error" in lines
     assert not any("provider rejected request" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_auto_run_logs_its_resume_without_content(tmp_path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="app.auto")
+    manager, _factory, project_id, session_ids, _store = auto_manager_fixture(
+        tmp_path,
+        [
+            PlannedOutput("SECRET-A", "continue", delay=0.2),
+            PlannedOutput("SECRET-B", "agree"),
+            PlannedOutput("SECRET-C", "agree"),
+        ],
+    )
+    created = await manager.create(
+        project_id, topic="SECRET topic", participant_ids=session_ids,
+        agreement_policy="first_agree", max_cycles=2, preparation_enabled=False,
+    )
+    await wait_for_active_auto_key(manager, project_id, created.id)
+    await manager.request_stop_after_turn(project_id, created.id)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    await manager.resume(project_id, created.id, max_cycles=1, turn_timeout_seconds=120)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    lines = [record.getMessage() for record in caplog.records if record.name == "app.auto"]
+    assert f"Auto run {project_id} #{created.number} resumed: discussion, 2 participants" in lines
+    assert f"Auto run {project_id} #{created.number} ended: {terminal.status}" in lines
+    assert not any("SECRET" in line for line in lines)

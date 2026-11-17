@@ -1242,6 +1242,10 @@ class AutoManager:
                 raise
 
         self._publish_status(record)
+        LOGGER.info(
+            "Auto run %s #%s resumed: %s, %d participants",
+            project_id, record.number, record.kind, len(record.participants),
+        )
         task = asyncio.create_task(
             self._drive(project_id, auto_id),
             name=f"delibra-auto-{auto_id}",

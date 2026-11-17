@@ -8,11 +8,15 @@ import stat
 import pytest
 
 from app.log_setup import PrivateRotatingFileHandler, install_logging
+from app.storage import OwnershipError
 
 
 @pytest.fixture
 def home(tmp_path):
-    yield tmp_path / "home"
+    # Production installs after RegistryStore has created the home at 0700.
+    path = tmp_path / "home"
+    path.mkdir(mode=0o700)
+    yield path
 
 
 def mode(path) -> int:
@@ -113,7 +117,7 @@ def test_an_unknown_level_falls_back_to_info_with_a_warning(home) -> None:
 
 
 def test_rotation_keeps_five_private_files(home) -> None:
-    handler = PrivateRotatingFileHandler(home / "logs" / "delibra.log", max_bytes=200, backups=4)
+    handler = PrivateRotatingFileHandler(home, max_bytes=200, backups=4)
     logger = logging.getLogger("app.rotation-test")
     logger.addHandler(handler)
     logger.propagate = False
@@ -128,3 +132,57 @@ def test_rotation_keeps_five_private_files(home) -> None:
     files = sorted(path.name for path in (home / "logs").iterdir())
     assert files == ["delibra.log", "delibra.log.1", "delibra.log.2", "delibra.log.3", "delibra.log.4"]
     assert all(mode(home / "logs" / name) == 0o600 for name in files)
+
+
+def test_install_makes_an_existing_directory_and_files_private(home) -> None:
+    logs = home / "logs"
+    logs.mkdir()
+    os.chmod(logs, 0o755)
+    for name in ("delibra.log", "delibra.log.1"):
+        (logs / name).write_text("old\n", encoding="utf-8")
+        os.chmod(logs / name, 0o644)
+
+    install_logging(home, None)()
+
+    assert mode(logs) == 0o700
+    assert mode(logs / "delibra.log") == 0o600
+    assert mode(logs / "delibra.log.1") == 0o600
+
+
+def test_a_symlinked_logs_directory_is_refused(home, tmp_path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.chmod(elsewhere, 0o755)
+    (home / "logs").symlink_to(elsewhere)
+    before = list(logging.getLogger("app").handlers)
+
+    with pytest.raises(OwnershipError):
+        install_logging(home, None)
+
+    assert mode(elsewhere) == 0o755 and list(elsewhere.iterdir()) == []
+    assert list(logging.getLogger("app").handlers) == before
+
+
+def test_a_symlinked_log_file_is_refused(home, tmp_path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep\n", encoding="utf-8")
+    os.chmod(outside, 0o644)
+    (home / "logs").mkdir(mode=0o700)
+    (home / "logs" / "delibra.log").symlink_to(outside)
+
+    with pytest.raises(OwnershipError):
+        install_logging(home, None)
+
+    assert outside.read_text(encoding="utf-8") == "keep\n" and mode(outside) == 0o644
+
+
+def test_a_symlinked_rotated_file_is_left_alone(home, tmp_path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep\n", encoding="utf-8")
+    os.chmod(outside, 0o644)
+    (home / "logs").mkdir(mode=0o700)
+    (home / "logs" / "delibra.log.1").symlink_to(outside)
+
+    install_logging(home, None)()
+
+    assert outside.read_text(encoding="utf-8") == "keep\n" and mode(outside) == 0o644

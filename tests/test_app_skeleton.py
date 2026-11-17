@@ -129,6 +129,8 @@ def test_the_app_logs_to_its_home_while_it_runs(tmp_path) -> None:
 
     assert f"Delibra started: home {home}, log {home / 'logs' / 'delibra.log'}" in text
     assert "Delibra stopped" in text
+    assert home.stat().st_mode & 0o777 == 0o700
+    assert (home / "logs").stat().st_mode & 0o777 == 0o700
     assert not any(isinstance(h, PrivateRotatingFileHandler) for h in logging.getLogger("app").handlers)
 
 

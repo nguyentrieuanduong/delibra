@@ -140,13 +140,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # RegistryStore creates the home at 0700 before the log directory goes inside it.
+        registry = RegistryStore(app_settings.home)
         uninstall_logging = install_logging(app_settings.home, app_settings.log_level)
-        LOGGER.info(
-            "Delibra started: home %s, log %s",
-            app_settings.home, app_settings.home / LOG_DIRNAME / LOG_FILENAME,
-        )
         try:
-            registry = RegistryStore(app_settings.home)
+            LOGGER.info(
+                "Delibra started: home %s, log %s",
+                app_settings.home, app_settings.home / LOG_DIRNAME / LOG_FILENAME,
+            )
             locks = LockCoordinator()
             # One account-wide quota view: it can change because of a run in any
             # project, so every component reads the same instance.
