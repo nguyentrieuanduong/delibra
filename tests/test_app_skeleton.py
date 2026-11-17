@@ -149,15 +149,27 @@ def test_the_settings_lock_poll_is_not_access_logged() -> None:
 
     from app.main import QuietPollFilter
 
-    def access(path: str) -> logging.LogRecord:
+    def access(path: str, method: str = "GET", status: int = 200) -> logging.LogRecord:
+        # uvicorn's layout: client, method, path with query, HTTP version, status.
         return logging.LogRecord(
             "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
-            ("127.0.0.1:5000", "GET", path, "1.1", 200), None,
+            ("127.0.0.1:5000", method, path, "1.1", status), None,
         )
 
     quiet = QuietPollFilter()
     assert quiet.filter(access("/projects/P/settings-lock?tab=coding")) is False
+    assert quiet.filter(access("/projects/P/settings-lock")) is False
     assert quiet.filter(access("/projects/P/settings/coding")) is True
+    # Only the successful GET poll itself is dropped.
+    assert quiet.filter(access("/projects/P/reset?x=/settings-lock", method="POST")) is True
+    assert quiet.filter(access("/projects/P/chat?next=/projects/P/settings-lock")) is True
+    assert quiet.filter(access("/projects/P/settings-lock?tab=coding", method="POST")) is True
+    assert quiet.filter(access("/projects/settings-lock/chat")) is True
+    assert quiet.filter(access("/projects/settings-lock/settings")) is True
+    assert quiet.filter(access("/projects/P/settings-lockdown")) is True
+    assert quiet.filter(access("/projects/P/settings-lock/extra")) is True
+    assert quiet.filter(access("/projects/P/settings-lock?tab=nope", status=404)) is True
+    assert quiet.filter(access("/projects/P/settings-lock", status=500)) is True
     assert quiet.filter(logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "plain", None, None)) is True
 
 

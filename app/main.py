@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 import logging
 from pathlib import Path
+import re
 import shlex
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -63,14 +64,29 @@ LOGGER = logging.getLogger(__name__)
 APP_ROOT = Path(__file__).resolve().parent
 
 
+SETTINGS_LOCK_POLL = re.compile(r"/projects/[^/]+/settings-lock")
+
+
 class QuietPollFilter(logging.Filter):
-    """Drop uvicorn access lines for the settings lock poll (every 5 s per open tab)."""
+    """Drop uvicorn access lines for the settings lock poll (every 5 s per open tab).
+
+    Only a successful GET of exactly that path: uvicorn logs (client, method,
+    path with query, HTTP version, status), and every other request is kept.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
-        return not (
-            isinstance(args, tuple) and len(args) >= 3 and "/settings-lock" in str(args[2])
+        if not (isinstance(args, tuple) and len(args) == 5):
+            return True
+        _client, method, full_path, _version, status = args
+        path = str(full_path).split("?", 1)[0]
+        quiet = (
+            method == "GET"
+            and isinstance(status, int)
+            and status < 400
+            and SETTINGS_LOCK_POLL.fullmatch(path) is not None
         )
+        return not quiet
 
 
 def _recover_interrupted_env(store: ProjectStore) -> None:
