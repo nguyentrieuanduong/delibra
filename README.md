@@ -427,8 +427,7 @@ turn by user`. While that graceful stop is pending the panel offers **Keep going
 to withdraw it and **Stop now** to escalate; withdrawing after the run has already
 ended is a no-op that simply shows the stopped panel. Manual Send, pass, retry,
 cancel, agent identity changes, and project removal remain blocked until Auto is
-terminal; file viewing and shared-Markdown editing remain available. Edits do not
-change the immutable shared snapshot already captured for that Auto run.
+terminal; file viewing remains available.
 
 A failed Auto turn is classified before it ends the run. Each adapter maps its
 own structured error fields to a category, and the runner does the same for
