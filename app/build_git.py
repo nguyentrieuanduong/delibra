@@ -212,9 +212,14 @@ async def ensure_local_excludes(
     else:
         lines.extend(block)
     # Whole-file replace: a concurrent `git ls-files --exclude-standard` sees the
-    # old file or the new one, never a half-written one. Keeps the file's mode.
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-    atomic_write_bytes(path, ("\n".join(lines) + "\n").encode("utf-8"), mode=mode)
+    # old file or the new one, never a half-written one.
+    old_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    atomic_write_bytes(
+        path, ("\n".join(lines) + "\n").encode("utf-8"),
+        mode=0o644 if old_mode is None else old_mode,
+    )
+    if old_mode is not None:
+        os.chmod(path, old_mode)  # the umask trimmed the new file's mode; keep the old one
     return [line for line in body if line.strip() and not line.startswith("#")]
 
 
