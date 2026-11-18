@@ -1081,10 +1081,18 @@ kept.
   per file, 2 GB per Auto run, 4 downloads at a time per project and 2 per
   host, 15 s to connect, 10 min per download. Executables are refused by
   content (ELF, Mach-O, PE, `#!` scripts, macOS `.pkg`, `.deb`, `.rpm`) and
-  by name, on the requested file name and on every URL hop before it is
-  requested: `exe msi msp dll scr com cpl sys bat cmd ps1 vbs vbe wsf jar apk
-  ipa app dmg pkg mpkg deb rpm appimage command`. Source code (`.js`, `.py`,
-  `.sh` without `#!`) and plain text are allowed.
+  by name: the requested file name, the last part of every URL hop (checked
+  before that hop is requested) and the name Delibra would save, so
+  `run.bat_`, fullwidth or zero-width variants of a refused extension are
+  refused too. Refused extensions: `exe msi msp dll scr com cpl sys bat cmd
+  ps1 vbs vbe wsf jar apk ipa app dmg pkg mpkg deb rpm appimage command`,
+  macOS run-on-open types `terminal fileloc inetloc webloc scpt applescript
+  tool jnlp`, disk images and profiles `iso img cdr sparseimage sparsebundle
+  mobileconfig`, `shortcut afploc prefpane`, and Windows launchers `lnk hta
+  reg url pif msix msixbundle appx xll`. Source code (`.js`, `.py`, `.sh`
+  without `#!`), macro Office documents and plain text are allowed. Every
+  download carries the `com.apple.quarantine` attribute, so macOS Gatekeeper
+  asks before you open one as an app.
 - **File names.** Every name Delibra writes is portable ASCII
   (`A-Z a-z 0-9 . _ -`) of at most 64 characters, extension kept: accents are
   transliterated (`Báo cáo.pdf` → `Bao_cao.pdf`), other characters become
@@ -1140,11 +1148,18 @@ Delibra converts documents to Markdown itself, so agents without a shell
   without `.pdf` still converts; a mismatch fails with `file type checks
   disagree`. A misleading extension is only noted (`named .xlsx but content is
   docx`).
-- **Sandbox.** Each step runs `<python> -I -B app/converter/worker.py` under
-  macOS `sandbox-exec`: no network, writes only to a fresh scratch folder, no
-  reads of file contents under your home except the scratch folder, the staged
-  copy, the Python install, the worker and the models. The source is first
-  copied in through a no-follow descriptor. Without `sandbox-exec` (not
+- **Sandbox.** Each step runs `<python> -I -B app/converter/worker.py` (or,
+  for `.doc`, `textutil` alone) under macOS `sandbox-exec`: no network;
+  writes only to a fresh scratch folder; reads of file contents only from the
+  system (`/System`, `/usr`, `/Library/Frameworks`, the dyld cache,
+  `/private/etc`), the Python install, the worker, the models, the staged
+  copy and scratch, never anything else under your home, `/tmp`,
+  `/Volumes` or a terminal; only that one program may start, and it may not
+  fork; no apps or LaunchServices, Apple events, pasteboard, preference
+  writes, launchd jobs, mounts, or signals to or inspection of other
+  processes; only Apple's own system services. The source is first copied in
+  through a no-follow descriptor, and the server reads the worker's output
+  without following links. Without `sandbox-exec` (not
   macOS) conversion is skipped with `conversion needs macOS sandbox-exec`; it
   never runs unsandboxed.
 - **Limits.** One conversion at a time per server; input at most 100 MB (also
