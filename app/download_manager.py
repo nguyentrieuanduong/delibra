@@ -8,17 +8,23 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
+import shutil
+import tempfile
 
 from watchfiles import awatch
 
 from app.coding import DownloadPolicy
 from app.config import Settings
+from app.converter_models import ready_models_dir
+from app.doc_convert import ConvertResult, convert_file, stage_source
 from app.download_fetch import FetchError, Fetcher
 from app.download_model_check import (
     BATCH_MAX, BATCH_WINDOW_SECONDS, CheckError, run_model_check,
 )
+from app.convert_store import ConversionRecord, ConversionStore, render_convert_status
 from app.download_rules import (
-    REQUEST_FILE_MAX_BYTES, TURN_MAX_REQUESTS, RequestError, parse_request, url_flags,
+    CONVERT_DIR, CONVERT_REQUEST_MAX_BYTES, CONVERT_SPOOL, REQUEST_FILE_MAX_BYTES, TURN_MAX_CONVERSIONS,
+    TURN_MAX_REQUESTS, RequestError, converted_output, parse_convert_request, parse_request, url_flags,
 )
 from app.download_store import (
     DownloadRecord, DownloadStore, render_index, render_status,
@@ -49,6 +55,7 @@ class DownloadTurn:
     round_n: int
     agent: str
     agent_name: str
+    session_id: str
     policy: DownloadPolicy
     ids: list[str] = field(default_factory=list)
     files: dict[str, str] = field(default_factory=dict)  # id -> this turn's request file
@@ -56,34 +63,45 @@ class DownloadTurn:
     unparsable: dict[str, tuple[int, int]] = field(default_factory=dict)
     checks: list[asyncio.Task[None]] = field(default_factory=list)
     watch: tuple[asyncio.Event, asyncio.Task[None]] | None = None
+    convert: bool = False  # the turn has a convert spool (design Part B)
+    convert_files: dict[str, str] = field(default_factory=dict)  # id -> this turn's request file
+    convert_unparsable: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def spool(self) -> Path:
         return self.temp_dir / "downloads" / "requests"
 
+    @property
+    def convert_spool(self) -> Path:
+        return self.temp_dir / CONVERT_DIR / CONVERT_SPOOL
+
 
 class _RunBudget:
-    def __init__(self, store: DownloadStore, auto_run: int | None, rid: str, lock: asyncio.Lock) -> None:
-        self.store, self.auto_run, self.rid, self.lock = store, auto_run, rid, lock
+    def __init__(self, store: DownloadStore, budget_key: str, rid: str, lock: asyncio.Lock) -> None:
+        self.store, self.budget_key, self.rid, self.lock = store, budget_key, rid, lock
 
     async def reserve(self, amount: int) -> int:
         async with self.lock:
-            return self.store.reserve(self.auto_run, amount, self.rid)
+            return self.store.reserve(self.budget_key, amount, self.rid)
 
     async def release(self, amount: int) -> None:
         async with self.lock:
-            self.store.release(self.auto_run, amount, self.rid)
+            self.store.release(self.budget_key, amount, self.rid)
 
 
 class DownloadManager:
     def __init__(self, settings: Settings, provider_commands: dict[str, str], *,
                  fetcher: Fetcher | None = None,
-                 model_check: Callable[..., Awaitable[dict[str, tuple[str, str]]]] | None = None) -> None:
+                 model_check: Callable[..., Awaitable[dict[str, tuple[str, str]]]] | None = None,
+                 converter: Callable[..., Awaitable[ConvertResult]] | None = None) -> None:
         self.settings = settings
         self.commands = dict(provider_commands)
         self.fetcher = fetcher or Fetcher()
         self.model_check = model_check or run_model_check
-        self._turns: dict[str, DownloadTurn] = {}
+        self.converter = converter or convert_file
+        # One conversion at a time per server: Docling can use several GB (design).
+        self._convert_slot = asyncio.Semaphore(1)
+        self._turns: dict[tuple[str, str], DownloadTurn] = {}
         self._budget_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._project_slots: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(PROJECT_CONCURRENCY))
         self._host_slots: dict[tuple[str, str], asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(HOST_CONCURRENCY))
@@ -120,19 +138,23 @@ class DownloadManager:
     # ----- rendering
     def _refresh(self, project_id: str, project_root: Path, store: DownloadStore,
                  record: DownloadRecord | None = None) -> None:
-        turn = self._turns.get(project_id)
+        turns = [turn for (turn_project, _session), turn in self._turns.items() if turn_project == project_id]
         try:
             records = store.load().requests
         except StorageError:
             LOGGER.warning("download records under %s are unreadable", store.root, exc_info=True)
-            if turn is not None:
+            for turn in turns:
                 turn.warnings.append(UNREADABLE_WARNING)
             self._publish(project_id)
             return
-        if turn is not None and (record is None or record.auto_run == turn.auto_run):
+        for turn in turns:
+            if not turn.policy.enabled:
+                continue  # a convert-only turn has no download status file
+            if record is not None and not self._turn_owns(turn, record):
+                continue
             try:
                 write_turn_status(turn.temp_dir, render_status(
-                    [r for r in records if r.auto_run == turn.auto_run], turn.files))
+                    [r for r in records if self._turn_owns(turn, r)], turn.files))
             except OSError:
                 turn.warnings.append("download status could not be written")
         if record is not None and record.state == "downloaded":
@@ -143,9 +165,17 @@ class DownloadManager:
                 LOGGER.warning("could not write the download index", exc_info=True)
         self._publish(project_id)
 
+    @staticmethod
+    def _turn_owns(turn: DownloadTurn, record: DownloadRecord) -> bool:
+        """Auto turns list their run's records; a chat turn lists its agent's chat records."""
+
+        if turn.auto_run:
+            return record.auto_run == turn.auto_run
+        return not record.auto_run and record.agent == turn.session_id
+
     # ----- turn lifecycle
     def begin_turn(self, turn: DownloadTurn) -> None:
-        self._turns[turn.project_id] = turn
+        self._turns[(turn.project_id, turn.session_id)] = turn
         self._refresh(turn.project_id, turn.project_root, DownloadStore(turn.store_root))
         stop = asyncio.Event()
         turn.watch = (stop, asyncio.create_task(self._watch(turn, stop)))
@@ -153,7 +183,11 @@ class DownloadManager:
     async def _watch(self, turn: DownloadTurn, stop: asyncio.Event) -> None:
         try:
             self.harvest(turn, final=False)
-            async for _changes in awatch(turn.spool, stop_event=stop, step=50, recursive=False, watch_filter=None):
+            paths = [
+                *([turn.spool] if turn.policy.enabled else []),
+                *([turn.convert_spool] if turn.convert else []),
+            ]
+            async for _changes in awatch(*paths, stop_event=stop, step=50, recursive=False, watch_filter=None):
                 self.harvest(turn, final=False)
         except Exception:
             LOGGER.warning("download spool watch failed for %s", turn.spool, exc_info=True)
@@ -167,10 +201,17 @@ class DownloadManager:
             turn.watch = None
 
     def end_turn(self, turn: DownloadTurn) -> None:
-        if self._turns.get(turn.project_id) is turn:
-            del self._turns[turn.project_id]
+        key = (turn.project_id, turn.session_id)
+        if self._turns.get(key) is turn:
+            del self._turns[key]
 
     def harvest(self, turn: DownloadTurn, *, final: bool) -> None:
+        if turn.policy.enabled:
+            self._harvest_downloads(turn, final=final)
+        if turn.convert:
+            self._harvest_conversions(turn, final=final)
+
+    def _harvest_downloads(self, turn: DownloadTurn, *, final: bool) -> None:
         try:
             entries = scan_spool(turn.spool)
         except (OutboxError, OSError):
@@ -213,7 +254,7 @@ class DownloadManager:
                     proposal.url, purpose=proposal.purpose, filename=proposal.filename,
                     flags=url_flags(proposal.url), auto_run=turn.auto_run, cycle=turn.cycle,
                     round_n=turn.round_n, agent=turn.agent, agent_name=turn.agent_name,
-                    folder=turn.policy.folder,
+                    folder=turn.policy.folder, convert=turn.policy.convert,
                 )
             except StorageError:
                 LOGGER.warning("download request %s could not be recorded", entry.name, exc_info=True)
@@ -228,11 +269,128 @@ class DownloadManager:
                     record = self._after_checks(turn.project_id, turn.project_root, store, record.id, turn.policy)
             self._refresh(turn.project_id, turn.project_root, store, record)
 
-    def _remove(self, turn: DownloadTurn, name: str) -> None:
+    def _remove(self, turn: DownloadTurn, name: str, spool: Path | None = None) -> None:
         try:
-            remove_spool_entry(turn.spool, name)
+            remove_spool_entry(spool or turn.spool, name)
         except (OutboxError, OSError):
             LOGGER.warning("could not remove download request %s", name, exc_info=True)
+
+    # ----- conversion requests (design Part B)
+    def _harvest_conversions(self, turn: DownloadTurn, *, final: bool) -> None:
+        try:
+            entries = scan_spool(turn.convert_spool)
+        except (OutboxError, OSError):
+            turn.warnings.append("convert requests unreadable: the spool is not a real directory")
+            return
+        conversions = ConversionStore(turn.store_root)
+        added = False
+        for entry in entries:
+            if not entry.valid:
+                if final:
+                    self._remove(turn, entry.name, turn.convert_spool)
+                continue
+            if turn.convert_unparsable.get(entry.name) == entry.signature and not final:
+                continue
+            try:
+                data = read_spool_file(turn.convert_spool, entry.name, limit=CONVERT_REQUEST_MAX_BYTES)
+            except (OutboxError, OSError):
+                continue
+            if data is None:
+                continue
+            try:
+                path = parse_convert_request(data)
+            except RequestError as exc:
+                if len(data) <= CONVERT_REQUEST_MAX_BYTES and not final:
+                    turn.convert_unparsable[entry.name] = entry.signature  # maybe half-written
+                    continue
+                turn.warnings.append(f"convert request {entry.name} refused: {exc}")
+                self._remove(turn, entry.name, turn.convert_spool)
+                continue
+            self._remove(turn, entry.name, turn.convert_spool)
+            if len(turn.convert_files) >= TURN_MAX_CONVERSIONS:
+                turn.warnings.append(
+                    f"convert request {entry.name} refused: over {TURN_MAX_CONVERSIONS} this turn"
+                )
+                continue
+            try:
+                record = conversions.add(path, request=entry.name, auto_run=turn.auto_run,
+                                         round_n=turn.round_n, agent=turn.session_id)
+            except StorageError:
+                LOGGER.warning("convert request %s could not be recorded", entry.name, exc_info=True)
+                turn.warnings.append(f"convert request {entry.name} was not recorded: records unreadable")
+                return
+            turn.convert_files[record.id] = entry.name
+            task = asyncio.create_task(self._convert_request(turn, record))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            added = True
+        self._write_convert_status(turn)
+        if added:
+            self._publish(turn.project_id)
+
+    @staticmethod
+    def _turn_owns_conversion(turn: DownloadTurn, record: ConversionRecord) -> bool:
+        if turn.auto_run:
+            return record.auto_run == turn.auto_run
+        return not record.auto_run and record.agent == turn.session_id
+
+    def _write_convert_status(self, turn: DownloadTurn) -> None:
+        try:
+            records = [
+                r for r in ConversionStore(turn.store_root).load() if self._turn_owns_conversion(turn, r)
+            ]
+            write_turn_status(turn.temp_dir, render_convert_status(records, turn.convert_files),
+                              directory=CONVERT_DIR)
+        except (OSError, StorageError):
+            turn.warnings.append("convert status could not be written")
+
+    async def _convert_request(self, turn: DownloadTurn, record: ConversionRecord) -> None:
+        conversions = ConversionStore(turn.store_root)
+        scratch = turn.store_root / "downloads" / ".converting"
+        scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(dir=scratch)) / "source"
+        try:
+            try:
+                source = stage_source(turn.project_root, record.path, staged)
+            except ValueError as exc:
+                conversions.update(record.id, state="refused", reason=str(exc))
+                return
+            except (StorageError, OSError):  # StorageError covers every app.storage refusal
+                conversions.update(record.id, state="refused", reason="not a convertible project file")
+                return
+            output = converted_output(turn.policy.folder, record.path)
+            reused = conversions.latest_converted(record.path, source.sha256)
+            if reused is not None and reused.output == output and (turn.project_root / output).is_file():
+                conversions.update(record.id, state="converted", reason="reused",
+                                   source_sha256=source.sha256, output=output)
+                return
+            result = await self._converted(
+                staged, display_path=record.path, source_sha256=source.sha256, scratch_root=scratch,
+            )
+            if result.state == "unsupported":
+                conversions.update(record.id, state="refused", reason=result.reason)
+                return
+            if result.state != "converted" or result.markdown is None:
+                conversions.update(record.id, state="failed", reason=result.reason)
+                return
+            folder, _, leaf = output.rpartition("/")
+            try:
+                write_project_file(turn.project_root, folder, leaf, result.markdown)
+            except (OSError, StorageError) as exc:
+                conversions.update(record.id, state="failed", reason=f"could not save the Markdown: {exc}")
+                return
+            conversions.update(record.id, state="converted", reason=result.reason,
+                               source_sha256=source.sha256, output=output)
+        except StorageError:
+            LOGGER.exception("conversion %s could not be recorded", record.id)
+        finally:
+            shutil.rmtree(staged.parent, ignore_errors=True)
+            # The live turn that owns it, which may be a later one: an ended turn's
+            # request names must not overwrite the next turn's status file.
+            for live in list(self._turns.values()):
+                if live.convert and live.store_root == turn.store_root and self._turn_owns_conversion(live, record):
+                    self._write_convert_status(live)
+            self._publish(turn.project_id)
 
     # ----- model check batching
     def _queue_check(self, turn: DownloadTurn, rid: str) -> None:
@@ -339,7 +497,7 @@ class DownloadManager:
         async with self._project_slots[project_id], self._host_slots[(project_id, record.host)]:
             record = store.update(rid, state="downloading")
             self._refresh(project_id, project_root, store, record)
-            budget = _RunBudget(store, record.auto_run, rid, self._budget_locks[project_id])
+            budget = _RunBudget(store, record.budget_key, rid, self._budget_locks[project_id])
             try:
                 result = await self.fetcher.fetch(
                     record.url, check_first=not record.overridden, project_root=project_root,
@@ -357,6 +515,63 @@ class DownloadManager:
             finally:
                 store.finish_reservation(rid)  # S2: nothing stays held once the fetch ended
         self._refresh(project_id, project_root, store, record)
+        if record.state == "downloaded" and record.convert:
+            # Outside the download slots: a long conversion never holds up other downloads.
+            record = store.update(rid, convert_state="converting")
+            self._refresh(project_id, project_root, store, record)
+            record = await self._convert_download(project_root, store, record)
+            self._refresh(project_id, project_root, store, record)
+
+    async def _converted(self, staged: Path, *, display_path: str, source_sha256: str,
+                         scratch_root: Path) -> ConvertResult:
+        """Run the converter in the server's single conversion slot, with local models."""
+
+        async with self._convert_slot:
+            try:
+                return await self.converter(
+                    staged, display_path=display_path, source_sha256=source_sha256,
+                    scratch_root=scratch_root, models_dir=ready_models_dir(self.settings.home),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("conversion of %s failed unexpectedly", display_path)
+                return ConvertResult("failed", "unexpected error")
+
+    async def _convert_download(
+        self, project_root: Path, store: DownloadStore, record: DownloadRecord
+    ) -> DownloadRecord:
+        """Every finished download goes through the converter: Magika, not the saved
+        name, decides whether it is a document (a PDF saved as raw/view still converts)."""
+
+        assert record.path is not None
+        scratch = store.root / "downloads" / ".converting"
+        scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(dir=scratch)) / "source"
+        try:
+            try:
+                source = stage_source(project_root, record.path, staged)
+            except (ValueError, OSError, StorageError) as exc:
+                return store.update(record.id, convert_state="failed", convert_reason=str(exc))
+            result = await self._converted(
+                staged, display_path=record.path, source_sha256=source.sha256, scratch_root=scratch,
+            )
+            if result.state == "unsupported":
+                return store.update(record.id, convert_state="skipped", convert_reason=result.reason)
+            if result.state != "converted" or result.markdown is None:
+                return store.update(record.id, convert_state="failed", convert_reason=result.reason)
+            folder, _, leaf = record.path.rpartition("/")
+            try:
+                write_project_file(project_root, folder, f"{leaf}.md", result.markdown)
+            except (OSError, StorageError) as exc:
+                return store.update(record.id, convert_state="failed",
+                                    convert_reason=f"could not save the Markdown: {exc}")
+            return store.update(
+                record.id, convert_state="converted", convert_reason=result.reason,
+                converted_path=f"{record.path}.md",
+            )
+        finally:
+            shutil.rmtree(staged.parent, ignore_errors=True)
 
     async def idle(self) -> None:
         """Tests and shutdown: wait until no download task runs."""
@@ -372,9 +587,9 @@ class DownloadManager:
         return store, record
 
     def _project_id(self, store_root: Path) -> str:
-        for project_id, turn in self._turns.items():
+        for turn in self._turns.values():
             if turn.store_root == store_root:
-                return project_id
+                return turn.project_id
         return str(store_root)
 
     def approve(self, project_root: Path, store_root: Path, rid: str, project_id: str | None = None) -> DownloadRecord:

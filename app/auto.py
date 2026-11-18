@@ -30,7 +30,9 @@ from app.coding import (
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
 from app.download_manager import DownloadManager, DownloadTurn
-from app.download_rules import DOWNLOAD_SPOOL, DOWNLOADS_DIR, STATUS_NAME, downloads_prompt
+from app.download_rules import (
+    CONVERT_DIR, CONVERT_SPOOL, DOWNLOAD_SPOOL, DOWNLOADS_DIR, STATUS_NAME, convert_prompt, downloads_prompt,
+)
 from app.download_store import project_download_excludes
 from app.docker_backend import DockerController, DockerStopFailed, DockerUnavailable
 from app.health import probe_build_version
@@ -82,6 +84,7 @@ from app.questions import (
     discard_outbox,
     outbox_rule_expressible,
     prepare_outbox,
+    prepare_spool,
     questions_prompt,
     take_outbox,
 )
@@ -2308,7 +2311,20 @@ class AutoManager:
         participant = record.participants[record.next_participant]
         outbox_root = self._outbox_root(store, record, participant.session_id)
         download_policy, download_unavailable = self._download_policy(store, record, participant)
-        downloads_dir = self.settings.build_tmp_root / participant.session_id / DOWNLOADS_DIR
+        temp_root = self._outbox_root(store, record, participant.session_id)
+        downloads_dir = temp_root / DOWNLOADS_DIR
+        downloads_on = download_policy is not None and download_policy.enabled
+        convert_on = download_policy is not None and download_policy.convert
+        convert_note = (
+            convert_prompt(
+                temp_root / CONVERT_DIR / STATUS_NAME, temp_root / CONVERT_DIR / CONVERT_SPOOL,
+                f"{download_policy.folder}/converted",
+                # Build turns and Codex have a shell; Claude discussion turns do not.
+                shell=record.kind == "build" or participant.agent == "codex",
+            )
+            if download_policy is not None and convert_on
+            else ""
+        )
         view: QuestionView | None = None
         notes_view: NoteView | None = None
         unavailable: str | None = None
@@ -2330,6 +2346,16 @@ class AutoManager:
                         participant.agent, outbox_root
                     )
                     turn_cycle = current.current_cycle
+                    if current.kind != "build":
+                        # Build turns get theirs when the runner recreates the temp dir.
+                        if downloads_on:
+                            prepare_spool(
+                                temp_root, DOWNLOADS_DIR, DOWNLOAD_SPOOL, extra_names=(STATUS_NAME,)
+                            )
+                        if convert_on:
+                            prepare_spool(
+                                temp_root, CONVERT_DIR, CONVERT_SPOOL, extra_names=(STATUS_NAME,)
+                            )
                     notes_view, notes_path, notes_live = self._prepare_notes_locked(
                         store, current, view_path
                     )
@@ -2379,10 +2405,12 @@ class AutoManager:
                                         downloads_dir / STATUS_NAME,
                                         downloads_dir / DOWNLOAD_SPOOL,
                                         manual=download_policy.approval == "manual",
+                                        shell=True,
                                     )
-                                    if download_policy is not None
+                                    if download_policy is not None and downloads_on
                                     else ""
                                 )
+                                + convert_note
                             )
                             if current.kind == "build"
                             else (
@@ -2400,13 +2428,26 @@ class AutoManager:
                                     else ""
                                 )
                                 + disagreement_note(spool_dir is not None)
+                                + (
+                                    downloads_prompt(
+                                        downloads_dir / STATUS_NAME,
+                                        downloads_dir / DOWNLOAD_SPOOL,
+                                        manual=download_policy.approval == "manual",
+                                        # Claude discussion turns have no shell (design Part A).
+                                        shell=participant.agent == "codex",
+                                    )
+                                    if download_policy is not None and downloads_on
+                                    else ""
+                                )
+                                + convert_note
                             )
                         ) + questions_prompt(
                             view_path, spool_dir, pause_enabled=current.pause_on_blocking_questions
                         ) + notes_prompt(notes_path, live=notes_live, marks_path=marks_path),
                         build=current.kind == "build",
                         docker=lease[0] if lease is not None else None,
-                        downloads=download_policy is not None,
+                        downloads=downloads_on,
+                        convert=convert_on,
                         initial_timeout_seconds=current.future_turn_timeout_seconds,
                         preserve_native_session=False,
                         ignore_returned_session=True,
@@ -2445,10 +2486,11 @@ class AutoManager:
         if download_policy is not None and self.downloads is not None:
             download_turn = DownloadTurn(
                 project_id=record.project_id, project_root=store.project_path,
-                store_root=store.root, temp_dir=downloads_dir.parent,
+                store_root=store.root, temp_dir=temp_root,
                 auto_run=record.number, cycle=turn_cycle, round_n=key.round_n,
                 agent=participant.session_id, agent_name=participant.name,
-                policy=download_policy,
+                session_id=participant.session_id, policy=download_policy,
+                convert=download_policy.convert,
             )
             self.downloads.begin_turn(download_turn)
         try:
@@ -3176,13 +3218,14 @@ class AutoManager:
     ) -> tuple[DownloadPolicy | None, str | None]:
         """The turn's download policy, or None with a warning when the spool cannot be granted."""
 
-        if self.downloads is None or record.kind != "build":
+        if self.downloads is None:
             return None, None
         policy = store.coding_policy().downloads
-        if not policy.enabled:
+        if not (policy.enabled or policy.convert):
             return None, None
-        spool = self.settings.build_tmp_root / participant.session_id / DOWNLOADS_DIR / DOWNLOAD_SPOOL
-        if participant.agent == "claude" and not outbox_rule_expressible(spool):
+        spool = self._outbox_root(store, record, participant.session_id) / DOWNLOADS_DIR / DOWNLOAD_SPOOL
+        # Discussion turns use the workspace, which every provider may write.
+        if record.kind == "build" and participant.agent == "claude" and not outbox_rule_expressible(spool):
             return None, (
                 "downloads unavailable: the build temp path cannot be expressed "
                 "in a Claude permission rule"

@@ -14,7 +14,10 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from app.download_rules import detect_type, is_executable, is_public_address, sanitize_filename, url_flags
+from app.download_rules import (
+    detect_type, executable_extension, is_executable, is_public_address, safe_host, sanitize_filename,
+    url_flags, url_leaf,
+)
 from app.storage import StorageError, ensure_project_subdirectory, open_project_directory, writable_root_parts
 
 FILE_MAX_BYTES = 100 * 1024 * 1024
@@ -162,6 +165,9 @@ class Fetcher:
                     flags = url_flags(current)
                     if flags:
                         raise FetchError(("redirect refused: " if hop else "refused: ") + ", ".join(flags))
+                extension = executable_extension(url_leaf(current))
+                if extension is not None:  # checked before every hop: a redirect can lead to an installer
+                    raise FetchError(f"executable file type refused (.{extension})")
                 parts = urlsplit(current)
                 host = (parts.hostname or "").lower()
                 https = parts.scheme == "https"
@@ -187,7 +193,9 @@ class Fetcher:
                     if response.status_code != 200:
                         raise FetchError(f"HTTP {response.status_code}")
                     name = sanitize_filename(filename, current)
-                    return await self._save(response, current, project_root, f"{folder}/{host}", name, request_id, budget)
+                    return await self._save(
+                        response, current, project_root, f"{folder}/{safe_host(host)}", name, request_id, budget
+                    )
                 finally:
                     await response.aclose()
             raise FetchError("too many redirects")

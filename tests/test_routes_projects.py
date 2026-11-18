@@ -2911,7 +2911,8 @@ def test_a_download_policy_saved_mid_run_reaches_the_next_turn(tmp_path, monkeyp
     policy.downloads = DownloadPolicy(enabled=True, folder="raw", approval="manual")
     store.replace_coding_policy(policy)
     manager = types.SimpleNamespace(
-        downloads=object(), settings=types.SimpleNamespace(build_tmp_root=tmp_path / "build")
+        downloads=object(), settings=types.SimpleNamespace(build_tmp_root=tmp_path / "build"),
+        _outbox_root=lambda _store, _record, session_id: tmp_path / "build" / session_id,
     )
     record = types.SimpleNamespace(kind="build")
     participant = types.SimpleNamespace(session_id="d" * 32, agent="codex")

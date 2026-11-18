@@ -7,7 +7,9 @@ from app.config import Settings
 from app.download_fetch import FetchError, FetchResult
 from app.download_manager import DownloadManager, DownloadTurn
 from app.download_model_check import CheckError
+from app.doc_convert import ConvertResult
 from app.download_store import DownloadStore
+from app.questions import prepare_spool
 
 class FakeFetcher:
     def __init__(self, fail=None): self.calls, self.fail = [], fail
@@ -27,7 +29,7 @@ def setup(tmp_path, *, approval="manual", model_check=False, fetcher=None, check
                               fetcher=fetcher or FakeFetcher(), model_check=check)
     turn = DownloadTurn(project_id="p1", project_root=project, store_root=root, temp_dir=temp,
                         auto_run=1, cycle=1, round_n=2, agent="s" * 32, agent_name="Alpha",
-                        policy=DownloadPolicy(enabled=True, folder="raw", approval=approval, model_check=model_check))
+                        session_id="s" * 32, policy=DownloadPolicy(enabled=True, folder="raw", approval=approval, model_check=model_check))
     return manager, turn
 
 def drop(turn, name, **fields):
@@ -248,3 +250,251 @@ async def test_closing_ends_settle_at_once(tmp_path):
     await asyncio.wait_for(manager.shutdown(), 2)
     records = DownloadStore(turn.store_root).load().requests
     assert [(r.state, r.masked) for r in records] == [("refused", True), ("refused", True)]
+
+
+def settings_for(tmp_path: Path) -> Settings:
+    return Settings(home=tmp_path / "home")
+
+
+def chat_turn(tmp_path: Path, *, session: str, round_n: int, convert: bool = False,
+              fresh: bool = True) -> DownloadTurn:
+    workspace = tmp_path / "sessions" / session / "workspace"
+    workspace.mkdir(parents=True, exist_ok=not fresh)
+    prepare_spool(workspace, "downloads", "requests", extra_names=("status.json",))
+    if convert:
+        prepare_spool(workspace, "convert", "requests", extra_names=("status.json",))
+    return DownloadTurn(
+        project_id="p" * 32, project_root=tmp_path / "project", store_root=tmp_path / "delibra",
+        temp_dir=workspace, auto_run=0, cycle=None, round_n=round_n,
+        agent=session, agent_name=session[:4], session_id=session,
+        policy=DownloadPolicy(enabled=True, approval="manual", convert=convert), convert=convert,
+    )
+
+
+def write_request(spool: Path, name: str, url: str) -> None:
+    (spool / name).write_text(json.dumps({"url": url, "purpose": "test"}), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_two_chat_turns_in_one_project_keep_their_own_status(tmp_path) -> None:
+    manager = DownloadManager(settings_for(tmp_path), {})
+    first = chat_turn(tmp_path, session="a" * 32, round_n=1)
+    second = chat_turn(tmp_path, session="b" * 32, round_n=1)
+    manager.begin_turn(first)
+    manager.begin_turn(second)
+    write_request(first.spool, "d1.json", "https://a.example/one.pdf")
+    write_request(second.spool, "d1.json", "https://b.example/two.pdf")
+
+    manager.harvest(first, final=True)
+    manager.harvest(second, final=True)
+
+    first_status = (first.temp_dir / "downloads" / "status.json").read_text()
+    second_status = (second.temp_dir / "downloads" / "status.json").read_text()
+    assert "one.pdf" in first_status and "two.pdf" not in first_status
+    assert "two.pdf" in second_status and "one.pdf" not in second_status
+    await manager.stop_watch(first)
+    await manager.stop_watch(second)
+    manager.end_turn(first)
+    manager.end_turn(second)
+
+
+class PdfFetcher:
+    async def fetch(self, url, *, check_first, project_root, folder, filename, request_id, budget):
+        target = project_root / folder / "paper.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"%PDF-1.7 x")
+        return FetchResult(url, f"{folder}/paper.pdf", "ab" * 32, 10, "pdf")
+
+
+def pdf_fetcher() -> PdfFetcher:
+    return PdfFetcher()
+
+
+async def download_one(manager: DownloadManager, tmp_path: Path, *, convert: bool):
+    (tmp_path / "project").mkdir(exist_ok=True)
+    turn = chat_turn(tmp_path, session="c" * 32, round_n=1)
+    turn.policy = DownloadPolicy(enabled=True, folder="raw", approval="automatic", convert=convert)
+    manager.begin_turn(turn)
+    write_request(turn.spool, "d1.json", "https://a.example/paper.pdf")
+    manager.harvest(turn, final=True)
+    await manager.idle()
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+    return DownloadStore(tmp_path / "delibra").get("D1")
+
+
+@pytest.mark.asyncio
+async def test_a_downloaded_pdf_is_converted_beside_itself(tmp_path) -> None:
+    calls = []
+
+    async def fake_convert(staged, **kwargs):
+        calls.append(kwargs["display_path"])
+        return ConvertResult("converted", None, b"# converted\n", "pdf")
+
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=fake_convert)
+    record = await download_one(manager, tmp_path, convert=True)
+
+    assert calls == [record.path]
+    saved = DownloadStore(tmp_path / "delibra").get(record.id)
+    assert (saved.convert_state, saved.converted_path) == ("converted", f"{record.path}.md")
+    assert (tmp_path / "project" / f"{record.path}.md").read_bytes() == b"# converted\n"
+    index = (tmp_path / "project" / "raw" / "index.md").read_text()
+    assert f"{record.path}.md" in index
+
+
+@pytest.mark.asyncio
+async def test_a_failed_conversion_keeps_the_download(tmp_path) -> None:
+    async def failing(staged, **kwargs):
+        return ConvertResult("failed", "converter exited with 3")
+
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=failing)
+    record = await download_one(manager, tmp_path, convert=True)
+
+    saved = DownloadStore(tmp_path / "delibra").get(record.id)
+    assert saved.state == "downloaded"
+    assert (saved.convert_state, saved.convert_reason) == ("failed", "converter exited with 3")
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_download_is_skipped_with_magikas_label(tmp_path) -> None:
+    async def unsupported(staged, **kwargs):
+        return ConvertResult("unsupported", "not a supported document (Magika: html)", kind="html")
+
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=unsupported)
+    record = await download_one(manager, tmp_path, convert=True)
+
+    saved = DownloadStore(tmp_path / "delibra").get(record.id)
+    assert (saved.convert_state, saved.convert_reason) == (
+        "skipped", "not a supported document (Magika: html)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_conversion_off_leaves_downloads_alone(tmp_path) -> None:
+    async def never(*args, **kwargs):
+        raise AssertionError("must not convert")
+
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=never)
+    record = await download_one(manager, tmp_path, convert=False)
+    assert DownloadStore(tmp_path / "delibra").get(record.id).convert_state is None
+
+
+@pytest.mark.asyncio
+async def test_a_convert_request_converts_once_and_reuses_unchanged_files(tmp_path) -> None:
+    calls = []
+
+    async def fake_convert(staged, **kwargs):
+        calls.append(kwargs["display_path"])
+        return ConvertResult("converted", None, b"# md\n", "pdf")
+
+    project = tmp_path / "project"
+    (project / "docs").mkdir(parents=True)
+    (project / "docs" / "a.pdf").write_bytes(b"%PDF-1.7 a")
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=fake_convert)
+    for round_n in (1, 2):
+        turn = chat_turn(tmp_path, session="a" * 32, round_n=round_n, convert=True, fresh=round_n == 1)
+        manager.begin_turn(turn)
+        (turn.convert_spool / "c1.json").write_text('{"path": "docs/a.pdf"}')
+        manager.harvest(turn, final=True)
+        await manager.idle()
+        await manager.stop_watch(turn)
+        manager.end_turn(turn)
+
+    assert calls == ["docs/a.pdf"]
+    assert (project / "docs/source/raw/converted/docs/a.pdf.md").read_bytes() == b"# md\n"
+    status = (turn.temp_dir / "convert" / "status.json").read_text()
+    assert '"state": "converted"' in status and '"reason": "reused"' in status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path, reason", [
+    ("../x.pdf", "not a convertible project file"),
+    (".delibra/x.pdf", "not a convertible project file"),
+    ("notes.txt", "not a supported document"),
+    ("link.pdf", "not a convertible project file"),
+])
+async def test_bad_convert_requests_are_refused_with_reasons(tmp_path, path, reason) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "notes.txt").write_text("hello")
+    (project / "real.pdf").write_bytes(b"%PDF-1.7")
+    (project / "link.pdf").symlink_to(project / "real.pdf")
+
+    async def unsupported(staged, **kwargs):  # what Magika says about notes.txt
+        return ConvertResult("unsupported", "not a supported document (Magika: txt)", kind="txt")
+
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=unsupported)
+    turn = chat_turn(tmp_path, session="b" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    (turn.convert_spool / "c1.json").write_text(json.dumps({"path": path}))
+    manager.harvest(turn, final=True)
+    await manager.idle()
+
+    status = (turn.temp_dir / "convert" / "status.json").read_text()
+    assert '"state": "refused"' in status
+    assert reason in status
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_a_conversions_only_turn_reads_no_download_requests(tmp_path) -> None:
+    async def fake_convert(staged, **kwargs):
+        return ConvertResult("converted", None, b"# md\n", "pdf")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.pdf").write_bytes(b"%PDF-1.7 a")
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=fake_convert)
+    turn = chat_turn(tmp_path, session="d" * 32, round_n=1, convert=True)
+    turn.policy = DownloadPolicy(enabled=False, convert=True)
+    import shutil
+    shutil.rmtree(turn.temp_dir / "downloads")  # a convert-only turn has no download spool
+    manager.begin_turn(turn)
+    (turn.convert_spool / "c1.json").write_text('{"path": "a.pdf"}')
+    for _ in range(100):  # the watcher picks it up live
+        if (project / "docs/source/raw/converted/a.pdf.md").exists():
+            break
+        await asyncio.sleep(0.02)
+    manager.harvest(turn, final=True)
+    await manager.idle()
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+    assert DownloadStore(tmp_path / "delibra").load().requests == []
+    assert not (turn.temp_dir / "downloads").exists()
+    assert '"state": "converted"' in (turn.temp_dir / "convert" / "status.json").read_text()
+    assert turn.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_a_late_conversion_does_not_overwrite_the_next_turns_status(tmp_path) -> None:
+    release = asyncio.Event()
+
+    async def slow_convert(staged, **kwargs):
+        await release.wait()
+        return ConvertResult("converted", None, b"# md\n", "pdf")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.pdf").write_bytes(b"%PDF-1.7 a")
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=slow_convert)
+    first = chat_turn(tmp_path, session="e" * 32, round_n=1, convert=True)
+    manager.begin_turn(first)
+    (first.convert_spool / "c1.json").write_text('{"path": "a.pdf"}')
+    manager.harvest(first, final=True)
+    await manager.stop_watch(first)
+    manager.end_turn(first)
+
+    second = chat_turn(tmp_path, session="e" * 32, round_n=2, convert=True, fresh=False)
+    manager.begin_turn(second)
+    (second.convert_spool / "c1.json").write_text('{"path": "../x.pdf"}')  # refused at once
+    manager.harvest(second, final=False)
+    await manager.stop_watch(second)  # no watcher rewrite: the late result's own write counts
+    release.set()
+    await manager.idle()
+
+    lines = (second.temp_dir / "convert" / "status.json").read_text().splitlines()
+    assert any('"id": "C2", "request": "c1.json"' in line and '"refused"' in line for line in lines)
+    assert any('"id": "C1"' in line and '"request"' not in line and '"converted"' in line for line in lines)
+    manager.end_turn(second)

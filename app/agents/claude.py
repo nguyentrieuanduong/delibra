@@ -18,7 +18,7 @@ from app.agents.errors import (
     classify_text,
 )
 from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsage
-from app.download_rules import DOWNLOAD_SPOOL, DOWNLOADS_DIR
+from app.download_rules import CONVERT_DIR, CONVERT_SPOOL, DOWNLOAD_SPOOL, DOWNLOADS_DIR
 from app.questions import QUESTIONS_DIR, outbox_rule_expressible
 from app.storage import epoch_instant
 
@@ -291,6 +291,12 @@ class ClaudeAdapter:
             if coding.downloads and outbox_rule_expressible(downloads_dir)
             else ""
         )
+        convert_dir = coding.temp_dir / CONVERT_DIR / CONVERT_SPOOL
+        convert_rule = (
+            f",Edit(/{convert_dir.as_posix()}/**)"
+            if coding.convert and outbox_rule_expressible(convert_dir)
+            else ""
+        )
         argv = [
             self.executable,
             "-p",
@@ -313,7 +319,7 @@ class ClaudeAdapter:
             # are in-process and not covered by the sandbox allowlist.
             "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch",
             "--allowedTools",
-            "Read(/**),Edit(/**),Bash,WebSearch,WebFetch" + questions_rule + downloads_rule,
+            "Read(/**),Edit(/**),Bash,WebSearch,WebFetch" + questions_rule + downloads_rule + convert_rule,
             "--disallowedTools",
             "Edit(/.delibra/**),Edit(/.git/**)",
             "--settings",

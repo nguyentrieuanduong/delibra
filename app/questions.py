@@ -589,36 +589,44 @@ def _remove_entry(descriptor: int, name: str) -> None:
             os.close(opened)
 
 
-def prepare_outbox(root: Path, extra_names: Sequence[str] = ()) -> Path:
-    """Give this turn an empty question spool, dropping a previous turn's files.
+def prepare_spool(
+    root: Path, directory: str, spool: str, extra_names: Sequence[str] = ()
+) -> Path:
+    """Give this turn an empty spool under root/directory, dropping a previous turn's files.
 
-    ``extra_names`` are other per-turn files the directory holds beside the
-    outbox; a previous turn's copy of each is removed too.
+    ``extra_names`` are other per-turn files the directory holds beside the spool; a
+    previous turn's copy of each is removed too. A planted symlink or file named
+    ``directory`` is replaced, never followed.
     """
+
     root_descriptor = _open_directory(root)
     try:
         try:
-            info = os.stat(QUESTIONS_DIR, dir_fd=root_descriptor, follow_symlinks=False)
+            info = os.stat(directory, dir_fd=root_descriptor, follow_symlinks=False)
         except FileNotFoundError:
             info = None
         if info is not None and not stat.S_ISDIR(info.st_mode):
-            os.unlink(QUESTIONS_DIR, dir_fd=root_descriptor)
+            os.unlink(directory, dir_fd=root_descriptor)
             info = None
         if info is None:
-            os.mkdir(QUESTIONS_DIR, mode=0o700, dir_fd=root_descriptor)
-        os.chmod(QUESTIONS_DIR, 0o700, dir_fd=root_descriptor, follow_symlinks=False)
-        descriptor = os.open(
-            QUESTIONS_DIR, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=root_descriptor
-        )
+            os.mkdir(directory, mode=0o700, dir_fd=root_descriptor)
+        os.chmod(directory, 0o700, dir_fd=root_descriptor, follow_symlinks=False)
+        descriptor = os.open(directory, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=root_descriptor)
         try:
-            for name in (SPOOL_NAME, LEGACY_OUTBOX_NAME, *extra_names):
+            for name in (spool, *extra_names):
                 _remove_entry(descriptor, name)
-            os.mkdir(SPOOL_NAME, mode=0o700, dir_fd=descriptor)
+            os.mkdir(spool, mode=0o700, dir_fd=descriptor)
         finally:
             os.close(descriptor)
     finally:
         os.close(root_descriptor)
-    return root / QUESTIONS_DIR / SPOOL_NAME
+    return root / directory / spool
+
+
+def prepare_outbox(root: Path, extra_names: Sequence[str] = ()) -> Path:
+    """Give this turn an empty question spool, dropping a previous turn's files."""
+
+    return prepare_spool(root, QUESTIONS_DIR, SPOOL_NAME, (LEGACY_OUTBOX_NAME, *extra_names))
 
 
 def _read_outbox(descriptor: int, name: str, limit: int) -> bytes | None:

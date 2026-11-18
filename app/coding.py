@@ -702,6 +702,7 @@ class DownloadPolicy:
     model_check: bool = False
     check_provider: str = "claude"
     check_model: str = "haiku"
+    convert: bool = True  # Markdown copies of documents (design 2026-11-15, Part B)
 
     @classmethod
     def from_dict(cls, data: object) -> "DownloadPolicy":
@@ -710,9 +711,10 @@ class DownloadPolicy:
         default = cls()
         enabled = data.get("enabled", default.enabled)
         model_check = data.get("model_check", default.model_check)
+        convert = data.get("convert", default.convert)
         approval = data.get("approval", default.approval)
         provider = data.get("check_provider", default.check_provider)
-        if type(enabled) is not bool or type(model_check) is not bool:
+        if type(enabled) is not bool or type(model_check) is not bool or type(convert) is not bool:
             raise CodingPolicyError("download settings are invalid")
         if approval not in DOWNLOAD_APPROVALS or provider not in CHECK_PROVIDERS:
             raise CodingPolicyError("download settings are invalid")
@@ -730,6 +732,7 @@ class DownloadPolicy:
             model_check=model_check,
             check_provider=provider,
             check_model=check_model,
+            convert=convert,
         )
 
     def to_dict(self) -> dict[str, Any]:

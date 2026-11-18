@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
+from app.converter_models import mark_interrupted
 from app.download_manager import DownloadManager
 from app.coding import CodingEnvState, DockerPolicy, build_capable, cli_newer_than_verified
 from app.config import Settings
@@ -193,7 +194,9 @@ def create_app(
                 codex_executable=commands["codex"],
             )
             docker_controller = docker_controller_override or DockerController(app_settings)
+            mark_interrupted(app_settings.home)  # a models download cut by the last stop
             download_manager = DownloadManager(app_settings, commands)
+            manager.downloads = download_manager  # chat replies request downloads too
             auto_manager = AutoManager(
                 registry=registry,
                 locks=locks,
@@ -280,6 +283,10 @@ def create_app(
                 for task in docker_tasks:
                     task.cancel()
                 await asyncio.gather(*docker_tasks, return_exceptions=True)
+                models_task = app.state.converter_models_task
+                if models_task is not None:
+                    models_task.cancel()  # the next start marks it interrupted
+                    await asyncio.gather(models_task, return_exceptions=True)
                 # Checks and downloads stop first, so no settling turn holds Auto's
                 # shutdown (and a finished turn records before Auto interrupts);
                 # Auto's cancelled turns then harvest the spool, and the second
@@ -311,6 +318,7 @@ def create_app(
     app.state.manager = None
     app.state.auto_manager = None
     app.state.download_manager = None
+    app.state.converter_models_task = None
     app.state.usage_monitor = None
     app.state.templates = templates
     app.state.health = []

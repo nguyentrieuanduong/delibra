@@ -75,6 +75,8 @@ class CodingContext:
     docker: DockerAccess | None = None
     # Delibra downloads: the request spool exists this turn.
     downloads: bool = False
+    # Delibra conversions: the convert request spool exists this turn.
+    convert: bool = False
 
 
 def build_command_environment(coding: CodingContext) -> dict[str, str]:
