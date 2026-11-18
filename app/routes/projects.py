@@ -86,7 +86,7 @@ LOCKED_ON_TAB: dict[str, tuple[str, str] | None] = {
     "general": None,
     "prompts": None,
     "coding": ("coding on/off and Docker", "are"),
-    "agents": ("creating, editing and deleting agents", "is"),
+    "agents": ("editing and deleting agents", "are"),
     "reset": ("resets", "are"),
 }
 

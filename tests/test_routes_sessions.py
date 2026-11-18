@@ -513,7 +513,8 @@ def test_active_auto_reservation_blocks_session_mutations(
         create_session(client, project.id, name="Beta", agent="codex", effort="low")
         reserve_auto_run(store)
 
-        assert create_session(client, project.id, name="Blocked").status_code == 409
+        # Creating is allowed during Auto (user decision 2026-11-18).
+        assert create_session(client, project.id, name="Allowed").status_code == 303
         assert client.post(
             f"/projects/{quote(project.name, safe='')}/sessions/{first}/edit",
             data={"model": "opus", "effort": "medium"},
@@ -524,7 +525,7 @@ def test_active_auto_reservation_blocks_session_mutations(
             follow_redirects=False,
         ).status_code == 409
 
-    assert len(store.list_sessions()) == 2
+    assert len(store.list_sessions()) == 3
 
 
 def test_create_uses_a_unique_permanent_agent_name(tmp_path: Path) -> None:

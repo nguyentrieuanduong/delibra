@@ -2700,7 +2700,7 @@ def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) 
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get(f"{prefix}/settings/coding").text
     assert 'name="downloads_folder" value="docs/source/raw"' in page
-    assert 'name="downloads_check_model" value="sonnet"' in page
+    assert 'name="downloads_check_model" value="haiku"' in page
 
 
 SETTINGS_TABS = {
@@ -2735,6 +2735,26 @@ def test_each_settings_tab_is_its_own_page(tmp_path: Path) -> None:
     assert root == pages["general"].text
     assert unknown.status_code == 404
     assert unknown.json()["detail"] == "Unknown settings tab"
+
+
+def test_the_agents_tab_says_creating_is_open_and_editing_is_locked(tmp_path: Path) -> None:
+    # User decision 2026-11-18: creating an agent is allowed during Auto.
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "agents-lines"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Lines", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    form = {"name": "Alpha", "agent": "claude", "model": "haiku", "effort": "high"}
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data=form, follow_redirects=False)
+        page = client.get(f"{prefix}/settings/agents").text
+
+    create_line = page.index(
+        "Allowed during Auto; a running Auto run keeps its participants."
+    )
+    locked_line = page.index("Locked while an Auto run is active.")
+    assert create_line < page.index("<summary>Create session</summary>") < locked_line
+    assert locked_line < page.index('class="session-card"')
 
 
 def test_general_tab_orders_its_sections(tmp_path: Path) -> None:
@@ -2912,7 +2932,7 @@ def test_the_lock_line_names_what_is_locked_on_each_tab(tmp_path, monkeypatch) -
     assert 'id="settings-lock" data-auto-active="true"' in coding
     assert "is active:" not in prompts
     assert "Git ignore" not in coding.split('id="settings-lock"', 1)[1].split("</", 1)[0]
-    assert "creating, editing and deleting agents is locked until it ends." in fragment
+    assert "Auto run #7 is active: editing and deleting agents are locked until it ends." in fragment
     assert "hx-trigger=\"every 5s [document.visibilityState === 'visible']\"" in fragment
 
 
@@ -3077,7 +3097,10 @@ def test_refused_agent_forms_on_the_agents_tab_pop_up_and_keep_the_input(tmp_pat
             raise ConflictError("an Auto run is active")
 
         monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
-        locked_create = client.post(f"{prefix}/sessions", data={**form, "name": "Beta"})
+        # Creating is allowed during Auto (user decision 2026-11-18).
+        allowed_create = client.post(
+            f"{prefix}/sessions", data={**form, "name": "Beta"}, follow_redirects=False
+        )
         locked_delete = client.post(f"{prefix}/sessions/{alpha}/delete", data={"return_to": "settings"})
 
     _agents_refusal(bad_name, 422)
@@ -3090,12 +3113,11 @@ def test_refused_agent_forms_on_the_agents_tab_pop_up_and_keep_the_input(tmp_pat
     assert f'id="session-writable-roots-{alpha}" name="writable_roots" maxlength="65536"></textarea>' in emptied_edit.text
     assert 'name="role_instructions" maxlength="20000"></textarea>' in emptied_edit.text.split(f'/sessions/{alpha}/edit', 1)[1]
     assert store.load_session(alpha).writable_roots == ["src"]
-    assert "Auto run is active" in _agents_refusal(locked_create, 409)
-    assert 'value="Beta"' in locked_create.text
+    assert allowed_create.status_code == 303
     assert "Auto run is active" in _agents_refusal(locked_delete, 409)
     # Without return_to (the chat page) the answer is unchanged.
     assert chat_page.status_code == 422 and "detail" in chat_page.json()
-    assert [s.name for s in store.list_sessions()] == ["Alpha"]
+    assert sorted(s.name for s in store.list_sessions()) == ["Alpha", "Beta"]
     assert store.load_session(alpha).model == "sonnet"
 
 
