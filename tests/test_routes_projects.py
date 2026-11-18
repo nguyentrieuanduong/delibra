@@ -3268,3 +3268,115 @@ def test_project_writable_roots_save_from_this_machine_only(tmp_path, monkeypatc
     assert '<button type="submit" disabled>Save writable roots</button>' in section(lan_page)
     assert "Only this machine can change this list." not in section(local_page)
     assert '<button type="submit">Save writable roots</button>' in section(local_page)
+
+
+def _agent_roots_app(tmp_path: Path):
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "roots"
+    (project_dir / "src").mkdir(parents=True)
+    (project_dir / "out").mkdir()
+    project = RegistryStore(settings.home).register("Roots", project_dir)
+    return app, project, ProjectStore(project), f"/projects/{quote(project.name, safe='')}"
+
+
+def test_agent_writable_roots_change_from_this_machine_only(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    form = {"agent": "claude", "model": "sonnet", "effort": "high"}
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        local_create = client.post(
+            f"{prefix}/sessions", data={**form, "name": "Alpha", "writable_roots": "src"},
+            follow_redirects=False,
+        )
+    alpha = store.list_sessions()[0]
+    before = store.load_session(alpha.id)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan_create_roots = client.post(
+            f"{prefix}/sessions", data={**form, "name": "Beta", "writable_roots": "out"},
+            follow_redirects=False,
+        )
+        lan_create_tick = client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "Gamma", "create_missing_writable_roots": "true", "return_to": "settings"},
+            follow_redirects=False,
+        )
+        lan_edit_roots = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "writable_roots": "out"}, follow_redirects=False,
+        )
+        lan_edit_emptied = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "writable_roots": ""}, follow_redirects=False,
+        )
+        lan_edit_tick = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "writable_roots": "src", "create_missing_writable_roots": "true"},
+            follow_redirects=False,
+        )
+        after_refusals = store.load_session(alpha.id)
+        lan_edit_same = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "role_instructions": "New role", "writable_roots": " src \n"},
+            follow_redirects=False,
+        )
+        lan_edit_without = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit", data={"effort": "low"}, follow_redirects=False,
+        )
+        lan_create_plain = client.post(
+            f"{prefix}/sessions", data={**form, "name": "Delta", "writable_roots": ""},
+            follow_redirects=False,
+        )
+
+    assert local_create.status_code == 303 and alpha.writable_roots == ["src"]
+    refused = (lan_create_roots, lan_create_tick, lan_edit_roots, lan_edit_emptied, lan_edit_tick)
+    assert [r.status_code for r in refused] == [403] * 5
+    assert lan_create_roots.json()["detail"] == "Only this machine can change an agent's writable roots"
+    assert after_refusals == before  # nothing written
+    assert [r.status_code for r in (lan_edit_same, lan_edit_without, lan_create_plain)] == [303] * 3
+    saved = store.load_session(alpha.id)
+    assert (saved.model, saved.role_instructions, saved.effort) == ("opus", "New role", "low")
+    assert saved.writable_roots == ["src"] and saved.create_missing_writable_roots is False
+    assert sorted(s.name for s in store.list_sessions()) == ["Alpha", "Delta"]
+
+
+def test_a_lan_edit_keeps_the_agent_create_missing_tick(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data={
+            "name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high",
+            "writable_roots": "src", "create_missing_writable_roots": "true",
+        }, follow_redirects=False)
+    alpha = store.list_sessions()[0].id
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        # The LAN form has no checkbox, so the tick is absent but must not be cleared.
+        saved = client.post(
+            f"{prefix}/sessions/{alpha}/edit", data={"model": "opus", "writable_roots": "src"},
+            follow_redirects=False,
+        )
+    assert saved.status_code == 303
+    config = store.load_session(alpha)
+    assert (config.model, config.create_missing_writable_roots) == ("opus", True)
+
+
+def test_network_viewers_see_agent_roots_read_only(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data={
+            "name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high", "writable_roots": "src",
+        }, follow_redirects=False)
+        local_pages = [client.get(f"{prefix}/settings/agents").text, client.get(f"{prefix}/chat").text]
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan_pages = [client.get(f"{prefix}/settings/agents").text, client.get(f"{prefix}/chat").text]
+
+    hint = "Only this machine can change this list."
+    for page in lan_pages:
+        assert page.count(hint) == 2  # the create form and the agent's card
+        assert 'name="create_missing_writable_roots"' not in page
+        roots = re.findall(r'<textarea[^>]*name="writable_roots"[^>]*>', page)
+        assert len(roots) == 2 and all("readonly" in tag for tag in roots), roots
+        assert 'data-picker-target="new-session-writable-roots"' not in page
+        assert 'data-picker-target="session-writable-roots-' not in page
+    for page in local_pages:
+        assert hint not in page
+        assert page.count('name="create_missing_writable_roots"') == 2
+        assert all("readonly" not in tag for tag in re.findall(r'<textarea[^>]*name="writable_roots"[^>]*>', page))
+    assert 'data-picker-target="new-session-writable-roots"' in local_pages[0]

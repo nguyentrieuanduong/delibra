@@ -183,3 +183,20 @@ def test_create_app_installs_the_quiet_poll_filter(tmp_path) -> None:
         provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
     )
     assert any(isinstance(f, QuietPollFilter) for f in logging.getLogger("uvicorn.access").filters)
+
+
+def test_the_loopback_gate_names_the_setting_it_refuses() -> None:
+    import pytest
+    from fastapi import HTTPException
+
+    from app.security import require_loopback_client
+
+    class Peer:
+        scope = {"client": ("192.168.1.20", 5000)}
+
+    with pytest.raises(HTTPException) as default:
+        require_loopback_client(Peer())
+    with pytest.raises(HTTPException) as named:
+        require_loopback_client(Peer(), reason="Only this machine may enable coding or start build runs")
+    assert (default.value.status_code, default.value.detail) == (403, "Only this machine can change this setting")
+    assert named.value.detail == "Only this machine may enable coding or start build runs"

@@ -40,6 +40,7 @@ from app.project_reset import CLEAR_SCOPES, PartialClearError, clear_project
 from app.project_routing import request_project
 from app.questions import QuestionStore
 from app.security import (
+    CODING_ONLY_HERE,
     is_loopback_client,
     require_loopback_client,
     validate_field,
@@ -500,7 +501,7 @@ async def save_coding_mode(
     project_id: str,
     enabled: bool = Form(False),
 ):
-    require_loopback_client(request)
+    require_loopback_client(request, CODING_ONLY_HERE)
     return await _save_coding_part(
         request, project_id, lambda current: replace(current, enabled=enabled),
         locked=True, typed={}, refresh_excludes=True,

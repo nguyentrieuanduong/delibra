@@ -133,9 +133,8 @@ Auto runs from their next turn. A project can switch it off under
 fixed.
 
 On this machine, build guidance files, skills agents can read, Register and
-Rebind have a **Browse…** button that lists this machine's folders;
-an agent's writable-roots fields browse the project's own folders from any allowed
-client, and the project's writable roots browse them on this machine.
+Rebind have a **Browse…** button that lists this machine's folders, and
+writable-roots fields browse the project's own folders.
 
 Open `http://127.0.0.1:8000`, register an existing absolute directory, create a
 Claude or Codex agent, and submit a prompt. The project chat keeps project context
@@ -250,8 +249,10 @@ The existing project manifest stores `active_auto_run_id` while Auto owns the pr
 reservation. An older manifest's `shared_markdown_path` (the removed shared-context
 feature) is ignored and dropped on the next write.
 
-Project settings may grant default writable roots to every agent (saved from
-this machine only), and agent settings may add roots for that agent. A writable root is always stored relative
+Project settings may grant default writable roots to every agent, and agent
+settings may add roots for that agent. Both lists change from this machine only:
+other allowed clients see them read-only, and may still create and edit agents
+without changing their roots. A writable root is always stored relative
 to the registered project directory. The effective grant is the normalized union
 of the project and agent lists, with at most 16 roots after redundant descendants
 are removed.

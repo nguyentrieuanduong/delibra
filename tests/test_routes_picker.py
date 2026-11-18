@@ -229,4 +229,5 @@ def test_browse_buttons_follow_who_may_browse(tmp_path) -> None:
     assert 'data-picker-target="coding-guidance-skills"' not in lan_coding
     # Project writable roots are saved from this machine only (2026-11-18).
     assert 'data-picker-target="project-writable-roots"' not in lan_settings
-    assert 'data-picker-target="new-session-writable-roots"' in lan_agents
+    # Agent writable roots change from this machine only (2026-11-18).
+    assert 'data-picker-target="new-session-writable-roots"' not in lan_agents

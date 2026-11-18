@@ -30,7 +30,7 @@ from app.models import (
 )
 from app.project_routing import request_project
 from app.questions import QuestionStore
-from app.security import is_loopback_client, require_loopback_client, validate_field
+from app.security import CODING_ONLY_HERE, is_loopback_client, require_loopback_client, validate_field
 from app.storage import ProjectStore, StorageError, parse_auto_reference
 from app.urls import project_url
 from app.views import agent_views, auto_notes_context, auto_run_usage, undelivered_notes
@@ -624,7 +624,7 @@ async def start_auto(
     pause_on_blocking_questions: bool = Form(False),
 ) -> HTMLResponse:
     if kind == "build":
-        require_loopback_client(request)
+        require_loopback_client(request, CODING_ONLY_HERE)
     topic = validate_field(topic, "Topic", maximum=100_000)
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -794,7 +794,7 @@ async def extend_auto_cycles(
     record, _ = _load_auto_reference(ProjectStore(project), auto_id)
     if record.kind == "build":
         # More cycles is more shell time for build agents, as Continue Auto is.
-        require_loopback_client(request)
+        require_loopback_client(request, CODING_ONLY_HERE)
     record = await request.app.state.auto_manager.extend_cycles(
         resolved_project_id,
         record.id,
@@ -820,7 +820,7 @@ async def resume_auto(
     resolved_project_id = project.id
     record, _ = _load_auto_reference(ProjectStore(project), auto_id)
     if record.kind == "build":
-        require_loopback_client(request)
+        require_loopback_client(request, CODING_ONLY_HERE)
     # The form asks for cycles to add; the manager stores a cumulative limit.
     # Translate here so the two never have to mean the same number.
     cursor = reconstruct_resume_cursor(record)

@@ -15,13 +15,19 @@ from app.project_routing import request_project
 from app.routes.auto import project_auto_record
 from app.routes.chat import sidebar_response
 from app.routes.projects import _writable_roots_field, render_refusal, settings_tab_url
-from app.security import validate_agent_name, validate_field
+from app.security import (
+    is_loopback_client,
+    require_loopback_client,
+    validate_agent_name,
+    validate_field,
+)
 from app.storage import (
     ConflictError,
     NotFoundError,
     ProjectStore,
     StorageError,
     merge_writable_roots,
+    normalize_writable_roots,
     utc_now,
     validate_id,
 )
@@ -70,6 +76,20 @@ def _validated_configuration(
     return agent, model, effort, role_instructions
 
 
+# An agent's writable roots widen what it may write: this machine only (user
+# decision 2026-11-18). Network clients may still create and edit agents.
+AGENT_ROOTS_HERE = "Only this machine can change an agent's writable roots"
+
+
+def _roots_differ(sent: str, saved: list[str]) -> bool:
+    """Whether a submitted roots box changes the saved list (an invalid one does)."""
+
+    try:
+        return _writable_roots_field(sent) != normalize_writable_roots(saved)
+    except (HTTPException, StorageError):
+        return True
+
+
 def _back_to_agents_tab(project: Project) -> RedirectResponse:
     """Agent forms on the settings page send return_to=settings and land on Agents."""
 
@@ -116,6 +136,8 @@ async def create_session(
     # Only "settings" changes the redirect (to the Agents tab); anything else is ignored.
     return_to: str = Form(""),
 ):
+    if writable_roots.strip() or create_missing_writable_roots:
+        require_loopback_client(request, AGENT_ROOTS_HERE)
     typed = {
         "form": "create", "name": name, "agent": agent, "model": model, "effort": effort,
         "role_instructions": role_instructions, "writable_roots": writable_roots,
@@ -265,6 +287,14 @@ async def _edit_session(
         config = store.load_session(session_id)
         if config.status == "running":
             raise ConflictError("cannot edit a running session")
+        if not is_loopback_client(request) and (
+            create_missing_writable_roots or writable_roots is not None
+        ):
+            if create_missing_writable_roots or _roots_differ(writable_roots, config.writable_roots):
+                require_loopback_client(request, AGENT_ROOTS_HERE)
+            # The same roots from a network form (it has no tick): leave the roots
+            # and their create-missing tick as they are.
+            writable_roots = None
         project_writable_roots = store.effective_writable_roots()
         old_effective_writable_roots = (
             merge_writable_roots(project_writable_roots, config.writable_roots)

@@ -18,7 +18,7 @@ from app.routes.downloads import downloads_panel_context
 from app.routes.questions import questions_panel_context
 from app.routes.runs import start_run_fragment
 from app.routes.usage import usage_badge_context
-from app.security import validate_field
+from app.security import is_loopback_client, validate_field
 from app.storage import ProjectStore, validate_id
 from app.urls import project_url
 from app.views import (
@@ -83,6 +83,7 @@ def _sidebar_context(
     composer_oob: bool,
     auto_active: bool,
     auto_open: bool,
+    coding_local: bool,
 ) -> dict:
     selected = selected_session(sessions, selected_id)
     return {
@@ -94,6 +95,8 @@ def _sidebar_context(
         "effort_levels": effort_levels(),
         "composer_oob": composer_oob,
         "auto_active": auto_active,
+        # Agent writable roots change from this machine only (2026-11-18).
+        "coding_local": coding_local,
     }
 
 
@@ -117,6 +120,7 @@ def sidebar_response(
             composer_oob=composer_oob,
             auto_active=store.active_auto_run_id() is not None,
             auto_open=accepts_notes(project_auto_record(request, project.id).record),
+            coding_local=is_loopback_client(request),
         ),
         headers=headers,
     )
@@ -163,6 +167,7 @@ async def chat_page(
         composer_oob=False,
         auto_active=auto_active,
         auto_open=accepts_notes(auto_record),
+        coding_local=is_loopback_client(request),
     )
     auto_numbers = {
         record.id: record.number

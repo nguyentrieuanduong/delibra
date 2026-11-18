@@ -37,9 +37,10 @@
         <textarea name="role_instructions" maxlength="20000"></textarea>
       </label>
       <label>Additional writable roots
-        <textarea name="writable_roots" maxlength="65536"></textarea>
+        <textarea name="writable_roots" maxlength="65536"{% if not coding_local %} readonly{% endif %}></textarea>
       </label>
-      <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"> Create directories that don't exist</label>
+      {% if not coding_local %}<p class="hint">Only this machine can change this list.</p>{% endif %}
+      {% if coding_local %}<label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"> Create directories that don't exist</label>{% endif %}
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create agent</button>
     </form>
   </details>

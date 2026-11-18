@@ -32,10 +32,13 @@
         <textarea name="role_instructions" maxlength="20000">{{ c.get('role_instructions', '') }}</textarea>
       </label>
       <label>Additional writable roots
-        <textarea id="new-session-writable-roots" name="writable_roots" maxlength="65536">{{ c.get('writable_roots', '') }}</textarea>
+        <textarea id="new-session-writable-roots" name="writable_roots" maxlength="65536"{% if not coding_local %} readonly{% endif %}>{{ c.get('writable_roots', '') }}</textarea>
       </label>
+      {% if not coding_local %}<p class="hint">Only this machine can change this list.</p>{% endif %}
+      {% if coding_local %}
       {{ browse_button(project_url(project.name, "/browse"), "new-session-writable-roots") }}
       <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if c.get('create_missing_writable_roots') %} checked{% endif %}> Create directories that don't exist</label>
+      {% endif %}
       <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create session</button>
     </form>
   </details>
@@ -77,10 +80,13 @@
                 <p>Role instructions are fixed after the first round.</p>
               {% endif %}
               <label>Additional writable roots
-                <textarea id="session-writable-roots-{{ session.id }}" name="writable_roots" maxlength="65536">{{ e.get('writable_roots', session.writable_roots|join('\n')) }}</textarea>
+                <textarea id="session-writable-roots-{{ session.id }}" name="writable_roots" maxlength="65536"{% if not coding_local %} readonly{% endif %}>{{ e.get('writable_roots', session.writable_roots|join('\n')) }}</textarea>
               </label>
+              {% if not coding_local %}<p class="hint">Only this machine can change this list.</p>{% endif %}
+              {% if coding_local %}
               {{ browse_button(project_url(project.name, "/browse"), "session-writable-roots-" ~ session.id) }}
               <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if (e.get('create_missing_writable_roots') if 'create_missing_writable_roots' in e else session.create_missing_writable_roots) %} checked{% endif %}> Create directories that don't exist</label>
+              {% endif %}
               <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
             </form>
           </details>
