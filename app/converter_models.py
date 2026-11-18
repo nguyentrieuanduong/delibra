@@ -1,35 +1,67 @@
-"""Docling's PDF models, downloaded once into $DELIBRA_HOME/models/docling (design 2026-11-16).
+"""Docling's PDF models in $DELIBRA_HOME/models/docling: download, check, choose, remove.
 
 The converter sandbox has no network, so the models are fetched here, outside it,
-when the user asks, and passed to the worker as Docling's artifacts_path.
+when the user asks (Settings → Converter), and passed to the worker as Docling's
+artifacts_path. Hugging Face work runs in app/converter/hub.py, a separate process
+whose caches stay inside Delibra. A new set is downloaded into a staging folder,
+self-tested through the real sandboxed converter, and only then swapped in, so a
+failed or interrupted update keeps the models that worked (Task 14, 2026-11-19).
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
+import uuid
 
+from app.converter import hub as hub_module
 from app.storage import atomic_write_bytes, utc_now
 
 STATUS_NAME = "docling-status.json"
+CHECK_NAME = "docling-check.json"
+MANIFEST_NAME = "delibra-models.json"
 READY_NAME = ".delibra-ready"
 DOWNLOAD_SECONDS = 30 * 60
-# What the PDF pipeline uses (layout Heron + TableFormer, about 0.67 GB, Task 1).
-# Docling's default set adds code-formula, picture-classifier and RapidOCR models
-# that Delibra never runs: OCR is macOS Vision.
-MODELS = ("layout", "tableformer")
+CHECK_SECONDS = 120
+HUB = Path(hub_module.__file__)
+SELF_TEST_PDF = HUB.with_name("selftest.pdf")
+# The bundled PDF's sentence (layout ran) and a Markdown table row (TableFormer ran).
+SELF_TEST_MARKS = (b"checks that the PDF models load", b"| Alpha")
+# What the PDF pipeline loads, with Docling 2.150.1's default revisions and the
+# folders docling-tools uses (docling/utils/model_downloader.py; a test checks them).
+MODEL_REPOS: tuple[tuple[str, str], ...] = (
+    ("docling-project/docling-layout-heron", "main"),
+    ("docling-project/docling-layout-heron-onnx", "main"),
+    ("docling-project/docling-models", "v2.3.0"),  # TableFormer
+)
+_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+SelfTest = Callable[[Path, Path], Awaitable[str | None]]
 
 
 @dataclass(frozen=True)
 class ModelsState:
-    status: str
+    status: str  # absent | downloading | ready | failed
     error: str | None = None
     size_bytes: int = 0
+    notice: str | None = None  # the last action's failure while older models stay ready
+
+
+@dataclass(frozen=True)
+class InstalledModel:
+    repo_id: str
+    revision: str | None
+    commit: str | None
+    downloaded_at: str | None
+    size_bytes: int
+    default: bool | None
 
 
 def models_dir(home: Path) -> Path:
@@ -46,8 +78,19 @@ def _write_status(home: Path, status: str, error: str | None = None) -> None:
     atomic_write_bytes(_status_path(home), json.dumps(payload).encode("utf-8"))
 
 
+def _read_json(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _size(directory: Path) -> int:
-    return sum(path.stat().st_size for path in directory.rglob("*") if path.is_file() and path.name != READY_NAME)
+    return sum(
+        path.stat().st_size for path in directory.rglob("*")
+        if path.is_file() and path.name != READY_NAME and ".cache" not in path.parts
+    )
 
 
 def ready_models_dir(home: Path) -> Path | None:
@@ -56,63 +99,195 @@ def ready_models_dir(home: Path) -> Path | None:
 
 
 def models_state(home: Path) -> ModelsState:
-    if ready_models_dir(home) is not None:
-        return ModelsState("ready", None, _size(models_dir(home)))
-    try:
-        data = json.loads(_status_path(home).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ModelsState("absent")
-    status = data.get("status") if isinstance(data, dict) else None
-    if status in ("downloading", "failed"):
-        return ModelsState(status, data.get("error"))
+    data = _read_json(_status_path(home)) or {}
+    status = data.get("status")
+    ready = ready_models_dir(home)
+    if status == "downloading":
+        return ModelsState("downloading", None, _size(ready) if ready else 0)
+    if ready is not None:
+        return ModelsState("ready", None, _size(ready), data.get("error") if status == "failed" else None)
+    if status == "failed":
+        return ModelsState("failed", data.get("error"))
     return ModelsState("absent")
 
 
-def mark_interrupted(home: Path) -> None:
-    """Startup: a download that was running when the server stopped did not finish."""
+def installed_models(home: Path) -> list[InstalledModel]:
+    """Each repo of the installed set: from the manifest, else the HF snapshot metadata."""
 
-    if models_state(home).status == "downloading":
+    target = ready_models_dir(home)
+    if target is None:
+        return []
+    manifest = {item.get("repo_id"): item for item in (_read_json(target / MANIFEST_NAME) or {}).get("models", [])
+                if isinstance(item, dict)}
+    rows = []
+    for repo_id, default_revision in MODEL_REPOS:
+        folder = target / repo_id.replace("/", "--")
+        item = manifest.get(repo_id, {})
+        revision = item.get("revision")
+        rows.append(InstalledModel(
+            repo_id=repo_id, revision=revision,
+            commit=item.get("commit") or (hub_module.snapshot_commit(folder) if folder.is_dir() else None),
+            downloaded_at=item.get("downloaded_at"),
+            size_bytes=_size(folder) if folder.is_dir() else 0,
+            default=(revision == default_revision) if revision else None,
+        ))
+    return rows
+
+
+def load_check(home: Path) -> dict | None:
+    return _read_json(home / "models" / CHECK_NAME)
+
+
+def _cleanup_leftovers(home: Path) -> None:
+    """Startup: finish or undo a swap the last stop cut, drop staging and old copies."""
+
+    models = home / "models"
+    if not models.is_dir():
+        return
+    olds = sorted(models.glob("docling.old-*"))
+    if not models_dir(home).exists() and olds:
+        os.replace(olds[-1], models_dir(home))  # stopped between the two renames
+        olds = olds[:-1]
+    for leftover in [*models.glob("docling.staging-*"), *olds, models / "docling.hf-cache"]:
+        shutil.rmtree(leftover, ignore_errors=True)
+
+
+def mark_interrupted(home: Path) -> None:
+    """Startup: an action that was running when the server stopped did not finish."""
+
+    _cleanup_leftovers(home)
+    if (_read_json(_status_path(home)) or {}).get("status") == "downloading":
         _write_status(home, "failed", "interrupted")
 
 
-async def download_models(home: Path, *, tools: Path | None = None) -> None:
-    """Fetch Docling's PDF models into a temporary folder, then move it into place."""
+async def _hub(home: Path, *args: str, hub: Path, python: str, timeout: float) -> dict:
+    """Run hub.py with every Hugging Face cache inside Delibra; its JSON answer."""
 
-    tools = tools or Path(sys.executable).with_name("docling-tools")
+    cache = home / "models" / "docling.hf-cache"
+    env = {**os.environ, "HF_HOME": str(cache), "HF_HUB_CACHE": str(cache / "hub"),
+           "HF_XET_CACHE": str(cache / "xet")}
+    process = await asyncio.create_subprocess_exec(
+        python, "-I", str(hub), *args,
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, env=env,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise RuntimeError(f"Hugging Face did not answer within {timeout / 60:g} minutes") from None
+    except asyncio.CancelledError:  # shutdown: the next start cleans up
+        process.kill()
+        await process.wait()
+        raise
+    finally:
+        shutil.rmtree(cache, ignore_errors=True)
+    try:
+        answer = json.loads(stdout.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        answer = {}
+    if not isinstance(answer, dict) or "error" in answer or process.returncode != 0:
+        error = answer.get("error") if isinstance(answer, dict) else None
+        raise RuntimeError(str(error or f"the model tool exited with {process.returncode}")[:300])
+    return answer
+
+
+async def check_updates(home: Path, *, hub: Path = HUB, python: str = sys.executable) -> None:
+    """List each repo's refs and recent commits; nothing is downloaded or changed."""
+
+    try:
+        found = await _hub(home, "check", *(repo for repo, _rev in MODEL_REPOS),
+                           hub=hub, python=python, timeout=CHECK_SECONDS)
+        record = {"checked_at": utc_now(), "repos": found.get("repos", {})}
+    except (OSError, RuntimeError) as exc:
+        record = {"checked_at": utc_now(), "error": str(exc)}
+    (home / "models").mkdir(mode=0o700, parents=True, exist_ok=True)
+    atomic_write_bytes(home / "models" / CHECK_NAME, json.dumps(record).encode("utf-8"))
+
+
+def resolve_revision(repo_id: str, selected: str, sha: str, check: Mapping | None) -> str:
+    """The revision to download: a typed commit, or a version the last check listed."""
+
+    listing = ((check or {}).get("repos") or {}).get(repo_id) or {}
+    refs = listing.get("refs") or []
+    commits = [item["commit"] for item in listing.get("commits") or []] + [ref["commit"] for ref in refs]
+    sha = sha.strip().lower()
+    if sha:
+        if not _COMMIT.fullmatch(sha):
+            raise ValueError("a commit must be 40 hex characters, or a 7+ character prefix of a listed commit")
+        if len(sha) == 40:
+            return sha
+        matches = {commit for commit in commits if commit.startswith(sha)}
+        if len(matches) != 1:
+            raise ValueError(f"{sha} does not match a listed commit of {repo_id}")
+        return matches.pop()
+    if selected not in {ref["name"] for ref in refs} | set(commits):
+        raise ValueError(f"{selected} is not a listed version of {repo_id}; check for updates first")
+    return selected
+
+
+async def run_self_test(home: Path, staged: Path) -> str | None:
+    """Convert the bundled table PDF with the staged models in the real sandbox."""
+
+    from app.doc_convert import convert_file  # the converter, not needed to show state
+
+    work = home / "models" / f"docling.selftest-{uuid.uuid4().hex}"
+    work.mkdir(mode=0o700, parents=True)
+    try:
+        source = work / "selftest.pdf"
+        shutil.copyfile(SELF_TEST_PDF, source)
+        result = await convert_file(
+            source, display_path="selftest.pdf", source_sha256=sha256(source.read_bytes()).hexdigest(),
+            scratch_root=work / "scratch", models_dir=staged,
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    markdown = result.markdown or b""
+    if result.state != "converted" or result.reason is not None or not all(m in markdown for m in SELF_TEST_MARKS):
+        return f"self-test failed: {result.reason or 'the test PDF did not convert with tables'}"
+    return None
+
+
+async def download_models(
+    home: Path, revisions: Mapping[str, str] | None = None, *, hub: Path = HUB,
+    python: str = sys.executable, self_test: SelfTest = run_self_test,
+) -> None:
+    """Download Docling's default revisions (or the chosen ones), self-test, then swap."""
+
+    pairs = [(repo, (revisions or {}).get(repo, default)) for repo, default in MODEL_REPOS]
     target = models_dir(home)
-    partial = target.with_name("docling.partial")
-    # Hugging Face's cache would otherwise go to ~/.cache; it is dropped afterwards.
-    hf_home = target.with_name("docling.hf-cache")
-    for leftover in (partial, hf_home):
-        shutil.rmtree(leftover, ignore_errors=True)
+    staging = target.with_name(f"docling.staging-{uuid.uuid4().hex}")
     _write_status(home, "downloading")
     try:
-        process = await asyncio.create_subprocess_exec(
-            str(tools), "models", "download", "-o", str(partial), *MODELS,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-            # Every Hugging Face cache variable, so a user's own setting cannot send files elsewhere.
-            env={**os.environ, "HF_HOME": str(hf_home), "HF_HUB_CACHE": str(hf_home / "hub"),
-                 "HF_XET_CACHE": str(hf_home / "xet")},
-        )
-        try:
-            _, stderr = await asyncio.wait_for(process.communicate(), DOWNLOAD_SECONDS)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise RuntimeError("download did not finish within 30 minutes") from None
-        except asyncio.CancelledError:  # shutdown: the next start marks it interrupted
-            process.kill()
-            await process.wait()
-            raise
-        if process.returncode != 0:
-            tail = stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or ["no message"]
-            raise RuntimeError(f"docling-tools exited with {process.returncode}: {tail[0][:200]}")
-        (partial / READY_NAME).write_text(utc_now(), encoding="utf-8")
-        shutil.rmtree(target, ignore_errors=True)
-        os.replace(partial, target)
+        found = await _hub(home, "download", str(staging), *(f"{repo}={rev}" for repo, rev in pairs),
+                           hub=hub, python=python, timeout=DOWNLOAD_SECONDS)
+        commits = {item.get("repo_id"): item.get("commit") for item in found.get("models", [])}
+        now = utc_now()
+        manifest = {"format": "delibra-models/1", "models": [
+            {"repo_id": repo, "revision": rev, "commit": commits.get(repo), "downloaded_at": now,
+             "default": rev == dict(MODEL_REPOS)[repo]}
+            for repo, rev in pairs
+        ]}
+        atomic_write_bytes(staging / MANIFEST_NAME, json.dumps(manifest, indent=1).encode("utf-8"))
+        (staging / READY_NAME).write_text(now, encoding="utf-8")
+        reason = await self_test(home, staging)
+        if reason is not None:
+            raise RuntimeError(reason)
+        old = target.with_name(f"docling.old-{uuid.uuid4().hex}")
+        if target.exists():
+            os.replace(target, old)
+        os.replace(staging, target)
+        shutil.rmtree(old, ignore_errors=True)
         _write_status(home, "ready")
     except (OSError, RuntimeError) as exc:
-        shutil.rmtree(partial, ignore_errors=True)
         _write_status(home, "failed", str(exc))
     finally:
-        shutil.rmtree(hf_home, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def remove_models(home: Path) -> None:
+    """Delete the models; PDFs fall back to pypdf until they are downloaded again."""
+
+    shutil.rmtree(models_dir(home), ignore_errors=True)
+    _status_path(home).unlink(missing_ok=True)
