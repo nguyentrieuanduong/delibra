@@ -22,9 +22,9 @@
           <option value="codex"{% if c_agent == 'codex' %} selected{% endif %}>Codex</option>
         </select>
       </label>
-      <label>Model {% set c_default = agent_defaults()[c_agent] %}<input name="model" maxlength="200" value="{{ c.get('model', c_default.model) }}" placeholder="CLI default"></label>
+      <label>Model {% set c_default = agent_defaults()[c_agent] %}<input name="model" maxlength="200" value="{{ c.get('model', c_default.model) }}" placeholder="CLI default"{% if 'model' in c %} data-edited="true"{% endif %}></label>
       <label>Effort
-        <select name="effort" required data-effort-select>
+        <select name="effort" required data-effort-select{% if 'effort' in c %} data-edited="true"{% endif %}>
           {{ effort_options(effort_levels, c_agent, c.get('effort', c_default.effort)) }}
         </select>
       </label>

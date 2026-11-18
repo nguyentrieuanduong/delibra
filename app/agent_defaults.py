@@ -49,6 +49,15 @@ def normalize_agent_model(model: str) -> str:
     return model
 
 
+def typed_model(typed: str) -> str:
+    """A model as typed in a form: blank is refused, otherwise trimmed and checked;
+    empty means the CLI default. Agent forms and Settings → Agents share this."""
+
+    if typed and not typed.strip():
+        raise ValueError("Model must be empty or a model name, not blank")
+    return normalize_agent_model(typed.strip())
+
+
 def checked_default(agent: str, model: str, effort: str) -> AgentDefault:
     if agent not in EFFORT_LEVELS:
         raise ValueError(f"Unknown agent type {agent}")

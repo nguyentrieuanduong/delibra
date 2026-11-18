@@ -136,7 +136,8 @@ its own page with its own Save button: **Access** (`/settings`, both lists),
 **Presets** (`/settings/presets`, build guidance presets) and **Agents**
 (`/settings/agents`, defaults for new agents below). Access, Presets and
 Agents each write only their own keys of `config.json` and apply the change to
-the next request without a restart.
+the next request without a restart. A list whose environment variable is set is
+shown read-only. Hand edits to `config.json` still need a restart.
 
 **Defaults for new agents.** The **Agents** tab has one row per agent type
 (Claude, Codex): a default model and a default effort from that type's own
@@ -146,10 +147,10 @@ start from the selected type's defaults, and switching the Agent select
 switches model and effort, except a field you already changed in that form.
 An empty model means the CLI's own default model: Delibra then passes no
 `--model` option, and agent cards show "CLI default". A model is empty or one
-token of at most 200 characters with no spaces that does not start with `-`.
-Existing agents and their edit forms are not changed, and the Delibra
-downloads model check keeps its own setting. A list whose environment variable is set is
-shown read-only. Hand edits to `config.json` still need a restart.
+token of at most 200 characters with no spaces that does not start with `-`;
+a blank one (only spaces) is refused. Defaults never change existing agents;
+in an agent's edit form, clearing the model switches that agent to the CLI
+default. The Delibra downloads model check keeps its own setting.
 
 **Global instruction.** The **Instruction** tab holds one instruction text (at most
 64 KB, saved to `$DELIBRA_HOME/instructions.md`) added to the system prompt

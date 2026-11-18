@@ -9,7 +9,7 @@ import os
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.agent_defaults import EFFORT_LEVELS, AgentDefault, read_agent_defaults, save_agent_defaults
+from app.agent_defaults import EFFORT_LEVELS, AgentDefault, read_agent_defaults, save_agent_defaults, typed_model
 from app.coding import (
     SKILLS_MAX_BYTES,
     SKILLS_MAX_FILES,
@@ -444,12 +444,13 @@ async def save_agent_default_settings(request: Request):
     _require_local(request)
     form = await request.form()
     typed = {
-        agent: AgentDefault(str(form.get(f"model_{agent}", "")).strip(), str(form.get(f"effort_{agent}", "")))
+        agent: AgentDefault(str(form.get(f"model_{agent}", "")), str(form.get(f"effort_{agent}", "")))
         for agent in EFFORT_LEVELS
     }
     async with request.app.state.global_settings_lock:
         settings = request.app.state.settings
         try:
+            typed = {agent: AgentDefault(typed_model(item.model), item.effort) for agent, item in typed.items()}
             await asyncio.to_thread(save_agent_defaults, settings.home, typed)
         except (ValueError, StorageError, OSError) as exc:
             return _settings_page(

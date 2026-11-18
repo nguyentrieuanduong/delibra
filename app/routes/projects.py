@@ -12,8 +12,7 @@ import shutil
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from app.agents.claude import ClaudeAdapter
-from app.agents.codex import CodexAdapter
+from app.agent_defaults import EFFORT_LEVELS
 
 from app.coding import (
     CHECK_MODEL_DEFAULT_KEY,
@@ -1066,10 +1065,7 @@ async def render_project_settings(
             "project": project,
             "sessions": sessions,
             "health": request.app.state.health,
-            "effort_levels": {
-                "claude": ClaudeAdapter.EFFORT_LEVELS,
-                "codex": CodexAdapter.EFFORT_LEVELS,
-            },
+            "effort_levels": EFFORT_LEVELS,
             "auto_active": store.active_auto_run_id() is not None,
             "legacy_session_ids": frozenset(migration.legacy_session_ids),
             "migration_issues": migration_issues,

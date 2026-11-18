@@ -1042,3 +1042,31 @@ def test_create_forms_start_from_the_default_of_the_selected_agent_type(tmp_path
         assert 'name="model" maxlength="200" value="opus" placeholder="CLI default"' in form
         assert "required" not in form[form.index('name="model"'):form.index('name="model"') + 120]
         assert 'data-agent-defaults="' in form and "&#34;codex&#34;: {&#34;model&#34;: &#34;&#34;, &#34;effort&#34;: &#34;xhigh&#34;}" in form
+
+
+def test_clearing_the_model_in_the_edit_form_means_the_cli_default(tmp_path) -> None:
+    from app.agents.claude import ClaudeAdapter
+    from app.agents.base import RunContext
+
+    client, project, store = seeded_client(tmp_path)
+    with client:
+        session_id = created_session_id(create_session(client, project.id))
+        edited = client.post(f"/projects/{project.id}/sessions/{session_id}/edit", data={
+            "model": "", "effort": "max", "role_instructions": "Be rigorous.",
+        }, follow_redirects=False)
+    assert edited.status_code == 303
+    config = store.load_session(session_id)
+    assert config.model == ""
+    context = RunContext(user_prompt="Hi", resume_id=None, resume_strategy="native", staged_history=[],
+                         staged_source=None, workspace=tmp_path)
+    assert "--model" not in ClaudeAdapter(executable="claude").build_command(config, context).argv
+
+
+def test_a_refused_create_keeps_the_typed_model_as_the_users_choice(tmp_path) -> None:
+    client, project, _store = seeded_client(tmp_path, local=True)
+    with client:
+        refused = client.post(f"/projects/{project.id}/sessions", data={
+            "name": "Bad", "agent": "claude", "model": "-x", "effort": "high", "return_to": "settings"})
+    form = refused.text[refused.text.index('data-agent-defaults="'):]
+    model_input = form[form.index('name="model"') - 10: form.index('name="model"') + 160]
+    assert 'value="-x"' in model_input and 'data-edited="true"' in model_input

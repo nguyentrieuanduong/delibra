@@ -60,3 +60,26 @@ def test_any_text_is_either_a_safe_model_or_refused() -> None:
         except ValueError:
             continue
         assert model == text and not model.startswith("-") and not any(ch.isspace() or ord(ch) < 32 for ch in model)
+
+
+def test_one_effort_map_serves_every_form() -> None:
+    from app import agent_defaults, views
+    from app.routes import projects, sessions
+
+    assert views.effort_levels() is agent_defaults.EFFORT_LEVELS
+    assert sessions.EFFORT_LEVELS is agent_defaults.EFFORT_LEVELS
+    assert projects.EFFORT_LEVELS is agent_defaults.EFFORT_LEVELS
+
+
+@pytest.mark.parametrize("typed, saved", [("", ""), (" opus ", "opus")])
+def test_typed_models_are_trimmed(typed, saved) -> None:
+    from app.agent_defaults import typed_model
+
+    assert typed_model(typed) == saved
+
+
+def test_a_blank_typed_model_is_refused_everywhere() -> None:
+    from app.agent_defaults import typed_model
+
+    with pytest.raises(ValueError, match="not blank"):
+        typed_model("   ")

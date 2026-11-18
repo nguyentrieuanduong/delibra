@@ -655,3 +655,11 @@ def test_agent_defaults_are_this_machine_only(tmp_path) -> None:
         saved = client.post("/settings/agents", data={"model_claude": "x", "effort_claude": "high",
                                                       "model_codex": "", "effort_codex": "high"})
     assert (page.status_code, saved.status_code) == (403, 403)
+
+
+def test_a_blank_default_model_is_refused_like_an_agents_model(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        refused = client.post("/settings/agents", data={
+            "model_claude": "   ", "effort_claude": "high", "model_codex": "", "effort_codex": "high"})
+    assert refused.status_code == 422 and "not blank" in refused.text
