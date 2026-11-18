@@ -491,3 +491,22 @@ async def test_an_error_reason_names_only_the_exception_type(tmp_path) -> None:
     result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch", worker=worker)
     assert (result.state, result.reason) == ("failed", "converter error: ValueError")
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_worker_keeps_the_venv_it_was_started_with(tmp_path) -> None:
+    # Review round 2, A1: resolving the venv's python symlink drops pyvenv.cfg,
+    # so the worker would lose the venv's site-packages.
+    import sys as _sys
+
+    venv = tmp_path / "venv"
+    subprocess.run([_sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    worker = stub_worker(tmp_path, "import sys\nopen(output, 'w').write('prefix ' + sys.prefix + ' and enough words')\n",
+                         label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker, python=str(venv / "bin" / "python"))
+    assert result.state == "converted", result.reason
+    assert f"prefix {venv.resolve()} ".encode() in result.markdown or f"prefix {venv} ".encode() in result.markdown

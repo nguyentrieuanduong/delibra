@@ -206,9 +206,10 @@ async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str |
                "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "OMP_NUM_THREADS": "4"}
         if run.models_dir is not None:
             env["DELIBRA_DOCLING_MODELS"] = str(run.models_dir)
-        python = str(Path(run.python).resolve())  # the exec rule matches the real file
         params = {
-            "PYTHON": python,
+            # The exec rule matches the real file; the argv keeps the venv's own path,
+            # whose pyvenv.cfg gives the worker the venv's packages (review round 2).
+            "PYTHON": Path(run.python).resolve(),
             "OUT": scratch,
             "SOURCE": staged.resolve(),
             "PRIVATE": run.private_root.resolve(),
@@ -221,7 +222,7 @@ async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str |
         process = await asyncio.create_subprocess_exec(
             run.python, "-I", "-B", "-c", LIMIT_SHIM, str(run.file_limit),
             run.sandbox, *defines, "-p", PROFILE,
-            python, "-I", "-B", str(run.worker), str(staged), str(output), kind,
+            run.python, "-I", "-B", str(run.worker), str(staged), str(output), kind,
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True, env=env,
             # getcwd() needs a readable cwd; the server's own is under the denied home (Task 1).
