@@ -103,6 +103,7 @@ def seeded_client(
     *,
     observations: list[dict] | None = None,
     project_name: str = "Sessions",
+    local: bool = False,
 ):
     settings = Settings(home=tmp_path / "home")
     project_dir = tmp_path / "project"
@@ -118,7 +119,9 @@ def seeded_client(
             else None
         ),
     )
-    return TestClient(app, base_url="http://localhost"), project, ProjectStore(project)
+    # local: a loopback peer, for this-machine-only routes such as project writable roots.
+    peer = {"client": ("127.0.0.1", 5000)} if local else {}
+    return TestClient(app, base_url="http://localhost", **peer), project, ProjectStore(project)
 
 
 def create_session(client: TestClient, project_id: str, **overrides):
@@ -920,7 +923,7 @@ def test_omitted_writable_roots_preserve_and_submitted_blank_clears(
 def test_project_writable_root_revocation_clears_only_changed_native_sessions(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     (store.project_path / "shared").mkdir()
     store.set_writable_roots(["shared"])
     with client:

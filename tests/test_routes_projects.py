@@ -1148,7 +1148,7 @@ def test_project_writable_roots_reject_invalid_candidates_atomically(
         submitted = "\n".join(roots)
     before = store.manifest_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": submitted},
@@ -1192,7 +1192,7 @@ def test_project_writable_root_candidate_hidden_by_agent_ancestor_is_rejected(
     config_path = store.session_dir(config.id) / "config.json"
     config_before = config_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": candidate},
@@ -1232,7 +1232,7 @@ def test_project_writable_roots_union_cap_is_atomic_for_existing_agent(
     config_path = store.session_dir(config.id) / "config.json"
     config_before = config_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": roots[16]},
@@ -1256,7 +1256,7 @@ def test_project_writable_roots_save_during_in_memory_work(
     project = RegistryStore(settings.home).register("Writable", project_path)
     store = ProjectStore(project)
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         manager = getattr(app.state, manager_name)
         monkeypatch.setattr(manager, "has_active_project", lambda _: True)
         response = client.post(
@@ -1296,7 +1296,7 @@ def test_project_writable_roots_update_and_clear_around_stale_agent_addition(
     stale.rmdir()
     route = f"/projects/{quote(project.name, safe='')}/writable-roots"
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         updated = client.post(
             route,
             data={"writable_roots": " valid \n\n"},
@@ -2608,7 +2608,7 @@ def test_project_writable_roots_tick_creates_missing_and_renders_checked(
     store = ProjectStore(project)
     url = f"/projects/{quote(project.name, safe='')}"
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         before = client.get(f"{url}/settings")
         saved = client.post(
             f"{url}/writable-roots",
@@ -2636,7 +2636,7 @@ def test_project_writable_roots_refusal_pops_up_and_keeps_input(
     store = ProjectStore(project)
     before = store.manifest_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": "typed/missing"},
@@ -3238,3 +3238,33 @@ def test_the_coding_tab_orders_its_sections(tmp_path, monkeypatch) -> None:
     mode_form_end = page.index("</form>", positions[0])
     # The environment line sits right under the coding mode form.
     assert page[mode_form_end + len("</form>"):positions[1]].strip().startswith("<p")
+
+
+def test_project_writable_roots_save_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    (project_dir / "out").mkdir()
+    store = ProjectStore(project)
+    before = store.manifest_path.read_bytes()
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        refused = client.post(f"{prefix}/writable-roots", data={"writable_roots": "out"},
+                              follow_redirects=False)
+        lan_page = client.get(f"{prefix}/settings").text
+    assert refused.status_code == 403
+    assert store.manifest_path.read_bytes() == before
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(f"{prefix}/writable-roots", data={"writable_roots": "out"},
+                            follow_redirects=False)
+        local_page = client.get(f"{prefix}/settings").text
+    assert saved.status_code == 303
+    assert store.effective_writable_roots() == ["out"]
+
+    def section(page: str) -> str:
+        return page.split('id="writable-roots-heading"', 1)[1].split("</section>", 1)[0]
+
+    # A LAN viewer sees the list, why it cannot change it, and no live controls.
+    assert "Only this machine can change this list." in section(lan_page)
+    assert 'data-picker-target="project-writable-roots"' not in section(lan_page)
+    assert '<button type="submit" disabled>Save writable roots</button>' in section(lan_page)
+    assert "Only this machine can change this list." not in section(local_page)
+    assert '<button type="submit">Save writable roots</button>' in section(local_page)

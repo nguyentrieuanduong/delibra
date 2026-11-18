@@ -397,6 +397,9 @@ async def save_writable_roots(
     writable_roots: str = Form(""),
     create_missing_writable_roots: bool = Form(False),
 ):
+    # What every agent may write: this machine only, like the other agent-capability
+    # settings (user decision 2026-11-18).
+    require_loopback_client(request)
     project = request_project(request, project_id)
     resolved_project_id = project.id
     try:
