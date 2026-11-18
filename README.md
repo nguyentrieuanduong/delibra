@@ -14,11 +14,29 @@ Requirements:
   verified against 0.144.5 and 0.153.4; newer versions are accepted and
   rate-limit fields are feature-detected at runtime
 
-Create the project environment and install the reproducible lock:
+Create the project environment in `./envs` from the reproducible lock
+(`requirements.lock` holds every pin) with pip, uv or conda:
 
 ```sh
-python3.12 -m venv envs
-envs/bin/pip install -r requirements.lock
+scripts/setup_env.sh --tool pip     # python3.12 -m venv envs && envs/bin/pip install -r requirements.lock
+scripts/setup_env.sh --tool uv      # uv venv envs --python 3.12 && uv pip sync --python envs/bin/python requirements.lock
+scripts/setup_env.sh --tool conda   # conda env create -p envs -f environment.yml (updates it if it exists)
+```
+
+A second argument picks another path (`scripts/setup_env.sh --tool uv /path/to/env`).
+The script stops with a message if the chosen tool is missing.
+
+**OpenMP clash in conda envs.** The document converter uses PyTorch from pip,
+which ships its own OpenMP runtime. If conda installed NumPy into the env (for
+example as a dependency of another conda package) with the OpenMP build of
+OpenBLAS, a second runtime is loaded and every Docling conversion aborts with
+`OMP: Error #15: Initializing libomp.dylib, but found libomp.dylib already
+initialized` (the converter reports `converter exited with -6`). Fix an
+existing env by switching OpenBLAS to its pthreads build, which changes only
+that one package:
+
+```sh
+conda install -p envs "libopenblas=*=*pthreads*"
 ```
 
 Confirm both providers are available:
@@ -1151,8 +1169,8 @@ Delibra converts documents to Markdown itself, so agents without a shell
   with OCR, 3 GB peak). Office files 2–3 s.
 - **Environment note.** PyTorch ships its own OpenMP runtime. An env whose
   NumPy comes from conda with OpenBLAS's OpenMP build loads a second one and
-  the worker aborts (`OMP: Error #15`); the pip-installed setup above does
-  not.
+  the worker aborts (`OMP: Error #15`); see the install section for the
+  one-package fix.
 
 ## Isolation and security boundary
 
