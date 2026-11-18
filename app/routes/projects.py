@@ -31,7 +31,7 @@ from app.coding import (
     preset_guidance_lists,
     private_resolution_warnings,
 )
-from app.converter_models import download_models, models_state
+from app.converter_models import download_models, models_state, ready_models_dir
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
@@ -705,15 +705,22 @@ async def save_download_settings(
 
 
 @router.post("/projects/{project_id}/converter-models")
-async def download_converter_models(request: Request, project_id: str):
+async def download_converter_models(request: Request, project_id: str, force: str = Form("")):
     """Fetch Docling's PDF models once (about 0.7 GB) over this machine's network."""
 
     require_loopback_client(request)
     project = request_project(request, project_id)
+    home = request.app.state.settings.home
+    if ready_models_dir(home) is not None and force != "true":
+        return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)
+    if request.app.state.download_manager.converting():
+        # Replacing the models under a running Docling step would break it (review round 1).
+        return await render_refusal(request, project, "general", ConflictError(
+            "a conversion is running; download the models when it has finished"))
     task = request.app.state.converter_models_task
     if task is None or task.done():
         request.app.state.converter_models_task = asyncio.create_task(
-            download_models(request.app.state.settings.home), name="delibra-converter-models"
+            download_models(home), name="delibra-converter-models"
         )
     return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)
 

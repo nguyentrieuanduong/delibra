@@ -113,6 +113,18 @@ class ConversionStore:
                 return records[index]
         raise StorageError(f"Unknown conversion {cid}")
 
+    def recover(self) -> int:
+        """Startup: a conversion that was running when the server stopped did not finish."""
+
+        next_id, records = self._load()
+        stopped = [i for i, r in enumerate(records) if r.state == "converting"]
+        for index in stopped:
+            records[index] = replace(records[index], state="failed", reason="interrupted by restart",
+                                     updated_at=utc_now())
+        if stopped:
+            self._save(next_id, records)
+        return len(stopped)
+
     def latest_converted(self, path: str, source_sha256: str) -> ConversionRecord | None:
         for record in reversed(self.load()):
             if record.path == path and record.state == "converted" and record.source_sha256 == source_sha256:

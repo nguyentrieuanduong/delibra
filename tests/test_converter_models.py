@@ -86,3 +86,14 @@ async def test_a_cancelled_download_stops_the_tool(tmp_path) -> None:
         await task
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid_file.read_text()), 0)
+
+
+@pytest.mark.asyncio
+async def test_no_hugging_face_cache_lands_outside_delibra(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "users-cache"))
+    monkeypatch.setenv("HF_XET_CACHE", str(tmp_path / "users-xet"))
+    home = tmp_path / "home"
+    tools = fake_tools(tmp_path, 'mkdir -p "$4" && printf "%s|%s" "$HF_HUB_CACHE" "$HF_XET_CACHE" > "$4/env.txt"\n')
+    await download_models(home, tools=tools)
+    for value in (models_dir(home) / "env.txt").read_text().split("|"):
+        assert Path(value).is_relative_to(home / "models")

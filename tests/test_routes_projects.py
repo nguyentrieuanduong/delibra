@@ -3533,3 +3533,28 @@ def test_the_converter_models_download_starts_from_this_machine_only(tmp_path, m
     assert (started.status_code, started.headers["location"]) == (303, f"{prefix}/settings")
     assert homes == [app.state.settings.home]
     assert refused.status_code == 403
+
+
+def test_the_models_download_is_not_restarted_needlessly(tmp_path, monkeypatch) -> None:
+    import asyncio
+    from app.converter_models import READY_NAME, models_dir
+
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    started = []
+
+    async def fake_download(home):
+        started.append(home)
+
+    monkeypatch.setattr("app.routes.projects.download_models", fake_download)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        target = models_dir(app.state.settings.home)
+        target.mkdir(parents=True)
+        (target / READY_NAME).write_text("x")
+        ready = client.post(f"{prefix}/converter-models", follow_redirects=False)
+        target.joinpath(READY_NAME).unlink()
+        app.state.download_manager._convert_slot = asyncio.Semaphore(0)  # a conversion holds the slot
+        busy = client.post(f"{prefix}/converter-models", follow_redirects=False)
+    assert (ready.status_code, ready.headers["location"]) == (303, f"{prefix}/settings")
+    assert busy.status_code == 409
+    assert "Nothing was saved: A conversion is running" in busy.text
+    assert started == []

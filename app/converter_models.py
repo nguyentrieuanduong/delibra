@@ -90,7 +90,9 @@ async def download_models(home: Path, *, tools: Path | None = None) -> None:
         process = await asyncio.create_subprocess_exec(
             str(tools), "models", "download", "-o", str(partial), *MODELS,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "HF_HOME": str(hf_home)},
+            # Every Hugging Face cache variable, so a user's own setting cannot send files elsewhere.
+            env={**os.environ, "HF_HOME": str(hf_home), "HF_HUB_CACHE": str(hf_home / "hub"),
+                 "HF_XET_CACHE": str(hf_home / "xet")},
         )
         try:
             _, stderr = await asyncio.wait_for(process.communicate(), DOWNLOAD_SECONDS)

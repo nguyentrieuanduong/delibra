@@ -498,3 +498,59 @@ async def test_a_late_conversion_does_not_overwrite_the_next_turns_status(tmp_pa
     assert any('"id": "C2", "request": "c1.json"' in line and '"refused"' in line for line in lines)
     assert any('"id": "C1"' in line and '"request"' not in line and '"converted"' in line for line in lines)
     manager.end_turn(second)
+
+
+@pytest.mark.asyncio
+async def test_only_one_conversion_runs_at_a_time(tmp_path) -> None:
+    active, peak = 0, 0
+
+    async def counting(staged, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return ConvertResult("converted", None, b"# md\n", "pdf")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("a", "b", "c"):
+        (project / f"{name}.pdf").write_bytes(b"%PDF-1.7 " + name.encode())
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=counting)
+    turn = chat_turn(tmp_path, session="f" * 32, round_n=1, convert=True)
+    turn.policy = DownloadPolicy(enabled=True, folder="raw", approval="automatic", convert=True)
+    manager.begin_turn(turn)
+    write_request(turn.spool, "d1.json", "https://a.example/paper.pdf")
+    for name in ("a", "b", "c"):
+        (turn.convert_spool / f"{name}.json").write_text(json.dumps({"path": f"{name}.pdf"}))
+    manager.harvest(turn, final=True)
+    await manager.idle()
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_a_harvest_after_shutdown_records_but_starts_nothing(tmp_path) -> None:
+    from app.convert_store import ConversionStore
+
+    async def never(*args, **kwargs):
+        raise AssertionError("no conversion may start after shutdown")
+
+    (tmp_path / "project").mkdir()
+    (tmp_path / "project" / "a.pdf").write_bytes(b"%PDF-1.7")
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=never)
+    turn = chat_turn(tmp_path, session="9" * 32, round_n=1, convert=True)
+    turn.policy = DownloadPolicy(enabled=True, folder="raw", approval="automatic", convert=True)
+    manager.begin_turn(turn)
+    await manager.stop_watch(turn)
+    await manager.shutdown()
+    write_request(turn.spool, "d1.json", "https://a.example/paper.pdf")
+    (turn.convert_spool / "c1.json").write_text('{"path": "a.pdf"}')
+
+    manager.harvest(turn, final=True)  # a chat reply finalised after the server's last shutdown step
+
+    assert manager._tasks == set()
+    manager.recover(turn.store_root)
+    assert DownloadStore(turn.store_root).get("D1").state == "failed"
+    assert [r.state for r in ConversionStore(turn.store_root).load()] == ["failed"]
