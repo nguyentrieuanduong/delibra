@@ -641,7 +641,15 @@ def test_a_manifest_without_downloads_loads_defaults() -> None:
     assert policy.downloads.folder == "docs/source/raw"
     assert policy.downloads.approval == "manual"
     assert policy.downloads.model_check is False
+    assert policy.downloads.check_model == "haiku"
     assert "downloads" in policy.to_dict()
+
+
+def test_a_saved_check_model_is_kept_over_the_default() -> None:
+    policy = CodingPolicy.from_manifest(
+        {"coding": {"enabled": True, "downloads": {"check_model": "sonnet"}}}
+    )
+    assert policy.downloads.check_model == "sonnet"
 
 
 def test_downloads_round_trip() -> None:

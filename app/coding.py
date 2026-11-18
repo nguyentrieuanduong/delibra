@@ -695,7 +695,7 @@ class DownloadPolicy:
     approval: str = "manual"
     model_check: bool = False
     check_provider: str = "claude"
-    check_model: str = "sonnet"
+    check_model: str = "haiku"
 
     @classmethod
     def from_dict(cls, data: object) -> "DownloadPolicy":

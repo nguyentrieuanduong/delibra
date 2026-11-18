@@ -980,7 +980,7 @@ outside the sandbox into the project. The sandbox network stays closed.
 | Approval | Manual / Automatic after checks | Manual |
 | Model check | on / off | off |
 | Model check provider | Claude / Codex | Claude |
-| Model check model | 1–200 characters, no spaces, not starting with `-` | `sonnet` |
+| Model check model | 1–200 characters, no spaces, not starting with `-` | `haiku` |
 
 - **Agent protocol.** Each build turn gets `downloads/requests/` in its
   temp dir; the agent writes one new JSON file per request,

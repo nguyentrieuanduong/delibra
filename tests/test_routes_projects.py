@@ -2700,7 +2700,7 @@ def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) 
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get(f"{prefix}/settings/coding").text
     assert 'name="downloads_folder" value="docs/source/raw"' in page
-    assert 'name="downloads_check_model" value="sonnet"' in page
+    assert 'name="downloads_check_model" value="haiku"' in page
 
 
 SETTINGS_TABS = {
