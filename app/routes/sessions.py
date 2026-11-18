@@ -17,7 +17,6 @@ from app.routes.chat import sidebar_response
 from app.routes.projects import _writable_roots_field, render_refusal, settings_tab_url
 from app.security import (
     is_loopback_client,
-    require_loopback_client,
     validate_agent_name,
     validate_field,
 )
@@ -81,6 +80,10 @@ def _validated_configuration(
 AGENT_ROOTS_HERE = "Only this machine can change an agent's writable roots"
 
 
+def _refuse_agent_roots() -> None:
+    raise HTTPException(status_code=403, detail=AGENT_ROOTS_HERE)
+
+
 def _roots_differ(sent: str, saved: list[str]) -> bool:
     """Whether a submitted roots box changes the saved list (an invalid one does)."""
 
@@ -111,7 +114,7 @@ async def _on_agents_tab(
         return await action
     except (HTTPException, StorageError) as exc:
         shown = (
-            exc.status_code in (409, 422)
+            exc.status_code in (403, 409, 422)
             if isinstance(exc, HTTPException)
             else not isinstance(exc, NotFoundError)
         )
@@ -136,8 +139,6 @@ async def create_session(
     # Only "settings" changes the redirect (to the Agents tab); anything else is ignored.
     return_to: str = Form(""),
 ):
-    if writable_roots.strip() or create_missing_writable_roots:
-        require_loopback_client(request, AGENT_ROOTS_HERE)
     typed = {
         "form": "create", "name": name, "agent": agent, "model": model, "effort": effort,
         "role_instructions": role_instructions, "writable_roots": writable_roots,
@@ -161,6 +162,8 @@ async def _create_session(
     create_missing_writable_roots: bool,
     return_to: str,
 ):
+    if (writable_roots.strip() or create_missing_writable_roots) and not is_loopback_client(request):
+        _refuse_agent_roots()
     name = validate_agent_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
         agent, model, effort, role_instructions
@@ -291,7 +294,7 @@ async def _edit_session(
             create_missing_writable_roots or writable_roots is not None
         ):
             if create_missing_writable_roots or _roots_differ(writable_roots, config.writable_roots):
-                require_loopback_client(request, AGENT_ROOTS_HERE)
+                _refuse_agent_roots()
             # The same roots from a network form (it has no tick): leave the roots
             # and their create-missing tick as they are.
             writable_roots = None

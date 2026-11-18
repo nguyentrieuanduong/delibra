@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from app.agents.base import AgentEvent, Command, RunContext
 from app.auto import AutoManager
 from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
+from app.security import CODING_ONLY_HERE
 from app.models import AutoBuildDocker, AutoBuildGit, AutoHandover
 from app.config import Settings
 from app.main import create_app
@@ -2179,6 +2180,7 @@ def test_build_start_is_loopback_only(tmp_path: Path, monkeypatch) -> None:
     with TestClient(app, base_url="http://localhost", client=LAN) as lan:
         refused = lan.post(f"/projects/{project.id}/auto-runs", data=build_form(ids))
         assert refused.status_code == 403
+        assert refused.json()["detail"] == CODING_ONLY_HERE
         assert store.list_auto_runs() == []
         discussion = lan.post(f"/projects/{project.id}/auto-runs", data=build_form(ids, kind="discussion"))
         assert discussion.status_code == 202
@@ -2207,6 +2209,7 @@ def test_build_resume_is_loopback_only(tmp_path: Path, monkeypatch) -> None:
 
     assert record.status == "limit_reached"
     assert resumed.status_code == 403
+    assert resumed.json()["detail"] == CODING_ONLY_HERE
 
 
 def test_build_choice_only_for_a_local_client_with_a_ready_project(tmp_path: Path, monkeypatch) -> None:

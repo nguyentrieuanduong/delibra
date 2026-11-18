@@ -23,6 +23,7 @@ from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
 from app.notes import NoteStore
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
+from app.security import CODING_ONLY_HERE
 from app.questions import ProposedQuestion, QuestionStore
 from app.storage import (
     ConflictError,
@@ -1401,6 +1402,7 @@ def test_lan_client_cannot_change_coding(tmp_path, monkeypatch) -> None:
         page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 403
+    assert saved.json()["detail"] == CODING_ONLY_HERE
     assert retry.status_code == 403
     assert ProjectStore(project).coding_policy().enabled is False
     assert "Only this machine can change coding settings" in page.text
@@ -3380,3 +3382,37 @@ def test_network_viewers_see_agent_roots_read_only(tmp_path) -> None:
         assert page.count('name="create_missing_writable_roots"') == 2
         assert all("readonly" not in tag for tag in re.findall(r'<textarea[^>]*name="writable_roots"[^>]*>', page))
     assert 'data-picker-target="new-session-writable-roots"' in local_pages[0]
+
+
+def test_a_lan_agents_tab_roots_refusal_pops_up_and_keeps_the_input(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data={
+            "name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high", "writable_roots": "src",
+        }, follow_redirects=False)
+    alpha = store.list_sessions()[0].id
+    before = store.load_session(alpha)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        # A stale tab still shows "out" after the roots changed here to "src".
+        stale_edit = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "typed-model", "writable_roots": "out", "return_to": "settings"},
+        )
+        create = client.post(f"{prefix}/sessions", data={
+            "name": "Beta", "agent": "claude", "model": "sonnet", "effort": "high",
+            "writable_roots": "out", "return_to": "settings",
+        })
+        chat_page = client.post(
+            f"{prefix}/sessions/{alpha}/edit", data={"model": "x", "writable_roots": "out"}
+        )
+
+    for response in (stale_edit, create):
+        assert response.status_code == 403
+        assert "<div hidden data-page-alert>Nothing was saved: Only this machine can change an agent&#39;s writable roots</div>" in response.text
+        assert 'aria-current="page">Agents</a>' in response.text
+    assert 'value="typed-model"' in stale_edit.text
+    assert 'value="Beta"' in create.text
+    assert chat_page.status_code == 403
+    assert chat_page.json()["detail"] == "Only this machine can change an agent's writable roots"
+    assert store.load_session(alpha) == before
+    assert [s.name for s in store.list_sessions()] == ["Alpha"]

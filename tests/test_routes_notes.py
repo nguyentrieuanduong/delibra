@@ -8,6 +8,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import SessionConfig
 from app.notes import NoteStore
+from app.security import CODING_ONLY_HERE
 from app.storage import ProjectStore, RegistryStore
 from app.views import auto_notes_context, chat_notes_context
 from tests.test_auto import seed_durable_auto
@@ -259,6 +260,7 @@ def test_only_this_machine_may_steer_a_build_run_with_a_note(tmp_path: Path) -> 
         accepted = local.post(f"{base(project)}/auto-notes", data={"text": "Run this"})
 
     assert refused.status_code == 403
+    assert refused.json()["detail"] == CODING_ONLY_HERE
     assert accepted.status_code == 200
     assert [note.text for note in NoteStore(store.root).load().notes] == ["Run this"]
 
@@ -511,6 +513,7 @@ def test_only_this_machine_may_edit_a_build_run_note(tmp_path: Path) -> None:
         accepted = local.post(f"{base(project)}/auto-notes/N1/edit", data={"text": "Run lint"})
 
     assert refused.status_code == 403
+    assert refused.json()["detail"] == CODING_ONLY_HERE
     assert accepted.status_code == 200
     assert NoteStore(store.root).load().find("N1").text == "Run lint"
 

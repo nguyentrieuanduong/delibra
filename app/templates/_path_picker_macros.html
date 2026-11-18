@@ -1,3 +1,17 @@
 {% macro browse_button(url, target, files_list="", label="Browse…", list_name="") -%}
 <button type="button" class="path-picker-open" data-path-picker-open data-picker-url="{{ url }}" data-picker-target="{{ target }}"{% if files_list %} data-picker-files-list="{{ files_list }}"{% endif %}{% if list_name %} data-picker-list="{{ list_name }}"{% endif %} aria-controls="path-picker">{{ label }}</button>
 {%- endmacro %}
+
+{# A writable-roots list: changed from this machine only (2026-11-18). Elsewhere the
+   box is read-only with a hint, and neither Browse nor the create-missing tick shows. #}
+{% macro writable_roots_field(label, value, local, create_missing, field_id="", browse_url="") -%}
+<label>{{ label }}
+  <textarea{% if field_id %} id="{{ field_id }}"{% endif %} name="writable_roots" maxlength="65536"{% if not local %} readonly{% endif %}>{{ value }}</textarea>
+</label>
+{% if local %}
+  {% if browse_url %}{{ browse_button(browse_url, field_id) }}{% endif %}
+  <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if create_missing %} checked{% endif %}> Create directories that don't exist</label>
+{% else %}
+  <p class="hint">Only this machine can change this list.</p>
+{% endif %}
+{%- endmacro %}

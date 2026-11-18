@@ -189,7 +189,7 @@ def test_the_loopback_gate_names_the_setting_it_refuses() -> None:
     import pytest
     from fastapi import HTTPException
 
-    from app.security import require_loopback_client
+    from app.security import CODING_ONLY_HERE, require_loopback_client
 
     class Peer:
         scope = {"client": ("192.168.1.20", 5000)}
@@ -197,6 +197,6 @@ def test_the_loopback_gate_names_the_setting_it_refuses() -> None:
     with pytest.raises(HTTPException) as default:
         require_loopback_client(Peer())
     with pytest.raises(HTTPException) as named:
-        require_loopback_client(Peer(), reason="Only this machine may enable coding or start build runs")
+        require_loopback_client(Peer(), reason=CODING_ONLY_HERE)
     assert (default.value.status_code, default.value.detail) == (403, "Only this machine can change this setting")
-    assert named.value.detail == "Only this machine may enable coding or start build runs"
+    assert named.value.detail == CODING_ONLY_HERE

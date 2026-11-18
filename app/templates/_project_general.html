@@ -1,4 +1,4 @@
-{% from "_path_picker_macros.html" import browse_button %}
+{% from "_path_picker_macros.html" import browse_button, writable_roots_field %}
 {% from "_form_macros.html" import takes_effect %}
 <section aria-labelledby="turn-timeout-heading">
   <h2 id="turn-timeout-heading">Default message turn time limit</h2>
@@ -32,14 +32,10 @@
 <section aria-labelledby="writable-roots-heading">
   <h2 id="writable-roots-heading">Writable project directories</h2>
   {{ takes_effect("next_turn") }}
-  {% if not coding_local %}<p class="hint">Only this machine can change this list.</p>{% endif %}
   <p>One project-relative directory per line. These defaults apply to every agent.</p>
   <form method="post" action="{{ project_url(project.name, '/writable-roots') }}">
-    <label>Project writable roots
-      <textarea id="project-writable-roots" name="writable_roots" maxlength="65536">{{ writable_roots_text }}</textarea>
-    </label>
-    {% if coding_local %}{{ browse_button(project_url(project.name, "/browse"), "project-writable-roots") }}{% endif %}
-    <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if create_missing_writable_roots %} checked{% endif %}> Create directories that don't exist</label>
+    {{ writable_roots_field("Project writable roots", writable_roots_text, coding_local, create_missing_writable_roots,
+                            "project-writable-roots", project_url(project.name, "/browse")) }}
     <button type="submit"{% if not coding_local %} disabled{% endif %}>Save writable roots</button>
   </form>
 </section>
