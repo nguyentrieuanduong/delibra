@@ -510,3 +510,92 @@ async def test_the_worker_keeps_the_venv_it_was_started_with(tmp_path) -> None:
                                 scratch_root=tmp_path / "scratch", worker=worker, python=str(venv / "bin" / "python"))
     assert result.state == "converted", result.reason
     assert f"prefix {venv.resolve()} ".encode() in result.markdown or f"prefix {venv} ".encode() in result.markdown
+
+
+# Review round 2, part B: concrete denies.
+@MAC
+@pytest.mark.asyncio
+async def test_the_worker_cannot_fork(tmp_path) -> None:
+    worker = _probe(tmp_path, "fork", "import os\npid = os.fork()\nif pid == 0:\n    os._exit(0)\nos.waitpid(pid, 0)\nreturn 'FORKED'")
+    assert b"FORKED" not in await _run_probe(tmp_path, worker)
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_worker_reads_only_allowed_places(tmp_path) -> None:
+    import uuid
+
+    outside_home = Path("/private/tmp") / f"delibra-sandbox-probe-{uuid.uuid4().hex}.txt"
+    unlisted = tmp_path / "unlisted" / "probe.txt"
+    unlisted.parent.mkdir()
+    for path in (outside_home, unlisted):
+        path.write_text("READ-PROBE-CONTENT")
+    try:
+        results = {}
+        for name, target in (("tmp", outside_home), ("unlisted", unlisted)):
+            worker = _probe(tmp_path, f"read-{name}", f"return open({str(target)!r}).read()")
+            results[name] = await _run_probe(tmp_path, worker)
+    finally:
+        outside_home.unlink()
+    for name, markdown in results.items():
+        assert b"READ-PROBE-CONTENT" not in markdown, name
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_worker_cannot_open_a_terminal(tmp_path) -> None:
+    if not Path("/dev/ttys000").exists():
+        pytest.skip("no /dev/ttys000")
+    worker = _probe(tmp_path, "tty", "import os\nos.close(os.open('/dev/ttys000', os.O_RDONLY | os.O_NONBLOCK))\nreturn 'OPENED'")
+    assert b"OPENED" not in await _run_probe(tmp_path, worker)
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_worker_cannot_write_user_preferences(tmp_path) -> None:
+    needs("CoreFoundation")
+    domain = "delibra.sandbox-probe"
+    plist = Path.home() / "Library" / "Preferences" / f"{domain}.plist"
+    worker = _probe(tmp_path, "prefs", (
+        "from CoreFoundation import CFPreferencesAppSynchronize, CFPreferencesSetAppValue\n"
+        f"CFPreferencesSetAppValue('probe', 'written', {domain!r})\n"
+        f"return 'synced ' + str(CFPreferencesAppSynchronize({domain!r}))"
+    ))
+    try:
+        await _run_probe(tmp_path, worker)
+        written = subprocess.run(["/usr/bin/defaults", "read", domain, "probe"], capture_output=True, text=True)
+        assert written.returncode != 0, "the sandboxed worker wrote a user preference"
+    finally:
+        subprocess.run(["/usr/bin/defaults", "delete", domain], capture_output=True)
+        plist.unlink(missing_ok=True)  # only this exact probe domain
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_a_hard_link_cannot_bring_a_private_file_into_scratch(tmp_path) -> None:
+    secret = tmp_path / "private.txt"
+    secret.write_text("LINKED-SECRET " * 5)
+    worker = _probe(tmp_path, "link", (
+        "import os, pathlib\nx = pathlib.Path(output).with_name('x')\n"
+        f"os.link({str(secret)!r}, x)\nreturn x.read_text()"
+    ))
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker, private_root=tmp_path / "elsewhere")
+    assert b"LINKED-SECRET" not in (result.markdown or b"")
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_a_worker_that_swaps_its_scratch_for_a_symlink_gets_a_clear_reason(tmp_path) -> None:
+    worker = stub_worker(tmp_path, (
+        "import os, pathlib, shutil\nscratch = pathlib.Path(output).parent\n"
+        "shutil.rmtree(scratch)\nos.symlink('/usr', scratch)\n"
+    ), label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker)
+    assert (result.state, result.reason) == ("failed", "converter output is not a regular file")
+    assert list((tmp_path / "scratch").iterdir()) == []

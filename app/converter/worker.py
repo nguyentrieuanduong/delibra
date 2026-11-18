@@ -14,12 +14,10 @@ from io import BytesIO
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
-TEXTUTIL = "/usr/bin/textutil"
 OUTPUT_MAX_BYTES = 20 * 1024**2  # same as app.doc_convert; the parent marks the cut
-KINDS = frozenset({"identify", "pdf", "docx", "xlsx", "pptx", "doc", "xls", "pdf-text"})
+KINDS = frozenset({"identify", "pdf", "docx", "xlsx", "pptx", "xls", "pdf-text"})  # .doc: textutil step first
 
 
 def identify(source: Path) -> str:
@@ -100,16 +98,6 @@ def convert(source: Path, kind: str, work: Path) -> str:
         return pdf_text(source)
     if kind == "xls":
         return xls_markdown(source)
-    if kind == "doc":
-        docx = work / "document.docx"
-        # -stdout: textutil's own save goes through a temporary folder outside the
-        # scratch directory, which the sandbox denies (Task 1).
-        with docx.open("wb") as target:
-            subprocess.run(
-                [TEXTUTIL, "-convert", "docx", "-stdout", str(source)],
-                stdout=target, stderr=subprocess.DEVNULL, check=True, timeout=60,
-            )
-        return docling_markdown(docx, "docx")
     return docling_markdown(source, kind)
 
 

@@ -51,23 +51,37 @@ OFFICE_SECONDS = 300
 IDENTIFY_SECONDS = 60
 FALLBACK_SECONDS = 300
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+TEXTUTIL = "/usr/bin/textutil"
+# What every real conversion needs to read besides its own paths (review round 2).
+SYSTEM_READ_PATHS = ("/System", "/usr", "/Library/Frameworks", "/private/var/db/dyld",
+                     "/System/Volumes/Preboot/Cryptexes",
+                     "/private/etc")  # Python's mimetypes reads /etc/apache2/mime.types
+SYSTEM_READ_FILES = ("/", "/dev/null", "/dev/urandom", "/dev/random")  # "/": the root listing (dyld)
 # Reads of file contents under PRIVATE (the user's home) are denied except the
 # scratch dir, the staged source, the Python install, the worker and the models.
 # Metadata reads stay allowed: Python stats its own path's parents at startup.
 PROFILE = (
     "(version 1)(allow default)(deny network*)"
     '(deny file-write*)(allow file-write* (subpath (param "OUT")) (literal "/dev/null"))'
+    # Reads of file contents are denied by default (review round 2): only the system,
+    # the Python install, the worker, the models, the staged source and scratch. The
+    # home deny stays as a second fence for whatever the system list might cover.
+    "(deny file-read-data)"
+    "(allow file-read-data" + "".join(f' (subpath "{path}")' for path in SYSTEM_READ_PATHS)
+    + "".join(f' (literal "{path}")' for path in SYSTEM_READ_FILES) + ")"
     '(deny file-read-data (subpath (param "PRIVATE")))'
     '(allow file-read-data (subpath (param "OUT")) (literal (param "SOURCE"))'
     ' (subpath (param "PREFIX")) (subpath (param "BASE_PREFIX"))'
     ' (subpath (param "WORKER_DIR")) (subpath (param "MODELS")))'
-    # Review round 1: a probe .app opened from scratch ran outside the sandbox, and
-    # the worker could read the pasteboard and other processes' environments. Only
-    # the worker's own interpreter and textutil may start; no apps, Apple events,
-    # pasteboard, or signals/inspection of other processes.
-    '(deny process-exec*)(allow process-exec* (literal (param "PYTHON")) (literal "/usr/bin/textutil"))'
+    # Review rounds 1-2: one program per step (the worker's Python, or textutil in its
+    # own step), no fork, no apps, Apple events, pasteboard, preferences, launchd
+    # jobs, mounts, or signals/inspection of other processes.
+    '(deny process-exec*)(allow process-exec* (literal (param "EXEC")))'
+    "(deny process-fork)"
     "(deny lsopen)(deny appleevent-send)"
     "(deny process-info* (target others))(deny signal (target others))"
+    "(deny user-preference-write)(deny job-creation)(deny file-mount)"
+    "(deny mach-register)(deny distributed-notification-post)"
     # Only Apple's own services (Vision/CoreML/Metal need some; without the sandbox log
     # the exact set could not be pinned down), and never the pasteboard.
     '(deny mach-lookup)(allow mach-lookup (global-name-prefix "com.apple."))'
@@ -160,6 +174,8 @@ def _mib(size: int) -> str:
 
 
 def _tree_size(root: Path) -> int:
+    if root.is_symlink():  # never walk where a swapped scratch link points
+        return 0
     total = 0
     for current, _directories, names in os.walk(root, followlinks=False):
         for name in names:
@@ -195,39 +211,59 @@ async def _watch(process: asyncio.subprocess.Process, scratch: Path, run: _Run, 
             return f"scratch use over {_mib(run.scratch_limit)}"
 
 
-async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str | None, str | None]:
-    """Run one worker step; returns (text, None) or (None, reason)."""
+def _command(run: _Run, staged: Path, output: Path, kind: str) -> tuple[Path, list[str]]:
+    """(the one program this step may start, its argv). textutil runs as its own step,
+    so a worker step never needs to start anything (review round 2)."""
+
+    if kind == "textutil":
+        return Path(TEXTUTIL), [TEXTUTIL, "-convert", "docx", "-stdout", str(staged)]
+    # The exec rule matches the real file; the argv keeps the venv's own path, whose
+    # pyvenv.cfg gives the worker the venv's packages (review round 2).
+    return Path(run.python).resolve(), [run.python, "-I", "-B", str(run.worker), str(staged), str(output), kind]
+
+
+async def _step_bytes(
+    run: _Run, staged: Path, kind: str, limit: float, max_bytes: int
+) -> tuple[bytes | None, str | None]:
+    """Run one sandboxed step; returns (at most max_bytes of its output, None) or (None, reason)."""
 
     run.scratch_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="convert-", dir=run.scratch_root)).resolve()
+    stdout: int | None = None
     try:
         output = scratch / "out.md"
         env = {"PATH": "/usr/bin:/bin", "HOME": str(scratch), "TMPDIR": str(scratch),
                "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "OMP_NUM_THREADS": "4"}
         if run.models_dir is not None:
             env["DELIBRA_DOCLING_MODELS"] = str(run.models_dir)
+        program, argv = _command(run, staged, output, kind)
+        interpreter = Path(run.python).absolute()
         params = {
-            # The exec rule matches the real file; the argv keeps the venv's own path,
-            # whose pyvenv.cfg gives the worker the venv's packages (review round 2).
-            "PYTHON": Path(run.python).resolve(),
+            "EXEC": program,
             "OUT": scratch,
             "SOURCE": staged.resolve(),
             "PRIVATE": run.private_root.resolve(),
-            "PREFIX": Path(sys.prefix).resolve(),
-            "BASE_PREFIX": Path(sys.base_prefix).resolve(),
+            # The interpreter's own install: its venv (if any) and the Python it is based on.
+            "PREFIX": interpreter.parent.parent.resolve(),
+            "BASE_PREFIX": interpreter.resolve().parent.parent,
             "WORKER_DIR": run.worker.parent.resolve(),
             "MODELS": (run.models_dir or scratch).resolve(),
         }
         defines = [arg for name, value in params.items() for arg in ("-D", f"{name}={value}")]
+        if kind == "textutil":  # textutil writes the .docx to stdout: its own save is denied (Task 1)
+            stdout = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         process = await asyncio.create_subprocess_exec(
             run.python, "-I", "-B", "-c", LIMIT_SHIM, str(run.file_limit),
-            run.sandbox, *defines, "-p", PROFILE,
-            run.python, "-I", "-B", str(run.worker), str(staged), str(output), kind,
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            run.sandbox, *defines, "-p", PROFILE, *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=stdout if stdout is not None else asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True, env=env,
             # getcwd() needs a readable cwd; the server's own is under the denied home (Task 1).
             cwd=scratch,
         )
+        if stdout is not None:
+            os.close(stdout)
+            stdout = None
         try:
             failure = await _watch(process, scratch, run, limit)
         finally:
@@ -243,15 +279,47 @@ async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str |
                 return None, (
                     _error_reason(error) if error is not None else f"converter exited with {process.returncode}"
                 )
-            body = _read_scratch_file(scratch, output.name, OUTPUT_MAX_BYTES + 1)
+            body = _read_scratch_file(scratch, output.name, max_bytes)
         except _NotRegularFile:
             return None, NOT_REGULAR
         if body is None:
             return None, "converter wrote no output"
-        text = body[:OUTPUT_MAX_BYTES].decode("utf-8", errors="replace")
-        return (text + TRUNCATED if len(body) > OUTPUT_MAX_BYTES else text), None
+        return body, None
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        if stdout is not None:
+            os.close(stdout)
+        if scratch.is_symlink():  # the worker swapped its scratch dir for a link (review round 2)
+            scratch.unlink()
+        else:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str | None, str | None]:
+    """Run one worker step; returns (Markdown text, None) or (None, reason)."""
+
+    body, reason = await _step_bytes(run, staged, kind, limit, OUTPUT_MAX_BYTES + 1)
+    if body is None:
+        return None, reason
+    text = body[:OUTPUT_MAX_BYTES].decode("utf-8", errors="replace")
+    return (text + TRUNCATED if len(body) > OUTPUT_MAX_BYTES else text), None
+
+
+async def _doc_step(run: _Run, staged: Path, limit: float) -> tuple[str | None, str | None]:
+    """.doc: textutil turns it into .docx in its own sandboxed step, then Docling."""
+
+    docx, reason = await _step_bytes(run, staged, "textutil", limit, INPUT_MAX_BYTES + 1)
+    if docx is None:
+        return None, reason
+    if len(docx) > INPUT_MAX_BYTES:
+        return None, "larger than 100 MiB after textutil"
+    staged_docx = staged.with_name(staged.name + ".docx")
+    descriptor = os.open(staged_docx, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(docx)
+        return await _step(run, staged_docx, "docx", limit)
+    finally:
+        staged_docx.unlink(missing_ok=True)
 
 
 class _NotRegularFile(Exception):
@@ -262,7 +330,10 @@ def _read_scratch_file(scratch: Path, name: str, limit: int) -> bytes | None:
     """Read at most `limit` bytes of scratch/name without following anything the
     worker planted (review round 1): no symlinks, FIFOs or hard links."""
 
-    directory = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    try:
+        directory = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:  # the worker replaced its scratch dir (review round 2)
+        raise _NotRegularFile(str(scratch)) from exc
     try:
         try:
             descriptor = os.open(name, _READ_FLAGS, dir_fd=directory)
@@ -351,7 +422,8 @@ async def _convert(
     timeout: float | None,
 ) -> ConvertResult:
     if kind != "pdf":
-        text, reason = await _step(run, staged, kind, timeout or OFFICE_SECONDS)
+        limit = timeout or OFFICE_SECONDS
+        text, reason = await (_doc_step(run, staged, limit) if kind == "doc" else _step(run, staged, kind, limit))
         if text is None:
             return ConvertResult("failed", reason, kind=kind)
         return _result(text, display_path, source_sha256, kind)
