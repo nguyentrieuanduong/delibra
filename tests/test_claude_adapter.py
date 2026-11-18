@@ -42,7 +42,7 @@ def parse_fixture(name: str) -> tuple[ClaudeAdapter, list]:
     "strategy,resume_id",
     [("native", None), ("native", "thread"), ("stateless", None)],
 )
-def test_shared_context_is_present_in_every_claude_prompt_mode(
+def test_no_claude_prompt_mode_mentions_shared_context(
     strategy: str,
     resume_id: str | None,
 ) -> None:
@@ -53,11 +53,11 @@ def test_shared_context_is_present_in_every_claude_prompt_mode(
         staged_history=[],
         staged_source=None,
         workspace=Path("/session/workspace"),
-        staged_shared_context=Path("inputs/round-02/shared-context.md"),
     )
     command = ClaudeAdapter().build_command(config(), run_context)
-    assert command.stdin.count("inputs/round-02/shared-context.md") == 1
-    assert "standing requirements" in command.stdin
+    assert "shared-context" not in command.stdin
+    assert "standing requirements" not in command.stdin
+    assert command.stdin.endswith("Investigate.")
 
 
 def test_fixture_extracts_session_deltas_progress_and_final_without_duplication() -> None:

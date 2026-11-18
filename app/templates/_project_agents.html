@@ -1,0 +1,111 @@
+{% from "_path_picker_macros.html" import writable_roots_field %}
+{% from "_form_macros.html" import effort_options, takes_effect %}
+<section aria-labelledby="agents-heading">
+  <h2 id="agents-heading">Sessions</h2>
+  {{ takes_effect("locked") }}
+  {# A refused agent form comes back open, with what was typed (typed.form names it). #}
+  {% set c = typed if typed.get('form') == 'create' else {} %}
+  {% set c_agent = c.get('agent', 'claude') %}
+  <details{% if c %} open{% endif %}>
+    <summary>Create session</summary>
+    <form method="post" action="{{ project_url(project.name, '/sessions') }}" data-session-config-form data-agent="{{ c_agent }}">
+      <input type="hidden" name="return_to" value="settings">
+      <label>Name
+        <input name="name" maxlength="200" value="{{ c.get('name', '') }}" required>
+        <small>
+          Up to 200 UTF-8 bytes; non-ASCII characters may use multiple bytes.
+        </small>
+      </label>
+      <label>Agent
+        <select name="agent" required data-agent-select>
+          <option value="claude"{% if c_agent == 'claude' %} selected{% endif %}>Claude</option>
+          <option value="codex"{% if c_agent == 'codex' %} selected{% endif %}>Codex</option>
+        </select>
+      </label>
+      <label>Model <input name="model" maxlength="200" value="{{ c.get('model', 'sonnet') }}" required></label>
+      <label>Effort
+        <select name="effort" required data-effort-select>
+          {{ effort_options(effort_levels, c_agent, c.get('effort', 'high')) }}
+        </select>
+      </label>
+      <label>Role instructions
+        <textarea name="role_instructions" maxlength="20000">{{ c.get('role_instructions', '') }}</textarea>
+      </label>
+      {{ writable_roots_field("Additional writable roots", c.get('writable_roots', ''), coding_local,
+                              c.get('create_missing_writable_roots'), "new-session-writable-roots",
+                              project_url(project.name, "/browse")) }}
+      <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create session</button>
+    </form>
+  </details>
+  {% if sessions %}
+    <div class="sessions">
+      {% for session in sessions %}
+        {% set e = typed if typed.get('form') == 'edit:' ~ session.id else {} %}
+        {% set e_agent = e.get('agent', session.agent) %}
+        <article class="session-card">
+          <h3><a href="{{ project_url(project.name, '/sessions/' ~ session.id) }}">{{ session.name }}</a></h3>
+          <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
+          <details{% if e %} open{% endif %}>
+            <summary>Edit</summary>
+            <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/edit') }}" data-session-config-form data-agent="{{ e_agent }}">
+              <input type="hidden" name="return_to" value="settings">
+              <p class="immutable-agent-name">{{ session.name }}</p>
+              <p class="immutability-hint">Agent name and directory are permanent.</p>
+              {% if not session.rounds %}
+                <label>Agent
+                  <select name="agent" data-agent-select>
+                    <option value="claude"{% if e_agent == 'claude' %} selected{% endif %}>Claude</option>
+                    <option value="codex"{% if e_agent == 'codex' %} selected{% endif %}>Codex</option>
+                  </select>
+                </label>
+              {% else %}
+                <p>Agent: {{ session.agent }} (fixed after the first round)</p>
+              {% endif %}
+                <label>Model <input name="model" maxlength="200" value="{{ e.get('model', session.model) }}" required></label>
+                <label>Effort
+                  <select name="effort" required data-effort-select>
+                    {{ effort_options(effort_levels, e_agent, e.get('effort', session.effort)) }}
+                  </select>
+                </label>
+              {% if not session.rounds %}
+                <label>Role instructions
+                  <textarea name="role_instructions" maxlength="20000">{{ e.get('role_instructions', session.role_instructions) }}</textarea>
+                </label>
+              {% else %}
+                <p>Role instructions are fixed after the first round.</p>
+              {% endif %}
+              {{ writable_roots_field("Additional writable roots", e.get('writable_roots', session.writable_roots|join('\n')), coding_local,
+                                      e.get('create_missing_writable_roots') if 'create_missing_writable_roots' in e else session.create_missing_writable_roots,
+                                      "session-writable-roots-" ~ session.id, project_url(project.name, "/browse")) }}
+              <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
+            </form>
+          </details>
+          {% if session.id in legacy_session_ids %}
+            {% for issue in migration_issues.get(session.id, ()) %}
+              <p class="error migration-issue">{{ issue }}</p>
+            {% endfor %}
+            <form
+              method="post"
+              action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/permanent-name') }}"
+            >
+              <input type="hidden" name="return_to" value="settings">
+              <label>Permanent agent name
+                <input name="name" maxlength="200" value="{{ typed.get('name', session.name) if typed.get('form') == 'name:' ~ session.id else session.name }}" required>
+                <small>
+                  Up to 200 UTF-8 bytes; non-ASCII characters may use multiple bytes.
+                </small>
+              </label>
+              <button type="submit">Set permanent name and migrate directory</button>
+            </form>
+          {% endif %}
+          <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/delete') }}">
+            <input type="hidden" name="return_to" value="settings">
+            <button type="submit" data-disable-during-auto{% if session.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Delete</button>
+          </form>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>No sessions yet.</p>
+  {% endif %}
+</section>

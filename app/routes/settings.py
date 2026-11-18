@@ -52,6 +52,12 @@ router = APIRouter()
 CLIENTS_ENV = "DELIBRA_ALLOWED_CLIENTS"
 HOSTS_ENV = "DELIBRA_ALLOWED_HOSTS"
 ACCESS_FIELD_MAX = 65536
+GLOBAL_TABS = (
+    ("access", "Access", "/settings"),
+    ("instruction", "Instruction", "/settings/instruction"),
+    ("presets", "Presets", "/settings/presets"),
+)
+GLOBAL_TABS_LABELS = tuple((key, label) for key, label, _url in GLOBAL_TABS)
 
 
 def _require_local(request: Request) -> None:
@@ -225,6 +231,7 @@ def _saved_rows(presets: tuple[GuidancePreset, ...]) -> list[dict[str, object]]:
 
 def _settings_page(
     request: Request,
+    tab: str,
     rows: list[dict[str, object]],
     clients: list[str] | tuple[str, ...],
     hosts: list[str] | tuple[str, ...],
@@ -254,6 +261,9 @@ def _settings_page(
             "error": error,
             "global_instruction": global_instruction,
             "health": request.app.state.health,
+            "tab": tab,
+            "tab_label": dict(GLOBAL_TABS_LABELS)[tab],
+            "settings_tabs": GLOBAL_TABS,
         },
     )
 
@@ -293,10 +303,18 @@ def _with_picks(
 
 @router.get("/settings", response_class=HTMLResponse)
 async def global_settings(request: Request):
+    return await _global_tab(request, "access")
+
+
+async def _global_tab(request: Request, tab: str):
     _require_local(request)
     settings = request.app.state.settings
-    rows = await asyncio.to_thread(_preset_rows, _saved_rows(settings.guidance_presets))
-    return _settings_page(request, rows, settings.allowed_clients, settings.allowed_hosts)
+    rows = (
+        await asyncio.to_thread(_preset_rows, _saved_rows(settings.guidance_presets))
+        if tab == "presets"
+        else []
+    )
+    return _settings_page(request, tab, rows, settings.allowed_clients, settings.allowed_hosts)
 
 
 def _access_field(form, key: str, label: str) -> list[str]:
@@ -307,27 +325,22 @@ def _access_field(form, key: str, label: str) -> list[str]:
     return _lines(value)
 
 
-@router.post("/settings")
-async def save_global_settings(request: Request):
+@router.post("/settings/access")
+async def save_access(request: Request):
     _require_local(request)
     form = await request.form()
-    rows = _form_rows(form)
     async with request.app.state.global_settings_lock:
         settings = request.app.state.settings
         clients_env = CLIENTS_ENV in os.environ
         hosts_env = HOSTS_ENV in os.environ
         typed_clients = _lines(form.get("allowed_clients"))
         typed_hosts = _lines(form.get("allowed_hosts"))
-        saved = {
-            preset.name: (preset.files, preset.skills) for preset in settings.guidance_presets
-        }
 
-        async def refused(message: str, error_row: int | None = None):
-            # The page again, as submitted, so chosen files are not lost.
-            shown = await asyncio.to_thread(_preset_rows, rows, error_row, message)
+        def refused(message: str):
             return _settings_page(
                 request,
-                shown,
+                "access",
+                [],
                 settings.allowed_clients if clients_env else typed_clients,
                 settings.allowed_hosts if hosts_env else typed_hosts,
                 error=f"Nothing was saved: {message}",
@@ -338,7 +351,6 @@ async def save_global_settings(request: Request):
         # the file nor what the running server accepts.
         try:
             data = read_config_file(settings.home)
-            presets = await asyncio.to_thread(_checked_presets, rows, saved)
             clients = (
                 settings.allowed_clients
                 if clients_env
@@ -357,26 +369,59 @@ async def save_global_settings(request: Request):
             )
             policy = AccessPolicy.build(hosts, clients)
         except ValueError as exc:
-            error_row = exc.row if isinstance(exc, _PresetRowError) else None
-            return await refused(_sentence(str(exc)), error_row)
+            return refused(_sentence(str(exc)))
         if not clients_env:
             data["allowed_clients"] = list(clients)
         if not hosts_env:
             data["allowed_hosts"] = list(hosts)
+        try:
+            write_config_file(settings.home, data)
+        except (StorageError, OSError) as exc:
+            return refused(_sentence(str(exc)))
+        request.app.state.settings = replace(
+            settings, allowed_clients=clients, allowed_hosts=hosts
+        )
+        request.app.state.access.policy = policy
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/presets")
+async def save_presets(request: Request):
+    _require_local(request)
+    form = await request.form()
+    rows = _form_rows(form)
+    async with request.app.state.global_settings_lock:
+        settings = request.app.state.settings
+        saved = {
+            preset.name: (preset.files, preset.skills) for preset in settings.guidance_presets
+        }
+
+        async def refused(message: str, error_row: int | None = None):
+            # The page again, as submitted, so chosen files are not lost.
+            shown = await asyncio.to_thread(_preset_rows, rows, error_row, message)
+            return _settings_page(
+                request,
+                "presets",
+                shown,
+                settings.allowed_clients,
+                settings.allowed_hosts,
+                error=f"Nothing was saved: {message}",
+                status_code=422,
+            )
+
+        try:
+            data = read_config_file(settings.home)
+            presets = await asyncio.to_thread(_checked_presets, rows, saved)
+        except ValueError as exc:
+            error_row = exc.row if isinstance(exc, _PresetRowError) else None
+            return await refused(_sentence(str(exc)), error_row)
         data["guidance_presets"] = {preset.name: preset.to_json() for preset in presets}
         try:
             write_config_file(settings.home, data)
         except (StorageError, OSError) as exc:
-            # The running server keeps its settings; the page says why.
             return await refused(_sentence(str(exc)))
-        request.app.state.settings = replace(
-            settings,
-            allowed_clients=clients,
-            allowed_hosts=hosts,
-            guidance_presets=presets,
-        )
-        request.app.state.access.policy = policy
-    return RedirectResponse("/settings", status_code=303)
+        request.app.state.settings = replace(settings, guidance_presets=presets)
+    return RedirectResponse("/settings/presets", status_code=303)
 
 
 @router.post("/settings/global-instruction")
@@ -387,17 +432,17 @@ async def save_global_instruction_text(request: Request, global_instruction: str
         try:
             await asyncio.to_thread(save_global_instruction, settings.home, global_instruction)
         except (StorageError, OSError) as exc:
-            rows = await asyncio.to_thread(_preset_rows, _saved_rows(settings.guidance_presets))
             return _settings_page(
                 request,
-                rows,
+                "instruction",
+                [],
                 settings.allowed_clients,
                 settings.allowed_hosts,
                 error=f"Nothing was saved: {_sentence(str(exc))}",
                 status_code=422,
                 global_instruction=global_instruction,
             )
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings/instruction", status_code=303)
 
 
 @router.post("/settings/preset-files", response_class=HTMLResponse)
@@ -436,3 +481,12 @@ async def edit_preset_files(request: Request):
     return request.app.state.templates.TemplateResponse(
         request=request, name="_preset_files.html", context={"listing": listing}
     )
+
+
+# Declared last: /settings/preset-files is POST-only, so a GET for it is an unknown tab.
+@router.get("/settings/{tab}", response_class=HTMLResponse)
+async def global_settings_tab(request: Request, tab: str):
+    if tab not in {key for key, _label, _url in GLOBAL_TABS}:
+        _require_local(request)
+        raise HTTPException(status_code=404, detail="Unknown settings tab")
+    return await _global_tab(request, tab)

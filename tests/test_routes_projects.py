@@ -8,9 +8,11 @@ import shutil
 import subprocess
 import sys
 import time
+import types
 from urllib.parse import quote
 
 import httpx
+from markupsafe import escape
 import pytest
 from fastapi.testclient import TestClient
 
@@ -21,6 +23,7 @@ from app.main import create_app
 from app.models import RoundRecord, SessionConfig, SourceDescriptor
 from app.notes import NoteStore
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
+from app.security import CODING_ONLY_HERE
 from app.questions import ProposedQuestion, QuestionStore
 from app.storage import (
     ConflictError,
@@ -292,27 +295,6 @@ def test_unregister_degraded_storage_checks_in_memory_only(
         RegistryStore(settings.home).get(project.id)
 
 
-def test_project_settings_reports_selected_and_broken_shared_markdown(
-    tmp_path: Path,
-) -> None:
-    app, settings = project_app(tmp_path)
-    project_path = tmp_path / "settings-project"
-    project_path.mkdir()
-    source = project_path / "brief.md"
-    source.write_text("brief", encoding="utf-8")
-    project = RegistryStore(settings.home).register("Settings", project_path)
-    ProjectStore(project).select_shared_markdown("brief.md", 512 * 1024)
-
-    with TestClient(app, base_url="http://localhost") as client:
-        selected = client.get(f"/projects/{quote(project.name, safe='')}/settings")
-        source.unlink()
-        broken = client.get(f"/projects/{quote(project.name, safe='')}/settings")
-
-    assert "brief.md" in selected.text
-    assert "Shared context is available" in selected.text
-    assert "Shared context is unavailable" in broken.text
-
-
 def test_project_crud_path_validation_canonicalization_import_and_invalid_metadata(
     tmp_path: Path,
 ) -> None:
@@ -489,7 +471,7 @@ def test_legacy_uuid_pass_prompt_redirects_to_canonical_project_name(
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/projects/Route%20Matrix/settings"
+    assert response.headers["location"] == "/projects/Route%20Matrix/settings/prompts"
 
 
 def test_canonical_project_request_resolves_registry_once(
@@ -729,7 +711,7 @@ def test_project_chat_is_primary_and_settings_remains_available(tmp_path: Path) 
     with TestClient(app, base_url="http://localhost") as client:
         primary = client.get(f"/projects/{quote(project.name, safe='')}", follow_redirects=False)
         chat = client.get(f"/projects/{quote(project.name, safe='')}/chat")
-        management = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        management = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
         created = client.post(
             f"/projects/{quote(project.name, safe='')}/sessions",
             data={
@@ -783,13 +765,13 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
 
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store, auto_id="f" * 32)
-        initial = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        initial = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
         saved = client.post(
             f"/projects/{quote(project.name, safe='')}/pass-prompt",
             data={"pass_prompt_template": custom},
             follow_redirects=False,
         )
-        rendered = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        rendered = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
         reset = client.post(
             f"/projects/{quote(project.name, safe='')}/pass-prompt/reset",
             follow_redirects=False,
@@ -798,7 +780,7 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
     assert "Review the following document and give your critique." in initial.text
     assert "{source_path}" in initial.text
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"/projects/{quote(project.name, safe='')}/settings"
+    assert saved.headers["location"] == f"/projects/{quote(project.name, safe='')}/settings/prompts"
     assert "&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in rendered.text
     assert "</textarea><script>" not in rendered.text
     assert store.active_auto_run_id() == "f" * 32
@@ -806,7 +788,7 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
     assert store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
 
     with TestClient(app, base_url="http://localhost") as client:
-        after_reset = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        after_reset = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
     assert "Review the following document" in after_reset.text
 
 
@@ -1167,7 +1149,7 @@ def test_project_writable_roots_reject_invalid_candidates_atomically(
         submitted = "\n".join(roots)
     before = store.manifest_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": submitted},
@@ -1211,7 +1193,7 @@ def test_project_writable_root_candidate_hidden_by_agent_ancestor_is_rejected(
     config_path = store.session_dir(config.id) / "config.json"
     config_before = config_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": candidate},
@@ -1251,7 +1233,7 @@ def test_project_writable_roots_union_cap_is_atomic_for_existing_agent(
     config_path = store.session_dir(config.id) / "config.json"
     config_before = config_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": roots[16]},
@@ -1264,7 +1246,7 @@ def test_project_writable_roots_union_cap_is_atomic_for_existing_agent(
 
 
 @pytest.mark.parametrize("manager_name", ["manager", "auto_manager"])
-def test_project_writable_roots_reject_in_memory_work(
+def test_project_writable_roots_save_during_in_memory_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     manager_name: str,
@@ -1274,9 +1256,8 @@ def test_project_writable_roots_reject_in_memory_work(
     (project_path / "src").mkdir(parents=True)
     project = RegistryStore(settings.home).register("Writable", project_path)
     store = ProjectStore(project)
-    before = store.manifest_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         manager = getattr(app.state, manager_name)
         monkeypatch.setattr(manager, "has_active_project", lambda _: True)
         response = client.post(
@@ -1285,8 +1266,8 @@ def test_project_writable_roots_reject_in_memory_work(
             follow_redirects=False,
         )
 
-    assert response.status_code == 409
-    assert store.manifest_path.read_bytes() == before
+    assert response.status_code == 303
+    assert store.effective_writable_roots() == ["src"]
 
 
 def test_project_writable_roots_update_and_clear_around_stale_agent_addition(
@@ -1316,7 +1297,7 @@ def test_project_writable_roots_update_and_clear_around_stale_agent_addition(
     stale.rmdir()
     route = f"/projects/{quote(project.name, safe='')}/writable-roots"
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         updated = client.post(
             route,
             data={"writable_roots": " valid \n\n"},
@@ -1385,15 +1366,16 @@ def wait_env(project, status: str, timeout: float = 5.0) -> CodingEnvState:
 def test_enabling_coding_creates_env_and_persists_allowlist(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        saved = client.post(
-            f"{prefix}/coding",
-            data={"enabled": "true", "network_allowlist": "pypi.org\nfiles.pythonhosted.org"},
+        saved = client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
+        network = client.post(
+            f"{prefix}/coding/network",
+            data={"network_allowlist": "pypi.org\nfiles.pythonhosted.org"},
             follow_redirects=False,
         )
         state = wait_env(project, "ready")
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
-    assert saved.status_code == 303
+    assert saved.status_code == 303 and network.status_code == 303
     policy = ProjectStore(project).coding_policy()
     assert policy.enabled is True
     assert policy.network_allowlist == ["pypi.org", "files.pythonhosted.org"]
@@ -1406,10 +1388,10 @@ def test_enabling_coding_creates_env_and_persists_allowlist(tmp_path, monkeypatc
 def test_invalid_allowlist_is_rejected_and_nothing_is_stored(tmp_path, monkeypatch, allowlist) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": allowlist})
+        response = client.post(f"{prefix}/coding/network", data={"network_allowlist": allowlist})
 
     assert response.status_code == 422
-    assert ProjectStore(project).coding_policy().enabled is False
+    assert ProjectStore(project).coding_policy().network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
 
 
 def test_lan_client_cannot_change_coding(tmp_path, monkeypatch) -> None:
@@ -1417,9 +1399,10 @@ def test_lan_client_cannot_change_coding(tmp_path, monkeypatch) -> None:
     with TestClient(app, base_url="http://localhost", client=LAN) as client:
         saved = client.post(f"{prefix}/coding", data={"enabled": "true"})
         retry = client.post(f"{prefix}/coding/env/retry")
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 403
+    assert saved.json()["detail"] == CODING_ONLY_HERE
     assert retry.status_code == 403
     assert ProjectStore(project).coding_policy().enabled is False
     assert "Only this machine can change coding settings" in page.text
@@ -1446,11 +1429,11 @@ def test_private_resolution_warning_is_stored_and_shown(tmp_path, monkeypatch) -
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
+            f"{prefix}/coding/network",
             data={"network_allowlist": "intranet.example.com"},
             follow_redirects=False,
         )
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 303
     assert ProjectStore(project).coding_policy().network_warnings == [warning]
@@ -1464,7 +1447,7 @@ def test_startup_turns_interrupted_creation_into_retryable_error(tmp_path, monke
     store.set_coding_env(CodingEnvState(status="creating", updated_at="2026-10-15T00:00:00Z"))
 
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     state = ProjectStore(project).coding_policy().env
     assert state.status == "error"
@@ -1516,11 +1499,11 @@ def test_guidance_files_are_saved_from_the_textarea(tmp_path, monkeypatch) -> No
     guide.write_text("# Guide\n")
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_files": str(guide)},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": str(guide)},
             follow_redirects=False,
         )
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 303
     assert ProjectStore(project).coding_policy().guidance_files == [str(guide)]
@@ -1545,8 +1528,8 @@ def test_guidance_preset_saves_its_files_without_reading_folders(tmp_path, monke
     monkeypatch.setattr("app.coding._scan", no_scan)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_preset": "suite"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "suite"},
             follow_redirects=False,
         )
 
@@ -1569,23 +1552,24 @@ def test_guidance_preset_with_a_missing_file_is_refused_and_keeps_guidance(
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_files": str(guide)},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": str(guide)},
             follow_redirects=False,
         )
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "guidance_preset": "suite"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "suite"},
         )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
+    sentence = (
         f"Guidance preset 'suite': {str(absent)!r} must be an existing regular file reached "
         "without symlinks; guidance was not changed"
     )
+    assert f"<div hidden data-page-alert>Nothing was saved: {escape(sentence)}</div>" in response.text
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_files == [str(guide)]
-    assert policy.network_allowlist == ["pypi.org"]
+    assert policy.network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
 
 
 def _skill_files(root: Path) -> list[str]:
@@ -1600,20 +1584,20 @@ def test_skills_are_saved_from_the_coding_form_and_kept_without_it(tmp_path, mon
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": "\n".join(skills) + "\n\n"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_skills": "\n".join(skills) + "\n\n"},
             follow_redirects=False,
         )
+        # A guidance form without the skills box keeps the saved skills.
         kept = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": ""},
             follow_redirects=False,
         )
 
     assert saved.status_code == 303 and kept.status_code == 303
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_skills == skills
-    assert policy.network_allowlist == ["example.org"]
 
 
 def test_the_coding_page_shows_the_skills_box(tmp_path, monkeypatch) -> None:
@@ -1621,7 +1605,7 @@ def test_the_coding_page_shows_the_skills_box(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     ProjectStore(project).set_build_skills(skills)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert (
         '<textarea id="coding-guidance-skills" name="guidance_skills" maxlength="262144">'
@@ -1639,22 +1623,22 @@ def test_an_invalid_skill_list_is_refused_and_keeps_settings(tmp_path, monkeypat
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": skills[0]},
+            f"{prefix}/coding/guidance",
+            data={"guidance_skills": skills[0]},
             follow_redirects=False,
         )
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "guidance_skills": f"{skills[0]}\n{clash}"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_skills": f"{skills[0]}\n{clash}"},
         )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
+    sentence = (
         f"Skill files {skills[0]!r} and {str(clash)!r} would both be copied as 'tdd/SKILL.md'"
     )
+    assert f"<div hidden data-page-alert>Nothing was saved: {escape(sentence)}</div>" in response.text
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_skills == [skills[0]]
-    assert policy.network_allowlist == ["pypi.org"]
 
 
 def test_guidance_preset_sets_both_lists(tmp_path, monkeypatch) -> None:
@@ -1673,8 +1657,8 @@ def test_guidance_preset_sets_both_lists(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("app.coding._scan", no_scan)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         saved = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_preset": "suite", "guidance_skills": ""},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "suite", "guidance_skills": ""},
             follow_redirects=False,
         )
 
@@ -1690,14 +1674,13 @@ def test_unknown_guidance_preset_is_refused(tmp_path, monkeypatch) -> None:
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "guidance_preset": "code-craft"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_preset": "code-craft"},
         )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "Unknown guidance preset 'code-craft'; guidance was not changed"
-    )
+    sentence = "Unknown guidance preset 'code-craft'; guidance was not changed"
+    assert f"<div hidden data-page-alert>Nothing was saved: {escape(sentence)}</div>" in response.text
     assert ProjectStore(project).coding_policy().network_allowlist == list(
         DEFAULT_NETWORK_ALLOWLIST
     )
@@ -1707,8 +1690,8 @@ def test_invalid_guidance_path_is_rejected(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_files": "relative.md"},
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": "relative.md"},
         )
 
     assert response.status_code == 422
@@ -1728,10 +1711,10 @@ def test_each_guidance_preset_gets_a_button_in_config_order(tmp_path, monkeypatc
         ),
     )
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
-    zeta = page.index('name="guidance_preset" value="zeta" data-disable-during-auto')
-    escaped = page.index('name="guidance_preset" value="a&lt;b" data-disable-during-auto')
+    zeta = page.index('name="guidance_preset" value="zeta"')
+    escaped = page.index('name="guidance_preset" value="a&lt;b"')
     assert zeta < escaped
     assert ">Use zeta guidance</button>" in page
     assert "Add guidance presets in" not in page
@@ -1741,12 +1724,12 @@ def test_each_guidance_preset_gets_a_button_in_config_order(tmp_path, monkeypatc
 def test_no_guidance_presets_links_to_global_settings(tmp_path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        local = client.get(f"{prefix}/settings").text
+        local = client.get(f"{prefix}/settings/coding").text
     with TestClient(app, base_url="http://localhost", client=LAN) as client:
-        lan = client.get(f"{prefix}/settings").text
+        lan = client.get(f"{prefix}/settings/coding").text
 
     assert 'name="guidance_preset"' not in local
-    assert 'Add guidance presets in <a href="/settings">Settings</a>.' in local
+    assert 'Add guidance presets in <a href="/settings/presets">Settings</a>.' in local
     assert 'href="/settings"' not in lan
     assert "Guidance presets are set on this machine's Settings page." in lan
 
@@ -1756,15 +1739,15 @@ def test_enabling_coding_in_a_git_project_adds_local_excludes(tmp_path, monkeypa
     subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
     exclude = project_dir / ".git" / "info" / "exclude"
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        client.post(f"{prefix}/coding", data={"network_allowlist": "pypi.org"}, follow_redirects=False)
+        client.post(f"{prefix}/coding", data={}, follow_redirects=False)
         assert "/envs/" not in exclude.read_text()
         client.post(
             f"{prefix}/coding",
-            data={"enabled": "true", "network_allowlist": "pypi.org"},
+            data={"enabled": "true"},
             follow_redirects=False,
         )
         wait_env(project, "ready")
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     text = exclude.read_text()
     assert "/.delibra/\n" in text and "/envs/\n" in text
@@ -1776,14 +1759,21 @@ def test_git_ignore_list_is_configurable_per_project(tmp_path, monkeypatch) -> N
     app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
     subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
     exclude = project_dir / ".git" / "info" / "exclude"
-    form = {"enabled": "true", "network_allowlist": "pypi.org"}
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        client.post(f"{prefix}/coding", data={**form, "git_exclude": "custom-out/\r\n*.tmp\r\n"}, follow_redirects=False)
+        client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
+        client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude": "custom-out/\r\n*.tmp\r\n"},
+            follow_redirects=False,
+        )
         custom, custom_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
-        client.post(f"{prefix}/coding", data=form, follow_redirects=False)
+        # The coding mode form never touches the list.
+        client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
         kept = ProjectStore(project).coding_policy().git_exclude
-        page = client.get(f"{prefix}/settings").text
-        client.post(f"{prefix}/coding", data={**form, "git_exclude_preset": "default"}, follow_redirects=False)
+        page = client.get(f"{prefix}/settings/coding").text
+        client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude_preset": "default"},
+            follow_redirects=False,
+        )
         reset, default_text = ProjectStore(project).coding_policy().git_exclude, exclude.read_text()
 
     assert custom == kept == ["custom-out/", "*.tmp"]
@@ -1800,11 +1790,11 @@ def test_submitting_the_default_ignore_list_keeps_following_it(tmp_path, monkeyp
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "git_exclude": "\r\n".join(default_git_exclude())},
+            f"{prefix}/coding/git-exclude",
+            data={"git_exclude": "\r\n".join(default_git_exclude())},
             follow_redirects=False,
         )
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert ProjectStore(project).coding_policy().git_exclude is None
     assert "(Delibra&#39;s default)" in page
@@ -1814,8 +1804,8 @@ def test_an_invalid_git_ignore_list_changes_nothing(tmp_path, monkeypatch) -> No
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "example.org", "git_exclude": "ok/\n# >>> Delibra coding mode"},
+            f"{prefix}/coding/git-exclude",
+            data={"git_exclude": "ok/\n# >>> Delibra coding mode"},
         )
 
     assert response.status_code == 422
@@ -1827,7 +1817,7 @@ def test_an_invalid_git_ignore_list_changes_nothing(tmp_path, monkeypatch) -> No
 def test_coding_hint_does_not_claim_the_browser_is_unlimited(tmp_path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
     assert "web fetch, browser) are not limited" not in page
     assert "browser features are off in build turns" in page
 
@@ -1913,7 +1903,7 @@ def wait_docker(project, status: str, timeout: float = 5.0) -> DockerPolicy:
 
 
 def enable_coding(client, prefix, project) -> None:
-    client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": "pypi.org"})
+    client.post(f"{prefix}/coding", data={"enabled": "true"})
     wait_env(project, "ready")
 
 
@@ -1924,7 +1914,7 @@ def test_enabling_docker_prepares_the_lima_vm(tmp_path, monkeypatch) -> None:
         enable_coding(client, prefix, project)
         saved = client.post(f"{prefix}/coding/docker", data={"enabled": "true"}, follow_redirects=False)
         state = wait_docker(project, "ready")
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/coding")
 
     assert saved.status_code == 303
     assert controller.prepared == [project_dir.resolve()]
@@ -1973,7 +1963,7 @@ def test_saving_coding_settings_keeps_docker_state(tmp_path, monkeypatch) -> Non
         enable_coding(client, prefix, project)
         client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
         before = wait_docker(project, "ready")
-        client.post(f"{prefix}/coding", data={"enabled": "true", "network_allowlist": "github.com"})
+        client.post(f"{prefix}/coding", data={"enabled": "true"})
 
     assert ProjectStore(project).coding_policy().docker == before
 
@@ -2079,7 +2069,7 @@ def test_settings_never_call_lima_isolated_and_disclose_every_risk(tmp_path, mon
         controller.lima_available = False
         client.post(f"{prefix}/coding/docker/local", data={"acknowledge": "true"})
         controller.lima_available = True
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert "Switch to a Lima VM</button>" in page
     assert "(isolated)" not in page
@@ -2171,7 +2161,7 @@ def test_settings_offer_local_docker_only_with_its_risks_when_lima_failed(tmp_pa
         enable_coding(client, prefix, project)
         client.post(f"{prefix}/coding/docker", data={"enabled": "true"})
         wait_docker(project, "error")
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
 
     assert "Lima is unavailable: limactl is not on PATH" in page
     assert "coding/docker/local" in page
@@ -2225,12 +2215,12 @@ def test_reset_clears_exactly_its_scope(
     prefix = f"/projects/{quote(project.name, safe='')}"
 
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/reset")
         response = client.post(f"{prefix}/reset", data={"scope": scope}, follow_redirects=False)
 
     assert "Start new phase" in page.text
     assert response.status_code == 303
-    assert response.headers["location"].endswith("/settings")
+    assert response.headers["location"].endswith("/settings/reset")
     assert (questions.load().find("Q1").status == "dismissed") is dismissed
     assert len(NoteStore(store.root).load().notes) == notes_left
     for session in store.list_sessions():
@@ -2255,7 +2245,7 @@ def test_reset_is_refused_whole_while_auto_is_active(
 
     with TestClient(app, base_url="http://localhost") as client:
         reserve_auto_run(store, auto_id="f" * 32)
-        page = client.get(f"{prefix}/settings")
+        page = client.get(f"{prefix}/settings/reset")
         response = client.post(f"{prefix}/reset", data={"scope": scope})
 
     assert response.status_code == 409
@@ -2285,7 +2275,7 @@ def test_clear_levels_archive_then_clear_their_scope(
         page = client.get(f"{prefix}/settings")
 
     assert response.status_code == 303
-    assert response.headers["location"].endswith("/settings")
+    assert response.headers["location"].endswith("/settings/reset")
     assert page.status_code == 200
     assert len(list((store.root / "archive").glob(f"*-{scope}-*.zip"))) == 1
     assert questions.load().questions == []
@@ -2301,9 +2291,9 @@ def test_reset_area_shows_refresh_then_clear_and_reset(tmp_path: Path) -> None:
     project, _, _ = _reset_project(tmp_path, settings)
 
     with TestClient(app, base_url="http://localhost") as client:
-        page = client.get(f"/projects/{quote(project.name, safe='')}/settings").text
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings/reset").text
 
-    section = page[page.index('id="reset-heading"') : page.index("<h2>Sessions</h2>")]
+    section = page[page.index('id="reset-heading"') : page.index("</section>", page.index('id="reset-heading"'))]
     assert ">Reset</h2>" in section
     order = [
         "Refresh (new phase)", "Start new phase", "Clear and reset",
@@ -2350,18 +2340,16 @@ def test_an_emptied_skills_or_git_exclude_box_clears_the_saved_list(tmp_path, mo
     skills = _skill_files(tmp_path / "skills")
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": skills[0], "git_exclude": "out/"},
-            follow_redirects=False,
+        client.post(f"{prefix}/coding/guidance", data={"guidance_skills": skills[0]}, follow_redirects=False)
+        client.post(f"{prefix}/coding/git-exclude", data={"git_exclude": "out/"}, follow_redirects=False)
+        cleared_skills = client.post(
+            f"{prefix}/coding/guidance", data={"guidance_skills": ""}, follow_redirects=False
         )
-        cleared = client.post(
-            f"{prefix}/coding",
-            data={"network_allowlist": "pypi.org", "guidance_skills": "", "git_exclude": ""},
-            follow_redirects=False,
+        cleared_exclude = client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude": ""}, follow_redirects=False
         )
 
-    assert cleared.status_code == 303
+    assert cleared_skills.status_code == 303 and cleared_exclude.status_code == 303
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_skills == []
     assert policy.git_exclude == []
@@ -2489,8 +2477,8 @@ def test_a_preset_button_copies_its_skills_into_the_chat_list(tmp_path, monkeypa
             follow_redirects=False,
         )
 
-    zeta = page.index('name="chat_preset" value="zeta" data-disable-during-auto')
-    escaped = page.index('name="chat_preset" value="a&lt;b" data-disable-during-auto')
+    zeta = page.index('name="chat_preset" value="zeta"')
+    escaped = page.index('name="chat_preset" value="a&lt;b"')
     assert zeta < escaped
     assert ">Use zeta skills</button>" in page
     assert 'name="chat_preset" value="files-only"' not in page
@@ -2538,7 +2526,7 @@ def test_no_preset_with_skills_links_to_global_settings_from_the_chat_section(
 
     section = page.split('id="chat-skills-heading"', 1)[1].split("</section>", 1)[0]
     assert 'name="chat_preset"' not in section
-    assert 'Add presets with skills in <a href="/settings">Settings</a>.' in section
+    assert 'Add presets with skills in <a href="/settings/presets">Settings</a>.' in section
 
 
 def test_the_project_global_instruction_switch_renders_and_saves(tmp_path: Path) -> None:
@@ -2622,7 +2610,7 @@ def test_project_writable_roots_tick_creates_missing_and_renders_checked(
     store = ProjectStore(project)
     url = f"/projects/{quote(project.name, safe='')}"
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         before = client.get(f"{url}/settings")
         saved = client.post(
             f"{url}/writable-roots",
@@ -2650,7 +2638,7 @@ def test_project_writable_roots_refusal_pops_up_and_keeps_input(
     store = ProjectStore(project)
     before = store.manifest_path.read_bytes()
 
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/writable-roots",
             data={"writable_roots": "typed/missing"},
@@ -2668,20 +2656,18 @@ def test_project_writable_roots_refusal_pops_up_and_keeps_input(
 def test_saving_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding", data={
-            "enabled": "true", "network_allowlist": "",
+        response = client.post(f"{prefix}/coding/downloads", data={
             "downloads_enabled": "true", "downloads_folder": "raw/src",
             "downloads_approval": "automatic", "downloads_model_check": "true",
             "downloads_check_provider": "codex", "downloads_check_model": "gpt-5.5-mini",
         }, follow_redirects=False)
-        wait_env(project, "ready")
     assert response.status_code == 303
     downloads = ProjectStore(project).coding_policy().downloads
     assert (downloads.enabled, downloads.folder, downloads.approval) == (True, "raw/src", "automatic")
     assert (downloads.check_provider, downloads.check_model) == ("codex", "gpt-5.5-mini")
 
 
-def test_an_older_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> None:
+def test_the_coding_mode_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     store = ProjectStore(project)
     policy = store.coding_policy()
@@ -2689,7 +2675,7 @@ def test_an_older_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> N
     store.replace_coding_policy(policy)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(
-            f"{prefix}/coding", data={"enabled": "true", "network_allowlist": ""},
+            f"{prefix}/coding", data={"enabled": "true"},
             follow_redirects=False,
         )
         wait_env(project, "ready")
@@ -2700,18 +2686,749 @@ def test_an_older_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> N
 def test_an_unsafe_download_folder_is_refused(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding", data={
-            "enabled": "true", "network_allowlist": "",
+        response = client.post(f"{prefix}/coding/downloads", data={
             "downloads_enabled": "true", "downloads_folder": "../out",
         })
     assert response.status_code == 422
-    assert "Download folder" in response.text
+    assert "<div hidden data-page-alert>Nothing was saved: Download folder" in response.text
+    assert 'name="downloads_folder" value="../out"' in response.text
     assert ProjectStore(project).coding_policy().downloads.enabled is False
 
 
 def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings").text
+        page = client.get(f"{prefix}/settings/coding").text
     assert 'name="downloads_folder" value="docs/source/raw"' in page
     assert 'name="downloads_check_model" value="sonnet"' in page
+
+
+SETTINGS_TABS = {
+    "general": ("Default message turn time limit", "Writable project directories",
+                "Use the global instruction in this project", "Skills for chat and discussion"),
+    "prompts": ("Default Pass prompt",),
+    "coding": ('id="coding-heading"', "Docker for build runs"),
+    "agents": ("Create session",),
+    "reset": ('id="reset-heading"',),
+}
+
+
+def test_each_settings_tab_is_its_own_page(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "tabs"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Tabs", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        pages = {tab: client.get(f"{prefix}/settings/{tab}") for tab in SETTINGS_TABS}
+        root = client.get(f"{prefix}/settings").text
+        unknown = client.get(f"{prefix}/settings/everything")
+
+    for tab, markers in SETTINGS_TABS.items():
+        assert pages[tab].status_code == 200
+        for marker in markers:
+            assert marker in pages[tab].text, (tab, marker)
+        for other, other_markers in SETTINGS_TABS.items():
+            if other != tab:
+                assert other_markers[0] not in pages[tab].text, (tab, other)
+        assert f'href="{prefix}/settings{"" if tab == "general" else "/" + tab}" aria-current="page"' in pages[tab].text
+    assert root == pages["general"].text
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "Unknown settings tab"
+
+
+def test_general_tab_orders_its_sections(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "order"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Order", project_dir)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings").text
+
+    positions = [
+        page.index('id="turn-timeout-heading"'),
+        page.index('id="writable-roots-heading"'),
+        page.index('id="global-instruction-heading"'),
+        page.index('id="chat-skills-heading"'),
+    ]
+    assert positions == sorted(positions)
+
+
+def test_each_coding_form_saves_only_its_own_fields(tmp_path, monkeypatch) -> None:
+    skills = _skill_files(tmp_path / "skills")
+    guide = tmp_path / "guide.md"
+    guide.write_text("# Guide\n")
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        guidance = client.post(
+            f"{prefix}/coding/guidance",
+            data={"guidance_files": str(guide), "guidance_skills": skills[0]},
+            follow_redirects=False,
+        )
+        network = client.post(
+            f"{prefix}/coding/network", data={"network_allowlist": "example.org"},
+            follow_redirects=False,
+        )
+        downloads = client.post(
+            f"{prefix}/coding/downloads",
+            data={"downloads_enabled": "true", "downloads_folder": "raw",
+                  "downloads_approval": "automatic", "downloads_check_provider": "claude",
+                  "downloads_check_model": "sonnet"},
+            follow_redirects=False,
+        )
+        mode = client.post(
+            f"{prefix}/coding/git-exclude", data={"git_exclude": "out/"}, follow_redirects=False
+        )
+
+    assert [r.status_code for r in (guidance, network, downloads, mode)] == [303] * 4
+    assert {r.headers["location"] for r in (guidance, network, downloads, mode)} == {
+        f"{prefix}/settings/coding"
+    }
+    policy = ProjectStore(project).coding_policy()
+    assert policy.guidance_files == [str(guide)]
+    assert policy.guidance_skills == [skills[0]]
+    assert policy.network_allowlist == ["example.org"]
+    assert (policy.downloads.enabled, policy.downloads.folder, policy.downloads.approval) == (
+        True, "raw", "automatic",
+    )
+    assert policy.git_exclude == ["out/"]
+    assert policy.enabled is False
+
+
+def test_a_refused_coding_form_pops_up_and_keeps_the_typed_text(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/coding/network", data={"network_allowlist": "https://pypi.org"}
+        )
+
+    assert response.status_code == 422
+    assert "<div hidden data-page-alert>Nothing was saved: " in response.text
+    assert ">https://pypi.org</textarea>" in response.text
+    assert 'aria-current="page">Coding</a>' in response.text
+    assert ProjectStore(project).coding_policy().network_allowlist == list(DEFAULT_NETWORK_ALLOWLIST)
+
+
+@pytest.mark.parametrize(
+    "path, field, value, saved",
+    [
+        ("/writable-roots", "writable_roots", "out", lambda s, t: s.effective_writable_roots() == ["out"]),
+        ("/coding/network", "network_allowlist", "example.org",
+         lambda s, t: s.coding_policy().network_allowlist == ["example.org"]),
+        ("/coding/downloads", "downloads_folder", "other/raw",
+         lambda s, t: (s.coding_policy().downloads.folder, s.coding_policy().downloads.enabled) == ("other/raw", True)),
+        ("/coding/guidance", "guidance_files", "{guide}",
+         lambda s, t: s.coding_policy().guidance_files == [str(t / "guide.md")]),
+        ("/chat-skills", "chat_skills", "{guide}", lambda s, t: s.chat_skills() == [str(t / "guide.md")]),
+        ("/coding/git-exclude", "git_exclude", "out/", lambda s, t: s.coding_policy().git_exclude == ["out/"]),
+    ],
+)
+def test_next_turn_settings_save_while_auto_and_agents_run(
+    tmp_path, monkeypatch, path, field, value, saved
+) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    (project_dir / "out").mkdir()
+    (tmp_path / "guide.md").write_text("# Guide\n")
+    data = {field: value.format(guide=tmp_path / "guide.md")}
+    if field == "downloads_folder":
+        data["downloads_enabled"] = "true"
+
+    def active(_self) -> None:
+        raise ConflictError("an Auto run is active")
+
+    monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        # The lifespan creates the managers, so patch them once the client is up.
+        monkeypatch.setattr(type(app.state.manager), "has_active_project", lambda _self, _pid: True)
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert saved(ProjectStore(project), tmp_path)
+
+
+@pytest.mark.parametrize(
+    "path, data",
+    [
+        ("/coding", {"enabled": "true"}),
+        ("/coding/docker", {"enabled": "true"}),
+    ],
+)
+def test_locked_settings_refuse_while_auto_runs(tmp_path, monkeypatch, path, data) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    if path == "/coding/docker":
+        store.set_coding_enabled(True)  # so only the lock can refuse it
+    before = store.manifest_path.read_bytes()
+
+    def active(_self) -> None:
+        raise ConflictError("an Auto run is active")
+
+    monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    assert response.status_code == 409
+    assert store.manifest_path.read_bytes() == before  # nothing written (AC 3)
+
+
+def test_a_download_policy_saved_mid_run_reaches_the_next_turn(tmp_path, monkeypatch) -> None:
+    from app.auto import AutoManager
+
+    _app, project, _dir, _prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, folder="raw", approval="manual")
+    store.replace_coding_policy(policy)
+    manager = types.SimpleNamespace(
+        downloads=object(), settings=types.SimpleNamespace(build_tmp_root=tmp_path / "build")
+    )
+    record = types.SimpleNamespace(kind="build")
+    participant = types.SimpleNamespace(session_id="d" * 32, agent="codex")
+
+    first, _ = AutoManager._download_policy(manager, store, record, participant)
+    policy.downloads = DownloadPolicy(enabled=True, folder="other", approval="automatic")
+    store.replace_coding_policy(policy)
+    second, _ = AutoManager._download_policy(manager, store, record, participant)
+
+    assert (first.folder, first.approval) == ("raw", "manual")
+    assert (second.folder, second.approval) == ("other", "automatic")
+
+
+def test_the_lock_line_names_what_is_locked_on_each_tab(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(ProjectStore, "active_auto_run_id", lambda _self: "a" * 32)
+    monkeypatch.setattr(
+        ProjectStore, "load_auto_run", lambda _self, _id: types.SimpleNamespace(number=7)
+    )
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        coding = client.get(f"{prefix}/settings/coding").text
+        prompts = client.get(f"{prefix}/settings/prompts").text
+        fragment = client.get(f"{prefix}/settings-lock", params={"tab": "agents"}).text
+
+    assert (
+        "Auto run #7 is active: coding on/off and Docker are locked "
+        "until it ends."
+    ) in coding
+    assert 'id="settings-lock" data-auto-active="true"' in coding
+    assert "is active:" not in prompts
+    assert "Git ignore" not in coding.split('id="settings-lock"', 1)[1].split("</", 1)[0]
+    assert "creating, editing and deleting agents is locked until it ends." in fragment
+    assert "hx-trigger=\"every 5s [document.visibilityState === 'visible']\"" in fragment
+
+
+def test_the_lock_fragment_is_inactive_without_auto(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        fragment = client.get(f"{prefix}/settings-lock", params={"tab": "coding"})
+        bad = client.get(f"{prefix}/settings-lock", params={"tab": "nope"})
+
+    assert 'data-auto-active="false"' in fragment.text
+    assert "is active:" not in fragment.text
+    assert bad.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path, data, tab",
+    [
+        ("/pass-prompt", {"pass_prompt_template": "Read {source_path}"}, "prompts"),
+        ("/pass-prompt/reset", {}, "prompts"),
+        ("/turn-timeout", {"turn_timeout_seconds": "5"}, "general"),
+        ("/global-instruction", {}, "general"),
+        ("/writable-roots", {"writable_roots": ""}, "general"),
+        ("/chat-skills", {"chat_skills": ""}, "general"),
+        ("/reset", {"scope": "notes"}, "reset"),
+        ("/coding/docker", {"enabled": ""}, "coding"),
+    ],
+)
+def test_every_settings_save_returns_to_its_tab(tmp_path, monkeypatch, path, data, tab) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    ProjectStore(project).set_coding_enabled(True)  # the Docker form needs coding on
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    expected = f"{prefix}/settings" if tab == "general" else f"{prefix}/settings/{tab}"
+    assert response.status_code == 303
+    assert response.headers["location"] == expected
+
+
+def test_agent_forms_on_the_settings_page_return_to_agents(tmp_path: Path) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "agents"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Agents", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    form = {"name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high"}
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        created = client.post(f"{prefix}/sessions", data={**form, "return_to": "settings"},
+                              follow_redirects=False)
+        plain = client.post(f"{prefix}/sessions", data={**form, "name": "Beta"},
+                            follow_redirects=False)
+        other = client.post(f"{prefix}/sessions", data={**form, "name": "Gamma", "return_to": "https://evil.example"},
+                            follow_redirects=False)
+        session_id = ProjectStore(project).list_sessions()[0].id
+        edited = client.post(f"{prefix}/sessions/{session_id}/edit",
+                             data={"model": "opus", "return_to": "settings"}, follow_redirects=False)
+        deleted = client.post(f"{prefix}/sessions/{session_id}/delete",
+                              data={"return_to": "settings"}, follow_redirects=False)
+
+    assert created.headers["location"] == f"{prefix}/settings/agents"
+    assert edited.headers["location"] == f"{prefix}/settings/agents"
+    assert deleted.headers["location"] == f"{prefix}/settings/agents"
+    assert plain.headers["location"].startswith(f"{prefix}/chat?agent=")
+    assert other.headers["location"].startswith(f"{prefix}/chat?agent=")
+
+
+@pytest.mark.parametrize(
+    "path, data",
+    [
+        ("/coding/git-exclude", {"git_exclude": "out/"}),
+        ("/coding/downloads", {"downloads_folder": "raw", "downloads_enabled": "true"}),
+        ("/coding", {"enabled": "true"}),
+    ],
+)
+def test_the_exclude_refresh_runs_under_the_project_lock(tmp_path, monkeypatch, path, data) -> None:
+    # Build commits read .git/info/exclude under the same lock, and these saves
+    # are allowed during Auto, so the refresh must not run after the lock is released.
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    ProjectStore(project).set_coding_enabled(True)
+    held: list[bool] = []
+
+    async def record(root, patterns=None, trailing=()):
+        held.append(app.state.locks.project_lock(project.id).locked())
+        return []
+
+    monkeypatch.setattr("app.routes.projects.ensure_local_excludes", record)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert held == [True]
+
+
+@pytest.mark.parametrize(
+    "path, data, tab, kept, sentence",
+    [
+        ("/pass-prompt", {"pass_prompt_template": "No placeholder <here>"}, "Prompts",
+         ">No placeholder &lt;here&gt;</textarea>", "must contain {source_path} exactly once"),
+        ("/pass-prompt", {"pass_prompt_template": ""}, "Prompts", "</textarea>", "Pass prompt must not be empty"),
+        ("/turn-timeout", {"turn_timeout_seconds": "0"}, "General", 'value="0"', "Project turn time limit must be"),
+        ("/turn-timeout", {"turn_timeout_seconds": "seven"}, "General", 'value="seven"', "Project turn time limit must be"),
+        # Over Python's int-parsing digit limit: still the normal refusal, never a 500.
+        ("/turn-timeout", {"turn_timeout_seconds": "9" * 5000}, "General", 'value="999', "Project turn time limit must be"),
+    ],
+)
+def test_a_refused_prompt_or_time_limit_save_pops_up_on_its_tab(
+    tmp_path, monkeypatch, path, data, tab, kept, sentence
+) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    store.set_pass_prompt_template("Keep {source_path}")
+    before = store.manifest_path.read_bytes()
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}{path}", data=data)
+
+    assert response.status_code == 422
+    alert = response.text.split("<div hidden data-page-alert>Nothing was saved: ", 1)[1].split("</div>", 1)[0]
+    assert alert[:1].isupper() and sentence.split("{")[0] in alert, alert
+    assert f'aria-current="page">{tab}</a>' in response.text
+    assert kept in response.text
+    assert store.manifest_path.read_bytes() == before
+
+def _agents_refusal(response, status: int) -> str:
+    assert response.status_code == status, response.text[:300]
+    assert 'aria-current="page">Agents</a>' in response.text
+    alert = response.text.split("<div hidden data-page-alert>Nothing was saved: ", 1)[1].split("</div>", 1)[0]
+    assert alert[:1].isupper(), alert
+    return alert
+
+
+def test_refused_agent_forms_on_the_agents_tab_pop_up_and_keep_the_input(tmp_path, monkeypatch) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "agents"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Agents", project_dir)
+    store = ProjectStore(project)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    form = {"agent": "claude", "model": "sonnet", "effort": "high", "return_to": "settings"}
+    (project_dir / "src").mkdir()
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "Alpha", "writable_roots": "src", "role_instructions": "Old role"},
+            follow_redirects=False,
+        )
+        alpha = store.list_sessions()[0].id
+        # Emptied boxes reach FastAPI as None; the page must still show them empty.
+        emptied_edit = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "m" * 201, "role_instructions": "", "writable_roots": "", "return_to": "settings"},
+        )
+        bad_name = client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "bad/name", "model": "my-model", "role_instructions": "Typed role"},
+        )
+        bad_edit = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "m" * 201, "role_instructions": "Edited role", "return_to": "settings"},
+        )
+        chat_page = client.post(f"{prefix}/sessions", data={**form, "name": "bad/name", "return_to": ""})
+
+        def active(_self) -> None:
+            raise ConflictError("an Auto run is active")
+
+        monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+        locked_create = client.post(f"{prefix}/sessions", data={**form, "name": "Beta"})
+        locked_delete = client.post(f"{prefix}/sessions/{alpha}/delete", data={"return_to": "settings"})
+
+    _agents_refusal(bad_name, 422)
+    assert 'name="name" maxlength="200" value="bad/name"' in bad_name.text
+    assert 'name="model" maxlength="200" value="my-model"' in bad_name.text
+    assert ">Typed role</textarea>" in bad_name.text
+    assert _agents_refusal(bad_edit, 422).startswith("Model")
+    assert ">Edited role</textarea>" in bad_edit.text
+    _agents_refusal(emptied_edit, 422)
+    assert f'id="session-writable-roots-{alpha}" name="writable_roots" maxlength="65536"></textarea>' in emptied_edit.text
+    assert 'name="role_instructions" maxlength="20000"></textarea>' in emptied_edit.text.split(f'/sessions/{alpha}/edit', 1)[1]
+    assert store.load_session(alpha).writable_roots == ["src"]
+    assert "Auto run is active" in _agents_refusal(locked_create, 409)
+    assert 'value="Beta"' in locked_create.text
+    assert "Auto run is active" in _agents_refusal(locked_delete, 409)
+    # Without return_to (the chat page) the answer is unchanged.
+    assert chat_page.status_code == 422 and "detail" in chat_page.json()
+    assert [s.name for s in store.list_sessions()] == ["Alpha"]
+    assert store.load_session(alpha).model == "sonnet"
+
+
+def test_a_refused_permanent_name_pops_up_on_the_agents_tab(tmp_path, monkeypatch) -> None:
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "named"
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register("Named", project_dir)
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    def active(_self) -> None:
+        raise ConflictError("an Auto run is active")
+
+    monkeypatch.setattr(ProjectStore, "require_auto_inactive", active)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(
+            f"{prefix}/sessions/{'a' * 32}/permanent-name",
+            data={"name": "Kept name", "return_to": "settings"},
+        )
+
+    assert "Auto run is active" in _agents_refusal(response, 409)
+
+
+def test_a_coding_form_without_a_text_field_keeps_its_saved_value(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.network_allowlist = ["example.org"]
+    policy.downloads = DownloadPolicy(
+        enabled=True, folder="raw", approval="automatic", model_check=True,
+        check_provider="codex", check_model="gpt-5.5-mini",
+    )
+    store.replace_coding_policy(policy)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        network = client.post(f"{prefix}/coding/network", data={}, follow_redirects=False)
+        downloads = client.post(
+            f"{prefix}/coding/downloads", data={"downloads_folder": "other"}, follow_redirects=False
+        )
+        emptied = client.post(
+            f"{prefix}/coding/network", data={"network_allowlist": ""}, follow_redirects=False
+        )
+
+    assert [r.status_code for r in (network, downloads, emptied)] == [303] * 3
+    saved = store.coding_policy()
+    assert saved.network_allowlist == []  # an emptied box is sent, and means no network
+    kept = saved.downloads
+    assert (kept.folder, kept.approval, kept.check_provider, kept.check_model) == (
+        "other", "automatic", "codex", "gpt-5.5-mini",
+    )
+    # Checkboxes are read as sent: an unticked box sends nothing.
+    assert (kept.enabled, kept.model_check) == (False, False)
+
+
+def test_a_network_form_without_its_field_keeps_the_allowlist(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    store.set_network_allowlist(["example.org"])
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding/network", data={}, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert store.coding_policy().network_allowlist == ["example.org"]
+
+
+def test_a_refused_downloads_save_keeps_every_field(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding/downloads", data={
+            "downloads_enabled": "true", "downloads_folder": "../out", "downloads_approval": "automatic",
+            "downloads_model_check": "true", "downloads_check_provider": "codex",
+            "downloads_check_model": "typed-model",
+        })
+
+    page = response.text
+    assert response.status_code == 422
+    assert 'name="downloads_enabled" value="true" checked' in page
+    assert 'name="downloads_model_check" value="true" checked' in page
+    assert '<option value="automatic" selected>' in page
+    assert '<option value="codex" selected>' in page
+    assert 'name="downloads_check_model" value="typed-model"' in page
+    assert 'name="downloads_folder" value="../out"' in page
+    assert ProjectStore(project).coding_policy().downloads.enabled is False
+
+
+@pytest.mark.parametrize("auto_active", [False, True])
+def test_every_docker_action_button_locks_live_with_auto(tmp_path, monkeypatch, auto_active) -> None:
+    def buttons(page: str) -> dict[str, str]:
+        found = {}
+        for label in ("Retry Docker", "Use local Docker (not isolated)", "Switch to a Lima VM", "Delete Docker VM"):
+            match = re.search(rf"<button[^>]*>{re.escape(label)}</button>", page)
+            if match:
+                found[label] = match.group(0)
+        return found
+
+    if auto_active:
+        monkeypatch.setattr(ProjectStore, "active_auto_run_id", lambda _self: "a" * 32)
+        monkeypatch.setattr(
+            ProjectStore, "load_auto_run", lambda _self, _id: types.SimpleNamespace(number=3)
+        )
+    controller = FakeDockerController()
+    app, project, _dir, prefix = docker_project(tmp_path, monkeypatch, controller)
+    store = ProjectStore(project)
+    store.set_coding_enabled(True)
+    pages = []
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        store.set_coding_docker(DockerPolicy(
+            enabled=True, backend="lima", status="error", error="boom", lima_instance="delibra-0123456789",
+        ))
+        controller.lima_available = False
+        pages.append(client.get(f"{prefix}/settings/coding").text)
+        store.set_coding_docker(DockerPolicy(
+            enabled=True, backend="local", status="ready", local_endpoint="/var/run/docker.sock",
+            local_acknowledged_at="t", docker_version="29.0.0", updated_at="t",
+        ))
+        controller.lima_available = True
+        pages.append(client.get(f"{prefix}/settings/coding").text)
+
+    found = {**buttons(pages[0]), **buttons(pages[1])}
+    assert sorted(found) == sorted(
+        ["Retry Docker", "Use local Docker (not isolated)", "Switch to a Lima VM", "Delete Docker VM"]
+    )
+    for label, button in found.items():
+        assert "data-disable-during-auto" in button, label
+        assert ("disabled" in button.replace("data-disable-during-auto", "")) is auto_active, label
+        assert ('data-auto-disabled="true"' in button) is auto_active, label
+
+
+def test_the_coding_tab_orders_its_sections(tmp_path, monkeypatch) -> None:
+    # User decision 2026-11-18: mode and its environment, Docker, guidance and
+    # skills, Git ignore list, downloads, network access.
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings/coding").text
+
+    markers = [
+        'id="coding-mode-heading"', 'class="coding-env-status"', 'id="docker-heading"',
+        'id="coding-guidance-heading"', 'id="coding-git-exclude-heading"',
+        'id="coding-downloads-heading"', 'id="coding-network-heading"',
+    ]
+    positions = [page.index(marker) for marker in markers]
+    assert positions == sorted(positions), list(zip(markers, positions))
+    mode_form_end = page.index("</form>", positions[0])
+    # The environment line sits right under the coding mode form.
+    assert page[mode_form_end + len("</form>"):positions[1]].strip().startswith("<p")
+
+
+def test_project_writable_roots_save_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    (project_dir / "out").mkdir()
+    store = ProjectStore(project)
+    before = store.manifest_path.read_bytes()
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        refused = client.post(f"{prefix}/writable-roots", data={"writable_roots": "out"},
+                              follow_redirects=False)
+        lan_page = client.get(f"{prefix}/settings").text
+    assert refused.status_code == 403
+    assert store.manifest_path.read_bytes() == before
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post(f"{prefix}/writable-roots", data={"writable_roots": "out"},
+                            follow_redirects=False)
+        local_page = client.get(f"{prefix}/settings").text
+    assert saved.status_code == 303
+    assert store.effective_writable_roots() == ["out"]
+
+    def section(page: str) -> str:
+        return page.split('id="writable-roots-heading"', 1)[1].split("</section>", 1)[0]
+
+    # A LAN viewer sees the list, why it cannot change it, and no live controls.
+    assert "Only this machine can change this list." in section(lan_page)
+    assert 'data-picker-target="project-writable-roots"' not in section(lan_page)
+    assert re.search(r'<textarea id="project-writable-roots"[^>]*readonly', section(lan_page))
+    assert '<button type="submit" disabled>Save writable roots</button>' in section(lan_page)
+    assert "Only this machine can change this list." not in section(local_page)
+    assert '<button type="submit">Save writable roots</button>' in section(local_page)
+
+
+def _agent_roots_app(tmp_path: Path):
+    app, settings = project_app(tmp_path)
+    project_dir = tmp_path / "roots"
+    (project_dir / "src").mkdir(parents=True)
+    (project_dir / "out").mkdir()
+    project = RegistryStore(settings.home).register("Roots", project_dir)
+    return app, project, ProjectStore(project), f"/projects/{quote(project.name, safe='')}"
+
+
+def test_agent_writable_roots_change_from_this_machine_only(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    form = {"agent": "claude", "model": "sonnet", "effort": "high"}
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        local_create = client.post(
+            f"{prefix}/sessions", data={**form, "name": "Alpha", "writable_roots": "src"},
+            follow_redirects=False,
+        )
+    alpha = store.list_sessions()[0]
+    before = store.load_session(alpha.id)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan_create_roots = client.post(
+            f"{prefix}/sessions", data={**form, "name": "Beta", "writable_roots": "out"},
+            follow_redirects=False,
+        )
+        lan_create_tick = client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "Gamma", "create_missing_writable_roots": "true", "return_to": "settings"},
+            follow_redirects=False,
+        )
+        lan_edit_roots = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "writable_roots": "out"}, follow_redirects=False,
+        )
+        lan_edit_emptied = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "writable_roots": ""}, follow_redirects=False,
+        )
+        lan_edit_tick = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "writable_roots": "src", "create_missing_writable_roots": "true"},
+            follow_redirects=False,
+        )
+        after_refusals = store.load_session(alpha.id)
+        lan_edit_same = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit",
+            data={"model": "opus", "role_instructions": "New role", "writable_roots": " src \n"},
+            follow_redirects=False,
+        )
+        lan_edit_without = client.post(
+            f"{prefix}/sessions/{alpha.id}/edit", data={"effort": "low"}, follow_redirects=False,
+        )
+        lan_create_plain = client.post(
+            f"{prefix}/sessions", data={**form, "name": "Delta", "writable_roots": ""},
+            follow_redirects=False,
+        )
+
+    assert local_create.status_code == 303 and alpha.writable_roots == ["src"]
+    refused = (lan_create_roots, lan_create_tick, lan_edit_roots, lan_edit_emptied, lan_edit_tick)
+    assert [r.status_code for r in refused] == [403] * 5
+    assert lan_create_roots.json()["detail"] == "Only this machine can change an agent's writable roots"
+    assert after_refusals == before  # nothing written
+    assert [r.status_code for r in (lan_edit_same, lan_edit_without, lan_create_plain)] == [303] * 3
+    saved = store.load_session(alpha.id)
+    assert (saved.model, saved.role_instructions, saved.effort) == ("opus", "New role", "low")
+    assert saved.writable_roots == ["src"] and saved.create_missing_writable_roots is False
+    assert sorted(s.name for s in store.list_sessions()) == ["Alpha", "Delta"]
+
+
+def test_a_lan_edit_keeps_the_agent_create_missing_tick(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data={
+            "name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high",
+            "writable_roots": "src", "create_missing_writable_roots": "true",
+        }, follow_redirects=False)
+    alpha = store.list_sessions()[0].id
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        # The LAN form has no checkbox, so the tick is absent but must not be cleared.
+        saved = client.post(
+            f"{prefix}/sessions/{alpha}/edit", data={"model": "opus", "writable_roots": "src"},
+            follow_redirects=False,
+        )
+    assert saved.status_code == 303
+    config = store.load_session(alpha)
+    assert (config.model, config.create_missing_writable_roots) == ("opus", True)
+
+
+def test_network_viewers_see_agent_roots_read_only(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data={
+            "name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high", "writable_roots": "src",
+        }, follow_redirects=False)
+        local_pages = [client.get(f"{prefix}/settings/agents").text, client.get(f"{prefix}/chat").text]
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan_pages = [client.get(f"{prefix}/settings/agents").text, client.get(f"{prefix}/chat").text]
+
+    hint = "Only this machine can change this list."
+    for page in lan_pages:
+        assert page.count(hint) == 2  # the create form and the agent's card
+        assert 'name="create_missing_writable_roots"' not in page
+        roots = re.findall(r'<textarea[^>]*name="writable_roots"[^>]*>', page)
+        assert len(roots) == 2 and all("readonly" in tag for tag in roots), roots
+        assert 'data-picker-target="new-session-writable-roots"' not in page
+        assert 'data-picker-target="session-writable-roots-' not in page
+    for page in local_pages:
+        assert hint not in page
+        assert page.count('name="create_missing_writable_roots"') == 2
+        assert all("readonly" not in tag for tag in re.findall(r'<textarea[^>]*name="writable_roots"[^>]*>', page))
+    assert 'data-picker-target="new-session-writable-roots"' in local_pages[0]
+
+
+def test_a_lan_agents_tab_roots_refusal_pops_up_and_keeps_the_input(tmp_path) -> None:
+    app, project, store, prefix = _agent_roots_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/sessions", data={
+            "name": "Alpha", "agent": "claude", "model": "sonnet", "effort": "high", "writable_roots": "src",
+        }, follow_redirects=False)
+    alpha = store.list_sessions()[0].id
+    before = store.load_session(alpha)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        # A stale tab still shows "out" after the roots changed here to "src".
+        stale_edit = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "typed-model", "writable_roots": "out", "return_to": "settings"},
+        )
+        create = client.post(f"{prefix}/sessions", data={
+            "name": "Beta", "agent": "claude", "model": "sonnet", "effort": "high",
+            "writable_roots": "out", "return_to": "settings",
+        })
+        chat_page = client.post(
+            f"{prefix}/sessions/{alpha}/edit", data={"model": "x", "writable_roots": "out"}
+        )
+        unchanged = store.load_session(alpha)
+        # The re-rendered (read-only) box shows the saved roots, so resending the
+        # page as it now stands saves the typed model.
+        shown_roots = re.search(
+            rf'id="session-writable-roots-{alpha}"[^>]*>([^<]*)</textarea>', stale_edit.text
+        ).group(1)
+        retry = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "typed-model", "writable_roots": shown_roots, "return_to": "settings"},
+            follow_redirects=False,
+        )
+
+    assert shown_roots == "src"
+    assert re.search(r'id="new-session-writable-roots"[^>]*></textarea>', create.text)
+    assert retry.status_code == 303
+    assert store.load_session(alpha).model == "typed-model"
+    for response in (stale_edit, create):
+        assert response.status_code == 403
+        assert "<div hidden data-page-alert>Nothing was saved: Only this machine can change an agent&#39;s writable roots</div>" in response.text
+        assert 'aria-current="page">Agents</a>' in response.text
+    assert 'value="typed-model"' in stale_edit.text
+    assert 'value="Beta"' in create.text
+    assert chat_page.status_code == 403
+    assert chat_page.json()["detail"] == "Only this machine can change an agent's writable roots"
+    assert unchanged == before
+    assert [s.name for s in store.list_sessions()] == ["Alpha"]

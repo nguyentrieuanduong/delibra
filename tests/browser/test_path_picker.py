@@ -37,9 +37,9 @@ def _set_preset_files(page: Any, row: int, value: str) -> None:
 
 
 def _save(page: Any) -> None:
-    # POST /settings answers 303 to /settings; wait for that page to load.
+    # POST /settings/presets answers 303 to /settings/presets; wait for that page to load.
     with page.expect_navigation():
-        page.click("button:has-text('Save global settings')")
+        page.click("button:has-text('Save presets')")
 
 
 @pytest.mark.browser
@@ -50,7 +50,7 @@ def test_choose_files_builds_a_fixed_list_that_save_stores(
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
     page.set_viewport_size({"width": 1400, "height": 1000})
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.fill("input[name='preset_name_0']", "suite")
     assert page.locator("textarea[name^='preset_']").count() == 0
 
@@ -87,7 +87,7 @@ def test_a_refused_save_keeps_the_chosen_files_and_marks_the_preset(
     monkeypatch.setenv("HOME", str(tmp_path))
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.click("[data-picker-target='preset-files-0']")
     dialog = page.locator("#path-picker")
     _settled(dialog, "picker-files").get_by_text("No files yet.").wait_for()
@@ -135,7 +135,7 @@ def test_choose_skills_fills_the_second_list(
     (tmp_path / "skills" / "tdd" / "references").mkdir()
     (tmp_path / "skills" / "tdd" / "references" / "r.md").write_text("ref\n")
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.fill("input[name='preset_name_0']", "suite")
     _set_preset_files(page, 0, "~/skills/a.md")
 
@@ -175,7 +175,7 @@ def test_remove_all_empties_the_list_in_one_click(
     monkeypatch.setenv("HOME", str(tmp_path))
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     _set_preset_files(page, 0, "~/skills/a.md\n~/skills/tdd/SKILL.md")
     page.click("[data-picker-target='preset-files-0']")
     dialog = page.locator("#path-picker")
@@ -200,7 +200,7 @@ def test_dialog_checkboxes_share_a_line_with_their_names(
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
     page.set_viewport_size({"width": 1400, "height": 1000})
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     _set_preset_files(page, 0, "~/skills/a.md")
     page.click("[data-picker-target='preset-files-0']")
     page.locator("#path-picker input[data-picker-value='~/skills/a.md']").wait_for()
@@ -259,7 +259,7 @@ def test_a_reopened_picker_never_shows_or_applies_an_earlier_listing(
     monkeypatch.setenv("HOME", str(tmp_path))
     _skills(tmp_path)
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     page.fill("input[name='preset_name_0']", "suite")
     _set_preset_files(page, 0, "~/skills/tdd/SKILL.md")
     _save(page)
@@ -327,7 +327,7 @@ def test_browse_adds_markdown_to_coding_guidance(
     (guides / "a.md").write_text("# A\n")
     (guides / "b.md").write_text("# B\n")
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    page.goto(f"{app['base_url']}/projects/Verify/settings/coding")
 
     page.click("[data-picker-target='coding-guidance-files']")
     dialog = page.locator("#path-picker")
@@ -345,10 +345,11 @@ def test_browse_adds_project_folders_to_writable_roots(
 ) -> None:
     app = live_server(["success"], tmp_path)
     (tmp_path / "project" / "src" / "app").mkdir(parents=True)
-    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    page.goto(f"{app['base_url']}/projects/Verify/settings/agents")
     edit_target = f"session-writable-roots-{app['session_ids'][0]}"
     assert page.locator(f"[data-picker-target='{edit_target}']").count() == 1
 
+    page.goto(f"{app['base_url']}/projects/Verify/settings")
     page.click("[data-picker-target='project-writable-roots']")
     dialog = page.locator("#path-picker")
     _open_folder(dialog, "src/")
@@ -367,11 +368,13 @@ def test_a_listing_opened_for_one_field_never_fills_another(
     (tmp_path / "guides" / "a.md").write_text("# A\n")
     app = live_server(["success"], tmp_path)
     (tmp_path / "project" / "src").mkdir(parents=True)
+    # General holds a /browse?mode=guidance field (chat skills) beside the
+    # project-folder field, so both listings can race on one page.
     page.goto(f"{app['base_url']}/projects/Verify/settings")
-    guidance_before = page.input_value("#coding-guidance-files")
+    guidance_before = page.input_value("#chat-skills")
     dialog = page.locator("#path-picker")
 
-    page.click("[data-picker-target='coding-guidance-files']")
+    page.click("[data-picker-target='chat-skills']")
     dialog.locator("[data-path-picker-add]").wait_for()
     dialog.get_by_role("button", name="Cancel").click()
 
@@ -387,7 +390,7 @@ def test_a_listing_opened_for_one_field_never_fills_another(
     dialog.locator("[data-path-picker-add]").click()
 
     assert page.input_value("#project-writable-roots").splitlines()[-1] == "src"
-    assert page.input_value("#coding-guidance-files") == guidance_before
+    assert page.input_value("#chat-skills") == guidance_before
 
 
 @pytest.mark.browser
@@ -399,7 +402,7 @@ def test_browse_adds_markdown_to_the_skills_box(
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# TDD\n")
     app = live_server(["success"], tmp_path)
-    page.goto(f"{app['base_url']}/projects/Verify/settings")
+    page.goto(f"{app['base_url']}/projects/Verify/settings/coding")
 
     page.click("[data-picker-target='coding-guidance-skills']")
     dialog = page.locator("#path-picker")

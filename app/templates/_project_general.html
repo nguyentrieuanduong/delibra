@@ -1,0 +1,73 @@
+{% from "_path_picker_macros.html" import browse_button, writable_roots_field %}
+{% from "_form_macros.html" import takes_effect %}
+<section aria-labelledby="turn-timeout-heading">
+  <h2 id="turn-timeout-heading">Default message turn time limit</h2>
+  {{ takes_effect("now") }}
+  <form method="post" action="{{ project_url(project.name, '/turn-timeout') }}">
+    <label>Seconds
+      <input
+        name="turn_timeout_seconds"
+        type="number"
+        min="1"
+        max="{{ max_turn_timeout_seconds }}"
+        value="{{ typed.get('turn_timeout_seconds', turn_timeout_seconds) }}"
+        required
+      >
+    </label>
+    <p class="hint">
+      {% if turn_timeout_inherited %}
+        Inherited application default. Saving creates a project default.
+      {% elif configured_turn_timeout_seconds != turn_timeout_seconds %}
+        Saved project default: {{ configured_turn_timeout_seconds }} seconds.
+        The current application cap limits new turns to {{ turn_timeout_seconds }} seconds.
+        Saving replaces the saved value with the displayed value.
+      {% else %}
+        Saved project default.
+      {% endif %}
+      New manual messages and new Auto runs use this value. Active turns are unchanged.
+    </p>
+    <button type="submit">Save turn time limit</button>
+  </form>
+</section>
+<section aria-labelledby="writable-roots-heading">
+  <h2 id="writable-roots-heading">Writable project directories</h2>
+  {{ takes_effect("next_turn") }}
+  <p>One project-relative directory per line. These defaults apply to every agent.</p>
+  <form method="post" action="{{ project_url(project.name, '/writable-roots') }}">
+    {{ writable_roots_field("Project writable roots", writable_roots_text, coding_local, create_missing_writable_roots,
+                            "project-writable-roots", project_url(project.name, "/browse")) }}
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save writable roots</button>
+  </form>
+</section>
+<section aria-labelledby="global-instruction-heading">
+  <h2 id="global-instruction-heading">Global instruction</h2>
+  {{ takes_effect("next_turn") }}
+  <form method="post" action="{{ project_url(project.name, '/global-instruction') }}">
+    <label class="auto-choice"><input type="checkbox" name="use_global_instruction" value="true"{% if use_global_instruction %} checked{% endif %}> Use the global instruction in this project</label>
+    <p class="hint">
+      {% if global_instruction_state == "set" %}Added before each agent's role instructions on every chat, discussion and build turn.
+      {% elif global_instruction_state == "empty" %}The global instruction is empty, so nothing is added.
+      {% else %}{{ global_instruction_state }}; turns are refused until it is fixed or switched off here.{% endif %}
+      {% if coding_local %}Edit it in <a href="/settings/instruction">Settings</a>.{% else %}It is edited on this machine's Settings page.{% endif %}
+    </p>
+    <button type="submit">Save</button>
+  </form>
+</section>
+<section aria-labelledby="chat-skills-heading">
+  <h2 id="chat-skills-heading">Skills for chat and discussion</h2>
+  {{ takes_effect("next_turn") }}
+  {% if not coding_local %}<p class="hint">Only this machine can change this list.</p>{% endif %}
+  <form method="post" action="{{ project_url(project.name, '/chat-skills') }}">
+    <label>Skills for chat and discussion
+      <textarea id="chat-skills" name="chat_skills" maxlength="262144">{{ chat_skills_text }}</textarea>
+    </label>
+    {% if coding_local %}{{ browse_button("/browse?mode=guidance", "chat-skills") }}{% endif %}
+    <p class="hint">Markdown files (a skill's SKILL.md with its references/ files) that chat replies and Auto discussion runs may read. Delibra keeps one copy in <code>.delibra/skills/chat/</code> and refreshes it when a file changes. Build runs use their own list under Coding. At most 512 files and 4 MB. One absolute path per line.</p>
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save skills</button>
+    {% for preset in guidance_presets if preset.skills %}
+    <button type="submit" name="chat_preset" value="{{ preset.name }}"{% if not coding_local %} disabled{% endif %}>Use {{ preset.name }} skills</button>
+    {% else %}
+    <p class="hint">{% if coding_local %}Add presets with skills in <a href="/settings/presets">Settings</a>.{% else %}Presets are set on this machine's Settings page.{% endif %}</p>
+    {% endfor %}
+  </form>
+</section>

@@ -102,18 +102,20 @@ def is_loopback_client(request: Request) -> bool:
     return _is_loopback(_address(peer) if peer else None)
 
 
-def require_loopback_client(request: Request) -> None:
-    """Gate actions that let agents run commands: this machine only.
+CODING_ONLY_HERE = "Only this machine may enable coding or start build runs"
+
+
+def require_loopback_client(
+    request: Request, reason: str = "Only this machine can change this setting"
+) -> None:
+    """Gate actions that widen what agents may do: this machine only.
 
     Delibra has no user authentication, so a LAN peer that may start a build
-    run could execute code as the operator.
+    run could execute code as the operator. `reason` is the 403's detail.
     """
 
     if not is_loopback_client(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Only this machine may enable coding or start build runs",
-        )
+        raise HTTPException(status_code=403, detail=reason)
 
 
 def _within(address: Address | None, networks: tuple[Network, ...]) -> bool:

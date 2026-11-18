@@ -27,7 +27,7 @@ test("a different file starts at the top", function () {
 });
 
 test("the same file re-rendered keeps its place", function () {
-  // Shared-context Use, Save and Stop sharing re-render the open file.
+  // A re-render of the open file (for example after Focus) keeps its place.
   const reader = container(".plans/a.md", 900);
   assert.equal(resetScrollForNewFile(reader, ".plans/a.md"), false);
   assert.equal(reader.scrollTop, 900);

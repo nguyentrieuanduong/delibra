@@ -473,3 +473,22 @@ async def test_the_folder_exclusion_ignores_letter_case(tmp_path: Path) -> None:
     state, warning = await commit_turn(root, state, "s", "b", "t", extra_excludes=excludes)
     assert warning is None
     assert git(root, "show", "--name-only", "--format=", "HEAD").split() == ["notes.md"]
+
+
+@pytest.mark.asyncio
+async def test_local_excludes_replace_the_file_whole_and_keep_its_mode(tmp_path) -> None:
+    # A build commit's `git ls-files --exclude-standard` may read the file at any
+    # moment, so it must see the old file or the new one, never a half-written one.
+    root = make_repo(tmp_path)
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.write_text("mine\n")
+    exclude.chmod(0o664)  # group-writable: the umask would drop that bit on a new file
+    before = exclude.stat().st_ino
+
+    await ensure_local_excludes(root)
+
+    after = exclude.stat()
+    assert after.st_ino != before
+    assert after.st_mode & 0o777 == 0o664
+    assert exclude.read_text().startswith("mine\n# >>> Delibra coding mode")
+    assert [p.name for p in exclude.parent.iterdir() if p.name != "exclude"] == []

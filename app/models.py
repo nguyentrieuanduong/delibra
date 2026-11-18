@@ -115,24 +115,6 @@ class SourceDescriptor:
 
 
 @dataclass(frozen=True)
-class SharedContextDescriptor:
-    path: str
-    staged_file: str
-    sha256: str
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SharedContextDescriptor":
-        return cls(
-            str(data["path"]),
-            str(data["staged_file"]),
-            str(data["sha256"]),
-        )
-
-    def to_dict(self) -> dict[str, str]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
 class AutoRoundDescriptor:
     auto_id: str
     phase: str
@@ -949,8 +931,7 @@ class ContextObservation:
 class ContextSummaryArtifact:
     """One session's durable context summary, owned by that session's directory.
 
-    Not a ``SharedContextDescriptor``: that type's ``staged_file`` denotes a
-    round-scoped input copy, while this outlives every round it summarizes and
+    Unlike a round's staged inputs, this outlives every round it summarizes and
     is re-staged, digest-checked, into each later turn.
     """
 
@@ -1304,7 +1285,6 @@ class RoundRecord:
     started_at: str
     finished_at: str | None
     source: SourceDescriptor
-    shared_context: SharedContextDescriptor | None = None
     retry_of: int | None = None
     auto: AutoRoundDescriptor | None = None
     timeout: TimeoutRecord | None = None
@@ -1327,11 +1307,6 @@ class RoundRecord:
             started_at=str(data["started_at"]),
             finished_at=data.get("finished_at"),
             source=SourceDescriptor.from_dict(data.get("source", {"type": "user"})),
-            shared_context=(
-                SharedContextDescriptor.from_dict(data["shared_context"])
-                if data.get("shared_context") is not None
-                else None
-            ),
             retry_of=(
                 int(data["retry_of"])
                 if data.get("retry_of") is not None
@@ -1364,10 +1339,6 @@ class RoundRecord:
         result["source"] = self.source.to_dict()
         if self.error_category is None:
             result.pop("error_category", None)
-        if self.shared_context is None:
-            result.pop("shared_context", None)
-        else:
-            result["shared_context"] = self.shared_context.to_dict()
         if self.retry_of is None:
             result.pop("retry_of", None)
         if self.auto is None:
@@ -1498,8 +1469,6 @@ class AutoRunRecord:
     topic: AutoArtifact
     baseline: AutoArtifact
     baseline_entries: list[AutoBaselineEntry]
-    shared_context: AutoArtifact | None
-    shared_context_source: str | None
     preparations: list[AutoTurn]
     discussion: list[AutoTurn]
     active_key: RunKey | None
@@ -1588,16 +1557,6 @@ class AutoRunRecord:
                 AutoBaselineEntry.from_dict(item)
                 for item in data.get("baseline_entries", [])
             ],
-            shared_context=(
-                AutoArtifact.from_dict(data["shared_context"])
-                if data.get("shared_context") is not None
-                else None
-            ),
-            shared_context_source=(
-                str(data["shared_context_source"])
-                if data.get("shared_context_source") is not None
-                else None
-            ),
             preparations=[
                 AutoTurn.from_dict(item) for item in data.get("preparations", [])
             ],
@@ -1725,12 +1684,6 @@ class AutoRunRecord:
             "topic": self.topic.to_dict(),
             "baseline": self.baseline.to_dict(),
             "baseline_entries": [item.to_dict() for item in self.baseline_entries],
-            "shared_context": (
-                self.shared_context.to_dict()
-                if self.shared_context is not None
-                else None
-            ),
-            "shared_context_source": self.shared_context_source,
             "preparations": [item.to_dict() for item in self.preparations],
             "discussion": [item.to_dict() for item in self.discussion],
             "active_key": self.active_key.to_dict() if self.active_key is not None else None,

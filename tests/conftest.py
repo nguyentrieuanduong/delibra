@@ -43,8 +43,6 @@ def reserve_auto_run():
             topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
             baseline=AutoArtifact("baseline.md", sha256(baseline).hexdigest()),
             baseline_entries=[],
-            shared_context=None,
-            shared_context_source=None,
             preparations=[],
             discussion=[],
             active_key=None,

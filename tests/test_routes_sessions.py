@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from pathlib import Path
 import sys
 from urllib.parse import parse_qs, quote, urlsplit
@@ -104,6 +103,7 @@ def seeded_client(
     *,
     observations: list[dict] | None = None,
     project_name: str = "Sessions",
+    local: bool = False,
 ):
     settings = Settings(home=tmp_path / "home")
     project_dir = tmp_path / "project"
@@ -119,7 +119,9 @@ def seeded_client(
             else None
         ),
     )
-    return TestClient(app, base_url="http://localhost"), project, ProjectStore(project)
+    # local: a loopback peer, for this-machine-only routes such as project writable roots.
+    peer = {"client": ("127.0.0.1", 5000)} if local else {}
+    return TestClient(app, base_url="http://localhost", **peer), project, ProjectStore(project)
 
 
 def create_session(client: TestClient, project_id: str, **overrides):
@@ -219,7 +221,7 @@ def test_create_session_validates_provider_specific_effort_and_renders_controls(
             client, project.id, role_instructions="x" * 20_001
         ).status_code == 422
 
-        page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        page = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
     sessions = store.list_sessions()
     assert {(item.agent, item.effort) for item in sessions} == {
         ("codex", "minimal"),
@@ -501,13 +503,11 @@ def test_delete_rejects_running_session_and_removes_idle_owned_session(
     assert not (store.sessions_root / "Researcher").exists()
 
 
-def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_files(
+def test_active_auto_reservation_blocks_session_mutations(
     tmp_path: Path,
     reserve_auto_run,
 ) -> None:
     client, project, store = seeded_client(tmp_path)
-    shared = Path(project.path) / "shared.md"
-    shared.write_text("Original shared context", encoding="utf-8")
     with client:
         first = created_session_id(create_session(client, project.id, name="Alpha"))
         create_session(client, project.id, name="Beta", agent="codex", effort="low")
@@ -524,24 +524,6 @@ def test_active_auto_reservation_blocks_session_mutations_but_allows_shared_file
             follow_redirects=False,
         ).status_code == 409
 
-        selected = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/select",
-            data={"path": "shared.md"},
-        )
-        assert selected.status_code == 200
-        saved = client.post(
-            f"/projects/{quote(project.name, safe='')}/files/shared/save",
-            data={
-                "path": "shared.md",
-                "expected_sha256": sha256(
-                    b"Original shared context"
-                ).hexdigest(),
-                "text": "Updated during Auto",
-            },
-        )
-        assert saved.status_code == 200
-
-    assert shared.read_text(encoding="utf-8") == "Updated during Auto"
     assert len(store.list_sessions()) == 2
 
 
@@ -627,7 +609,7 @@ def test_project_settings_explains_a_blocked_legacy_migration(
     create_legacy_session(store, legacy)
 
     with client:
-        response = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
 
     assert response.status_code == 200
     assert "agent name must be one directory component" in response.text
@@ -659,7 +641,7 @@ def test_project_settings_escapes_migration_issue_messages(
                 ),
             ),
         )
-        response = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        response = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
 
     assert response.status_code == 200
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
@@ -671,7 +653,7 @@ def test_session_writable_root_create_and_edit_reject_unavailable_candidates(
     tmp_path: Path,
     candidate_kind: str,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     candidate = "missing"
     if candidate_kind == "symlink":
         outside = tmp_path / "outside"
@@ -709,7 +691,7 @@ def test_session_writable_root_create_and_edit_reject_unavailable_candidates(
 def test_session_writable_root_create_rejects_seventeenth_effective_root(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     roots = [f"root-{index:02d}" for index in range(17)]
     for root in roots:
         (store.project_path / root).mkdir()
@@ -729,7 +711,7 @@ def test_session_writable_root_create_rejects_seventeenth_effective_root(
 def test_session_writable_roots_persist_clear_and_render_in_both_forms(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     for root in ("docs", "src"):
         (store.project_path / root).mkdir()
 
@@ -741,7 +723,7 @@ def test_session_writable_roots_persist_clear_and_render_in_both_forms(
         )
         session_id = created_session_id(created)
         settings_page = client.get(
-            f"/projects/{quote(project.name, safe='')}/settings"
+            f"/projects/{quote(project.name, safe='')}/settings/agents"
         )
         chat_page = client.get(f"/projects/{quote(project.name, safe='')}/chat")
         cleared = client.post(
@@ -761,7 +743,7 @@ def test_session_writable_root_edit_rejects_target_run_and_auto_but_not_other_ru
     tmp_path: Path,
     reserve_auto_run,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     (store.project_path / "src").mkdir()
     with client:
         target_id = created_session_id(
@@ -838,7 +820,7 @@ def test_deleted_project_writable_root_does_not_block_unrelated_agent_edit(
 def test_agent_writable_root_effective_change_controls_native_invalidation(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     (store.project_path / "src" / "api").mkdir(parents=True)
     (store.project_path / "tests").mkdir()
     with client:
@@ -881,7 +863,7 @@ def test_agent_writable_root_effective_change_controls_native_invalidation(
 def test_redundant_agent_writable_root_preserves_native_effective_session(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     (store.project_path / "src" / "api").mkdir(parents=True)
     store.set_writable_roots(["src"])
     with client:
@@ -906,7 +888,7 @@ def test_redundant_agent_writable_root_preserves_native_effective_session(
 def test_omitted_writable_roots_preserve_and_submitted_blank_clears(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     (store.project_path / "src").mkdir()
     with client:
         created = create_session(client, project.id, writable_roots="src")
@@ -941,7 +923,7 @@ def test_omitted_writable_roots_preserve_and_submitted_blank_clears(
 def test_project_writable_root_revocation_clears_only_changed_native_sessions(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     (store.project_path / "shared").mkdir()
     store.set_writable_roots(["shared"])
     with client:
@@ -980,7 +962,7 @@ def test_project_writable_root_revocation_clears_only_changed_native_sessions(
 def test_agent_writable_roots_tick_creates_missing_on_create_and_edit(
     tmp_path: Path,
 ) -> None:
-    client, project, store = seeded_client(tmp_path)
+    client, project, store = seeded_client(tmp_path, local=True)
     url = f"/projects/{quote(project.name, safe='')}"
 
     with client:
@@ -998,7 +980,7 @@ def test_agent_writable_roots_tick_creates_missing_on_create_and_edit(
         assert (store.project_path / "new" / "dir").is_dir()
         assert store.load_session(session_id).create_missing_writable_roots is True
 
-        settings_page = client.get(f"{url}/settings")
+        settings_page = client.get(f"{url}/settings/agents")
         chat_page = client.get(f"{url}/chat")
 
         # An edit that does not submit the roots leaves the tick alone.

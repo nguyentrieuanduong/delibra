@@ -32,7 +32,6 @@ from app.models import (
     RateLimitReading,
     RoundRecord,
     SessionConfig,
-    SharedContextDescriptor,
     SourceDescriptor,
     TurnUsage,
 )
@@ -47,7 +46,6 @@ from app.storage import (
     ConflictError,
     LockCoordinator,
     OwnershipError,
-    ProjectFileDisplayError,
     ProjectStore,
     RegistryStore,
     StorageError,
@@ -224,7 +222,6 @@ def create_runner_auto_record(
     session_id: str,
     *,
     status: str,
-    shared: bytes | None = None,
     agent: str = "fake",
 ) -> AutoRunRecord:
     second_id = "b" * 32
@@ -259,12 +256,6 @@ def create_runner_auto_record(
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(b"").hexdigest()),
         baseline_entries=[],
-        shared_context=(
-            AutoArtifact("shared-context.md", sha256(shared).hexdigest())
-            if shared is not None
-            else None
-        ),
-        shared_context_source="brief.md" if shared is not None else None,
         preparations=[],
         discussion=[],
         active_key=None,
@@ -281,7 +272,6 @@ def create_runner_auto_record(
         record,
         topic=topic,
         baseline=b"",
-        shared_context=shared,
     )
     store.publish_auto_reservation(record.id)
     return record
@@ -302,12 +292,6 @@ def auto_run_request(
         context_source=run_dir / "topic.md",
         context_root=run_dir,
         context_sha256=record.topic.sha256,
-        shared_source=(run_dir / "shared-context.md" if record.shared_context else None),
-        shared_root=(run_dir if record.shared_context else None),
-        shared_path=record.shared_context_source,
-        shared_sha256=(
-            record.shared_context.sha256 if record.shared_context is not None else None
-        ),
         execution_prompt="Read inputs/round-01/auto-context.md and respond.",
         initial_timeout_seconds=2,
         preserve_native_session=True,
@@ -327,16 +311,11 @@ async def test_auto_run_stages_only_verified_frozen_inputs_and_preserves_native_
     config = store.load_session(session_id)
     config.cli_session_id = "preserved-native-session"
     store.save_session(config)
-    frozen_shared = b"Frozen shared bytes"
     auto_record = create_runner_auto_record(
         store,
         session_id,
         status="preparing",
-        shared=frozen_shared,
     )
-    current_shared = store.project_path / "brief.md"
-    current_shared.write_bytes(b"Changed project bytes")
-    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
 
     async with manager.locks.registry_project_sessions(project_id, [session_id]):
         key = await manager.start_auto_locked(
@@ -347,7 +326,6 @@ async def test_auto_run_stages_only_verified_frozen_inputs_and_preserves_native_
     record = await manager.wait(key)
 
     staged_context = Path("inputs/round-01/auto-context.md")
-    staged_shared = Path("inputs/round-01/shared-context.md")
     assert contexts[0].resume_strategy == "stateless"
     assert contexts[0].resume_id is None
     assert contexts[0].staged_history == []
@@ -355,7 +333,7 @@ async def test_auto_run_stages_only_verified_frozen_inputs_and_preserves_native_
     assert (store.workspace_dir(session_id) / staged_context).read_bytes() == (
         b"Frozen Auto context"
     )
-    assert (store.workspace_dir(session_id) / staged_shared).read_bytes() == frozen_shared
+    assert not (store.workspace_dir(session_id) / "inputs/round-01/shared-context.md").exists()
     assert record.source.type == "auto"
     assert record.auto == AutoRoundDescriptor(
         auto_id=auto_record.id,
@@ -569,51 +547,6 @@ async def test_manual_round_snapshots_the_project_turn_timeout(
         await manager.cancel(key)
 
 
-@pytest.mark.asyncio
-async def test_run_stages_and_records_selected_shared_context(tmp_path: Path) -> None:
-    contexts: list[RunContext] = []
-    manager, project_id, session_id, store = setup_manager(
-        tmp_path,
-        contexts=contexts,
-    )
-    source = store.project_path / "brief.md"
-    source.write_text("Standing rule\n", encoding="utf-8")
-    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
-
-    record = await manager.wait(
-        await manager.start(project_id, session_id, "Question")
-    )
-
-    staged = Path("inputs/round-01/shared-context.md")
-    assert contexts[0].staged_shared_context == staged
-    assert (store.workspace_dir(session_id) / staged).read_bytes() == b"Standing rule\n"
-    assert record.shared_context == SharedContextDescriptor(
-        path="brief.md",
-        staged_file=staged.as_posix(),
-        sha256=sha256(b"Standing rule\n").hexdigest(),
-    )
-
-
-@pytest.mark.asyncio
-async def test_missing_selected_context_creates_no_round_or_input(
-    tmp_path: Path,
-) -> None:
-    manager, project_id, session_id, store = setup_manager(tmp_path)
-    source = store.project_path / "brief.md"
-    source.write_text("context", encoding="utf-8")
-    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
-    source.unlink()
-
-    with pytest.raises(ProjectFileDisplayError):
-        await manager.start(project_id, session_id, "Question")
-
-    assert store.load_session(session_id).rounds == []
-    assert not (store.workspace_dir(session_id) / "inputs" / "round-01").exists()
-    rounds = store.rounds_dir(session_id)
-    assert not (rounds / "round-01.prompt.md").exists()
-    assert not (rounds / "round-01.partial.md").exists()
-
-
 @pytest.mark.parametrize("stale_kind", ["deleted", "symlink"])
 @pytest.mark.asyncio
 async def test_stale_writable_root_fails_before_quota_adapter_or_round(
@@ -723,9 +656,6 @@ async def test_retry_appends_stateless_round_and_clears_ambiguous_native_state(
         mode="provider-error",
         contexts=contexts,
     )
-    shared_file = store.project_path / "brief.md"
-    shared_file.write_text("old requirements", encoding="utf-8")
-    store.select_shared_markdown("brief.md", manager.settings.file_view_limit)
     failed = await manager.wait(
         await manager.start(project_id, session_id, "Original")
     )
@@ -734,14 +664,6 @@ async def test_retry_appends_stateless_round_and_clears_ambiguous_native_state(
     assert persisted.cli_session_id == "fake-native-session"
     persisted.model = "success"
     store.save_session(persisted)
-    current = store.read_selected_shared_markdown(manager.settings.file_view_limit)
-    assert current is not None
-    store.save_shared_markdown(
-        "brief.md",
-        current.sha256,
-        "new requirements",
-        manager.settings.file_view_limit,
-    )
 
     retried = await manager.wait(
         await manager.retry(project_id, session_id, failed.n)
@@ -757,12 +679,6 @@ async def test_retry_appends_stateless_round_and_clears_ambiguous_native_state(
     assert (
         store.rounds_dir(session_id) / "round-01.prompt.md"
     ).read_text() == "Original"
-    shared_snapshot = (
-        store.workspace_dir(session_id) / "inputs/round-02/shared-context.md"
-    )
-    assert shared_snapshot.read_text(encoding="utf-8") == "new requirements"
-    assert retried.shared_context is not None
-    assert retried.shared_context.sha256 == sha256(b"new requirements").hexdigest()
 
 
 def test_subprocess_environment_does_not_inherit_server_secrets(
@@ -2754,3 +2670,60 @@ async def test_a_failed_turn_logs_a_warning_without_its_text(tmp_path, caplog) -
         f"category {record.error_category}"
     ) in lines
     assert not any("SECRET" in line for line in lines)
+
+
+def _save_roots_mid_turn(monkeypatch: pytest.MonkeyPatch, store: ProjectStore, roots: list[str]) -> None:
+    """Save project writable roots while the turn's process streams (no lock held)."""
+
+    real = FakeAdapter.parse_line
+    done: list[bool] = []
+
+    def parse_line(self, line):
+        if not done:
+            done.append(True)
+            store.set_writable_roots(roots)
+        return real(self, line)
+
+    monkeypatch.setattr(FakeAdapter, "parse_line", parse_line)
+
+
+@pytest.mark.asyncio
+async def test_a_roots_save_during_a_turn_still_resets_the_native_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    (store.project_path / "out").mkdir()
+    first = await manager.wait(await manager.start(project_id, session_id, "One"))
+    assert first.status == "complete"
+    assert store.load_session(session_id).cli_session_id is not None
+
+    _save_roots_mid_turn(monkeypatch, store, ["out"])
+    second = await manager.wait(await manager.start(project_id, session_id, "Two"))
+    assert second.status == "complete"
+    # The id this turn returned was made with the old roots: never resumed.
+    assert store.load_session(session_id).cli_session_id is None
+
+    await manager.wait(await manager.start(project_id, session_id, "Three"))
+    assert contexts[-1].resume_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_roots_save_during_an_auto_turn_still_resets_the_native_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, project_id, session_id, store = setup_manager(tmp_path)
+    (store.project_path / "out").mkdir()
+    config = store.load_session(session_id)
+    config.cli_session_id = "preserved-native-session"
+    store.save_session(config)
+    auto_record = create_runner_auto_record(store, session_id, status="preparing")
+
+    _save_roots_mid_turn(monkeypatch, store, ["out"])
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(
+            project_id, session_id, auto_run_request(store, auto_record, phase="preparation")
+        )
+    await manager.wait(key)
+
+    assert store.load_session(session_id).cli_session_id is None

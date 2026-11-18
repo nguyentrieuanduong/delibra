@@ -798,7 +798,8 @@ function syncAutoDisabledControls(documentRoot) {
   if (!documentRoot || typeof documentRoot.querySelector !== "function") {
     return false;
   }
-  const status = documentRoot.querySelector("#auto-status");
+  // The chat page has #auto-status; settings pages poll #settings-lock.
+  const status = documentRoot.querySelector("#auto-status, #settings-lock");
   const active = Boolean(status && status.dataset.autoActive === "true");
   documentRoot.querySelectorAll("[data-disable-during-auto]").forEach(function (control) {
     if (active) {
@@ -1507,8 +1508,28 @@ function streamRetryDelay(attempts) {
   return Math.min(STREAM_RETRY_MAX_MS, 1000 * 2 ** count);
 }
 
+// Settings tabs are separate pages: leaving one with an edited, unsent form
+// would lose the edit, so the browser asks first (design 2026-11-15).
+function formSnapshot(form) {
+  return Array.prototype.map
+    .call(form.elements || [], function (element) {
+      const kind = element.type || "";
+      const value = kind === "checkbox" || kind === "radio" ? String(element.checked) : String(element.value || "");
+      return (element.name || "") + "=" + value;
+    })
+    .join("\n");
+}
+
+function settingsFormsDirty(forms, snapshots, submitting) {
+  return Array.prototype.some.call(forms, function (form) {
+    return form !== submitting && snapshots.has(form) && snapshots.get(form) !== formSnapshot(form);
+  });
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    formSnapshot,
+    settingsFormsDirty,
     alertDownloadsError,
     newerDownloadsRevision,
     openDownloadsPanelForNew,
@@ -1600,6 +1621,24 @@ if (typeof document !== "undefined") {
   const streamRetries = new WeakMap();
 
   initializeDynamicPresentation(document);
+
+  if (document.body && document.body.classList.contains("settings-page")) {
+    const settingsForms = document.querySelectorAll("main form[method='post']");
+    const settingsSnapshots = new Map();
+    settingsForms.forEach(function (form) {
+      settingsSnapshots.set(form, formSnapshot(form));
+    });
+    let submittingForm = null;
+    document.addEventListener("submit", function (event) {
+      submittingForm = event.target;
+    });
+    window.addEventListener("beforeunload", function (event) {
+      if (settingsFormsDirty(settingsForms, settingsSnapshots, submittingForm)) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    });
+  }
 
   const disclosureStorage = browserStorage(window);
   const applyAgentChoices = function () {

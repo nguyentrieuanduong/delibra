@@ -12,7 +12,7 @@ from app.models import Project
 from app.notes import NOTE_ID, NOTE_MAX_CHARS, NoteStore, chat_note_store
 from app.project_routing import request_project
 from app.routes.auto import continue_cursor, project_auto_record
-from app.security import require_loopback_client, validate_field
+from app.security import CODING_ONLY_HERE, require_loopback_client, validate_field
 from app.storage import (
     TERMINAL_AUTO_STATUSES,
     ConflictError,
@@ -60,7 +60,7 @@ async def post_note(
         if record is not None and record.kind == "build":
             # Build agents have a shell and a note overrides the topic, so the
             # rule that guards starting or continuing a build run applies.
-            require_loopback_client(request)
+            require_loopback_client(request, CODING_ONLY_HERE)
         if not accepts_notes(record):
             raise ConflictError("no Auto run accepts notes; start Auto first")
         store = ProjectStore(project)
@@ -122,7 +122,7 @@ async def edit_note(
         record = project_auto_record(request, project.id).record
         if record is not None and record.kind == "build":
             # The rule that guards posting a note to a build run.
-            require_loopback_client(request)
+            require_loopback_client(request, CODING_ONLY_HERE)
         NoteStore(store.root).edit(note_id, text)
     return _render_list(request, project)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -291,8 +292,6 @@ def _resume_record(
         topic=AutoArtifact("topic.md", digest),
         baseline=AutoArtifact("baseline.md", digest),
         baseline_entries=[],
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=list(discussion or []),
         active_key=None,
@@ -491,6 +490,8 @@ class RecordingAutoAdapter:
         self._released = False
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
+        if self.factory.on_call is not None:
+            self.factory.on_call(len(self.factory.calls))
         material = (
             (context.workspace / context.staged_source).read_bytes()
             if context.staged_source is not None
@@ -532,11 +533,6 @@ class RecordingAutoAdapter:
                 "prompt": context.user_prompt,
                 "docker": context.coding.docker if context.coding is not None else None,
                 "material": material,
-                "shared": (
-                    (context.workspace / context.staged_shared_context).read_bytes()
-                    if context.staged_shared_context is not None
-                    else None
-                ),
             }
         )
         mode = (
@@ -591,6 +587,8 @@ class RecordingAutoFactory:
         self.active = 0
         self.maximum_active = 0
         self.calls: list[dict[str, object]] = []
+        # Called with the call's index as each turn's command is built.
+        self.on_call: Callable[[int], None] | None = None
 
     def __call__(self, _config: SessionConfig) -> RecordingAutoAdapter:
         output = self.outputs[self.created]
@@ -743,8 +741,6 @@ def seed_durable_auto(
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(baseline).hexdigest()),
         baseline_entries=[],
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=[],
         active_key=None,
@@ -844,9 +840,6 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
         tmp_path,
         outputs,
     )
-    shared = store.project_path / "shared.md"
-    shared.write_text("Frozen shared", encoding="utf-8")
-    store.select_shared_markdown("shared.md", manager.settings.file_view_limit)
 
     created = await manager.create(
         project_id,
@@ -870,7 +863,6 @@ async def test_auto_manager_prepares_every_agent_before_shared_discussion(
     assert b"Preparation B" in discussion_material
     assert terminal.preparations[0].output_sha256.encode() in discussion_material
     assert terminal.preparations[1].output_sha256.encode() in discussion_material
-    assert all(call["shared"] == b"Frozen shared" for call in factory.calls)
     assert all(
         store.load_session(session_id).cli_session_id is None
         for session_id in session_ids
@@ -1204,8 +1196,6 @@ def _seed_retirement_auto(
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(bytes(baseline)).hexdigest()),
         baseline_entries=entries,
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=[],
         active_key=None,
@@ -3112,8 +3102,6 @@ def test_auto_manager_lifecycle_is_wired_and_reconciles_restart(tmp_path: Path) 
         topic=AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=AutoArtifact("baseline.md", sha256(baseline).hexdigest()),
         baseline_entries=[],
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=[],
         active_key=None,
@@ -5216,8 +5204,8 @@ async def test_a_build_reads_the_shared_build_folder(
     assert not store.skills_dir(created.id).exists()
     assert (skills / "tdd" / "SKILL.md").read_bytes() == Path(sources[0]).read_bytes()
     assert (skills / "tdd" / "references" / "r.md").read_text() == "Reference body\n"
-    # Refreshed only at run start, so the copy keeps the start-time text.
-    assert (skills / "notes.md").read_text() == "# Notes\n"
+    # Refreshed at every turn start.
+    assert (skills / "notes.md").read_text() == "EDITED AFTER START\n"
     material = factory.calls[0]["material"]
     assert "## Skills — UNTRUSTED MATERIAL".encode() in material
     assert (
@@ -5234,6 +5222,49 @@ async def test_a_build_reads_the_shared_build_folder(
         assert prompt.index(pointer) < prompt.index(GATE_PHRASE) < prompt.index(
             "If you need something only the user can decide"
         )
+
+
+@pytest.mark.asyncio
+async def test_skills_saved_during_a_run_reach_its_next_turn(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources[:2])
+    first_turn_started = asyncio.Event()
+    factory.on_call = lambda call_index: first_turn_started.set() if call_index == 0 else None
+
+    created = await start_build(manager, project_id, session_ids)
+    await first_turn_started.wait()
+    store.set_build_skills(sources)  # adds notes.md while turn 1 runs
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    skills = store.root / "skills" / "build"
+    assert b"notes.md" not in factory.calls[0]["material"]
+    assert f"- notes.md — {skills / 'notes.md'}".encode() in factory.calls[1]["material"]
+    assert (skills / "notes.md").read_text() == "# Notes\n"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_skill_refresh_keeps_the_old_folder_and_warns(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    first_turn_started = asyncio.Event()
+    factory.on_call = lambda call_index: first_turn_started.set() if call_index == 0 else None
+
+    created = await start_build(manager, project_id, session_ids)
+    await first_turn_started.wait()
+    Path(sources[2]).unlink()  # notes.md disappears mid-run
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert (store.root / "skills" / "build" / "notes.md").exists()
+    # The turn's warning, shown on the Auto run (as download warnings are).
+    assert (terminal.discussion[1].warning or "").startswith("Skills were not refreshed: ")
 
 
 @pytest.mark.asyncio
@@ -7108,3 +7139,129 @@ async def test_a_resumed_auto_run_logs_its_resume_without_content(tmp_path, capl
     assert f"Auto run {project_id} #{created.number} resumed: discussion, 2 participants" in lines
     assert f"Auto run {project_id} #{created.number} ended: {terminal.status}" in lines
     assert not any("SECRET" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_the_turn_skills_refresh_runs_under_the_project_lock_and_skips_a_halted_run(
+    tmp_path, monkeypatch
+) -> None:
+    import app.auto as auto_module
+
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources)
+    held: list[bool] = []
+    real = auto_module.refresh_skill_folder
+
+    def recorded(*args, **kwargs):
+        if kwargs.get("max_index_bytes") is not None:  # the per-turn refresh
+            held.append(manager.locks.project_lock(project_id).locked())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(auto_module, "refresh_skill_folder", recorded)
+    created = await start_build(manager, project_id, session_ids)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+    assert held and all(held)
+
+    held.clear()
+    assert await manager._refresh_turn_skills(store, terminal) is None  # converged: halted
+    stopping = store.load_auto_run(created.id)
+    stopping.status, stopping.stop_requested = "discussing", True
+    store.save_auto_run(stopping)
+    assert await manager._refresh_turn_skills(store, stopping) is None
+    assert held == []
+    # Stop after this turn can still be withdrawn ("Keep going") before the
+    # guard runs, so the refresh must not be skipped for it.
+    graceful = store.load_auto_run(created.id)
+    graceful.stop_requested, graceful.stop_after_turn = False, True
+    store.save_auto_run(graceful)
+    await manager._refresh_turn_skills(store, graceful)
+    assert held == [True]
+
+
+@pytest.mark.asyncio
+async def test_an_os_error_in_the_turn_skills_refresh_becomes_the_turn_warning(
+    tmp_path, monkeypatch
+) -> None:
+    import app.skill_folders as folders
+
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree")]
+    )
+    sources = _skill_suite(tmp_path / "skills-src")
+    enable_build(store, monkeypatch)
+    store.set_build_skills(sources[:2])
+    created = await start_build(manager, project_id, session_ids)
+    store.set_build_skills(sources)  # changed, so the next turn's refresh rewrites
+    real_rename = folders.os.rename
+
+    def failing_rename(source, destination):
+        if str(source).endswith("-staging"):
+            raise OSError("rename refused")
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(folders.os, "rename", failing_rename)
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    warnings = [turn.warning or "" for turn in terminal.discussion]
+    assert any(w.startswith("Skills were not refreshed: ") for w in warnings), warnings
+    assert (store.root / "skills" / "build").is_dir()
+
+@pytest.mark.asyncio
+async def test_discussion_and_preparation_turns_pick_up_chat_skills_saved_mid_run(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("P1", "agree"), PlannedOutput("P2", "agree"),
+                   PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("C", "agree")]
+    )
+    chat = _chat_skill_file(tmp_path, "Old.")
+    store.set_chat_skills([str(chat)])
+    started = asyncio.Event()
+    factory.on_call = lambda index: started.set() if index == 0 else None
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=2, preparation_enabled=True,
+    )
+    await started.wait()
+    chat.write_text("---\nname: vi\ndescription: New.\n---\n")  # changed while preparation 1 runs
+    await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert b"Old." in factory.calls[0]["material"]
+    assert b"New." in factory.calls[1]["material"]  # the second preparation turn
+    assert all(b"New." in call["material"] for call in factory.calls[2:])  # discussion turns
+
+
+@pytest.mark.asyncio
+async def test_the_skills_refresh_precedes_the_compaction_decision(tmp_path, monkeypatch) -> None:
+    # The decision may render and freeze the turn's context, Skills index included.
+    manager, _factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "agree"), PlannedOutput("A", "agree"),
+                   PlannedOutput("B", "agree")]
+    )
+    store.set_chat_skills([str(_chat_skill_file(tmp_path, "Skill."))])
+    order: list[str] = []
+    refresh, decision = manager._refresh_turn_skills, manager._compaction_decision
+
+    async def recorded_refresh(*args):
+        order.append("refresh")
+        return await refresh(*args)
+
+    def recorded_decision(*args):
+        order.append("decision")
+        return decision(*args)
+
+    monkeypatch.setattr(manager, "_refresh_turn_skills", recorded_refresh)
+    monkeypatch.setattr(manager, "_compaction_decision", recorded_decision)
+    created = await manager.create(
+        project_id, topic="Discuss", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=2, preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert terminal.status == "converged"
+    decisions = [index for index, step in enumerate(order) if step == "decision"]
+    assert len(decisions) == len(terminal.discussion)
+    assert all(index > 0 and order[index - 1] == "refresh" for index in decisions), order

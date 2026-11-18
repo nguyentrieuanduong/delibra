@@ -50,7 +50,6 @@ from app.models import (
     RoundRecord,
     RunKey,
     SessionConfig,
-    SharedContextDescriptor,
     SourceDescriptor,
     TimeoutExtensionRecord,
     TimeoutRecord,
@@ -72,6 +71,7 @@ from app.storage import (
     atomic_write_text,
     ensure_owned_directory,
     first_unsafe_writable_root_character,
+    merge_writable_roots,
     read_codex_rollout_state,
     read_latest_codex_rollout_state,
     safe_copy_file,
@@ -142,6 +142,10 @@ class ActiveRun:
     # A chat reply's turn-start notes view; None for Auto and compaction turns.
     chat_notes_seen: tuple[str, ...] | None = None
     resumed: bool = False
+    # The effective writable roots (project-relative) this turn started with.
+    # Roots may be saved mid-turn (design 2026-11-15), which resets the native
+    # session on disk; finalize must not write the old id back.
+    start_roots: tuple[str, ...] | None = None
     task: asyncio.Task[None] | None = None
     captured: bytearray = field(default_factory=bytearray)
     stderr_tail: bytearray = field(default_factory=bytearray)
@@ -198,10 +202,6 @@ class AutoRunRequest:
     context_source: Path
     context_root: Path
     context_sha256: str
-    shared_source: Path | None
-    shared_root: Path | None
-    shared_path: str | None
-    shared_sha256: str | None
     execution_prompt: str
     initial_timeout_seconds: int
     preserve_native_session: bool
@@ -455,31 +455,6 @@ class RunManager:
             request.context_source.resolve(strict=True).relative_to(run_dir)
         except (OSError, ValueError) as exc:
             raise OwnershipError("Auto context source is invalid") from exc
-        shared_values = (
-            request.shared_source,
-            request.shared_root,
-            request.shared_path,
-            request.shared_sha256,
-        )
-        if any(value is not None for value in shared_values):
-            if any(value is None for value in shared_values):
-                raise StorageError("Auto shared context is incomplete")
-            assert request.shared_source is not None
-            assert request.shared_root is not None
-            assert request.shared_sha256 is not None
-            if record.shared_context is None or (
-                request.shared_path != record.shared_context_source
-                or request.shared_sha256 != record.shared_context.sha256
-            ):
-                raise ConflictError("Auto shared context changed")
-            if request.shared_root.resolve(strict=True) != run_dir:
-                raise OwnershipError("Auto shared context root is invalid")
-            try:
-                request.shared_source.resolve(strict=True).relative_to(run_dir)
-            except (OSError, ValueError) as exc:
-                raise OwnershipError("Auto shared context source is invalid") from exc
-        elif record.shared_context is not None:
-            raise StorageError("Auto shared context is incomplete")
         return record
 
     async def retry(
@@ -635,6 +610,7 @@ class RunManager:
 
         # Re-creates flagged missing roots first (design 2026-11-09).
         writable_roots = store.prepare_session_writable_roots(session_id)
+        start_roots = self._effective_roots(store, config)
         # Read per turn, so a Settings edit reaches the next turn, running
         # Auto runs included (design 2026-11-03). Before allocate_round: an
         # unreadable file refuses the turn without leaving a round behind.
@@ -694,8 +670,6 @@ class RunManager:
             resume_id = config.cli_session_id
         staged_history: list[Path] = []
         staged_source: Path | None = None
-        staged_shared_context: Path | None = None
-        shared_context: SharedContextDescriptor | None = None
         execution_prompt = request.prompt
         record_source = SourceDescriptor(
             type="compact" if request.compact else "user"
@@ -738,28 +712,6 @@ class RunManager:
                     source_sha256=digest,
                 )
                 execution_prompt = auto_request.execution_prompt
-                if auto_request.shared_source is not None:
-                    assert auto_request.shared_root is not None
-                    assert auto_request.shared_path is not None
-                    assert auto_request.shared_sha256 is not None
-                    staged_shared_context = (
-                        Path("inputs")
-                        / f"round-{round_n:02d}"
-                        / "shared-context.md"
-                    )
-                    shared_digest = safe_copy_file(
-                        auto_request.shared_source,
-                        auto_request.shared_root,
-                        workspace / staged_shared_context,
-                        input_root,
-                    )
-                    if shared_digest != auto_request.shared_sha256:
-                        raise ConflictError("Auto shared context digest changed")
-                    shared_context = SharedContextDescriptor(
-                        path=auto_request.shared_path,
-                        staged_file=staged_shared_context.as_posix(),
-                        sha256=shared_digest,
-                    )
             elif request.compact:
                 input_root, staged_history = self._stage_compaction_input(
                     store,
@@ -771,34 +723,6 @@ class RunManager:
                     store,
                     config,
                     round_n,
-                )
-            shared_document = (
-                None
-                if auto_request is not None or request.compact
-                # A compaction summarizes this conversation only; folding in a
-                # project document would summarize something nobody sent.
-                else store.read_selected_shared_markdown(
-                    self.settings.file_view_limit
-                )
-            )
-            if auto_request is None and shared_document is not None:
-                if input_root is None:
-                    input_root = self._create_input_root(
-                        store,
-                        session_id,
-                        round_n,
-                    )
-                staged_shared_context = (
-                    Path("inputs") / f"round-{round_n:02d}" / "shared-context.md"
-                )
-                atomic_write_bytes(
-                    workspace / staged_shared_context,
-                    shared_document.text.encode("utf-8"),
-                )
-                shared_context = SharedContextDescriptor(
-                    path=shared_document.relative_path,
-                    staged_file=staged_shared_context.as_posix(),
-                    sha256=shared_document.sha256,
                 )
             if auto_request is None and request.expected_source_sha256 is not None:
                 retry_source = request.source
@@ -894,7 +818,6 @@ class RunManager:
             staged_history=staged_history,
             staged_source=staged_source,
             workspace=workspace,
-            staged_shared_context=staged_shared_context,
             writable_roots=writable_roots,
             project_root=(
                 store.project_path
@@ -951,7 +874,6 @@ class RunManager:
             started_at=utc_now(),
             finished_at=None,
             source=record_source,
-            shared_context=shared_context,
             retry_of=request.retry_of,
             auto=(
                 AutoRoundDescriptor(
@@ -1020,6 +942,7 @@ class RunManager:
             chat_notes_seen=chat_notes_seen,
             resumed=resume_id is not None,
             warnings=list(record.warnings),
+            start_roots=start_roots,
         )
         self._active[key] = active
         try:
@@ -1931,6 +1854,15 @@ class RunManager:
             if not active.completion.done():
                 active.completion.set_exception(exc)
 
+    @staticmethod
+    def _effective_roots(store: ProjectStore, config: SessionConfig) -> tuple[str, ...] | None:
+        """Project plus agent roots; None when they cannot be read (treated as changed)."""
+
+        try:
+            return tuple(merge_writable_roots(store.effective_writable_roots(), config.writable_roots))
+        except (StorageError, OSError):
+            return None
+
     async def _finalize_locked(
         self,
         active: ActiveRun,
@@ -2047,6 +1979,11 @@ class RunManager:
             # summarization request, so a failed compaction that adopted it
             # would silently rebind the conversation to that request.
             active.config.cli_session_id = active.cli_session_id
+        current_roots = self._effective_roots(active.store, active.config)
+        if current_roots is None or current_roots != active.start_roots:
+            # The provider session (old or just returned) was made with other
+            # roots; the next turn starts a fresh one, as a save between turns does.
+            active.config.cli_session_id = None
         if active.compact and status == "complete":
             # Before the save, so the artifact and the new boundary commit
             # together or not at all.

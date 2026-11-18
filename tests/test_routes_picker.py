@@ -199,9 +199,13 @@ def test_browse_buttons_follow_who_may_browse(tmp_path) -> None:
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         index = client.get("/").text
         settings_page = client.get("/projects/Proj/settings").text
+        coding_page = client.get("/projects/Proj/settings/coding").text
+        agents_page = client.get("/projects/Proj/settings/agents").text
     with TestClient(app, base_url="http://localhost", client=LAN) as client:
         lan_index = client.get("/").text
         lan_settings = client.get("/projects/Proj/settings").text
+        lan_coding = client.get("/projects/Proj/settings/coding").text
+        lan_agents = client.get("/projects/Proj/settings/agents").text
 
     assert 'data-picker-url="/browse?mode=folder" data-picker-target="register-path"' in index
     assert 'data-picker-target="rebind-path-0"' in index
@@ -209,18 +213,21 @@ def test_browse_buttons_follow_who_may_browse(tmp_path) -> None:
     assert 'id="path-picker"' in index
     assert (
         'data-picker-url="/browse?mode=guidance" data-picker-target="coding-guidance-files"'
-    ) in settings_page
+    ) in coding_page
     assert (
         'data-picker-url="/projects/Proj/browse" data-picker-target="project-writable-roots"'
     ) in settings_page
-    assert 'data-picker-target="new-session-writable-roots"' in settings_page
+    assert 'data-picker-target="new-session-writable-roots"' in agents_page
     assert (
         'data-picker-url="/browse?mode=guidance" data-picker-target="coding-guidance-skills"'
-    ) in settings_page
+    ) in coding_page
     assert 'id="path-picker"' in settings_page
     assert 'data-picker-target="register-path"' not in lan_index
     assert 'data-picker-target="rebind-path-0"' not in lan_index
     assert 'id="path-picker"' not in lan_index
-    assert 'data-picker-target="coding-guidance-files"' not in lan_settings
-    assert 'data-picker-target="coding-guidance-skills"' not in lan_settings
-    assert 'data-picker-target="project-writable-roots"' in lan_settings
+    assert 'data-picker-target="coding-guidance-files"' not in lan_coding
+    assert 'data-picker-target="coding-guidance-skills"' not in lan_coding
+    # Project writable roots are saved from this machine only (2026-11-18).
+    assert 'data-picker-target="project-writable-roots"' not in lan_settings
+    # Agent writable roots change from this machine only (2026-11-18).
+    assert 'data-picker-target="new-session-writable-roots"' not in lan_agents

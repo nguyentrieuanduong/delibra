@@ -74,8 +74,6 @@ def auto_record_fixture(project_id: str) -> models.AutoRunRecord:
         topic=models.AutoArtifact("topic.md", sha256(topic).hexdigest()),
         baseline=models.AutoArtifact("baseline.md", sha256(baseline).hexdigest()),
         baseline_entries=[],
-        shared_context=None,
-        shared_context_source=None,
         preparations=[],
         discussion=[],
         active_key=None,
@@ -133,6 +131,18 @@ def create_numeric_auto_run(
     record.created_at = created_at
     write_auto_run_directory(store, record, str(number))
     return record
+
+
+def test_an_auto_run_record_ignores_legacy_shared_context_keys() -> None:
+    data = auto_record_fixture("c" * 32).to_dict()
+    data["shared_context"] = {"path": "shared-context.md", "sha256": "b" * 64}
+    data["shared_context_source"] = "brief.md"
+
+    loaded = models.AutoRunRecord.from_dict(data)
+
+    assert not hasattr(loaded, "shared_context")
+    assert "shared_context" not in loaded.to_dict()
+    assert "shared_context_source" not in loaded.to_dict()
 
 
 def test_numbered_auto_listing_uses_number_not_wall_clock(tmp_path: Path) -> None:

@@ -16,14 +16,14 @@ def test_preset_checkboxes_share_a_line_with_their_text(
 ) -> None:
     app = live_server(["success"], tmp_path)
     page.set_viewport_size({"width": 1400, "height": 1000})
-    page.goto(f"{app['base_url']}/settings")
+    page.goto(f"{app['base_url']}/settings/presets")
     guide = tmp_path / "guide.md"
     guide.write_text("# Guide\n")
     page.fill("input[name='preset_name_0']", "suite")
     # The list field is hidden: in the UI only the pop-up's Use these files writes it.
     page.evaluate("(value) => { document.getElementById('preset-files-0').value = value; }", str(guide))
     with page.expect_navigation():
-        page.click("button:has-text('Save global settings')")
+        page.click("button:has-text('Save presets')")
 
     rows = page.evaluate(
         """() => Array.from(document.querySelectorAll("form.global-settings label.auto-choice")).map((label) => {

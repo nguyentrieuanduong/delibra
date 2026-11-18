@@ -1,3 +1,4 @@
+{% from "_path_picker_macros.html" import writable_roots_field %}
 {% from "_form_macros.html" import effort_options %}
 <article
   class="agent-card{% if agent_view.selected %} selected{% endif %}"
@@ -128,10 +129,7 @@
         {% else %}
           <p class="immutability-hint">Role instructions cannot change after the first round.</p>
         {% endif %}
-        <label>Additional writable roots
-          <textarea name="writable_roots" maxlength="65536">{{ agent.writable_roots|join('\n') }}</textarea>
-        </label>
-        <label class="auto-choice"><input type="checkbox" name="create_missing_writable_roots" value="true"{% if agent.create_missing_writable_roots %} checked{% endif %}> Create directories that don't exist</label>
+        {{ writable_roots_field("Additional writable roots", agent.writable_roots|join('\n'), coding_local, agent.create_missing_writable_roots) }}
         <button type="submit" data-disable-during-auto{% if agent.status == 'running' or auto_active %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save</button>
       </form>
     </details>

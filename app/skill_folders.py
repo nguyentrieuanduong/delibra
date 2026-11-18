@@ -2,10 +2,12 @@
 
 `.delibra/skills/build/` serves build runs; `.delibra/skills/chat/` serves
 chat turns and discussion runs. Beside each folder sit `<mode>-index.md` and
-`<mode>.sha256`. The digest is removed before a rewrite and written last, so a
-crash mid-refresh leaves no digest and the next refresh rewrites everything.
-Callers hold a lock under which no turn reads the folder being rewritten, or
-pass `rewrite=False`.
+`<mode>.sha256`. A rewrite builds the new folder beside the old one and swaps
+it in when complete; the digest is removed just before the swap and written
+last, so a crash during the swap makes the next refresh rewrite everything.
+Callers that rewrite hold the project lock (no other writer) at a moment no
+turn reads the folder: Auto between turns, chat on an idle send. Others pass
+`rewrite=False`. Every failure, OSError included, surfaces as StorageError.
 """
 
 from __future__ import annotations
@@ -105,7 +107,12 @@ def sync_folder(folder: Path, files: list[tuple[str, bytes]]) -> None:
 
 
 def refresh_skill_folder(
-    delibra_root: Path, mode: SkillMode, paths: list[str], *, rewrite: bool = True
+    delibra_root: Path,
+    mode: SkillMode,
+    paths: list[str],
+    *,
+    rewrite: bool = True,
+    max_index_bytes: int | None = None,
 ) -> SkillSnapshot | None:
     """Check `paths` now, always, and bring the mode's folder in line with them.
 
@@ -113,6 +120,10 @@ def refresh_skill_folder(
     written: a stale folder is offered as it is, and with no index there is
     nothing consistent to offer (None; the next idle send rewrites). The list
     is still read and checked, so a removed or symlinked file is refused.
+
+    A rewrite is all or nothing: the new folder is built beside the old one and
+    swapped in only when complete; an index over `max_index_bytes` or a failed
+    copy raises StorageError with the old folder, index and digest untouched.
     """
 
     root = ensure_owned_directory(skills_root(delibra_root), delibra_root)
@@ -121,11 +132,14 @@ def refresh_skill_folder(
     digest_path = _digest_path(delibra_root, mode)
     if not paths:
         if rewrite:
-            digest_path.unlink(missing_ok=True)
-            index_path.unlink(missing_ok=True)
-            _assert_no_symlink_components(folder, root, allow_missing_leaf=True)
-            if folder.exists():
-                shutil.rmtree(folder)
+            try:
+                retired = _retire(root, folder, mode)
+                digest_path.unlink(missing_ok=True)
+                index_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise StorageError(f"skills could not be removed: {exc}") from exc
+            if retired is not None:
+                shutil.rmtree(retired, ignore_errors=True)
         return None
     try:
         library = read_skill_library(paths)
@@ -139,12 +153,55 @@ def refresh_skill_folder(
     if not rewrite:
         shown = read_skill_index(delibra_root, mode)
         return SkillSnapshot(shown, current or "") if shown is not None else None
-    digest_path.unlink(missing_ok=True)
-    ensure_owned_directory(folder, root)
-    sync_folder(folder, [(destination, contents) for _source, destination, contents in library])
-    atomic_write_bytes(index_path, index)
-    atomic_write_bytes(digest_path, digest.encode("ascii"))
+    if max_index_bytes is not None and len(index) > max_index_bytes:
+        raise StorageError(f"the skills index would exceed {max_index_bytes} bytes")
+    staging = root / f".{mode}-staging"
+    try:
+        _clear(root, staging)
+        ensure_owned_directory(staging, root)
+        sync_folder(staging, [(destination, contents) for _source, destination, contents in library])
+    except (OSError, StorageError) as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise StorageError(f"skills could not be copied: {exc}") from exc
+    # Commit. The digest goes first, so a crash from here on makes the next
+    # refresh rewrite everything (as before this change).
+    try:
+        digest_path.unlink(missing_ok=True)
+        retired = _retire(root, folder, mode)
+        try:
+            os.rename(staging, folder)
+        except OSError:
+            if retired is not None:
+                os.rename(retired, folder)  # put the old folder back
+            raise
+        atomic_write_bytes(index_path, index)
+        atomic_write_bytes(digest_path, digest.encode("ascii"))
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise StorageError(f"skills could not be swapped in: {exc}") from exc
+    if retired is not None:
+        shutil.rmtree(retired, ignore_errors=True)
     return SkillSnapshot(index, digest)
+
+
+def _clear(root: Path, path: Path) -> Path:
+    """Remove a leftover staging/retired directory from an interrupted refresh."""
+
+    _assert_no_symlink_components(path, root, allow_missing_leaf=True)
+    if path.exists():
+        shutil.rmtree(path)
+    return path
+
+
+def _retire(root: Path, folder: Path, mode: SkillMode) -> Path | None:
+    """Move the live folder aside (one rename); returns where it went, or None."""
+
+    _assert_no_symlink_components(folder, root, allow_missing_leaf=True)
+    if not folder.exists():
+        return None
+    retired = _clear(root, root / f".{mode}-retired")
+    os.rename(folder, retired)
+    return retired
 
 
 def chat_skills_note(index_path: Path) -> str:

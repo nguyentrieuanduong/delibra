@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from app.agents.base import AgentEvent, Command, RunContext
 from app.auto import AutoManager
 from app.coding import BUILD_VERIFIED_VERSIONS, CodingEnvState
+from app.security import CODING_ONLY_HERE
 from app.models import AutoBuildDocker, AutoBuildGit, AutoHandover
 from app.config import Settings
 from app.main import create_app
@@ -1100,7 +1101,7 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
         session_page = client.get(
             f"/projects/{quote(project.name, safe='')}/sessions/{active.active_key.session_id}"
         )
-        settings_page = client.get(f"/projects/{quote(project.name, safe='')}/settings")
+        settings_page = client.get(f"/projects/{quote(project.name, safe='')}/settings/agents")
         index = client.get("/")
         active_deep_link = client.get(
             f"/projects/{quote(project.name, safe='')}/chat?auto_setup=true"
@@ -2179,6 +2180,7 @@ def test_build_start_is_loopback_only(tmp_path: Path, monkeypatch) -> None:
     with TestClient(app, base_url="http://localhost", client=LAN) as lan:
         refused = lan.post(f"/projects/{project.id}/auto-runs", data=build_form(ids))
         assert refused.status_code == 403
+        assert refused.json()["detail"] == CODING_ONLY_HERE
         assert store.list_auto_runs() == []
         discussion = lan.post(f"/projects/{project.id}/auto-runs", data=build_form(ids, kind="discussion"))
         assert discussion.status_code == 202
@@ -2207,6 +2209,7 @@ def test_build_resume_is_loopback_only(tmp_path: Path, monkeypatch) -> None:
 
     assert record.status == "limit_reached"
     assert resumed.status_code == 403
+    assert resumed.json()["detail"] == CODING_ONLY_HERE
 
 
 def test_build_choice_only_for_a_local_client_with_a_ready_project(tmp_path: Path, monkeypatch) -> None:
@@ -2369,7 +2372,7 @@ def test_build_acceptance_enable_handover_commit_and_lan_guard(tmp_path: Path, m
     with TestClient(app, base_url="http://localhost", client=LOCAL) as local:
         assert local.post(
             f"{prefix}/coding",
-            data={"enabled": "true", "network_allowlist": "pypi.org"},
+            data={"enabled": "true"},
             follow_redirects=False,
         ).status_code == 303
         for _ in range(100):

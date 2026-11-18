@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import replace
 import logging
 from pathlib import Path
 import shutil
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
@@ -39,6 +40,7 @@ from app.project_reset import CLEAR_SCOPES, PartialClearError, clear_project
 from app.project_routing import request_project
 from app.questions import QuestionStore
 from app.security import (
+    CODING_ONLY_HERE,
     is_loopback_client,
     require_loopback_client,
     validate_field,
@@ -47,8 +49,6 @@ from app.security import (
 from app.storage import (
     ConflictError,
     NotFoundError,
-    ProjectFileDisplayError,
-    ProjectFileSecurityError,
     ProjectStore,
     StorageError,
     normalize_project_name,
@@ -60,6 +60,58 @@ from app.urls import project_url
 
 router = APIRouter()
 RESET_SCOPES = frozenset({"questions", "notes", "context", "all", *CLEAR_SCOPES})
+PROJECT_TABS = (
+    ("general", "General"),
+    ("prompts", "Prompts"),
+    ("coding", "Coding"),
+    ("agents", "Agents"),
+    ("reset", "Reset"),
+)
+PROJECT_TAB_NAMES = frozenset(key for key, _label in PROJECT_TABS)
+
+
+def nothing_saved(reason: str) -> str:
+    """The page alert for a refused settings form (user standard: capitalised)."""
+
+    return f"Nothing was saved: {reason[:1].upper()}{reason[1:]}"
+
+
+def settings_tab_url(project_name: str, tab: str) -> str:
+    """General keeps the old /settings URL, so existing links land on it."""
+
+    return project_url(project_name, "/settings" if tab == "general" else f"/settings/{tab}")
+
+
+LOCKED_ON_TAB: dict[str, tuple[str, str] | None] = {
+    "general": None,
+    "prompts": None,
+    "coding": ("coding on/off and Docker", "are"),
+    "agents": ("creating, editing and deleting agents", "is"),
+    "reset": ("resets", "are"),
+}
+
+
+def _settings_lock_context(store: ProjectStore, tab: str) -> dict[str, object]:
+    auto_id = store.active_auto_run_id()
+    number: int | None = None
+    if auto_id is not None:
+        try:
+            number = store.load_auto_run(auto_id).number
+        except StorageError:
+            number = None
+    locked = LOCKED_ON_TAB[tab]
+    return {
+        "lock_active": auto_id is not None,
+        "lock_line": (
+            f"Auto run #{number} is active: {locked[0]} {locked[1]} locked until it ends."
+            if auto_id is not None and locked is not None and number is not None
+            else (
+                f"An Auto run is active: {locked[0]} {locked[1]} locked until it ends."
+                if auto_id is not None and locked is not None
+                else None
+            )
+        ),
+    }
 
 
 def _project_path(value: str) -> Path:
@@ -245,7 +297,7 @@ async def retry_auto_migration(request: Request, project_id: str):
             status.readable_records,
         )
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "general"),
         status_code=303,
     )
 
@@ -297,7 +349,7 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
         raise
     except PartialClearError as exc:
         return await render_project_settings(
-            request, project, error=str(exc), status_code=500
+            request, project, tab="reset", error=str(exc), status_code=500
         )
     except StorageError as exc:
         message = str(exc)
@@ -305,26 +357,36 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
         return await render_project_settings(
             request,
             project,
+            tab="reset",
             error=f"{lead}: {message[:1].upper()}{message[1:]}",
             status_code=409 if isinstance(exc, ConflictError) else 422,
         )
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "reset"), status_code=303)
 
 
 @router.post("/projects/{project_id}/pass-prompt")
 async def save_pass_prompt(
     request: Request,
     project_id: str,
-    pass_prompt_template: str = Form(...),
+    pass_prompt_template: str = Form(""),
 ):
-    validated = validate_pass_prompt_template_field(pass_prompt_template)
     project = request_project(request, project_id)
     resolved_project_id = project.id
-    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-        project = request.app.state.registry.get(resolved_project_id)
-        ProjectStore(project).set_pass_prompt_template(validated)
+    try:
+        validated = validate_pass_prompt_template_field(pass_prompt_template)
+        async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+            project = request.app.state.registry.get(resolved_project_id)
+            ProjectStore(project).set_pass_prompt_template(validated)
+    except NotFoundError:
+        raise
+    except (HTTPException, StorageError) as exc:
+        if isinstance(exc, HTTPException) and exc.status_code != 422:
+            raise
+        return await render_refusal(
+            request, project, "prompts", exc, {"pass_prompt_template": pass_prompt_template}
+        )
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "prompts"),
         status_code=303,
     )
 
@@ -336,170 +398,300 @@ async def save_writable_roots(
     writable_roots: str = Form(""),
     create_missing_writable_roots: bool = Form(False),
 ):
+    # What every agent may write: this machine only, like the other agent-capability
+    # settings (user decision 2026-11-18).
+    require_loopback_client(request)
     project = request_project(request, project_id)
     resolved_project_id = project.id
     try:
+        # Next turn (design 2026-11-15/16): turns read these when they start.
         async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-            _reject_in_memory_work(request, resolved_project_id)
             project = request.app.state.registry.get(resolved_project_id)
             store = ProjectStore(project)
-            store.require_auto_inactive()
             store.set_writable_roots(
                 _writable_roots_field(writable_roots),
                 create_missing=create_missing_writable_roots,
             )
     except (ConflictError, NotFoundError):
-        raise  # Active work, Auto, or a gone project keep their 409/404.
+        raise  # A conflict or a gone project keep their 409/404.
     except StorageError as exc:
         message = str(exc)
         return await render_project_settings(
             request,
             project,
-            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            error=nothing_saved(message),
             writable_roots_text=writable_roots,
             create_missing_writable_roots=create_missing_writable_roots,
             status_code=422,
         )
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "general"),
         status_code=303,
     )
 
 
+async def _refresh_local_excludes(project: Project, policy: CodingPolicy) -> None:
+    """Keep .git/info/exclude in step with coding mode and the download folders."""
+
+    try:
+        try:
+            used_folders = DownloadStore(ProjectStore(project).root).used_folders()
+        except StorageError:
+            # Only `git status` noise: build commits fail closed on their own.
+            used_folders = set()
+        await ensure_local_excludes(
+            ProjectStore(project).project_path,
+            policy.git_exclude,
+            trailing=download_excludes(policy, used_folders),
+        )
+    except (OSError, StorageError):
+        LOGGER.warning(
+            "Could not update .git/info/exclude for project %s", project.id, exc_info=True
+        )
+
+
+async def _save_coding_part(
+    request: Request,
+    project_id: str,
+    change: Callable[[CodingPolicy], CodingPolicy],
+    *,
+    locked: bool,
+    typed: dict[str, str],
+    refresh_excludes: bool,
+) -> Response:
+    """Save one Coding form: replace its fields, keep every other saved field."""
+
+    project = request_project(request, project_id)
+    resolved_project_id = project.id
+    try:
+        async with request.app.state.locks.registry_project_sessions(resolved_project_id):
+            project = request.app.state.registry.get(resolved_project_id)
+            store = ProjectStore(project)
+            if locked:
+                _reject_in_memory_work(request, resolved_project_id)
+                store.require_auto_inactive()
+            current = store.coding_policy()
+            try:
+                updated = change(current)
+            except CodingPolicyError as exc:
+                raise StorageError(str(exc)) from exc
+            token = None
+            if updated.enabled and current.env.status == "absent":
+                token = utc_now()
+                updated.env = CodingEnvState(status="creating", updated_at=token)
+            store.replace_coding_policy(updated)
+            if token is not None:
+                _start_env_creation(request.app, resolved_project_id, token)
+            if refresh_excludes and updated.enabled:
+                # Under the project lock that build commits also take: they read
+                # this file, and these saves are allowed while Auto runs.
+                await _refresh_local_excludes(project, updated)
+    except NotFoundError:
+        raise  # A gone project keeps its 404.
+    except StorageError as exc:
+        # A locked form saved just before the 5-second lock poll noticed Auto
+        # starting gets the same pop-up, with 409 (ConflictError) instead of 422.
+        return await render_refusal(request, project, "coding", exc, typed)
+    return RedirectResponse(settings_tab_url(project.name, "coding"), status_code=303)
+
+
 @router.post("/projects/{project_id}/coding")
-async def save_coding(
+async def save_coding_mode(
     request: Request,
     project_id: str,
     enabled: bool = Form(False),
-    network_allowlist: str = Form(""),
-    guidance_files: str = Form(""),
-    guidance_skills: str | None = Form(None),
-    guidance_preset: str = Form(""),
+):
+    require_loopback_client(request, CODING_ONLY_HERE)
+    return await _save_coding_part(
+        request, project_id, lambda current: replace(current, enabled=enabled),
+        locked=True, typed={}, refresh_excludes=True,
+    )
+
+
+@router.post("/projects/{project_id}/coding/git-exclude")
+async def save_git_exclude(
+    request: Request,
+    project_id: str,
     git_exclude: str | None = Form(None),
     git_exclude_preset: str = Form(""),
-    downloads_enabled: bool = Form(False),
-    downloads_folder: str | None = Form(None),
-    downloads_approval: str = Form("manual"),
-    downloads_model_check: bool = Form(False),
-    downloads_check_provider: str = Form("claude"),
-    downloads_check_model: str = Form("sonnet"),
 ):
     require_loopback_client(request)
-    # FastAPI gives an emptied box its default (None), so whether a box was
-    # on the page is read from the form itself (already parsed, so cached).
     sent = await request.form()
-    project = request_project(request, project_id)
-    resolved_project_id = project.id
-    lines = network_allowlist.splitlines() if network_allowlist.strip() else []
-    try:
-        hosts = normalize_network_allowlist(lines)
-    except CodingPolicyError as exc:
-        raise StorageError(str(exc)) from exc
-    # DNS before the lock, with a budget: a slow resolver must not hold
-    # the project's sessions. Timing out only replaces the warning.
-    try:
-        warnings = await asyncio.wait_for(
-            asyncio.to_thread(private_resolution_warnings, hosts), timeout=5
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        if git_exclude_preset == "default":
+            exclude = None
+        elif "git_exclude" not in sent:
+            exclude = current.git_exclude
+        else:
+            lines = (git_exclude or "").splitlines()
+            # Unchanged from the default: keep following Delibra's list.
+            exclude = None if lines == default_git_exclude() else lines
+        return replace(
+            current,
+            git_exclude=None if exclude is None else normalize_git_exclude(exclude),
         )
-    except TimeoutError:
-        warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
-    # Checked before the lock, off the event loop: each file is opened one
+
+    # Never locked (user decision 2026-11-16): the save and a build commit both take
+    # the project lock, so the next commit simply reads the new exclude block.
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={"git_exclude": git_exclude or ""} if "git_exclude" in sent else {},
+        refresh_excludes=True,
+    )
+
+
+@router.post("/projects/{project_id}/coding/guidance")
+async def save_coding_guidance(
+    request: Request,
+    project_id: str,
+    guidance_files: str | None = Form(None),
+    guidance_skills: str | None = Form(None),
+    guidance_preset: str = Form(""),
+):
+    require_loopback_client(request)
+    sent = await request.form()
+    typed = {
+        key: value or ""
+        for key, value in (("guidance_files", guidance_files), ("guidance_skills", guidance_skills))
+        if key in sent
+    }
+    # Off the event loop and before the lock: each file is opened one
     # component at a time, which must not hold the project's sessions.
     preset_guidance: tuple[list[str], list[str]] | None = None
+    preset_error: str | None = None
     if guidance_preset:
         preset = next(
-            (
-                item
-                for item in request.app.state.settings.guidance_presets
-                if item.name == guidance_preset
-            ),
+            (item for item in request.app.state.settings.guidance_presets
+             if item.name == guidance_preset),
             None,
         )
         if preset is None:
-            raise StorageError(
-                f"Unknown guidance preset {guidance_preset!r}; guidance was not changed"
-            )
-        try:
-            preset_guidance = await asyncio.to_thread(preset_guidance_lists, preset)
-        except CodingPolicyError as exc:
-            raise StorageError(f"{exc}; guidance was not changed") from exc
-    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-        _reject_in_memory_work(request, resolved_project_id)
-        project = request.app.state.registry.get(resolved_project_id)
-        store = ProjectStore(project)
-        store.require_auto_inactive()
-        current = store.coding_policy()
-        if preset_guidance is not None:
-            guidance, skills = preset_guidance
+            preset_error = f"Unknown guidance preset {guidance_preset!r}; guidance was not changed"
         else:
-            guidance = guidance_files.splitlines() if guidance_files.strip() else []
-            # A form without the box (older pages) keeps the saved skills.
+            try:
+                preset_guidance = await asyncio.to_thread(preset_guidance_lists, preset)
+            except CodingPolicyError as exc:
+                preset_error = f"{exc}; guidance was not changed"
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        if preset_error is not None:
+            raise StorageError(preset_error)
+        if preset_guidance is not None:
+            files, skills = preset_guidance
+        else:
+            files = (
+                [line for line in (guidance_files or "").splitlines() if line.strip()]
+                if "guidance_files" in sent
+                else current.guidance_files
+            )
             skills = (
                 [line for line in (guidance_skills or "").splitlines() if line.strip()]
                 if "guidance_skills" in sent
                 else current.guidance_skills
             )
-        if git_exclude_preset == "default":
-            exclude = None
-        elif "git_exclude" not in sent:
-            exclude = current.git_exclude  # older forms: keep what is saved
-        else:
-            lines = (git_exclude or "").splitlines()
-            # Unchanged from the default: keep following Delibra's list.
-            exclude = None if lines == default_git_exclude() else lines
+        return replace(
+            current,
+            guidance_files=normalize_guidance_paths(files),
+            guidance_skills=normalize_skill_paths(skills),
+        )
 
-        # Validate every field before writing: a rejected form must not
-        # change command network access.
+    # Never locked (user decision 2026-11-16): skills reach a running run from its
+    # next turn, guidance files from its next run.
+    return await _save_coding_part(
+        request, project_id, change, locked=False, typed=typed, refresh_excludes=False
+    )
+
+
+@router.post("/projects/{project_id}/coding/network")
+async def save_coding_network(
+    request: Request,
+    project_id: str,
+    network_allowlist: str | None = Form(None),
+):
+    require_loopback_client(request)
+    # An emptied box arrives as None, so presence is read from the form itself.
+    sent = await request.form()
+    if "network_allowlist" not in sent:
+        # A form without the box keeps the saved list (and its warnings).
+        return await _save_coding_part(
+            request, project_id, lambda current: current, locked=False,
+            typed={}, refresh_excludes=False,
+        )
+    text = network_allowlist or ""
+    lines = text.splitlines() if text.strip() else []
+    try:
+        hosts = normalize_network_allowlist(lines)
+    except CodingPolicyError as exc:
+        hosts, host_error = None, str(exc)
+    else:
+        host_error = None
+    warnings: list[str] = []
+    if hosts is not None:
+        # DNS before the lock, with a budget: a slow resolver must not hold
+        # the project's sessions. Timing out only replaces the warning.
         try:
-            if "downloads_folder" in sent:
-                downloads = DownloadPolicy.from_dict({
-                    "enabled": downloads_enabled,
-                    "folder": downloads_folder or "",
-                    "approval": downloads_approval,
-                    "model_check": downloads_model_check,
-                    "check_provider": downloads_check_provider,
-                    "check_model": downloads_check_model.strip(),
-                })
-            else:
-                downloads = current.downloads  # older forms: keep what is saved
-            updated = CodingPolicy(
-                enabled=enabled,
-                network_allowlist=hosts,
-                env=current.env,
-                network_warnings=warnings,
-                guidance_files=normalize_guidance_paths(guidance),
-                guidance_skills=normalize_skill_paths(skills),
-                git_exclude=None if exclude is None else normalize_git_exclude(exclude),
-                docker=current.docker,
-                downloads=downloads,
+            warnings = await asyncio.wait_for(
+                asyncio.to_thread(private_resolution_warnings, hosts), timeout=5
             )
-        except CodingPolicyError as exc:
-            raise StorageError(str(exc)) from exc
-        token = None
-        if enabled and current.env.status == "absent":
-            token = utc_now()
-            updated.env = CodingEnvState(status="creating", updated_at=token)
-        store.replace_coding_policy(updated)
-        if token is not None:
-            _start_env_creation(request.app, resolved_project_id, token)
-    if enabled:
-        try:
-            try:
-                used_folders = DownloadStore(ProjectStore(project).root).used_folders()
-            except StorageError:
-                # Only `git status` noise: build commits fail closed on their own.
-                used_folders = set()
-            await ensure_local_excludes(
-                ProjectStore(project).project_path,
-                updated.git_exclude,
-                trailing=download_excludes(updated, used_folders),
-            )
-        except OSError:
-            LOGGER.warning(
-                "Could not update .git/info/exclude for project %s",
-                resolved_project_id, exc_info=True,
-            )
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+        except TimeoutError:
+            warnings = ["Could not check where the listed hosts resolve (DNS timed out)"]
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        if host_error is not None:
+            raise StorageError(host_error)
+        return replace(current, network_allowlist=hosts, network_warnings=warnings)
+
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={"network_allowlist": text}, refresh_excludes=False,
+    )
+
+
+DOWNLOAD_TEXT_FIELDS = (
+    ("downloads_approval", "approval"),
+    ("downloads_check_provider", "check_provider"),
+    ("downloads_check_model", "check_model"),
+)
+
+
+@router.post("/projects/{project_id}/coding/downloads")
+async def save_coding_downloads(
+    request: Request,
+    project_id: str,
+    downloads_folder: str = Form(...),
+    downloads_enabled: bool = Form(False),
+    downloads_model_check: bool = Form(False),
+):
+    require_loopback_client(request)
+    sent = await request.form()
+    # Text and select fields missing from the form keep their saved values;
+    # checkboxes are read as sent (an unticked box sends nothing).
+    sent_text = {
+        field: str(sent[field]) for field, _key in DOWNLOAD_TEXT_FIELDS if field in sent
+    }
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        saved = current.downloads.to_dict()
+        values = {key: sent_text.get(field, saved[key]) for field, key in DOWNLOAD_TEXT_FIELDS}
+        return replace(current, downloads=DownloadPolicy.from_dict({
+            **values,
+            "enabled": downloads_enabled,
+            "folder": downloads_folder,
+            "model_check": downloads_model_check,
+            "check_model": str(values["check_model"]).strip(),
+        }))
+
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={
+            **sent_text,
+            "downloads_folder": downloads_folder,
+            "downloads_enabled": "true" if downloads_enabled else "",
+            "downloads_model_check": "true" if downloads_model_check else "",
+        },
+        refresh_excludes=True,
+    )
 
 
 @router.post("/projects/{project_id}/coding/env/retry")
@@ -530,7 +722,7 @@ async def retry_coding_env(request: Request, project_id: str):
         token = utc_now()
         store.set_coding_env(CodingEnvState(status="creating", updated_at=token))
         _start_env_creation(request.app, resolved_project_id, token)
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "coding"), status_code=303)
 
 
 def _start_docker_preparation(app, project_id: str, token: str) -> None:
@@ -614,7 +806,7 @@ async def save_docker(request: Request, project_id: str, enabled: bool = Form(Fa
             docker.enabled = enabled
             store.set_coding_docker(docker)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/retry")
@@ -626,7 +818,7 @@ async def retry_docker(request: Request, project_id: str):
             raise ConflictError("Docker is not in an error state")
         _begin_preparation(request, store, resolved)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/lima")
@@ -641,7 +833,7 @@ async def switch_docker_to_lima(request: Request, project_id: str):
             raise ConflictError("This project does not use local Docker")
         _begin_preparation(request, store, resolved)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/local")
@@ -673,7 +865,7 @@ async def use_local_docker(request: Request, project_id: str, acknowledge: bool 
         adopted.lima_instance = current.lima_instance  # Delete VM stays possible
         store.set_coding_docker(adopted)
         name = store.project.name
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/docker/delete")
@@ -727,27 +919,38 @@ async def delete_docker_vm(request: Request, project_id: str):
             store.set_coding_docker(result)
     if failure is not None:
         raise StorageError(failure)
-    return RedirectResponse(project_url(name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(name, "coding"), status_code=303)
 
 
 @router.post("/projects/{project_id}/turn-timeout")
 async def save_turn_timeout(
     request: Request,
     project_id: str,
-    turn_timeout_seconds: int = Form(...),
+    turn_timeout_seconds: str = Form(""),
 ):
     project = request_project(request, project_id)
     resolved_project_id = project.id
-    async with request.app.state.locks.registry_project_sessions(
-        resolved_project_id
-    ):
-        project = request.app.state.registry.get(resolved_project_id)
-        ProjectStore(project).set_turn_timeout_seconds(
-            turn_timeout_seconds,
-            maximum=request.app.state.settings.max_run_timeout,
+    text = turn_timeout_seconds.strip()
+    # Not a number, or longer than any limit (int() refuses over 4300 digits):
+    # let the store's check word the refusal like any bad value.
+    seconds: object = int(text) if text.isdecimal() and len(text) <= 18 else text
+    try:
+        async with request.app.state.locks.registry_project_sessions(
+            resolved_project_id
+        ):
+            project = request.app.state.registry.get(resolved_project_id)
+            ProjectStore(project).set_turn_timeout_seconds(
+                seconds,
+                maximum=request.app.state.settings.max_run_timeout,
+            )
+    except NotFoundError:
+        raise
+    except StorageError as exc:
+        return await render_refusal(
+            request, project, "general", exc, {"turn_timeout_seconds": turn_timeout_seconds}
         )
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "general"),
         status_code=303,
     )
 
@@ -765,7 +968,7 @@ async def save_global_instruction_use(
         # An unticked checkbox sends nothing; FastAPI refuses a non-boolean
         # value with 422, as for the other checkbox routes here.
         ProjectStore(project).set_use_global_instruction(use_global_instruction)
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)
 
 
 @router.post("/projects/{project_id}/pass-prompt/reset")
@@ -776,7 +979,7 @@ async def reset_pass_prompt(request: Request, project_id: str):
         project = request.app.state.registry.get(resolved_project_id)
         ProjectStore(project).reset_pass_prompt_template()
     return RedirectResponse(
-        project_url(project.name, "/settings"),
+        settings_tab_url(project.name, "prompts"),
         status_code=303,
     )
 
@@ -785,27 +988,18 @@ async def render_project_settings(
     request: Request,
     project: Project,
     *,
+    tab: str = "general",
     error: str | None = None,
     chat_skills_text: str | None = None,
     writable_roots_text: str | None = None,
     create_missing_writable_roots: bool | None = None,
+    typed: dict[str, str] | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     """The project settings page; a refused form passes its text and error back."""
 
     store = ProjectStore(project)
     sessions = store.list_sessions()
-    shared_markdown_path = store.selected_shared_markdown_path()
-    shared_markdown_available: bool | None = None
-    if shared_markdown_path is not None:
-        try:
-            store.read_selected_shared_markdown(
-                request.app.state.settings.file_view_limit
-            )
-        except (ProjectFileDisplayError, ProjectFileSecurityError):
-            shared_markdown_available = False
-        else:
-            shared_markdown_available = True
     migration = store.session_migration_status()
     migration_issue_lists: dict[str, list[str]] = {}
     for issue in migration.issues:
@@ -840,8 +1034,6 @@ async def render_project_settings(
         context={
             "project": project,
             "sessions": sessions,
-            "shared_markdown_path": shared_markdown_path,
-            "shared_markdown_available": shared_markdown_available,
             "health": request.app.state.health,
             "effort_levels": {
                 "claude": ClaudeAdapter.EFFORT_LEVELS,
@@ -883,14 +1075,61 @@ async def render_project_settings(
             "use_global_instruction": store.use_global_instruction(),
             "global_instruction_state": global_instruction_state,
             "error": error,
+            "tab": tab,
+            "tab_label": dict(PROJECT_TABS)[tab],
+            "settings_tabs": [
+                (key, label, settings_tab_url(project.name, key)) for key, label in PROJECT_TABS
+            ],
+            "typed": typed or {},
+            **_settings_lock_context(store, tab),
         },
         status_code=status_code,
+    )
+
+
+async def render_refusal(
+    request: Request,
+    project: Project,
+    tab: str,
+    exc: HTTPException | StorageError,
+    typed: dict[str, str] | None = None,
+) -> HTMLResponse:
+    """A refused settings form: its tab again, the pop-up, and what was typed.
+
+    A conflict (an Auto run or busy agent) answers 409, a validation refusal 422.
+    """
+
+    if isinstance(exc, HTTPException):
+        reason, status = str(exc.detail), exc.status_code
+    else:
+        reason, status = str(exc), 409 if isinstance(exc, ConflictError) else 422
+    return await render_project_settings(
+        request, project, tab=tab, error=nothing_saved(reason), typed=typed, status_code=status
     )
 
 
 @router.get("/projects/{project_id}/settings", response_class=HTMLResponse)
 async def project_settings(request: Request, project_id: str) -> HTMLResponse:
     return await render_project_settings(request, request_project(request, project_id))
+
+
+@router.get("/projects/{project_id}/settings-lock", response_class=HTMLResponse)
+async def settings_lock(request: Request, project_id: str, tab: str = "general") -> HTMLResponse:
+    if tab not in PROJECT_TAB_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown settings tab")
+    project = request_project(request, project_id)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="_settings_lock.html",
+        context={"project": project, "tab": tab, **_settings_lock_context(ProjectStore(project), tab)},
+    )
+
+
+@router.get("/projects/{project_id}/settings/{tab}", response_class=HTMLResponse)
+async def project_settings_tab(request: Request, project_id: str, tab: str) -> HTMLResponse:
+    if tab not in PROJECT_TAB_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown settings tab")
+    return await render_project_settings(request, request_project(request, project_id), tab=tab)
 
 
 @router.post("/projects/{project_id}/chat-skills")
@@ -923,19 +1162,18 @@ async def save_chat_skills(
             paths = (await asyncio.to_thread(preset_guidance_lists, preset))[1]
         else:
             paths = await asyncio.to_thread(normalize_skill_paths, lines)
+        # Next turn (design 2026-11-15/16): turns read these when they start.
         async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-            _reject_in_memory_work(request, resolved_project_id)
             project = request.app.state.registry.get(resolved_project_id)
             store = ProjectStore(project)
-            store.require_auto_inactive()
             store.set_chat_skills(paths)
     except (CodingPolicyError, StorageError) as exc:
         message = str(exc)
         return await render_project_settings(
             request,
             project,
-            error=f"Nothing was saved: {message[:1].upper()}{message[1:]}",
+            error=nothing_saved(message),
             chat_skills_text=chat_skills,
             status_code=422,
         )
-    return RedirectResponse(project_url(project.name, "/settings"), status_code=303)
+    return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)

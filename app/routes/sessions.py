@@ -2,24 +2,31 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from uuid import uuid4
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
-from app.models import SessionConfig
+from app.models import Project, SessionConfig
 from app.project_routing import request_project
 from app.routes.auto import project_auto_record
 from app.routes.chat import sidebar_response
-from app.routes.projects import _writable_roots_field
-from app.security import validate_agent_name, validate_field
+from app.routes.projects import _writable_roots_field, render_refusal, settings_tab_url
+from app.security import (
+    is_loopback_client,
+    validate_agent_name,
+    validate_field,
+)
 from app.storage import (
     ConflictError,
     NotFoundError,
     ProjectStore,
+    StorageError,
     merge_writable_roots,
+    normalize_writable_roots,
     utc_now,
     validate_id,
 )
@@ -68,6 +75,71 @@ def _validated_configuration(
     return agent, model, effort, role_instructions
 
 
+# An agent's writable roots widen what it may write: this machine only (user
+# decision 2026-11-18). Network clients may still create and edit agents.
+AGENT_ROOTS_HERE = "Only this machine can change an agent's writable roots"
+
+
+def _refuse_agent_roots() -> None:
+    raise HTTPException(status_code=403, detail=AGENT_ROOTS_HERE)
+
+
+def _typed_roots(request: Request, roots: str, create_missing: bool) -> dict[str, str]:
+    """The roots to show again after a refusal: what was typed, on this machine only.
+
+    A network viewer's box is read-only, so a refused (stale) page shows the saved
+    roots again; resending it then keeps them and saves the other fields.
+    """
+
+    if not is_loopback_client(request):
+        return {}
+    return {
+        "writable_roots": roots,
+        "create_missing_writable_roots": "true" if create_missing else "",
+    }
+
+
+def _roots_differ(sent: str, saved: list[str]) -> bool:
+    """Whether a submitted roots box changes the saved list (an invalid one does)."""
+
+    try:
+        return _writable_roots_field(sent) != normalize_writable_roots(saved)
+    except (HTTPException, StorageError):
+        return True
+
+
+def _back_to_agents_tab(project: Project) -> RedirectResponse:
+    """Agent forms on the settings page send return_to=settings and land on Agents."""
+
+    return RedirectResponse(settings_tab_url(project.name, "agents"), status_code=303)
+
+
+async def _on_agents_tab(
+    request: Request,
+    project_id: str,
+    return_to: str,
+    typed: dict[str, str],
+    action: Awaitable[Response],
+) -> Response:
+    """Run an agent form; from the Agents tab (return_to=settings) a refusal
+    re-renders that tab with the pop-up and `typed`. Elsewhere (the chat page)
+    every answer is unchanged, and a gone project or other HTTP error keeps its own."""
+
+    try:
+        return await action
+    except (HTTPException, StorageError) as exc:
+        shown = (
+            exc.status_code in (403, 409, 422)
+            if isinstance(exc, HTTPException)
+            else not isinstance(exc, NotFoundError)
+        )
+        if return_to != "settings" or not shown:
+            raise
+        return await render_refusal(
+            request, request_project(request, project_id), "agents", exc, typed
+        )
+
+
 @router.post("/projects/{project_id}/sessions")
 async def create_session(
     request: Request,
@@ -79,7 +151,33 @@ async def create_session(
     role_instructions: str = Form(""),
     writable_roots: str = Form(""),
     create_missing_writable_roots: bool = Form(False),
+    # Only "settings" changes the redirect (to the Agents tab); anything else is ignored.
+    return_to: str = Form(""),
 ):
+    typed = {
+        "form": "create", "name": name, "agent": agent, "model": model, "effort": effort,
+        "role_instructions": role_instructions,
+    } | _typed_roots(request, writable_roots, create_missing_writable_roots)
+    return await _on_agents_tab(request, project_id, return_to, typed, _create_session(
+        request, project_id, name, agent, model, effort, role_instructions,
+        writable_roots, create_missing_writable_roots, return_to,
+    ))
+
+
+async def _create_session(
+    request: Request,
+    project_id: str,
+    name: str,
+    agent: str,
+    model: str,
+    effort: str,
+    role_instructions: str,
+    writable_roots: str,
+    create_missing_writable_roots: bool,
+    return_to: str,
+):
+    if (writable_roots.strip() or create_missing_writable_roots) and not is_loopback_client(request):
+        _refuse_agent_roots()
     name = validate_agent_name(name)
     agent, model, effort, role_instructions = _validated_configuration(
         agent, model, effort, role_instructions
@@ -126,6 +224,8 @@ async def create_session(
                 )
             },
         )
+    if return_to == "settings":
+        return _back_to_agents_tab(project)
     return RedirectResponse(
         project_url(project.name, f"/chat?agent={session_id}"),
         status_code=303,
@@ -146,7 +246,37 @@ async def edit_session(
     # Read only with the roots it governs: an unticked box sends nothing, so
     # a form without the roots field must leave the tick alone.
     create_missing_writable_roots: bool = Form(False),
+    return_to: str = Form(""),
     selected_agent: str | None = Query(None, alias="agent"),
+):
+    # From the form itself: FastAPI hands an emptied box over as None.
+    sent = await request.form()
+    typed = {"form": f"edit:{session_id}"} | {
+        key: str(sent[key])
+        for key in ("agent", "model", "effort", "role_instructions")
+        if key in sent
+    }
+    if "writable_roots" in sent:
+        typed |= _typed_roots(request, str(sent["writable_roots"]), create_missing_writable_roots)
+    return await _on_agents_tab(request, project_id, return_to, typed, _edit_session(
+        request, project_id, session_id, name, agent, model, effort, role_instructions,
+        writable_roots, create_missing_writable_roots, return_to, selected_agent,
+    ))
+
+
+async def _edit_session(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    name: str | None,
+    agent: str | None,
+    model: str | None,
+    effort: str | None,
+    role_instructions: str | None,
+    writable_roots: str | None,
+    create_missing_writable_roots: bool,
+    return_to: str,
+    selected_agent: str | None,
 ):
     if writable_roots is None:
         submitted_form = await request.form()
@@ -174,6 +304,14 @@ async def edit_session(
         config = store.load_session(session_id)
         if config.status == "running":
             raise ConflictError("cannot edit a running session")
+        if not is_loopback_client(request) and (
+            create_missing_writable_roots or writable_roots is not None
+        ):
+            if create_missing_writable_roots or _roots_differ(writable_roots, config.writable_roots):
+                _refuse_agent_roots()
+            # The same roots from a network form (it has no tick): leave the roots
+            # and their create-missing tick as they are.
+            writable_roots = None
         project_writable_roots = store.effective_writable_roots()
         old_effective_writable_roots = (
             merge_writable_roots(project_writable_roots, config.writable_roots)
@@ -250,6 +388,8 @@ async def edit_session(
             selected_id=selected_agent or session_id,
             composer_oob=True,
         )
+    if return_to == "settings":
+        return _back_to_agents_tab(project)
     return RedirectResponse(
         project_url(project.name, f"/sessions/{session_id}"),
         status_code=303,
@@ -262,6 +402,20 @@ async def set_permanent_session_name(
     project_id: str,
     session_id: str,
     name: str = Form(...),
+    return_to: str = Form(""),
+):
+    return await _on_agents_tab(
+        request, project_id, return_to, {"form": f"name:{session_id}", "name": name},
+        _set_permanent_session_name(request, project_id, session_id, name, return_to),
+    )
+
+
+async def _set_permanent_session_name(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    name: str,
+    return_to: str,
 ):
     validate_id(session_id, "session id")
     name = validate_agent_name(name)
@@ -278,6 +432,8 @@ async def set_permanent_session_name(
         if config.status == "running":
             raise ConflictError("cannot name a running session")
         store.set_legacy_session_name(session_id, name)
+    if return_to == "settings":
+        return _back_to_agents_tab(project)
     return RedirectResponse(
         project_url(project.name, "/settings"),
         status_code=303,
@@ -309,6 +465,19 @@ async def delete_session(
     request: Request,
     project_id: str,
     session_id: str,
+    return_to: str = Form(""),
+):
+    return await _on_agents_tab(
+        request, project_id, return_to, {},
+        _delete_session(request, project_id, session_id, return_to),
+    )
+
+
+async def _delete_session(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    return_to: str,
 ):
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -320,6 +489,8 @@ async def delete_session(
         store = ProjectStore(project)
         store.require_auto_inactive()
         store.delete_session(session_id)
+    if return_to == "settings":
+        return _back_to_agents_tab(project)
     return RedirectResponse(project_url(project.name), status_code=303)
 
 

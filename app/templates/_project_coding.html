@@ -1,0 +1,145 @@
+{% from "_path_picker_macros.html" import browse_button %}
+{% from "_form_macros.html" import takes_effect %}
+{% set coding_disabled = auto_active or not coding_local %}
+<section aria-labelledby="coding-heading">
+  <h2 id="coding-heading">Coding</h2>
+  {% if not coding_local %}<p class="hint">Only this machine can change coding settings.</p>{% endif %}
+
+  <h3 id="coding-mode-heading">Coding mode</h3>
+  {{ takes_effect("locked") }}
+  <form method="post" action="{{ project_url(project.name, '/coding') }}">
+    <label class="auto-choice">
+      <input type="checkbox" name="enabled" value="true"{% if coding.enabled %} checked{% endif %}>
+      Enable coding (Auto build runs)
+    </label>
+    <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save coding mode</button>
+  </form>
+  <p class="coding-env-status">Environment: {{ coding.env.status }}{% if coding.env.tool %} · {{ coding.env.tool }}{% endif %}{% if coding.env.python %} · Python {{ coding.env.python }}{% endif %}</p>
+  {% if coding.env.python and not coding.env.python.startswith('3.12') %}
+    <p class="warning">The environment's Python is {{ coding.env.python }}, not 3.12.</p>
+  {% endif %}
+  {% if coding.env.status == 'error' %}
+    <pre class="coding-env-error">{{ coding.env.error }}</pre>
+    <form method="post" action="{{ project_url(project.name, '/coding/env/retry') }}">
+      <button type="submit"{% if not coding_local %} disabled{% endif %}>Retry environment</button>
+    </form>
+  {% endif %}
+
+  <h3 id="docker-heading">Docker for build runs</h3>
+  <form method="post" action="{{ project_url(project.name, '/coding/docker') }}">
+    <label class="auto-choice">
+      <input type="checkbox" name="enabled" value="true"{% if coding.docker.enabled %} checked{% endif %}>
+      Let build agents use Docker (a Lima VM per project)
+    </label>
+    <button type="submit" data-disable-during-auto{% if auto_active or not coding_local or not coding.enabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Save Docker setting</button>
+  </form>
+  {% set docker = coding.docker %}
+  <p class="coding-docker-status">Docker: {{ docker.status }}{% if docker.backend == 'lima' %} · Lima VM{% if docker.lima_version %} {{ docker.lima_version }}{% endif %} · {% if docker.host_loopback_closed %}Isolated{% else %}Not isolated: containers can reach this machine's 127.0.0.1, including Delibra{% endif %}{% elif docker.backend == 'local' %} · local Docker ({{ docker.local_endpoint }}) · Not isolated{% endif %}</p>
+  <p class="hint">Containers see the project read-only, so they can read its secrets (for example .env); they have unrestricted internet access and reach your LAN, and the command allowlist does not apply to them. Preparation downloads an Ubuntu image and Docker over this machine's network.</p>
+  {% if docker.status == 'error' %}
+    <pre class="coding-docker-error">{{ docker.error }}</pre>
+    <form method="post" action="{{ project_url(project.name, '/coding/docker/retry') }}">
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Retry Docker</button>
+    </form>
+  {% endif %}
+  {% if docker.enabled and docker.backend != 'local' and (docker.status == 'error' or (docker_lima and not docker_lima.available)) %}
+    <form method="post" action="{{ project_url(project.name, '/coding/docker/local') }}" class="coding-docker-local">
+      <p class="warning">Local Docker is not isolated. Any container the agents start can bind-mount your files (for example ~/.ssh, or write ~/.zshrc), reach this machine's 127.0.0.1 including Delibra, and reach your network. Use it only if you accept that.</p>
+      <label class="auto-choice"><input type="checkbox" name="acknowledge" value="true"> I understand; use local Docker for this project</label>
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Use local Docker (not isolated)</button>
+    </form>
+  {% endif %}
+  {% if docker.backend == 'local' and docker_lima and docker_lima.available %}
+    <form method="post" action="{{ project_url(project.name, '/coding/docker/lima') }}">
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Switch to a Lima VM</button>
+    </form>
+  {% endif %}
+  {% if docker.lima_instance %}
+    <form method="post" action="{{ project_url(project.name, '/coding/docker/delete') }}" onsubmit="return confirm('Delete this project\'s Docker VM? Its images, volumes and caches are lost.')">
+      <button type="submit" data-disable-during-auto{% if coding_disabled %} disabled{% endif %}{% if auto_active %} data-auto-disabled="true"{% endif %}>Delete Docker VM</button>
+    </form>
+  {% endif %}
+
+  <h3 id="coding-guidance-heading">Build guidance and skills</h3>
+  <form method="post" action="{{ project_url(project.name, '/coding/guidance') }}">
+    <label>Build guidance files
+      <textarea id="coding-guidance-files" name="guidance_files" maxlength="65536">{{ typed.get('guidance_files', coding.guidance_files|join('\n')) }}</textarea>
+    </label>
+    {% if coding_local %}{{ browse_button("/browse?mode=guidance", "coding-guidance-files") }}{% endif %}
+    {{ takes_effect("next_run") }}
+    <p class="hint">Markdown files every build agent reads, snapshotted at run start. Nothing is executed. One absolute path per line.</p>
+    <label>Skills agents can read
+      <textarea id="coding-guidance-skills" name="guidance_skills" maxlength="262144">{{ typed.get('guidance_skills', coding.guidance_skills|join('\n')) }}</textarea>
+    </label>
+    {% if coding_local %}{{ browse_button("/browse?mode=guidance", "coding-guidance-skills") }}{% endif %}
+    {{ takes_effect("next_turn") }}
+    <p class="hint">Markdown files build agents read when they need them (a skill's SKILL.md with its references/ files). Delibra keeps one copy in <code>.delibra/skills/build/</code> and refreshes it when a file changes. At most 512 files and 4 MB. One absolute path per line.</p>
+    {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings/presets">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save build guidance</button>
+    {% for preset in guidance_presets %}
+    <button type="submit" name="guidance_preset" value="{{ preset.name }}"{% if not coding_local %} disabled{% endif %}>Use {{ preset.name }} guidance</button>
+    {% endfor %}
+  </form>
+
+  <h3 id="coding-git-exclude-heading">Git ignore list</h3>
+  {{ takes_effect("next_commit") }}
+  <form method="post" action="{{ project_url(project.name, '/coding/git-exclude') }}">
+    <details class="coding-git-exclude">
+      <summary>Git ignore list for build commits ({{ 'custom' if coding.git_exclude is not none else "Delibra's default" }})</summary>
+      <textarea name="git_exclude" rows="12" maxlength="65536">{{ typed.get('git_exclude', git_exclude_lines|join('\n')) }}</textarea>
+      <p class="hint">In a Git repository, saving with coding on writes <code>/.delibra/</code>, <code>/envs/</code> and this list to <code>.git/info/exclude</code> between Delibra's markers: local to this clone, never committed. Patterns apply at any depth unless they start with <code>/</code>. Build turns never commit ignored files, and <code>git status</code> hides them in this clone.</p>
+      <button type="submit" name="git_exclude_preset" value="default"{% if not coding_local %} disabled{% endif %}>Use Delibra's default ignore list</button>
+    </details>
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save ignore list</button>
+  </form>
+
+  <h3 id="coding-downloads-heading">Delibra downloads</h3>
+  {{ takes_effect("next_turn") }}
+  <form method="post" action="{{ project_url(project.name, '/coding/downloads') }}">
+    {# A refused save shows what was sent (typed); otherwise the saved policy. #}
+    {% set dl_enabled = typed.get('downloads_enabled') if 'downloads_enabled' in typed else coding.downloads.enabled %}
+    {% set dl_model_check = typed.get('downloads_model_check') if 'downloads_model_check' in typed else coding.downloads.model_check %}
+    {% set dl_approval = typed.get('downloads_approval', coding.downloads.approval) %}
+    {% set dl_provider = typed.get('downloads_check_provider', coding.downloads.check_provider) %}
+    <fieldset class="coding-downloads">
+      <legend>Delibra downloads</legend>
+      <label class="auto-choice"><input type="checkbox" name="downloads_enabled" value="true"{% if dl_enabled %} checked{% endif %}> Let Delibra download files build agents request</label>
+      <label>Download folder <input name="downloads_folder" value="{{ typed.get('downloads_folder', coding.downloads.folder) }}" maxlength="4096" required></label>
+      <p class="hint">Inside the project. Delibra never commits this folder, even files already tracked there.</p>
+      <label>Approval
+        <select name="downloads_approval">
+          <option value="manual"{% if dl_approval == 'manual' %} selected{% endif %}>Manual: I approve each download</option>
+          <option value="automatic"{% if dl_approval == 'automatic' %} selected{% endif %}>Automatic after checks</option>
+        </select>
+      </label>
+      <label class="auto-choice"><input type="checkbox" name="downloads_model_check" value="true"{% if dl_model_check %} checked{% endif %}> Model check of each URL</label>
+      <label>Model check provider
+        <select name="downloads_check_provider">
+          <option value="claude"{% if dl_provider == 'claude' %} selected{% endif %}>Claude</option>
+          <option value="codex"{% if dl_provider == 'codex' %} selected{% endif %}>Codex</option>
+        </select>
+      </label>
+      <label>Model check model <input name="downloads_check_model" value="{{ typed.get('downloads_check_model', coding.downloads.check_model) }}" maxlength="200" required></label>
+      <p class="hint">Delibra fetches from public addresses only. URLs with credentials, secrets, email addresses or encoded data are refused; you can allow them from the Downloads panel.</p>
+    </fieldset>
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save downloads</button>
+  </form>
+
+  <h3 id="coding-network-heading">Build-agent command network access</h3>
+  {{ takes_effect("next_turn") }}
+  <form method="post" action="{{ project_url(project.name, '/coding/network') }}">
+    <label>Build-agent command network access
+      <textarea name="network_allowlist" maxlength="65536">{{ typed.get('network_allowlist', coding.network_allowlist|join('\n')) }}</textarea>
+    </label>
+    <p class="hint">
+      One host per line; empty means no network for agent commands. Not a global
+      firewall: research tools (Claude's web search and web fetch, Codex's hosted search) are not limited, Codex's browser features are off in build turns,
+      and environment creation uses this machine's network.
+    </p>
+    {% for warning in coding.network_warnings %}<p class="warning">{{ warning }}</p>{% endfor %}
+    {% if coding.network_warnings %}
+      <p class="hint">Allowed by your choice: build agents may connect there. Claude's sandbox permits private addresses for listed hosts; Codex's refuses them.</p>
+    {% endif %}
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save network access</button>
+  </form>
+</section>

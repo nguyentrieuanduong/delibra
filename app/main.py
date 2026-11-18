@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 import logging
 from pathlib import Path
+import re
 import shlex
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -61,6 +62,31 @@ from app.views import project_card
 
 LOGGER = logging.getLogger(__name__)
 APP_ROOT = Path(__file__).resolve().parent
+
+
+SETTINGS_LOCK_POLL = re.compile(r"/projects/[^/]+/settings-lock")
+
+
+class QuietPollFilter(logging.Filter):
+    """Drop uvicorn access lines for the settings lock poll (every 5 s per open tab).
+
+    Only a successful GET of exactly that path: uvicorn logs (client, method,
+    path with query, HTTP version, status), and every other request is kept.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not (isinstance(args, tuple) and len(args) == 5):
+            return True
+        _client, method, full_path, _version, status = args
+        path = str(full_path).split("?", 1)[0]
+        quiet = (
+            method == "GET"
+            and isinstance(status, int)
+            and status < 400
+            and SETTINGS_LOCK_POLL.fullmatch(path) is not None
+        )
+        return not quiet
 
 
 def _recover_interrupted_env(store: ProjectStore) -> None:
@@ -125,6 +151,10 @@ def create_app(
         raise ValueError(f"unknown agent: {config.agent}")
 
     adapter_factory = adapter_factory_override or built_in_adapter
+    # Once per process: create_app may run more than once (tests, reloads).
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, QuietPollFilter) for item in access.filters):
+        access.addFilter(QuietPollFilter())
 
     templates = Jinja2Templates(directory=APP_ROOT / "templates")
     templates.env.filters["md"] = render_markdown

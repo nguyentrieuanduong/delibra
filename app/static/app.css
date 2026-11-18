@@ -98,9 +98,6 @@ textarea { min-height: 7rem; }
 .file-view-actions { display: flex; flex: 0 0 auto; gap: .35rem; margin-left: auto; }
 .file-view pre { overflow: auto; white-space: pre-wrap; }
 .file-view pre.structured-data { tab-size: 2; white-space: pre; }
-.shared-context-editor textarea { min-height: 16rem; font-family: ui-monospace, monospace; }
-.shared-context-actions { align-items: baseline; display: flex; gap: .5rem; }
-.shared-context-actions form { margin: 0; }
 .workspace-conversation {
   display: grid;
   gap: 0;
@@ -431,3 +428,7 @@ textarea { min-height: 7rem; }
 .project-list-controls input[type="search"] { min-width: 18rem; }
 .pagination { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1rem 0; }
 .pagination [aria-current="page"] { font-weight: bold; }
+.settings-tabs { border-bottom: 1px solid #ccc; display: flex; flex-wrap: wrap; gap: .25rem; margin: 1rem 0; }
+.settings-tabs a { border: 1px solid transparent; border-bottom: none; padding: .4rem .8rem; text-decoration: none; }
+.settings-tabs a[aria-current="page"] { border-color: #ccc; border-radius: .3rem .3rem 0 0; font-weight: 600; margin-bottom: -1px; background: Canvas; }
+.takes-effect { font-size: .85rem; margin: 0 0 .5rem; opacity: .75; }

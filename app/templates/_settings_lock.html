@@ -1,0 +1,5 @@
+<div id="settings-lock" data-auto-active="{{ 'true' if lock_active else 'false' }}"
+     hx-get="{{ project_url(project.name, '/settings-lock?tab=' ~ tab) }}"
+     hx-trigger="every 5s [document.visibilityState === 'visible']" hx-swap="outerHTML">
+  {% if lock_line %}<p class="warning" role="status">{{ lock_line }}</p>{% endif %}
+</div>

@@ -142,3 +142,61 @@ def test_settings_read_the_log_level_from_the_environment(tmp_path, monkeypatch)
     assert Settings.from_env().log_level == "warning"
     monkeypatch.delenv("DELIBRA_LOG_LEVEL")
     assert Settings.from_env().log_level is None
+
+
+def test_the_settings_lock_poll_is_not_access_logged() -> None:
+    import logging
+
+    from app.main import QuietPollFilter
+
+    def access(path: str, method: str = "GET", status: int = 200) -> logging.LogRecord:
+        # uvicorn's layout: client, method, path with query, HTTP version, status.
+        return logging.LogRecord(
+            "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1:5000", method, path, "1.1", status), None,
+        )
+
+    quiet = QuietPollFilter()
+    assert quiet.filter(access("/projects/P/settings-lock?tab=coding")) is False
+    assert quiet.filter(access("/projects/P/settings-lock")) is False
+    assert quiet.filter(access("/projects/P/settings/coding")) is True
+    # Only the successful GET poll itself is dropped.
+    assert quiet.filter(access("/projects/P/reset?x=/settings-lock", method="POST")) is True
+    assert quiet.filter(access("/projects/P/chat?next=/projects/P/settings-lock")) is True
+    assert quiet.filter(access("/projects/P/settings-lock?tab=coding", method="POST")) is True
+    assert quiet.filter(access("/projects/settings-lock/chat")) is True
+    assert quiet.filter(access("/projects/settings-lock/settings")) is True
+    assert quiet.filter(access("/projects/P/settings-lockdown")) is True
+    assert quiet.filter(access("/projects/P/settings-lock/extra")) is True
+    assert quiet.filter(access("/projects/P/settings-lock?tab=nope", status=404)) is True
+    assert quiet.filter(access("/projects/P/settings-lock", status=500)) is True
+    assert quiet.filter(logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "plain", None, None)) is True
+
+
+def test_create_app_installs_the_quiet_poll_filter(tmp_path) -> None:
+    import logging
+
+    from app.main import QuietPollFilter
+
+    create_app(
+        settings_override=Settings(home=tmp_path / "home", run_timeout=2),
+        provider_commands={"claude": "/missing/claude", "codex": "/missing/codex"},
+    )
+    assert any(isinstance(f, QuietPollFilter) for f in logging.getLogger("uvicorn.access").filters)
+
+
+def test_the_loopback_gate_names_the_setting_it_refuses() -> None:
+    import pytest
+    from fastapi import HTTPException
+
+    from app.security import CODING_ONLY_HERE, require_loopback_client
+
+    class Peer:
+        scope = {"client": ("192.168.1.20", 5000)}
+
+    with pytest.raises(HTTPException) as default:
+        require_loopback_client(Peer())
+    with pytest.raises(HTTPException) as named:
+        require_loopback_client(Peer(), reason=CODING_ONLY_HERE)
+    assert (default.value.status_code, default.value.detail) == (403, "Only this machine can change this setting")
+    assert named.value.detail == CODING_ONLY_HERE

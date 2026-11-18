@@ -15,13 +15,6 @@
       · SHA-256 {{ round.record.source.source_sha256 }}
     </p>
   {% endif %}
-  {% if round.record.shared_context %}
-    <p class="provenance">
-      Shared context {{ round.record.shared_context.path }}
-      · staged {{ round.record.shared_context.staged_file }}
-      · SHA-256 {{ round.record.shared_context.sha256 }}
-    </p>
-  {% endif %}
   {{ turn_usage(round.record.usage, "Usage") }}
   {% if round.quota_notice|default(none) %}
     <p class="notice" role="status">{{ round.quota_notice }}</p>

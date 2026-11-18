@@ -54,7 +54,6 @@ def context(
     *,
     resume_id: str | None = None,
     strategy: str = "native",
-    staged_shared_context: Path | None = None,
     writable_roots: tuple[Path, ...] = (),
 ) -> RunContext:
     return RunContext(
@@ -64,7 +63,6 @@ def context(
         staged_history=[],
         staged_source=None,
         workspace=Path("/session/workspace"),
-        staged_shared_context=staged_shared_context,
         writable_roots=writable_roots,
     )
 
@@ -73,19 +71,15 @@ def context(
     "strategy,resume_id",
     [("native", None), ("native", "thread"), ("stateless", None)],
 )
-def test_shared_context_is_present_in_every_codex_prompt_mode(
+def test_no_codex_prompt_mode_mentions_shared_context(
     strategy: str,
     resume_id: str | None,
 ) -> None:
-    run_context = context(
-        "Investigate.",
-        strategy=strategy,
-        resume_id=resume_id,
-        staged_shared_context=Path("inputs/round-02/shared-context.md"),
-    )
+    run_context = context("Investigate.", strategy=strategy, resume_id=resume_id)
     command = CodexAdapter().build_command(config(), run_context)
-    assert command.stdin.count("inputs/round-02/shared-context.md") == 1
-    assert "standing requirements" in command.stdin
+    assert "shared-context" not in command.stdin
+    assert "standing requirements" not in command.stdin
+    assert command.stdin.endswith("Investigate.")
 
 
 def test_fixture_extracts_thread_fixed_progress_and_final_message() -> None:
