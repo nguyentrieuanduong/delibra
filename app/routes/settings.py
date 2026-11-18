@@ -235,7 +235,7 @@ def _saved_rows(presets: tuple[GuidancePreset, ...]) -> list[dict[str, object]]:
 def _settings_page(
     request: Request,
     tab: str,
-    rows: list[dict[str, object]],
+    rows: list[dict[str, object]] | None,
     clients: list[str] | tuple[str, ...],
     hosts: list[str] | tuple[str, ...],
     error: str | None = None,
@@ -243,6 +243,15 @@ def _settings_page(
     global_instruction: str | None = None,
     agent_rows: list[dict[str, object]] | None = None,
 ):
+    if rows is None:
+        # The Instruction tab carries the presets form: every rendering of it, a refused
+        # instruction save included, lists the saved presets, or saving that form would
+        # delete them (final review F1).
+        rows = (
+            _preset_rows(_saved_rows(request.app.state.settings.guidance_presets))
+            if tab == "instruction"
+            else []
+        )
     if global_instruction is None:
         try:
             # At most 64 KB, read inline like the config.json this page reads.
@@ -348,7 +357,7 @@ async def save_access(request: Request):
             return _settings_page(
                 request,
                 "access",
-                [],
+                None,
                 settings.allowed_clients if clients_env else typed_clients,
                 settings.allowed_hosts if hosts_env else typed_hosts,
                 error=f"Nothing was saved: {message}",
@@ -451,8 +460,8 @@ async def download_converter_models(request: Request, force: str = Form("")):
     if request.app.state.download_manager.converting():
         # Replacing the models under a running Docling step would break it (review round 1).
         return _settings_page(
-            request, "converter", [], settings.allowed_clients, settings.allowed_hosts,
-            error="Nothing was saved: A conversion is running; download the models when it has finished",
+            request, "converter", None, settings.allowed_clients, settings.allowed_hosts,
+            error="Models were not downloaded: A conversion is running; download them when it has finished",
             status_code=409,
         )
     task = request.app.state.converter_models_task
@@ -487,7 +496,7 @@ async def save_agent_default_settings(request: Request):
             await asyncio.to_thread(save_agent_defaults, settings.home, typed)
         except (ValueError, StorageError, OSError) as exc:
             return _settings_page(
-                request, "agents", [], settings.allowed_clients, settings.allowed_hosts,
+                request, "agents", None, settings.allowed_clients, settings.allowed_hosts,
                 error=f"Nothing was saved: {_sentence(str(exc))}", status_code=422,
                 agent_rows=_agent_rows(typed),
             )
@@ -505,7 +514,7 @@ async def save_global_instruction_text(request: Request, global_instruction: str
             return _settings_page(
                 request,
                 "instruction",
-                [],
+                None,
                 settings.allowed_clients,
                 settings.allowed_hosts,
                 error=f"Nothing was saved: {_sentence(str(exc))}",

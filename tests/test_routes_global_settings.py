@@ -729,5 +729,43 @@ def test_the_models_download_is_not_restarted_needlessly(tmp_path, monkeypatch) 
         busy = client.post("/settings/converter-models", follow_redirects=False)
     assert (ready.status_code, ready.headers["location"]) == (303, "/settings/converter")
     assert busy.status_code == 409
-    assert "Nothing was saved: A conversion is running" in busy.text
+    assert "Models were not downloaded: A conversion is running" in busy.text
     assert started == []
+
+
+def test_a_refused_global_instruction_save_keeps_the_presets_on_the_page(tmp_path) -> None:
+    # Final review F1: the refused page showed no presets, and saving presets from it
+    # deleted them all.
+    from html import unescape
+
+    guide = tmp_path / "keep.md"
+    guide.write_text("# Keep\n")
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post("/settings/presets", data={"preset_count": "1", "preset_name_0": "keep",
+                                               "preset_files_0": str(guide)}, follow_redirects=False)
+        refused = client.post("/settings/global-instruction", data={"global_instruction": "x" * 70_000})
+        page = refused.text
+        form_html = page[page.index('action="/settings/presets"'):]
+        form_html = form_html[: form_html.index("</form>")]
+        fields = {name: unescape(value) for tag, name, value in
+                  re.findall(r'(<input[^>]*name="(preset_[a-z_0-9]+)"[^>]*value="([^"]*)")', form_html)
+                  if 'type="checkbox"' not in tag}  # an unticked box is not sent
+        fields |= {name: unescape(text) for name, text in
+                   re.findall(r'<textarea[^>]*name="(preset_[a-z_0-9]+)"[^>]*>([^<]*)</textarea>', form_html)}
+        resaved = client.post("/settings/presets", data=fields, follow_redirects=False)
+    assert refused.status_code == 422
+    assert fields.get("preset_name_0") == "keep"
+    assert resaved.status_code == 303
+    assert [preset.name for preset in app.state.settings.guidance_presets] == ["keep"]
+
+
+def test_a_busy_models_download_is_not_called_nothing_saved(tmp_path) -> None:
+    import asyncio
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        app.state.download_manager._convert_slot = asyncio.Semaphore(0)
+        busy = client.post("/settings/converter-models", follow_redirects=False)
+    assert busy.status_code == 409
+    assert "<div hidden data-page-alert>Models were not downloaded: A conversion is running" in busy.text

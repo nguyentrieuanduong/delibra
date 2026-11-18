@@ -108,5 +108,5 @@
     <button type="submit"{% if not coding_local %} disabled{% endif %}>Save downloads</button>
   </form>
   {% set models = converter_models %}
-  <p class="converter-models">Converter models: {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB{% elif models.status == "downloading" %}Downloading…{% elif models.status == "failed" %}Failed{% else %}Not downloaded{% endif %} · <a href="/settings/converter">Settings → Converter</a></p>
+  <p class="converter-models">Converter models: {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB{% elif models.status == "downloading" %}Downloading…{% elif models.status == "failed" %}Failed{% else %}Not downloaded{% endif %}{% if coding_local %} · <a href="/settings/converter">Settings → Converter</a>{% endif %}</p>
 </section>

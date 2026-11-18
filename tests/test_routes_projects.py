@@ -3522,3 +3522,11 @@ def test_general_shows_a_one_line_models_status_linking_to_settings(tmp_path, mo
     assert 'Converter models: Not downloaded · <a href="/settings/converter">Settings → Converter</a>' in section
     assert "Download models" not in section
     assert old.status_code in (404, 405)
+
+
+def test_lan_clients_get_no_link_to_the_converter_tab(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        general = client.get(f"{prefix}/settings").text
+    assert "Converter models: Not downloaded" in general
+    assert 'href="/settings/converter"' not in general
