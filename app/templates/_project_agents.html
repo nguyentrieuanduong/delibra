@@ -2,7 +2,7 @@
 {% from "_form_macros.html" import effort_options, takes_effect %}
 <section aria-labelledby="agents-heading">
   <h2 id="agents-heading">Sessions</h2>
-  {{ takes_effect("locked") }}
+  {{ takes_effect("new_agent") }}
   {# A refused agent form comes back open, with what was typed (typed.form names it). #}
   {% set c = typed if typed.get('form') == 'create' else {} %}
   {% set c_agent = c.get('agent', 'claude') %}
@@ -34,10 +34,11 @@
       {{ writable_roots_field("Additional writable roots", c.get('writable_roots', ''), coding_local,
                               c.get('create_missing_writable_roots'), "new-session-writable-roots",
                               project_url(project.name, "/browse")) }}
-      <button type="submit" data-disable-during-auto{% if auto_active %} disabled data-auto-disabled="true"{% endif %}>Create session</button>
+      <button type="submit">Create session</button>
     </form>
   </details>
   {% if sessions %}
+    {{ takes_effect("locked") }}
     <div class="sessions">
       {% for session in sessions %}
         {% set e = typed if typed.get('form') == 'edit:' ~ session.id else {} %}

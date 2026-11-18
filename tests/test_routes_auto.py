@@ -47,9 +47,10 @@ FAKE_CLI = Path(__file__).with_name("fake_cli.py")
 class AutoRouteAdapter:
     EFFORT_LEVELS = ["low"]
 
-    def __init__(self, output: str, *, sleep: bool = False) -> None:
+    def __init__(self, output: str, *, sleep: bool = False, delay: float = 0.03) -> None:
         self.output = output
         self.sleep = sleep
+        self.delay = delay
         self._final = ""
 
     def build_command(self, config: SessionConfig, context: RunContext) -> Command:
@@ -66,7 +67,7 @@ class AutoRouteAdapter:
                 "--mode",
                 mode,
                 "--delay",
-                "0.03",
+                str(self.delay),
             ],
             context.user_prompt,
         )
@@ -98,6 +99,7 @@ class AutoRouteFactory:
         self.outputs = outputs
         self.sleep = sleep
         self.sleep_at = sleep_at or set()
+        self.delay = 0.03
         self.created = 0
 
     def __call__(self, _config: SessionConfig) -> AutoRouteAdapter:
@@ -107,6 +109,7 @@ class AutoRouteFactory:
         return AutoRouteAdapter(
             output,
             sleep=self.sleep or index in self.sleep_at,
+            delay=self.delay,
         )
 
 
@@ -1081,6 +1084,66 @@ def test_auto_choice_css_aligns_controls_without_changing_global_labels() -> Non
     ) in css
 
 
+def test_an_agent_created_during_auto_does_not_join_the_running_run(
+    tmp_path: Path,
+) -> None:
+    # User decision 2026-11-18: creating an agent is allowed during Auto;
+    # editing and deleting stay locked, and a run keeps its participants.
+    app, _, project, store, sessions, factory = auto_route_app(
+        tmp_path, outputs=["CONVERGED", "CONVERGED"]
+    )
+    factory.delay = 0.3
+    prefix = f"/projects/{quote(project.name, safe='')}"
+    form = {"agent": "claude", "model": "haiku", "effort": "high"}
+    with TestClient(app, base_url="http://localhost") as client:
+        started = start_auto(client, project.id, [s.id for s in sessions])
+        active = wait_for_auto(store, terminal=False)
+        created = client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "Gamma", "return_to": "settings"},
+            follow_redirects=False,
+        )
+        from_chat = client.post(
+            f"{prefix}/sessions",
+            data={**form, "name": "Delta"},
+            headers={"HX-Request": "true"},
+        )
+        gamma = next(s for s in store.list_sessions() if s.name == "Gamma")
+        edited = client.post(
+            f"{prefix}/sessions/{gamma.id}/edit",
+            data={**form, "model": "other", "return_to": "settings"},
+        )
+        deleted = client.post(
+            f"{prefix}/sessions/{gamma.id}/delete", data={"return_to": "settings"}
+        )
+        settings_page = client.get(f"{prefix}/settings/agents").text
+        chat = client.get(f"{prefix}/chat").text
+        status = client.get(f"{prefix}/auto-runs/{active.number}")
+        terminal = wait_for_auto(store, terminal=True)
+
+    assert started.status_code == 202
+    assert created.status_code == 303
+    assert created.headers["location"] == f"{prefix}/settings/agents"
+    assert from_chat.status_code == 200 and "Delta" in from_chat.text
+    assert "Auto run is active" in edited.text and edited.status_code == 409
+    assert deleted.status_code == 409
+    assert store.load_session(gamma.id).model == "haiku"
+    for page, label in ((settings_page, "Create session"), (chat, "Create agent")):
+        button = re.search(rf"<button[^>]*>{label}</button>", page)
+        assert button is not None, label
+        assert "disabled" not in button.group(), label
+        assert "data-disable-during-auto" not in button.group(), label
+    assert re.search(r"<button[^>]*disabled[^>]*>Delete</button>", settings_page)
+    assert status.status_code == 200
+    assert terminal.status == "converged"
+    assert [p.session_id for p in terminal.participants] == [
+        p.session_id for p in active.participants
+    ]
+    assert {s.name for s in sessions} == {
+        s.name for s in store.list_sessions() if s.rounds
+    }
+
+
 def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
     tmp_path: Path,
 ) -> None:
@@ -1128,11 +1191,7 @@ def test_active_auto_status_reload_disables_mutations_and_stop_reenables_auto(
     assert f"Auto {active.number}" in session_page.text
     assert re.search(r'>Cancel</button>', session_page.text)
     assert re.search(r'<button[^>]*disabled[^>]*>Cancel</button>', session_page.text)
-    assert re.search(r'>Create session</button>', settings_page.text)
-    assert re.search(
-        r'<button[^>]*disabled[^>]*>Create session</button>',
-        settings_page.text,
-    )
+    assert re.search(r'<button type="submit">Create session</button>', settings_page.text)
     assert re.search(r'<button[^>]*disabled[^>]*>Unregister</button>', index.text)
     assert stopped.status_code == 200
     assert f"Auto {active.number}" in stopped.text

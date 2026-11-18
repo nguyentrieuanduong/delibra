@@ -2900,9 +2900,16 @@ class ProjectStore:
         return str(active) if active is not None else None
 
     def require_auto_inactive(self) -> None:
+        if self.require_active_auto_readable() is not None:
+            raise ConflictError("project has an active Auto run")
+
+    def require_active_auto_readable(self) -> str | None:
+        """The active Auto run id (None when no run is active); refuses with
+        the actionable conflict when that run's record cannot be read."""
+
         active_id = self.active_auto_run_id()
         if active_id is None:
-            return
+            return None
         try:
             self.load_auto_run(active_id)
         except NotFoundError:
@@ -2913,7 +2920,7 @@ class ProjectStore:
             ) from None
         except StorageError:
             raise _auto_migration_conflict(self.auto_migration_status()) from None
-        raise ConflictError("project has an active Auto run")
+        return active_id
 
     def require_auto_owner(self, auto_id: str) -> AutoRunRecord:
         validate_id(auto_id, "Auto run id")

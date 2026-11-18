@@ -185,7 +185,8 @@ Each section says when a change takes effect:
 | Next turn | A running Auto run uses this from its next turn. | Use of the global instruction; the global instruction text; writable project directories; command network access; downloads (all fields, folder included); chat skills; build skills |
 | Next commit | A running Auto run uses this from its next build commit. | Git ignore list |
 | Next run | A running Auto run keeps what it started with; new runs use this. | Build guidance files |
-| Locked | Locked while an Auto run is active. | Coding on/off; Docker (all actions); creating, editing and deleting agents; Reset |
+| New agent | Allowed during Auto; a running Auto run keeps its participants. | Creating an agent (the new agent does not join a running Auto run) |
+| Locked | Locked while an Auto run is active. | Coding on/off; Docker (all actions); editing and deleting agents; Reset |
 
 While an Auto run is active, the Coding, Agents and Reset tabs show which of
 their settings are locked ("Auto run #N is active: … locked until it ends.").
@@ -429,7 +430,8 @@ turn by user`. While that graceful stop is pending the panel offers **Keep going
 to withdraw it and **Stop now** to escalate; withdrawing after the run has already
 ended is a no-op that simply shows the stopped panel. Manual Send, pass, retry,
 cancel, agent identity changes, and project removal remain blocked until Auto is
-terminal; file viewing remains available.
+terminal; file viewing remains available. Creating an agent is allowed: the run
+keeps the participants it started with, and the new agent can join a later run.
 
 A failed Auto turn is classified before it ends the run. Each adapter maps its
 own structured error fields to a category, and the runner does the same for

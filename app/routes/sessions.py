@@ -191,7 +191,10 @@ async def _create_session(
     ):
         project = request.app.state.registry.get(resolved_project_id)
         store = ProjectStore(project)
-        store.require_auto_inactive()
+        # Creating is allowed during Auto (user decision 2026-11-18): a run's
+        # participants are fixed when it starts, so the new agent never joins it.
+        # An active run whose record cannot be read still refuses, actionably.
+        store.require_active_auto_readable()
         validated_writable_roots = store.validate_session_writable_roots(
             _writable_roots_field(writable_roots),
             create_missing=create_missing_writable_roots,
