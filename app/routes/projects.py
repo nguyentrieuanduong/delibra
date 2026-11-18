@@ -16,6 +16,8 @@ from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 
 from app.coding import (
+    CHECK_MODEL_DEFAULT_KEY,
+    CHECK_MODEL_DEFAULT_VERSION,
     CodingEnvState,
     CodingPolicy,
     CodingPolicyError,
@@ -680,6 +682,8 @@ async def save_coding_downloads(
             "folder": downloads_folder,
             "model_check": downloads_model_check,
             "check_model": str(values["check_model"]).strip(),
+            # What the form sends is a choice, never the old default (Task 2c).
+            CHECK_MODEL_DEFAULT_KEY: CHECK_MODEL_DEFAULT_VERSION,
         }))
 
     return await _save_coding_part(

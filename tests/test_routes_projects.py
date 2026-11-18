@@ -2667,6 +2667,17 @@ def test_saving_download_settings(tmp_path: Path, monkeypatch) -> None:
     assert (downloads.check_provider, downloads.check_model) == ("codex", "gpt-5.5-mini")
 
 
+def test_a_deliberate_sonnet_model_check_is_saved_as_chosen(tmp_path: Path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/coding/downloads", data={
+            "downloads_folder": "raw", "downloads_check_provider": "claude",
+            "downloads_check_model": "sonnet",
+        }, follow_redirects=False)
+    assert response.status_code == 303
+    assert ProjectStore(project).coding_policy().downloads.check_model == "sonnet"
+
+
 def test_the_coding_mode_form_keeps_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     store = ProjectStore(project)

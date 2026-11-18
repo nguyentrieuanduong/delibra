@@ -647,9 +647,32 @@ def test_a_manifest_without_downloads_loads_defaults() -> None:
 
 def test_a_saved_check_model_is_kept_over_the_default() -> None:
     policy = CodingPolicy.from_manifest(
-        {"coding": {"enabled": True, "downloads": {"check_model": "sonnet"}}}
+        {"coding": {"enabled": True, "downloads": {"check_model": "sonnet", "check_model_default": 2}}}
     )
     assert policy.downloads.check_model == "sonnet"
+
+
+def test_the_old_sonnet_default_becomes_haiku_once() -> None:
+    old = {"check_provider": "claude", "check_model": "sonnet"}
+    assert DownloadPolicy.from_dict(old).check_model == "haiku"
+    assert DownloadPolicy.from_dict({"check_model": "sonnet"}).check_model == "haiku"
+
+
+@pytest.mark.parametrize("block", [
+    {"check_provider": "codex", "check_model": "sonnet"},
+    {"check_provider": "claude", "check_model": "opus"},
+    {"check_provider": "claude", "check_model": "sonnet", "check_model_default": 2},
+])
+def test_codex_custom_and_marked_check_models_are_never_migrated(block) -> None:
+    assert DownloadPolicy.from_dict(block).check_model == block["check_model"]
+
+
+def test_every_saved_downloads_block_carries_the_marker() -> None:
+    saved = DownloadPolicy(check_model="sonnet").to_dict()
+    assert saved["check_model_default"] == 2
+    assert DownloadPolicy.from_dict(saved).check_model == "sonnet"
+    manifest = CodingPolicy(downloads=DownloadPolicy(check_model="sonnet")).to_dict()
+    assert manifest["downloads"]["check_model_default"] == 2
 
 
 def test_downloads_round_trip() -> None:

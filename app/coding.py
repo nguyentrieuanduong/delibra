@@ -686,6 +686,12 @@ def normalize_check_model(value: object) -> str:
     return value
 
 
+# Stored in every saved downloads block. A block without it predates the haiku
+# default (2026-11-18): its claude + sonnet pair was the old default, not a choice.
+CHECK_MODEL_DEFAULT_KEY = "check_model_default"
+CHECK_MODEL_DEFAULT_VERSION = 2
+
+
 @dataclass(frozen=True)
 class DownloadPolicy:
     """Delibra downloads for build turns (design "Settings")."""
@@ -710,17 +716,24 @@ class DownloadPolicy:
             raise CodingPolicyError("download settings are invalid")
         if approval not in DOWNLOAD_APPROVALS or provider not in CHECK_PROVIDERS:
             raise CodingPolicyError("download settings are invalid")
+        check_model = normalize_check_model(data.get("check_model", default.check_model))
+        if (
+            data.get(CHECK_MODEL_DEFAULT_KEY) != CHECK_MODEL_DEFAULT_VERSION
+            and provider == "claude"
+            and check_model == "sonnet"
+        ):
+            check_model = default.check_model  # one-time move off the old default
         return cls(
             enabled=enabled,
             folder=normalize_download_folder(data.get("folder", default.folder)),
             approval=approval,
             model_check=model_check,
             check_provider=provider,
-            check_model=normalize_check_model(data.get("check_model", default.check_model)),
+            check_model=check_model,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), CHECK_MODEL_DEFAULT_KEY: CHECK_MODEL_DEFAULT_VERSION}
 
 
 @dataclass
