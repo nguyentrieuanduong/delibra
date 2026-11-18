@@ -235,3 +235,12 @@ def test_names_that_normalise_to_a_refused_type_are_refused(filename, url, exten
 @pytest.mark.parametrize("name", ["report.docm", "sheet.xlsm", "deck.pptm", "script.sh", "app.js"])
 def test_macro_documents_and_source_code_stay_allowed(name) -> None:
     assert parse_request(json.dumps({"url": "https://a.org/x", "purpose": "p", "filename": name}).encode())
+
+
+@pytest.mark.parametrize("extension", [
+    "iso", "img", "cdr", "sparseimage", "sparsebundle", "mobileconfig", "shortcut", "afploc", "prefpane",
+    "lnk", "hta", "reg", "url", "pif", "msix", "msixbundle", "appx", "xll",
+])
+def test_disk_images_profiles_shortcuts_and_windows_launchers_are_refused(extension) -> None:
+    with pytest.raises(RequestError, match=rf"executable file type refused \(\.{extension}\)"):
+        parse_request(json.dumps({"url": f"https://a.org/thing.{extension}", "purpose": "p"}).encode())

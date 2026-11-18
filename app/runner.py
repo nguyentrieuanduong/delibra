@@ -652,14 +652,16 @@ class RunManager:
                 sent="to you in this conversation",
                 overrides="the message",
             ).strip()
-            spool_notes = ""
+            spool_notes: tuple[str, ...] = ()
             turn_policy = store.coding_policy().downloads
             if self.downloads is not None and (turn_policy.enabled or turn_policy.convert):
                 download_policy = turn_policy
                 spool_notes = turn_spool_notes(
                     store.workspace_dir(session_id), turn_policy, agent=config.agent, build=False
-                ).strip()
-            system_note = "\n\n".join(part for part in (skills_note, notes_note, spool_notes) if part)
+                )
+            system_note = "\n\n".join(
+                part.strip() for part in (skills_note, notes_note, *spool_notes) if part.strip()
+            )
 
         round_n = store.allocate_round(session_id)
         key = RunKey(project_id, session_id, round_n)

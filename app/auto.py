@@ -2334,10 +2334,10 @@ class AutoManager:
                     )
                     turn_cycle = current.current_cycle
                     if download_policy is not None:
-                        spool_notes = turn_spool_notes(
+                        spool_notes = "".join(turn_spool_notes(
                             temp_root, download_policy, agent=participant.agent,
                             build=current.kind == "build",
-                        )
+                        ))
                     notes_view, notes_path, notes_live = self._prepare_notes_locked(
                         store, current, view_path
                     )

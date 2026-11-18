@@ -67,7 +67,10 @@ EXECUTABLE_EXTENSIONS = frozenset(
     "exe msi msp dll scr com cpl sys bat cmd ps1 vbs vbe wsf jar apk ipa app dmg pkg mpkg deb rpm "
     "appimage command "
     # macOS runs these on open (review round 1); macro Office files stay allowed.
-    "terminal fileloc inetloc webloc scpt applescript tool jnlp".split()
+    "terminal fileloc inetloc webloc scpt applescript tool jnlp "
+    # Disk images, profiles, shortcuts and Windows launchers (review round 2).
+    "iso img cdr sparseimage sparsebundle mobileconfig shortcut afploc prefpane lnk hta reg url pif "
+    "msix msixbundle appx xll".split()
 )
 
 

@@ -2851,3 +2851,18 @@ async def test_only_codex_chat_replies_get_the_wait_loop(tmp_path: Path, agent: 
     note = contexts[0].system_note
     assert ("until grep" in note) is waits
     assert ("read the status file again later in your turn" in note) is not waits
+
+
+@pytest.mark.asyncio
+async def test_chat_notes_are_separate_paragraphs(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, approval="automatic")
+    store.replace_coding_policy(policy)
+    manager.downloads = RecordingDownloads()
+
+    await manager.wait(await manager.start(project_id, session_id, "Find the paper"))
+
+    note = contexts[0].system_note
+    assert "\n\nTo get Markdown from a PDF" in note  # the convert note is its own paragraph

@@ -7313,3 +7313,24 @@ async def test_the_skills_refresh_precedes_the_compaction_decision(tmp_path, mon
     decisions = [index for index, step in enumerate(order) if step == "decision"]
     assert len(decisions) == len(terminal.discussion)
     assert all(index > 0 and order[index - 1] == "refresh" for index in decisions), order
+
+
+@pytest.mark.asyncio
+async def test_a_codex_discussion_turn_gets_the_wait_loop(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue")]
+    )
+    codex = store.load_session(session_ids[0])
+    codex.agent, codex.model, codex.effort = "codex", "", "high"
+    store.save_session(codex)
+    enable_downloads(store, approval="automatic")
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    created = await manager.create(
+        project_id, topic="Discuss the paper", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert factory.calls, terminal.terminal_reason
+    first = str(factory.calls[0]["prompt"])
+    assert "until grep" in first and "read the status file again later in your turn" not in first

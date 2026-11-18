@@ -55,26 +55,26 @@ def has_shell(agent: str, *, build: bool) -> bool:
     return build or agent == "codex"
 
 
-def turn_spool_notes(temp_root: Path, policy: DownloadPolicy, *, agent: str, build: bool) -> str:
+def turn_spool_notes(temp_root: Path, policy: DownloadPolicy, *, agent: str, build: bool) -> tuple[str, ...]:
     """The turn's download and convert notes. Discussion and chat turns get fresh
     spools in `temp_root` here; build turns get theirs when the runner recreates
     the temp dir."""
 
     shell = has_shell(agent, build=build)
-    notes = ""
+    notes: list[str] = []
     if policy.enabled:
         directory = temp_root / DOWNLOADS_DIR
         if not build:
             prepare_spool(temp_root, DOWNLOADS_DIR, DOWNLOAD_SPOOL, extra_names=(STATUS_NAME,))
-        notes += downloads_prompt(directory / STATUS_NAME, directory / DOWNLOAD_SPOOL,
-                                  manual=policy.approval == "manual", shell=shell)
+        notes.append(downloads_prompt(directory / STATUS_NAME, directory / DOWNLOAD_SPOOL,
+                                      manual=policy.approval == "manual", shell=shell))
     if policy.convert:
         directory = temp_root / CONVERT_DIR
         if not build:
             prepare_spool(temp_root, CONVERT_DIR, CONVERT_SPOOL, extra_names=(STATUS_NAME,))
-        notes += convert_prompt(directory / STATUS_NAME, directory / CONVERT_SPOOL,
-                                f"{policy.folder}/converted", shell=shell)
-    return notes
+        notes.append(convert_prompt(directory / STATUS_NAME, directory / CONVERT_SPOOL,
+                                    f"{policy.folder}/converted", shell=shell))
+    return tuple(notes)
 
 
 @dataclass(frozen=True)
@@ -384,7 +384,7 @@ class DownloadManager:
         """Stage `path` and convert it, all inside the server's one conversion slot
         (review round 1: staging 100 MiB per request outside it multiplied the cost)."""
 
-        scratch = store_root / "downloads" / ".converting"
+        scratch = store_root / DOWNLOADS_DIR / ".converting"
         async with self._convert_slot:
             scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
             staged = Path(tempfile.mkdtemp(dir=scratch)) / "source"

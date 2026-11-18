@@ -565,7 +565,7 @@ def test_turn_notes_follow_the_one_shell_rule(tmp_path, agent, build, shell) -> 
     assert has_shell(agent, build=build) is shell
     workspace = tmp_path / agent / str(build)
     workspace.mkdir(parents=True)
-    notes = turn_spool_notes(workspace, DownloadPolicy(enabled=True, convert=True), agent=agent, build=build)
+    notes = "".join(turn_spool_notes(workspace, DownloadPolicy(enabled=True, convert=True), agent=agent, build=build))
     assert ("until grep" in notes) is shell
     assert f"{(workspace / 'downloads' / 'requests').as_posix()}/" in notes
     assert f"{(workspace / 'convert' / 'requests').as_posix()}/ named like c1.json" in notes
