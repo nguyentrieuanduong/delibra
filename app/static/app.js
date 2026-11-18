@@ -160,7 +160,7 @@ function staleDownloadsList(target, responseText) {
     return false;
   }
   const incoming = /data-revision="(\d+)"/.exec(responseText || "");
-  const epoch = /data-epoch="([0-9a-f]*)"/.exec(responseText || "");
+  const epoch = /data-epoch="([0-9a-f.]*)"/.exec(responseText || "");  // downloads[.conversions]
   if (epoch && target.dataset.epoch !== undefined && epoch[1] !== target.dataset.epoch) {
     return false;
   }

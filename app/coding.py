@@ -694,7 +694,7 @@ CHECK_MODEL_DEFAULT_VERSION = 2
 
 @dataclass(frozen=True)
 class DownloadPolicy:
-    """Delibra downloads for build turns (design "Settings")."""
+    """Delibra downloads and document conversion for every turn kind (design 2026-11-15)."""
 
     enabled: bool = False
     folder: str = DEFAULT_DOWNLOAD_FOLDER

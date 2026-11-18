@@ -39,7 +39,8 @@ def downloads_panel_context(request: Request, project: Project) -> dict:
         "revision": revision,
         "epoch": epoch,
         "downloads": records,
-        "conversions": conversions,
+        "conversions": conversions or [],
+        "conversions_unreadable": conversions is None,
         "awaiting_count": sum(1 for r in records if r.state == "awaiting"),
         "downloads_enabled": store.coding_policy().downloads.enabled,
     }
@@ -48,15 +49,15 @@ def downloads_panel_context(request: Request, project: Project) -> dict:
 CONVERSIONS_SHOWN = 50
 
 
-def _conversions(store: ProjectStore) -> tuple[list, int, str]:
-    """The newest conversions first, with their store's revision and epoch."""
+def _conversions(store: ProjectStore) -> tuple[list | None, int, str]:
+    """The newest conversions first (None when unreadable), with the store's revision and epoch."""
 
     conversions = ConversionStore(store.root)
     try:
         revision, epoch = conversions.revision()
         return list(reversed(conversions.load()))[:CONVERSIONS_SHOWN], revision, epoch
     except StorageError:
-        return [], 0, ""
+        return None, 0, ""
 
 
 def panel_revision(downloads: int, downloads_epoch: str, conversions: int, conversions_epoch: str) -> tuple[int, str]:

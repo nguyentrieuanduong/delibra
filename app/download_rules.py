@@ -11,8 +11,8 @@ import re
 import unicodedata
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-# Per build turn, in the turn's temp dir: the agent writes request files in
-# downloads/requests/; Delibra writes downloads/status.json.
+# Per turn (build: its temp dir; discussion and chat: the agent's workspace): the
+# agent writes request files in downloads/requests/; Delibra writes downloads/status.json.
 DOWNLOADS_DIR = "downloads"
 DOWNLOAD_SPOOL = "requests"
 STATUS_NAME = "status.json"

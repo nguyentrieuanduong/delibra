@@ -152,3 +152,13 @@ def test_a_conversion_change_makes_the_panel_revision_newer(tmp_path):
         updated, epoch_updated = shown(client)
     assert before < added < updated
     assert epoch_added == epoch_updated
+
+
+def test_unreadable_conversion_records_are_named_in_the_panel(tmp_path):
+    app, project, store = downloads_app(tmp_path)
+    (store.root / "downloads").mkdir(parents=True, exist_ok=True)
+    (store.root / "downloads" / "conversions.json").write_text("{")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        pages = [client.get(f"{base(project)}/{path}").text for path in ("downloads/list", "chat")]
+    for page in pages:
+        assert "Conversion records are unreadable (<code>.delibra/downloads/conversions.json</code>)" in page

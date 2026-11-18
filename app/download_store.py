@@ -13,7 +13,7 @@ import uuid
 
 from app.build_git import DOWNLOADS_UNREADABLE  # noqa: F401  (re-exported; defined there to avoid a cycle)
 from app.coding import download_excludes
-from app.download_rules import MASKED_URL, url_host
+from app.download_rules import DOWNLOADS_DIR, MASKED_URL, url_host
 from app.storage import (
     ProjectStore, StorageError, atomic_write_bytes, ensure_project_subdirectory,
     open_project_directory, utc_now, writable_root_parts,
@@ -302,7 +302,7 @@ def _write_in(directory: int, name: str, data: bytes) -> None:
         raise
 
 
-def write_turn_status(temp_dir: Path, data: bytes, directory: str = "downloads") -> None:
+def write_turn_status(temp_dir: Path, data: bytes, directory: str = DOWNLOADS_DIR) -> None:
     """Replace <temp>/<directory>/status.json without following any symlink."""
 
     parent = os.open(temp_dir, _DIR_FLAGS)

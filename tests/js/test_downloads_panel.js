@@ -83,3 +83,10 @@ test("an event from a new epoch re-fetches whatever its revision", function () {
   assert.equal(newerDownloadsRevision(12, JSON.stringify({ revision: 1, epoch: "bbbb" }), "aaaa"), true);
   assert.equal(newerDownloadsRevision(12, JSON.stringify({ revision: 1, epoch: "aaaa" }), "aaaa"), false);
 });
+
+test("a store reset with a dotted downloads.conversions epoch is never shown as stale", function () {
+  const shown = { id: "downloads-list", dataset: { revision: "9", epoch: "ab12.cd34" } };
+  // Same epoch, older revision: stale. New epoch (a store was recreated): not stale.
+  assert.equal(staleDownloadsList(shown, '<div id="downloads-list" data-revision="5" data-epoch="ab12.cd34">'), true);
+  assert.equal(staleDownloadsList(shown, '<div id="downloads-list" data-revision="1" data-epoch="ab12.ef56">'), false);
+});

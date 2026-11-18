@@ -9,6 +9,9 @@
     <p class="hint">{% if downloads_enabled %}No downloads yet. Agents request them here.{% else %}Delibra downloads are off for this project (Settings → General).{% endif %}</p>
   {% endif %}
   <ol class="downloads">{% for download in downloads %}{% include "_download_item.html" %}{% endfor %}</ol>
+  {% if conversions_unreadable|default(false) %}
+    <p class="warning">Conversion records are unreadable (<code>.delibra/downloads/conversions.json</code>). Conversion requests are not recorded until the file is repaired.</p>
+  {% endif %}
   {% if conversions %}
     <h3 class="downloads-conversions-heading">Conversions</h3>
     <ul class="downloads-conversions">
