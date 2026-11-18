@@ -603,6 +603,11 @@ class DownloadManager:
             converted_path=f"{record.path}.md",
         )
 
+    def conversion_slot(self) -> asyncio.Semaphore:
+        """The one conversion slot, for a models self-test and swap to hold."""
+
+        return self._convert_slot
+
     def converting(self) -> bool:
         """A conversion holds the server's one slot right now."""
 

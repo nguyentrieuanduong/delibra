@@ -11,10 +11,12 @@
     {% else %}Not downloaded{% endif %}
   </p>
   {% if models.notice %}<p class="warning">The last download did not replace the models: {{ models.notice }}</p>{% endif %}
+  {% set off = " disabled" if converter_busy else "" %}
+  {% if converter_busy %}<p class="hint">A models action is running; the buttons come back when it ends (reload the page).</p>{% endif %}
   {% if converter_non_default %}<p class="warning">Not the version this Docling release expects; conversions may fail or differ.</p>{% endif %}
   {% if models.status in ("absent", "failed") and not converter_repos[0].installed %}
     <form method="post" action="/settings/converter-models">
-      <button type="submit">{% if models.status == "failed" %}Retry{% else %}Download models (about 0.7 GB){% endif %}</button>
+      <button type="submit"{{ off }}>{% if models.status == "failed" %}Retry{% else %}Download models (about 0.7 GB){% endif %}</button>
     </form>
   {% endif %}
   {% if converter_repos[0].installed %}
@@ -33,10 +35,10 @@
     </table>
   {% endif %}
   <div class="converter-actions">
-    <form method="post" action="/settings/converter-models/check"><button type="submit">Check for updates</button></form>
+    <form method="post" action="/settings/converter-models/check"><button type="submit"{{ off }}>Check for updates</button></form>
     {% if converter_repos[0].installed %}
-      <form method="post" action="/settings/converter-models"><input type="hidden" name="force" value="true"><button type="submit">Update to Docling's default versions</button></form>
-      <form method="post" action="/settings/converter-models/remove" onsubmit="return confirm('Remove the converter models? PDFs are then converted to plain text until you download them again.')"><button type="submit">Remove models</button></form>
+      <form method="post" action="/settings/converter-models"><input type="hidden" name="force" value="true"><button type="submit"{{ off }}>Update to Docling's default versions</button></form>
+      <form method="post" action="/settings/converter-models/remove" onsubmit="return confirm('Remove the converter models ({{ (models.size_bytes / 1048576)|round|int }} MB)? PDFs will be converted as plain text until you download them again.')"><button type="submit"{{ off }}>Remove models</button></form>
     {% endif %}
   </div>
   {% if converter_check %}
@@ -58,7 +60,7 @@
           </fieldset>
         {% endfor %}
         <p class="hint">A non-default version may not be the one this Docling release expects; the new models must pass a test conversion before they replace the current ones.</p>
-        <button type="submit">Download chosen versions</button>
+        <button type="submit"{{ off }}>Download chosen versions</button>
       </form>
     {% endif %}
   {% endif %}

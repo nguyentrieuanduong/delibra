@@ -687,7 +687,7 @@ def test_the_converter_tab_downloads_the_models_from_this_machine_only(tmp_path,
     app = make_app(tmp_path)
     homes = []
 
-    async def fake_download(home):
+    async def fake_download(home, revisions=None, **kwargs):
         homes.append(home)
 
     monkeypatch.setattr("app.routes.settings.download_models", fake_download)
@@ -715,7 +715,7 @@ def test_the_models_download_is_not_restarted_needlessly(tmp_path, monkeypatch) 
     app = make_app(tmp_path)
     started = []
 
-    async def fake_download(home):
+    async def fake_download(home, revisions=None, **kwargs):
         started.append(home)
 
     monkeypatch.setattr("app.routes.settings.download_models", fake_download)
@@ -836,7 +836,7 @@ def test_a_chosen_version_downloads_those_revisions(tmp_path, monkeypatch) -> No
 
     chosen = []
 
-    async def fake_download(home, revisions=None):
+    async def fake_download(home, revisions=None, **kwargs):
         chosen.append(revisions)
 
     monkeypatch.setattr("app.routes.settings.download_models", fake_download)
@@ -909,3 +909,52 @@ def test_no_update_is_offered_when_the_default_points_to_the_installed_commit(tm
         _converter_home(app, check=current)
         page = client.get("/settings/converter").text
     assert "Update available" not in page
+
+
+def test_one_models_action_at_a_time(tmp_path, monkeypatch) -> None:
+    # Task 14 review 1: a running Check must block Update, Choose, Remove and another Check.
+    import asyncio
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        app.state.converter_models_lock = asyncio.Lock()
+        app.state.converter_models_lock._locked = True  # a check is running (held by another request)
+        responses = {path: client.post(path, data=data, follow_redirects=False) for path, data in (
+            ("/settings/converter-models", {"force": "true"}), ("/settings/converter-models/check", {}),
+            ("/settings/converter-models/remove", {}),
+            ("/settings/converter-models/version", {"revision_0": "main", "revision_1": "main", "revision_2": "v2.3.0"}))}
+        page = client.get("/settings/converter").text
+    assert {path: r.status_code for path, r in responses.items()} == dict.fromkeys(responses, 409)
+    assert "Models action refused: Another models action is running" in responses["/settings/converter-models/check"].text
+    assert "Models action refused: Another models action is running" in responses["/settings/converter-models/remove"].text
+    assert "Models were not downloaded: Another models action is running" in responses["/settings/converter-models"].text
+    assert page.count("disabled") >= 4 and "A models action is running" in page
+
+
+def test_remove_asks_first_with_the_size(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app)
+        page = client.get("/settings/converter").text
+    assert ("return confirm('Remove the converter models (0 MB)? PDFs will be converted as plain text until you "
+            "download them again.')") in page
+
+
+def test_downloads_hold_the_conversion_slot_for_the_self_test(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    seen = []
+
+    async def fake_download(home, revisions=None, *, slot=None):
+        seen.append(slot() is app.state.download_manager._convert_slot)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post("/settings/converter-models", follow_redirects=False)
+        for _ in range(100):
+            if seen:
+                break
+            _time.sleep(0.01)
+    assert seen == [True]

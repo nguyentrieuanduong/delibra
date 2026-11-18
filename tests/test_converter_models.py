@@ -68,7 +68,7 @@ def test_check_lists_refs_and_at_most_twenty_commits() -> None:
     commits = [SimpleNamespace(commit_id=f"{n:040x}", title=f"c{n}", created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
                for n in range(30)]
     api = SimpleNamespace(list_repo_refs=lambda repo: SimpleNamespace(branches=[ref], tags=[tag]),
-                          list_repo_commits=lambda repo: commits)
+                          iter_commits=lambda repo: iter(commits))
     result = hub.check(api, ["org/a"])["repos"]["org/a"]
     assert [(r["name"], r["kind"]) for r in result["refs"]] == [("main", "branch"), ("v2.3.0", "tag")]
     assert len(result["commits"]) == 20 and result["commits"][0]["commit"] == f"{0:040x}"
@@ -270,3 +270,167 @@ async def test_the_real_self_test_needs_working_models(tmp_path) -> None:
     assert await run_self_test(tmp_path, Path(models)) is None
     (tmp_path / "empty").mkdir()
     assert (await run_self_test(tmp_path, tmp_path / "empty")).startswith("self-test failed: structure lost")
+
+
+# ----- Task 14 review round 1
+@pytest.mark.asyncio
+async def test_each_run_has_its_own_cache_and_survives_another_runs_cleanup(tmp_path) -> None:
+    home = tmp_path / "home"
+    slow = fake_hub(tmp_path, body=(
+        "import time\nmine = pathlib.Path(os.environ['HF_HOME']); mine.mkdir(parents=True, exist_ok=True)\n"
+        "(mine / 'blob').write_text('x')\n"
+        "if sys.argv[1] == 'download':\n    time.sleep(1.0)\n"
+        "    assert (mine / 'blob').exists(), 'another run deleted my cache'\n"
+    ).replace("import time\n", "import time, pathlib\n"))
+    await asyncio.gather(download_models(home, hub=slow, self_test=passes), check_updates(home, hub=slow))
+    assert models_state(home).status == "ready"
+    homes = [line.split("|")[1] for line in (tmp_path / "hub-calls.txt").read_text().splitlines()]
+    assert len(set(homes)) == 2 and all("docling.hf-cache-" in path for path in homes)
+    assert not list((home / "models").glob("docling.hf-cache*"))
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_waits_for_the_self_test_and_swap(tmp_path) -> None:
+    home = tmp_path / "home"
+    slot = asyncio.Semaphore(1)
+    order: list[str] = []
+    entered = asyncio.Event()
+
+    async def slow_test(home: Path, staged: Path) -> str | None:
+        entered.set()
+        await asyncio.sleep(0.2)
+        order.append("self-test")
+        return None
+
+    async def conversion() -> None:
+        await entered.wait()
+        async with slot:
+            order.append("conversion sees " + ("new" if (models_dir(home) / MANIFEST_NAME).exists() else "old"))
+
+    await asyncio.gather(download_models(home, hub=fake_hub(tmp_path), self_test=slow_test, slot=lambda: slot),
+                         conversion())
+    assert order == ["self-test", "conversion sees new"]
+
+
+def _old(home: Path, stamp: str, ready: bool) -> Path:
+    folder = home / "models" / f"docling.old-{stamp}-{'a' * 8}"
+    folder.mkdir(parents=True)
+    (folder / "w.bin").write_text(stamp)
+    if ready:
+        (folder / READY_NAME).write_text("x")
+    return folder
+
+
+def test_startup_restores_the_newest_ready_old_set_cut_between_renames(tmp_path) -> None:
+    home = tmp_path / "home"
+    _old(home, "20261119T010000Z", ready=True)
+    _old(home, "20261119T020000Z", ready=True)
+    _old(home, "20261119T030000Z", ready=False)  # a later, broken leftover
+    (home / "models" / "docling.staging-1").mkdir()
+    mark_interrupted(home)
+    assert (models_dir(home) / "w.bin").read_text() == "20261119T020000Z"
+    assert sorted(p.name for p in (home / "models").iterdir()) == ["docling"]
+
+
+@pytest.mark.parametrize("name", ["docling.selftest-1", "docling.partial", "docling.removing-1",
+                                  "docling.hf-cache-1", "docling.hf-cache", "docling.staging-2"])
+def test_startup_removes_every_kind_of_leftover(tmp_path, name) -> None:
+    home = tmp_path / "home"
+    old_install(home)
+    (home / "models" / name).mkdir()
+    mark_interrupted(home)
+    assert not (home / "models" / name).exists() and (models_dir(home) / "old.bin").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stdout", ["not json", "[1]", "{}"])
+async def test_a_tool_without_an_answer_fails_the_download(tmp_path, stdout) -> None:
+    home = tmp_path / "home"
+    script = tmp_path / "quiet.py"
+    script.write_text(f"print({stdout!r})\n")
+    await download_models(home, hub=script, self_test=passes)
+    data = json.loads((home / "models" / "docling-status.json").read_text())
+    assert (data["status"], data["error"]) == ("failed", "the model tool gave no answer")
+
+
+@pytest.mark.asyncio
+async def test_any_error_ends_in_failed_never_downloading(tmp_path) -> None:
+    home = tmp_path / "home"
+
+    async def breaks(home: Path, staged: Path) -> str | None:
+        raise ValueError("unexpected")
+
+    await download_models(home, hub=fake_hub(tmp_path), self_test=breaks)
+    assert json.loads((home / "models" / "docling-status.json").read_text())["status"] == "failed"
+    assert models_state(home).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_swap_puts_the_old_models_back(tmp_path, monkeypatch) -> None:
+    import app.converter_models as cm
+
+    home = tmp_path / "home"
+    target = old_install(home)
+    real_replace = os.replace
+
+    def failing(src, dst):
+        if Path(src).name.startswith("docling.staging-") and Path(dst) == target:
+            raise OSError("disk full")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(cm.os, "replace", failing)
+    await download_models(home, hub=fake_hub(tmp_path), self_test=passes)
+    assert (target / "old.bin").exists() and ready_models_dir(home) == target
+
+
+@pytest.mark.asyncio
+async def test_a_chosen_commit_equal_to_the_default_is_default(tmp_path) -> None:
+    home = tmp_path / "home"
+    (home / "models").mkdir(parents=True)
+    (home / "models" / "docling-check.json").write_text(json.dumps({"repos": {
+        MODEL_REPOS[0][0]: {"refs": [{"name": "main", "kind": "branch", "commit": "b" * 40}], "commits": []}}}))
+    await download_models(home, {MODEL_REPOS[0][0]: "b" * 40}, hub=fake_hub(tmp_path), self_test=passes)
+    assert {r.repo_id: r.default for r in installed_models(home)}[MODEL_REPOS[0][0]] is True
+
+
+def test_remove_drops_ready_first_and_leaves_no_folder(tmp_path) -> None:
+    home = tmp_path / "home"
+    old_install(home)
+    remove_models(home)
+    assert ready_models_dir(home) is None
+    assert sorted(p.name for p in (home / "models").iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result, verdict", [
+    (("converted", None, b"x checks that the PDF models load\n| Alpha | 1 |"), None),
+    (("converted", "structure lost; converted with pypdf (Docling: x)", b"checks that the PDF models load | Alpha"),
+     "self-test failed: structure lost; converted with pypdf (Docling: x)"),
+    (("converted", None, b"checks that the PDF models load, no table"), "self-test failed: the test PDF did not convert with tables"),
+    (("failed", "converter error: RuntimeError", None), "self-test failed: converter error: RuntimeError"),
+])
+async def test_the_self_test_verdict(tmp_path, monkeypatch, result, verdict) -> None:
+    import app.doc_convert as dc
+    from app.converter_models import run_self_test
+
+    async def fake_convert(staged, **kwargs):
+        return dc.ConvertResult(result[0], result[1], result[2], "pdf")
+
+    monkeypatch.setattr(dc, "convert_file", fake_convert)
+    assert await run_self_test(tmp_path, tmp_path / "models") == verdict
+
+
+def test_check_fetches_at_most_twenty_commits_lazily() -> None:
+    pulled = []
+
+    def endless():
+        n = 0
+        while True:
+            pulled.append(n)
+            yield SimpleNamespace(commit_id=f"{n:040x}", title="t", created_at=None)
+            n += 1
+
+    api = SimpleNamespace(list_repo_refs=lambda repo: SimpleNamespace(branches=[], tags=[]),
+                          iter_commits=lambda repo: endless())
+    result = hub.check(api, ["org/a"])["repos"]["org/a"]
+    assert len(result["commits"]) == 20 and len(pulled) <= 21

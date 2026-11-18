@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 import json
 import os
@@ -44,6 +46,24 @@ MODEL_REPOS: tuple[tuple[str, str], ...] = (
 )
 _COMMIT = re.compile(r"[0-9a-f]{7,40}")
 SelfTest = Callable[[Path, Path], Awaitable[str | None]]
+# The server's one conversion slot: held for the self-test and the swap, so no user
+# conversion runs beside the self-test or loads models while they are renamed.
+Slot = Callable[[], AbstractAsyncContextManager[object]]
+NO_ANSWER = "the model tool gave no answer"
+_LEFTOVERS = ("docling.staging-*", "docling.selftest-*", "docling.removing-*", "docling.hf-cache*",
+              "docling.partial")
+
+
+def _stamped(kind: str) -> str:
+    """A folder name that sorts by time: docling.<kind>-<UTC>-<hex>."""
+
+    return f"docling.{kind}-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex[:8]}"
+
+
+def check_listing(check: Mapping | None, repo_id: str) -> dict:
+    """What the last check found for one repo ({} when nothing was checked)."""
+
+    return ((check or {}).get("repos") or {}).get(repo_id) or {}
 
 
 @dataclass(frozen=True)
@@ -129,7 +149,7 @@ def installed_models(home: Path) -> list[InstalledModel]:
             commit=item.get("commit") or (hub_module.snapshot_commit(folder) if folder.is_dir() else None),
             downloaded_at=item.get("downloaded_at"),
             size_bytes=_size(folder) if folder.is_dir() else 0,
-            default=(revision == default_revision) if revision else None,
+            default=item.get("default", revision == default_revision) if revision else None,
         ))
     return rows
 
@@ -139,16 +159,18 @@ def load_check(home: Path) -> dict | None:
 
 
 def _cleanup_leftovers(home: Path) -> None:
-    """Startup: finish or undo a swap the last stop cut, drop staging and old copies."""
+    """Startup: undo a swap the last stop cut, then drop every temporary folder."""
 
     models = home / "models"
     if not models.is_dir():
         return
-    olds = sorted(models.glob("docling.old-*"))
-    if not models_dir(home).exists() and olds:
-        os.replace(olds[-1], models_dir(home))  # stopped between the two renames
-        olds = olds[:-1]
-    for leftover in [*models.glob("docling.staging-*"), *olds, models / "docling.hf-cache"]:
+    olds = sorted(models.glob("docling.old-*"))  # time-sortable names
+    if not models_dir(home).exists():
+        ready = [old for old in olds if (old / READY_NAME).is_file()]
+        if ready:  # stopped between the two renames: the newest working set comes back
+            os.replace(ready[-1], models_dir(home))
+            olds.remove(ready[-1])
+    for leftover in [*olds, *(path for pattern in _LEFTOVERS for path in models.glob(pattern))]:
         shutil.rmtree(leftover, ignore_errors=True)
 
 
@@ -160,10 +182,10 @@ def mark_interrupted(home: Path) -> None:
         _write_status(home, "failed", "interrupted")
 
 
-async def _hub(home: Path, *args: str, hub: Path, python: str, timeout: float) -> dict:
+async def _hub(home: Path, *args: str, hub: Path, python: str, timeout: float, expect: str) -> dict:
     """Run hub.py with every Hugging Face cache inside Delibra; its JSON answer."""
 
-    cache = home / "models" / "docling.hf-cache"
+    cache = home / "models" / _stamped("hf-cache")  # each run its own: no run cleans another's
     env = {**os.environ, "HF_HOME": str(cache), "HF_HUB_CACHE": str(cache / "hub"),
            "HF_XET_CACHE": str(cache / "xet")}
     process = await asyncio.create_subprocess_exec(
@@ -184,12 +206,15 @@ async def _hub(home: Path, *args: str, hub: Path, python: str, timeout: float) -
     finally:
         shutil.rmtree(cache, ignore_errors=True)
     try:
-        answer = json.loads(stdout.decode("utf-8", "replace") or "{}")
+        answer = json.loads(stdout.decode("utf-8", "replace"))
     except ValueError:
-        answer = {}
-    if not isinstance(answer, dict) or "error" in answer or process.returncode != 0:
-        error = answer.get("error") if isinstance(answer, dict) else None
-        raise RuntimeError(str(error or f"the model tool exited with {process.returncode}")[:300])
+        answer = None
+    if isinstance(answer, dict) and "error" in answer:
+        raise RuntimeError(str(answer["error"])[:300])
+    if process.returncode != 0:
+        raise RuntimeError(f"the model tool exited with {process.returncode}")
+    if not isinstance(answer, dict) or expect not in answer:
+        raise RuntimeError(NO_ANSWER)
     return answer
 
 
@@ -198,7 +223,7 @@ async def check_updates(home: Path, *, hub: Path = HUB, python: str = sys.execut
 
     try:
         found = await _hub(home, "check", *(repo for repo, _rev in MODEL_REPOS),
-                           hub=hub, python=python, timeout=CHECK_SECONDS)
+                           hub=hub, python=python, timeout=CHECK_SECONDS, expect="repos")
         record = {"checked_at": utc_now(), "repos": found.get("repos", {})}
     except (OSError, RuntimeError) as exc:
         record = {"checked_at": utc_now(), "error": str(exc)}
@@ -209,7 +234,7 @@ async def check_updates(home: Path, *, hub: Path = HUB, python: str = sys.execut
 def resolve_revision(repo_id: str, selected: str, sha: str, check: Mapping | None) -> str:
     """The revision to download: a typed commit, or a version the last check listed."""
 
-    listing = ((check or {}).get("repos") or {}).get(repo_id) or {}
+    listing = check_listing(check, repo_id)
     refs = listing.get("refs") or []
     commits = [item["commit"] for item in listing.get("commits") or []] + [ref["commit"] for ref in refs]
     sha = sha.strip().lower()
@@ -251,43 +276,77 @@ async def run_self_test(home: Path, staged: Path) -> str | None:
 
 async def download_models(
     home: Path, revisions: Mapping[str, str] | None = None, *, hub: Path = HUB,
-    python: str = sys.executable, self_test: SelfTest = run_self_test,
+    python: str = sys.executable, self_test: SelfTest = run_self_test, slot: Slot | None = None,
 ) -> None:
     """Download Docling's default revisions (or the chosen ones), self-test, then swap."""
 
     pairs = [(repo, (revisions or {}).get(repo, default)) for repo, default in MODEL_REPOS]
     target = models_dir(home)
-    staging = target.with_name(f"docling.staging-{uuid.uuid4().hex}")
+    staging = target.with_name(_stamped("staging"))
     _write_status(home, "downloading")
     try:
         found = await _hub(home, "download", str(staging), *(f"{repo}={rev}" for repo, rev in pairs),
-                           hub=hub, python=python, timeout=DOWNLOAD_SECONDS)
-        commits = {item.get("repo_id"): item.get("commit") for item in found.get("models", [])}
+                           hub=hub, python=python, timeout=DOWNLOAD_SECONDS, expect="models")
+        commits = {item.get("repo_id"): item.get("commit") for item in found["models"] if isinstance(item, dict)}
+        check = load_check(home)
         now = utc_now()
         manifest = {"format": "delibra-models/1", "models": [
             {"repo_id": repo, "revision": rev, "commit": commits.get(repo), "downloaded_at": now,
-             "default": rev == dict(MODEL_REPOS)[repo]}
+             "default": _is_default(repo, rev, commits.get(repo), check)}
             for repo, rev in pairs
         ]}
         atomic_write_bytes(staging / MANIFEST_NAME, json.dumps(manifest, indent=1).encode("utf-8"))
         (staging / READY_NAME).write_text(now, encoding="utf-8")
-        reason = await self_test(home, staging)
-        if reason is not None:
-            raise RuntimeError(reason)
-        old = target.with_name(f"docling.old-{uuid.uuid4().hex}")
-        if target.exists():
-            os.replace(target, old)
-        os.replace(staging, target)
-        shutil.rmtree(old, ignore_errors=True)
+        async with (slot() if slot is not None else nullcontext()):
+            reason = await self_test(home, staging)
+            if reason is not None:
+                raise RuntimeError(reason)
+            _swap(home, staging)
         _write_status(home, "ready")
-    except (OSError, RuntimeError) as exc:
-        _write_status(home, "failed", str(exc))
+    except asyncio.CancelledError:
+        raise  # shutdown: the next start marks it interrupted and cleans up
+    except Exception as exc:  # any failure keeps the old models; never stuck on "downloading"
+        _write_status(home, "failed", str(exc) or type(exc).__name__)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _is_default(repo: str, revision: str, commit: str | None, check: Mapping | None) -> bool:
+    """Docling's default revision, or the commit it pointed to at the last check."""
+
+    default = dict(MODEL_REPOS)[repo]
+    if revision == default:
+        return True
+    default_commit = next((ref["commit"] for ref in check_listing(check, repo).get("refs") or []
+                           if ref["name"] == default), None)
+    return default_commit is not None and default_commit in (revision, commit)
+
+
+def _swap(home: Path, staging: Path) -> None:
+    """Put the tested set in place; on failure, the old set goes back."""
+
+    target = models_dir(home)
+    for stale in (home / "models").glob("docling.old-*"):  # never a candidate for restore
+        shutil.rmtree(stale, ignore_errors=True)
+    old = target.with_name(_stamped("old"))
+    if target.exists():
+        os.replace(target, old)
+    try:
+        os.replace(staging, target)
+    except OSError:
+        if old.exists():
+            os.replace(old, target)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
 
 
 def remove_models(home: Path) -> None:
     """Delete the models; PDFs fall back to pypdf until they are downloaded again."""
 
-    shutil.rmtree(models_dir(home), ignore_errors=True)
+    target = models_dir(home)
+    (target / READY_NAME).unlink(missing_ok=True)  # no conversion picks them up from here on
+    if target.exists():
+        removing = target.with_name(_stamped("removing"))
+        os.replace(target, removing)
+        shutil.rmtree(removing, ignore_errors=True)
     _status_path(home).unlink(missing_ok=True)

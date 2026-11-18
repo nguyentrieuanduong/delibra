@@ -11,6 +11,7 @@ Usage: hub.py check REPO...
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 import sys
@@ -25,7 +26,7 @@ def check(api: Any, repo_ids: list[str]) -> dict[str, Any]:
     repos: dict[str, Any] = {}
     for repo_id in repo_ids:
         refs = api.list_repo_refs(repo_id)
-        commits = api.list_repo_commits(repo_id)[:COMMITS_SHOWN]
+        commits = list(itertools.islice(api.iter_commits(repo_id), COMMITS_SHOWN))
         repos[repo_id] = {
             "refs": [{"name": ref.name, "kind": kind, "commit": ref.target_commit}
                      for kind, items in (("branch", refs.branches), ("tag", refs.tags)) for ref in items],
@@ -33,6 +34,35 @@ def check(api: Any, repo_ids: list[str]) -> dict[str, Any]:
                          "date": item.created_at.isoformat() if item.created_at else None} for item in commits],
         }
     return {"repos": repos}
+
+
+class _Api:
+    """HfApi plus a lazy commit listing: only the pages the first 20 commits need
+    (list_repo_commits always fetches the whole history)."""
+
+    def __init__(self) -> None:
+        from huggingface_hub import HfApi
+
+        self._api = HfApi()
+
+    def list_repo_refs(self, repo_id: str) -> Any:
+        return self._api.list_repo_refs(repo_id)
+
+    def iter_commits(self, repo_id: str) -> Any:
+        from types import SimpleNamespace
+
+        from huggingface_hub.utils import build_hf_headers, paginate
+
+        for item in paginate(f"{self._api.endpoint}/api/models/{repo_id}/commits/main",
+                             headers=build_hf_headers(), params={}):
+            yield SimpleNamespace(commit_id=item["id"], title=item.get("title"),
+                                  created_at=_parse_date(item.get("date")))
+
+
+def _parse_date(value: str | None) -> Any:
+    from datetime import datetime
+
+    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
 
 
 def snapshot_commit(local_dir: Path) -> str | None:
@@ -57,13 +87,13 @@ def download(snapshot: Callable[..., str], dest: Path, pairs: list[tuple[str, st
 
 
 def main(argv: list[str]) -> int:
-    from huggingface_hub import HfApi, snapshot_download
+    from huggingface_hub import snapshot_download
     from huggingface_hub.utils import disable_progress_bars
 
     disable_progress_bars()
     try:
         if len(argv) >= 3 and argv[1] == "check":
-            result = check(HfApi(), argv[2:])
+            result = check(_Api(), argv[2:])
         elif len(argv) >= 4 and argv[1] == "download":
             pairs = [tuple(item.split("=", 1)) for item in argv[3:]]
             result = download(snapshot_download, Path(argv[2]), pairs)  # type: ignore[arg-type]

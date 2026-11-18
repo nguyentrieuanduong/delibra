@@ -324,6 +324,8 @@ def create_app(
     app.state.auto_manager = None
     app.state.download_manager = None
     app.state.converter_models_task = None
+    # Every converter models action (check, update, choose, remove) takes this lock.
+    app.state.converter_models_lock = asyncio.Lock()
     app.state.usage_monitor = None
     app.state.templates = templates
     app.state.health = []
