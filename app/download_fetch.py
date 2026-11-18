@@ -4,22 +4,26 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import ctypes
 from dataclasses import dataclass
 from hashlib import sha256
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import socket
+import sys
+import time
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from app.download_rules import (
-    detect_type, executable_extension, is_executable, is_public_address, safe_host, sanitize_filename,
-    url_flags, url_leaf,
+    detect_type, is_executable, is_public_address, refused_extension, safe_host, sanitize_filename, url_flags,
 )
 from app.storage import StorageError, ensure_project_subdirectory, open_project_directory, writable_root_parts
 
+LOGGER = logging.getLogger(__name__)
 FILE_MAX_BYTES = 100 * 1024 * 1024
 MAX_REDIRECTS = 5
 CONNECT_TIMEOUT = 15.0
@@ -60,6 +64,21 @@ async def system_resolve(host: str, port: int) -> list[tuple[str, int]]:
     return [(info[4][0], int(info[4][1])) for info in infos]
 
 
+_LIBC = ctypes.CDLL(None, use_errno=True) if sys.platform == "darwin" else None
+QUARANTINE = "com.apple.quarantine"
+
+
+def _quarantine(descriptor: int) -> None:
+    """Mark a download as from the internet, so Gatekeeper asks before it runs or
+    opens as an app (review round 1). Best effort: a failure is only logged."""
+
+    if _LIBC is None:
+        return
+    value = f"0081;{int(time.time()):08x};Delibra;".encode()
+    if _LIBC.fsetxattr(descriptor, QUARANTINE.encode(), value, len(value), 0, 0) != 0:
+        LOGGER.warning("could not set %s on a download: errno %d", QUARANTINE, ctypes.get_errno())
+
+
 class _PartFile:
     """A `.part-<id>` file in a symlink-free project folder, renamed on commit."""
 
@@ -82,6 +101,7 @@ class _PartFile:
         except FileNotFoundError:
             pass
         self.descriptor = os.open(self.part, _CREATE, 0o644, dir_fd=self.directory)
+        _quarantine(self.descriptor)
         return self
 
     def write(self, data: bytes) -> None:
@@ -165,8 +185,8 @@ class Fetcher:
                     flags = url_flags(current)
                     if flags:
                         raise FetchError(("redirect refused: " if hop else "refused: ") + ", ".join(flags))
-                extension = executable_extension(url_leaf(current))
-                if extension is not None:  # checked before every hop: a redirect can lead to an installer
+                extension = refused_extension(filename, current)
+                if extension is not None:  # before every hop, on the name it would be saved as
                     raise FetchError(f"executable file type refused (.{extension})")
                 parts = urlsplit(current)
                 host = (parts.hostname or "").lower()

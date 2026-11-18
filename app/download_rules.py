@@ -65,7 +65,9 @@ _WINDOWS_RESERVED = frozenset(
 )
 EXECUTABLE_EXTENSIONS = frozenset(
     "exe msi msp dll scr com cpl sys bat cmd ps1 vbs vbe wsf jar apk ipa app dmg pkg mpkg deb rpm "
-    "appimage command".split()
+    "appimage command "
+    # macOS runs these on open (review round 1); macro Office files stay allowed.
+    "terminal fileloc inetloc webloc scpt applescript tool jnlp".split()
 )
 
 
@@ -137,6 +139,18 @@ def executable_extension(name: str | None) -> str | None:
     return extension if extension in EXECUTABLE_EXTENSIONS else None
 
 
+def refused_extension(filename: str | None, url: str) -> str | None:
+    """The refused type of the agent's name, the URL's last part, or -- what counts --
+    the name Delibra would save (`run.bat_`, fullwidth or zero-width forms normalise
+    to a refused extension; review round 1)."""
+
+    for name in (filename, url_leaf(url), sanitize_filename(filename, url), safe_name(url_leaf(url))):
+        extension = executable_extension(name)
+        if extension is not None:
+            return extension
+    return None
+
+
 class RequestError(ValueError):
     """A spool file Delibra will not turn into a request."""
 
@@ -177,10 +191,9 @@ def parse_request(data: bytes) -> ProposedDownload:
         raise RequestError(f"purpose must be at most {PURPOSE_MAX_CHARS} characters")
     if filename is not None and len(filename) > FILENAME_MAX_CHARS:
         raise RequestError(f"filename must be at most {FILENAME_MAX_CHARS} characters")
-    for name in (filename, url_leaf(url)):
-        extension = executable_extension(name)
-        if extension is not None:
-            raise RequestError(f"executable file type refused (.{extension})")
+    extension = refused_extension(filename, url)
+    if extension is not None:
+        raise RequestError(f"executable file type refused (.{extension})")
     return ProposedDownload(url, purpose, filename or None)
 
 

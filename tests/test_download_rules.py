@@ -212,3 +212,26 @@ def test_the_convert_note_names_spool_status_and_output() -> None:
     assert '{"path": "' in note
     assert "docs/source/raw/converted" in note
     assert "until grep" not in note
+
+
+# Review round 1, finding 3: the refusal judges the name that will be saved.
+@pytest.mark.parametrize(("filename", "url", "extension"), [
+    ("run.bat_", "https://a.org/x", "bat"),
+    (None, "https://a.org/run.bat_", "bat"),
+    ("x.ｐｓ１", "https://a.org/x", "ps1"),
+    ("run.ｃｏｍｍａｎｄ", "https://a.org/x", "command"),
+    ("setup.exe​", "https://a.org/x", "exe"),
+    ("a.jar_", "https://a.org/x", "jar"),
+    (None, "https://a.org/setup.%EF%BD%85%EF%BD%98%EF%BD%85", "exe"),
+    ("note.webloc", "https://a.org/x", "webloc"),
+    (None, "https://a.org/Run.terminal", "terminal"),
+])
+def test_names_that_normalise_to_a_refused_type_are_refused(filename, url, extension) -> None:
+    fields = {"url": url, "purpose": "p", **({"filename": filename} if filename else {})}
+    with pytest.raises(RequestError, match=rf"executable file type refused \(\.{extension}\)"):
+        parse_request(json.dumps(fields).encode())
+
+
+@pytest.mark.parametrize("name", ["report.docm", "sheet.xlsm", "deck.pptm", "script.sh", "app.js"])
+def test_macro_documents_and_source_code_stay_allowed(name) -> None:
+    assert parse_request(json.dumps({"url": "https://a.org/x", "purpose": "p", "filename": name}).encode())
