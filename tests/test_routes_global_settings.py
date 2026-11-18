@@ -769,3 +769,143 @@ def test_a_busy_models_download_is_not_called_nothing_saved(tmp_path) -> None:
         busy = client.post("/settings/converter-models", follow_redirects=False)
     assert busy.status_code == 409
     assert "<div hidden data-page-alert>Models were not downloaded: A conversion is running" in busy.text
+
+
+# Task 14: Settings -> Converter actions.
+def _converter_home(app, *, ready: bool = True, revision: str = "main", check: dict | None = None):
+    from app.converter_models import MANIFEST_NAME, MODEL_REPOS, READY_NAME, models_dir
+
+    home = app.state.settings.home
+    target = models_dir(home)
+    if ready:
+        target.mkdir(parents=True)
+        (target / READY_NAME).write_text("x")
+        (target / MANIFEST_NAME).write_text(json.dumps({"models": [
+            {"repo_id": repo, "revision": revision if n == 0 else default, "commit": ("b" if n == 0 else "c") * 40,
+             "downloaded_at": "2026-11-19T00:00:00Z", "default": (revision if n == 0 else default) == default}
+            for n, (repo, default) in enumerate(MODEL_REPOS)]}))
+    if check is not None:
+        (home / "models").mkdir(parents=True, exist_ok=True)
+        (home / "models" / "docling-check.json").write_text(json.dumps(check))
+    return MODEL_REPOS
+
+
+CHECKED = {"checked_at": "2026-11-19T01:00:00Z", "repos": {
+    "docling-project/docling-layout-heron": {"refs": [{"name": "main", "kind": "branch", "commit": "d" * 40}],
+                                             "commits": [{"commit": "d" * 40, "title": "new", "date": None},
+                                                         {"commit": "b" * 40, "title": "old", "date": None}]},
+    "docling-project/docling-layout-heron-onnx": {"refs": [{"name": "main", "kind": "branch", "commit": "c" * 40}], "commits": []},
+    "docling-project/docling-models": {"refs": [{"name": "v2.3.0", "kind": "tag", "commit": "c" * 40}], "commits": []},
+}}
+
+
+def test_the_converter_tab_lists_installed_models_and_a_checked_update(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        page = client.get("/settings/converter").text
+    assert "docling-project/docling-layout-heron" in page and "main @ bbbbbbb" in page
+    assert "Update available" in page  # main now points to ddddddd
+    assert '<select name="revision_0"' in page and '<option value="' + "d" * 40 + '"' in page
+    assert 'name="sha_0"' in page and "Download chosen versions" in page and "Remove models" in page
+
+
+def test_a_non_default_version_carries_the_warning(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, revision="b" * 40)
+        page = client.get("/settings/converter").text
+    assert "Not the version this Docling release expects; conversions may fail or differ." in page
+
+
+def test_check_for_updates_runs_and_returns(tmp_path, monkeypatch) -> None:
+    calls = []
+
+    async def fake_check(home):
+        calls.append(home)
+
+    monkeypatch.setattr("app.routes.settings.check_updates", fake_check)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        done = client.post("/settings/converter-models/check", follow_redirects=False)
+    assert (done.status_code, done.headers["location"], calls) == (303, "/settings/converter", [app.state.settings.home])
+
+
+def test_a_chosen_version_downloads_those_revisions(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    chosen = []
+
+    async def fake_download(home, revisions=None):
+        chosen.append(revisions)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        repos = _converter_home(app, check=CHECKED)
+        done = client.post("/settings/converter-models/version", data={
+            "revision_0": "main", "sha_0": "bbbbbbb", "revision_1": "main", "revision_2": "v2.3.0"},
+            follow_redirects=False)
+        for _ in range(100):
+            if chosen:
+                break
+            _time.sleep(0.01)
+    assert (done.status_code, done.headers["location"]) == (303, "/settings/converter")
+    assert chosen == [{repos[0][0]: "b" * 40, repos[1][0]: "main", repos[2][0]: "v2.3.0"}]
+
+
+def test_an_invalid_commit_is_refused_and_kept(tmp_path, monkeypatch) -> None:
+    async def never(*args, **kwargs):
+        raise AssertionError("must not download")
+
+    monkeypatch.setattr("app.routes.settings.download_models", never)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        refused = client.post("/settings/converter-models/version", data={
+            "revision_0": "main", "sha_0": "xyz123!", "revision_1": "main", "revision_2": "v2.3.0"})
+    assert refused.status_code == 422
+    assert "<div hidden data-page-alert>Models were not downloaded: A commit must be 40 hex characters" in refused.text
+    assert 'name="sha_0" value="xyz123!"' in refused.text
+
+
+def test_models_actions_are_refused_while_converting_and_from_the_lan(tmp_path) -> None:
+    import asyncio
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        app.state.download_manager._convert_slot = asyncio.Semaphore(0)
+        responses = [client.post(path, data=data, follow_redirects=False) for path, data in (
+            ("/settings/converter-models", {"force": "true"}), ("/settings/converter-models/check", {}),
+            ("/settings/converter-models/remove", {}),
+            ("/settings/converter-models/version", {"revision_0": "main", "revision_1": "main", "revision_2": "v2.3.0"}))]
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan = [client.post(path, follow_redirects=False).status_code
+               for path in ("/settings/converter-models/check", "/settings/converter-models/remove",
+                            "/settings/converter-models/version")]
+    assert [r.status_code for r in responses] == [409] * 4
+    assert all("A conversion is running" in r.text for r in responses)
+    assert lan == [403] * 3
+
+
+def test_remove_models_falls_back_to_not_downloaded(tmp_path) -> None:
+    from app.converter_models import models_dir
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app)
+        removed = client.post("/settings/converter-models/remove", follow_redirects=False)
+        page = client.get("/settings/converter").text
+    assert (removed.status_code, removed.headers["location"]) == (303, "/settings/converter")
+    assert not models_dir(app.state.settings.home).exists() and "Not downloaded" in page
+
+
+def test_no_update_is_offered_when_the_default_points_to_the_installed_commit(tmp_path) -> None:
+    current = json.loads(json.dumps(CHECKED))
+    current["repos"]["docling-project/docling-layout-heron"]["refs"][0]["commit"] = "b" * 40
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=current)
+        page = client.get("/settings/converter").text
+    assert "Update available" not in page

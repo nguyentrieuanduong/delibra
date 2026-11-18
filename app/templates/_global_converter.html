@@ -6,13 +6,60 @@
   {% set models = converter_models %}
   <p class="converter-models">Converter models (PDF layout and tables):
     {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB
-    {% elif models.status == "downloading" %}Downloading…
+    {% elif models.status == "downloading" %}Downloading… (the current models stay in use until the new ones pass a test conversion)
     {% elif models.status == "failed" %}<span class="warning">Failed: {{ models.error }}</span>
     {% else %}Not downloaded{% endif %}
   </p>
-  {% if models.status in ("absent", "failed") %}
+  {% if models.notice %}<p class="warning">The last download did not replace the models: {{ models.notice }}</p>{% endif %}
+  {% if converter_non_default %}<p class="warning">Not the version this Docling release expects; conversions may fail or differ.</p>{% endif %}
+  {% if models.status in ("absent", "failed") and not converter_repos[0].installed %}
     <form method="post" action="/settings/converter-models">
       <button type="submit">{% if models.status == "failed" %}Retry{% else %}Download models (about 0.7 GB){% endif %}</button>
     </form>
+  {% endif %}
+  {% if converter_repos[0].installed %}
+    <table class="converter-installed">
+      <thead><tr><th>Model</th><th>Version</th><th>Downloaded</th><th>Size</th></tr></thead>
+      <tbody>
+      {% for repo in converter_repos %}{% set row = repo.installed %}
+        <tr>
+          <td><code>{{ repo.repo_id }}</code></td>
+          <td>{{ row.revision or "unknown" }} @ {{ row.commit[:7] if row.commit else "unknown" }}{% if repo.update_available %} · <strong>Update available</strong>{% endif %}</td>
+          <td>{{ row.downloaded_at[:10] if row.downloaded_at else "unknown" }}</td>
+          <td>{{ (row.size_bytes / 1048576)|round|int }} MB</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+  <div class="converter-actions">
+    <form method="post" action="/settings/converter-models/check"><button type="submit">Check for updates</button></form>
+    {% if converter_repos[0].installed %}
+      <form method="post" action="/settings/converter-models"><input type="hidden" name="force" value="true"><button type="submit">Update to Docling's default versions</button></form>
+      <form method="post" action="/settings/converter-models/remove" onsubmit="return confirm('Remove the converter models? PDFs are then converted to plain text until you download them again.')"><button type="submit">Remove models</button></form>
+    {% endif %}
+  </div>
+  {% if converter_check %}
+    {% if converter_check.error %}
+      <p class="warning">Check for updates failed ({{ converter_check.checked_at[:16]|replace("T", " ") }} UTC): {{ converter_check.error }}. Nothing was changed.</p>
+    {% else %}
+      <form method="post" action="/settings/converter-models/version" class="converter-versions">
+        <p class="hint">Checked {{ converter_check.checked_at[:16]|replace("T", " ") }} UTC. Choose a version per model, or type a commit (40 hex characters, or 7 or more of a listed one). Docling's default is selected first.</p>
+        {% for repo in converter_repos %}
+          <fieldset>
+            <legend><code>{{ repo.repo_id }}</code> (default: {{ repo.default }})</legend>
+            <label>Version
+              <select name="revision_{{ repo.index }}">
+                {% for ref in repo.listing.refs or [] %}<option value="{{ ref.name }}"{% if ref.name == repo.selected %} selected{% endif %}>{{ ref.kind }} {{ ref.name }} @ {{ ref.commit[:7] }}</option>{% endfor %}
+                {% for item in repo.listing.commits or [] %}<option value="{{ item.commit }}"{% if item.commit == repo.selected %} selected{% endif %}>commit {{ item.commit[:7] }}{% if item.date %} · {{ item.date[:10] }}{% endif %}{% if item.title %} · {{ item.title }}{% endif %}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Or commit <input name="sha_{{ repo.index }}" value="{{ repo.sha }}" maxlength="40" placeholder="optional"></label>
+          </fieldset>
+        {% endfor %}
+        <p class="hint">A non-default version may not be the one this Docling release expects; the new models must pass a test conversion before they replace the current ones.</p>
+        <button type="submit">Download chosen versions</button>
+      </form>
+    {% endif %}
   {% endif %}
 </section>

@@ -10,7 +10,10 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.agent_defaults import EFFORT_LEVELS, AgentDefault, read_agent_defaults, save_agent_defaults, typed_model
-from app.converter_models import download_models, models_state, ready_models_dir
+from app.converter_models import (
+    MODEL_REPOS, check_updates, download_models, installed_models, load_check, models_state,
+    ready_models_dir, remove_models, resolve_revision,
+)
 from app.coding import (
     SKILLS_MAX_BYTES,
     SKILLS_MAX_FILES,
@@ -242,6 +245,7 @@ def _settings_page(
     status_code: int = 200,
     global_instruction: str | None = None,
     agent_rows: list[dict[str, object]] | None = None,
+    converter_typed: dict[str, str] | None = None,
 ):
     if rows is None:
         # The Instruction tab carries the presets form: every rendering of it, a refused
@@ -277,7 +281,7 @@ def _settings_page(
             "agent_rows": (
                 agent_rows if agent_rows is not None else _agent_rows(read_agent_defaults(request.app.state.settings.home))
             ),
-            "converter_models": models_state(request.app.state.settings.home),
+            **(_converter_context(request.app.state.settings.home, converter_typed or {}) if tab == "converter" else {}),
             "tab": tab,
             "tab_label": dict(GLOBAL_TABS_LABELS)[tab],
             "settings_tabs": GLOBAL_TABS,
@@ -449,26 +453,108 @@ async def presets_moved(request: Request):
     return RedirectResponse("/settings/instruction", status_code=303)
 
 
+def _models_refusal(request: Request, reason: str, status_code: int, typed: dict[str, str] | None = None):
+    settings = request.app.state.settings
+    return _settings_page(
+        request, "converter", None, settings.allowed_clients, settings.allowed_hosts,
+        error=f"Models were not downloaded: {_sentence(reason)}", status_code=status_code,
+        converter_typed=typed,
+    )
+
+
+def _models_busy(request: Request) -> str | None:
+    """Why a models action must wait: a conversion uses them, or another action runs."""
+
+    if request.app.state.download_manager.converting():
+        return "a conversion is running; try again when it has finished"
+    task = request.app.state.converter_models_task
+    if task is not None and not task.done():
+        return "another models action is running"
+    return None
+
+
+def _start_models_task(request: Request, coroutine) -> None:
+    request.app.state.converter_models_task = asyncio.create_task(coroutine, name="delibra-converter-models")
+
+
+def _converter_context(home, typed: dict[str, str]) -> dict[str, object]:
+    """Installed models, the last check and, per repo, what the check found."""
+
+    check = load_check(home)
+    installed = {row.repo_id: row for row in installed_models(home)}
+    repos = []
+    for index, (repo, default) in enumerate(MODEL_REPOS):
+        listing = ((check or {}).get("repos") or {}).get(repo) or {}
+        default_commit = next((ref["commit"] for ref in listing.get("refs") or [] if ref["name"] == default), None)
+        row = installed.get(repo)
+        repos.append({
+            "index": index, "repo_id": repo, "default": default, "installed": row, "listing": listing,
+            "update_available": bool(default_commit and row is not None and row.commit and row.commit != default_commit),
+            "selected": typed.get(f"revision_{index}", default), "sha": typed.get(f"sha_{index}", ""),
+        })
+    return {
+        "converter_models": models_state(home), "converter_check": check, "converter_repos": repos,
+        "converter_non_default": any(row.default is False for row in installed.values()),
+    }
+
+
 @router.post("/settings/converter-models")
 async def download_converter_models(request: Request, force: str = Form("")):
-    """Fetch Docling's PDF models once for this machine (about 0.7 GB)."""
+    """Download Docling's default revisions (first download, or Update when forced)."""
 
     _require_local(request)
     settings = request.app.state.settings
     if ready_models_dir(settings.home) is not None and force != "true":
         return RedirectResponse("/settings/converter", status_code=303)
-    if request.app.state.download_manager.converting():
-        # Replacing the models under a running Docling step would break it (review round 1).
-        return _settings_page(
-            request, "converter", None, settings.allowed_clients, settings.allowed_hosts,
-            error="Models were not downloaded: A conversion is running; download them when it has finished",
-            status_code=409,
-        )
-    task = request.app.state.converter_models_task
-    if task is None or task.done():
-        request.app.state.converter_models_task = asyncio.create_task(
-            download_models(settings.home), name="delibra-converter-models"
-        )
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409)
+    _start_models_task(request, download_models(settings.home))
+    return RedirectResponse("/settings/converter", status_code=303)
+
+
+@router.post("/settings/converter-models/check")
+async def check_converter_models(request: Request):
+    """List each model repo's versions; nothing is downloaded."""
+
+    _require_local(request)
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409)
+    await check_updates(request.app.state.settings.home)
+    return RedirectResponse("/settings/converter", status_code=303)
+
+
+@router.post("/settings/converter-models/version")
+async def choose_converter_models(request: Request):
+    """Download the versions picked from the last check (or typed commits)."""
+
+    _require_local(request)
+    form = await request.form()
+    typed = {key: str(value) for key, value in form.items() if key.startswith(("revision_", "sha_"))}
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409, typed)
+    home = request.app.state.settings.home
+    check = load_check(home)
+    try:
+        revisions = {
+            repo: resolve_revision(repo, typed.get(f"revision_{index}", default), typed.get(f"sha_{index}", ""), check)
+            for index, (repo, default) in enumerate(MODEL_REPOS)
+        }
+    except ValueError as exc:
+        return _models_refusal(request, str(exc), 422, typed)
+    _start_models_task(request, download_models(home, revisions))
+    return RedirectResponse("/settings/converter", status_code=303)
+
+
+@router.post("/settings/converter-models/remove")
+async def remove_converter_models(request: Request):
+    _require_local(request)
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409)
+    await asyncio.to_thread(remove_models, request.app.state.settings.home)
     return RedirectResponse("/settings/converter", status_code=303)
 
 
