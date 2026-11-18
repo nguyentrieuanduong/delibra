@@ -1160,11 +1160,17 @@ Delibra converts documents to Markdown itself, so agents without a shell
   `/Volumes` or a terminal; only that one program may start, and it may not
   fork; no apps or LaunchServices, Apple events, pasteboard, preference
   writes, launchd jobs, mounts, or signals to or inspection of other
-  processes; only Apple's own system services. Known remaining risk: the
-  mach-lookup rule still allows every `com.apple.*` service except the
-  pasteboard, because Vision and Metal need some of them; a measured
-  allow-list (about 19 services, captured from the sandbox log) is planned to
-  replace it. The source is first copied in
+  processes. System services are an explicit list measured from the sandbox
+  log while every document type converted (9 for the Python steps: Metal,
+  the Neural Engine and Vision's model assets for OCR, plus basic
+  CoreServices, preferences reading, notify and user lookups; textutil adds 5
+  for AppKit's document reader); the pasteboard is always denied. If a macOS
+  update makes conversions fail with `converter error: stopped by signal 6`,
+  re-measure with your own sample files and update
+  `app.doc_convert.MACH_SERVICES`:
+  `envs/bin/python -I scripts/measure_converter_sandbox.py --models
+  ~/.delibra/models/docling a.pdf b.docx c.doc d.xlsx e.pptx f.xls` (it reads
+  the sandbox reports with `/usr/bin/log show`; no sudo needed). The source is first copied in
   through a no-follow descriptor, and the server reads the worker's output
   without following links. Without `sandbox-exec` (not
   macOS) conversion is skipped with `conversion needs macOS sandbox-exec`; it

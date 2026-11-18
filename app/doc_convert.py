@@ -60,7 +60,7 @@ SYSTEM_READ_FILES = ("/", "/dev/null", "/dev/urandom", "/dev/random")  # "/": th
 # Reads of file contents under PRIVATE (the user's home) are denied except the
 # scratch dir, the staged source, the Python install, the worker and the models.
 # Metadata reads stay allowed: Python stats its own path's parents at startup.
-PROFILE = (
+_BASE_PROFILE = (
     "(version 1)(allow default)(deny network*)"
     '(deny file-write*)(allow file-write* (subpath (param "OUT")) (literal "/dev/null"))'
     # Reads of file contents are denied by default (review round 2): only the system,
@@ -82,11 +82,48 @@ PROFILE = (
     "(deny process-info* (target others))(deny signal (target others))"
     "(deny user-preference-write)(deny job-creation)(deny file-mount)"
     "(deny mach-register)(deny distributed-notification-post)"
-    # Only Apple's own services (Vision/CoreML/Metal need some; without the sandbox log
-    # the exact set could not be pinned down), and never the pasteboard.
-    '(deny mach-lookup)(allow mach-lookup (global-name-prefix "com.apple."))'
-    '(deny mach-lookup (global-name-prefix "com.apple.pasteboard"))'
 )
+# The mach services each step may look up, measured from the sandbox log while every
+# sample type converted (scripts/measure_converter_sandbox.py, 2026-11-18). Re-measure
+# with that script if a macOS update makes conversions fail with "stopped by signal".
+_WORKER_SERVICES = (
+    "com.apple.CoreServices.coreservicesd",  # CoreServices file and bundle lookups
+    "com.apple.MTLCompilerService",  # Metal shaders for Docling's PyTorch models on the GPU
+    "com.apple.appleneuralengine",  # Vision OCR and CoreML on the Neural Engine
+    "com.apple.cfprefsd.agent",  # reading framework defaults (writes are denied)
+    "com.apple.cfprefsd.daemon",
+    "com.apple.mobileassetd.v2",  # Vision's text-recognition model assets
+    "com.apple.system.notification_center",  # notify(3), used by libSystem and CoreFoundation
+    "com.apple.system.opendirectoryd.libinfo",  # getpwuid() and friends
+    "com.apple.system.opendirectoryd.membership",
+)
+# Measured too but denied: every sample type still converts (OCR and tables included)
+# without them. analyticsd and logd are telemetry and logging; tccd.system is a privacy
+# lookup; windowserver.active and coreservices.quarantine-resolver serve GUI apps.
+MACH_SERVICES = {
+    "worker": _WORKER_SERVICES,
+    "textutil": _WORKER_SERVICES + (  # AppKit's document reader
+        "com.apple.CARenderServer",
+        "com.apple.coreservices.launchservicesd",
+        "com.apple.distributed_notifications@Uv3",
+        "com.apple.fonts",
+        "com.apple.lsd.mapdb",
+    ),
+}
+
+
+def profile_for(kind: str) -> str:
+    """The sandbox profile for one step: the shared rules plus its own mach services."""
+
+    services = MACH_SERVICES["textutil" if kind == "textutil" else "worker"]
+    return (
+        _BASE_PROFILE
+        + "(deny mach-lookup)(allow mach-lookup"
+        + "".join(f' (global-name "{name}")' for name in services) + ")"
+        + '(deny mach-lookup (global-name-prefix "com.apple.pasteboard"))'
+    )
+
+
 # Runs before sandbox-exec: a hard RLIMIT_FSIZE the worker cannot raise again.
 LIMIT_SHIM = (
     "import os, resource, sys\n"
@@ -254,7 +291,7 @@ async def _step_bytes(
             stdout = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         process = await asyncio.create_subprocess_exec(
             run.python, "-I", "-B", "-c", LIMIT_SHIM, str(run.file_limit),
-            run.sandbox, *defines, "-p", PROFILE, *argv,
+            run.sandbox, *defines, "-p", profile_for(kind), *argv,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=stdout if stdout is not None else asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True, env=env,
@@ -276,9 +313,11 @@ async def _step_bytes(
         try:
             if process.returncode != 0:
                 error = _read_scratch_file(scratch, "error.txt", ERROR_MAX_BYTES)
-                return None, (
-                    _error_reason(error) if error is not None else f"converter exited with {process.returncode}"
-                )
+                if error is not None:
+                    return None, _error_reason(error)
+                if process.returncode < 0:  # e.g. an abort after a sandbox denial
+                    return None, f"converter error: stopped by signal {-process.returncode}"
+                return None, f"converter exited with {process.returncode}"
             body = _read_scratch_file(scratch, output.name, max_bytes)
         except _NotRegularFile:
             return None, NOT_REGULAR

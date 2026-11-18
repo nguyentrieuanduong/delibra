@@ -599,3 +599,29 @@ async def test_a_worker_that_swaps_its_scratch_for_a_symlink_gets_a_clear_reason
                                 scratch_root=tmp_path / "scratch", worker=worker)
     assert (result.state, result.reason) == ("failed", "converter output is not a regular file")
     assert list((tmp_path / "scratch").iterdir()) == []
+
+
+# Final mach rule: only the measured services, per step (review round 2 follow-up).
+def test_each_step_may_look_up_only_its_measured_services() -> None:
+    worker = doc_convert.profile_for("pdf")
+    textutil = doc_convert.profile_for("textutil")
+    assert 'global-name-prefix "com.apple.")' not in worker + textutil
+    assert '(global-name "com.apple.CARenderServer")' in textutil
+    assert "CARenderServer" not in worker
+    for profile in (worker, textutil):
+        assert profile.index("(deny mach-lookup)") < profile.index("(allow mach-lookup")
+        assert profile.rstrip().endswith('(deny mach-lookup (global-name-prefix "com.apple.pasteboard"))')
+        assert "(deny lsopen)" in profile and "(deny appleevent-send)" in profile
+    assert set(doc_convert.MACH_SERVICES["worker"]) < set(doc_convert.MACH_SERVICES["textutil"])
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_an_aborted_worker_is_a_normal_converter_error(tmp_path) -> None:
+    # A mach denial usually makes the worker abort without writing error.txt.
+    worker = stub_worker(tmp_path, "import os\nos.abort()\n", label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker)
+    assert (result.state, result.reason) == ("failed", "converter error: stopped by signal 6")
