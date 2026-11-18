@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-PROFILE = (  # the same text as app.doc_convert.PROFILE (Task 6.5)
+PROFILE = (  # app.doc_convert.PROFILE as of Task 1; review round 1 hardened the app's copy
     "(version 1)(allow default)(deny network*)"
     '(deny file-write*)(allow file-write* (subpath (param "OUT")) (literal "/dev/null"))'
     '(deny file-read-data (subpath (param "PRIVATE")))'

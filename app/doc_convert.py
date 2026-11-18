@@ -34,6 +34,9 @@ from app.storage import (
 
 SUPPORTED_KINDS = frozenset({"pdf", "docx", "xlsx", "pptx", "doc", "xls"})  # Magika labels
 LABEL = re.compile(r"[a-z0-9_]{1,40}")
+ERROR_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,79}")
+ERROR_MAX_BYTES = 4096
+NOT_REGULAR = "converter output is not a regular file"
 OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 EXPECTED_BYTES = {"pdf": "pdf", "docx": "zip", "xlsx": "zip", "pptx": "zip", "doc": "ole", "xls": "ole"}
 INPUT_MAX_BYTES = 100 * 1024**2
@@ -58,6 +61,17 @@ PROFILE = (
     '(allow file-read-data (subpath (param "OUT")) (literal (param "SOURCE"))'
     ' (subpath (param "PREFIX")) (subpath (param "BASE_PREFIX"))'
     ' (subpath (param "WORKER_DIR")) (subpath (param "MODELS")))'
+    # Review round 1: a probe .app opened from scratch ran outside the sandbox, and
+    # the worker could read the pasteboard and other processes' environments. Only
+    # the worker's own interpreter and textutil may start; no apps, Apple events,
+    # pasteboard, or signals/inspection of other processes.
+    '(deny process-exec*)(allow process-exec* (literal (param "PYTHON")) (literal "/usr/bin/textutil"))'
+    "(deny lsopen)(deny appleevent-send)"
+    "(deny process-info* (target others))(deny signal (target others))"
+    # Only Apple's own services (Vision/CoreML/Metal need some; without the sandbox log
+    # the exact set could not be pinned down), and never the pasteboard.
+    '(deny mach-lookup)(allow mach-lookup (global-name-prefix "com.apple."))'
+    '(deny mach-lookup (global-name-prefix "com.apple.pasteboard"))'
 )
 # Runs before sandbox-exec: a hard RLIMIT_FSIZE the worker cannot raise again.
 LIMIT_SHIM = (
@@ -192,7 +206,9 @@ async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str |
                "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "OMP_NUM_THREADS": "4"}
         if run.models_dir is not None:
             env["DELIBRA_DOCLING_MODELS"] = str(run.models_dir)
+        python = str(Path(run.python).resolve())  # the exec rule matches the real file
         params = {
+            "PYTHON": python,
             "OUT": scratch,
             "SOURCE": staged.resolve(),
             "PRIVATE": run.private_root.resolve(),
@@ -205,7 +221,7 @@ async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str |
         process = await asyncio.create_subprocess_exec(
             run.python, "-I", "-B", "-c", LIMIT_SHIM, str(run.file_limit),
             run.sandbox, *defines, "-p", PROFILE,
-            run.python, "-I", "-B", str(run.worker), str(staged), str(output), kind,
+            python, "-I", "-B", str(run.worker), str(staged), str(output), kind,
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True, env=env,
             # getcwd() needs a readable cwd; the server's own is under the denied home (Task 1).
@@ -214,24 +230,66 @@ async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str |
         try:
             failure = await _watch(process, scratch, run, limit)
         finally:
-            if process.returncode is None:  # timeout, scratch overuse or cancellation (review B5)
-                _kill_group(process)
-                await process.wait()
+            # Timeout, scratch overuse or cancellation (review B5); after a normal exit
+            # too, so nothing the worker started outlives it (review round 1).
+            _kill_group(process)
+            await process.wait()
         if failure is not None:
             return None, failure
-        if process.returncode != 0:
-            error = scratch / "error.txt"
-            return None, (
-                error.read_text(encoding="utf-8", errors="replace")[:200]
-                if error.is_file()
-                else f"converter exited with {process.returncode}"
-            )
-        with output.open("rb") as handle:
-            body = handle.read(OUTPUT_MAX_BYTES + 1)
+        try:
+            if process.returncode != 0:
+                error = _read_scratch_file(scratch, "error.txt", ERROR_MAX_BYTES)
+                return None, (
+                    _error_reason(error) if error is not None else f"converter exited with {process.returncode}"
+                )
+            body = _read_scratch_file(scratch, output.name, OUTPUT_MAX_BYTES + 1)
+        except _NotRegularFile:
+            return None, NOT_REGULAR
+        if body is None:
+            return None, "converter wrote no output"
         text = body[:OUTPUT_MAX_BYTES].decode("utf-8", errors="replace")
         return (text + TRUNCATED if len(body) > OUTPUT_MAX_BYTES else text), None
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+class _NotRegularFile(Exception):
+    """A file the worker left in scratch is a link, FIFO or other non-regular file."""
+
+
+def _read_scratch_file(scratch: Path, name: str, limit: int) -> bytes | None:
+    """Read at most `limit` bytes of scratch/name without following anything the
+    worker planted (review round 1): no symlinks, FIFOs or hard links."""
+
+    directory = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    try:
+        try:
+            descriptor = os.open(name, _READ_FLAGS, dir_fd=directory)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:  # ELOOP: a symlink
+            raise _NotRegularFile(name) from exc
+    finally:
+        os.close(directory)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise _NotRegularFile(name)
+        chunks: list[bytes] = []
+        remaining = limit
+        while remaining > 0 and (chunk := os.read(descriptor, min(remaining, 1024 * 1024))):
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _error_reason(error: bytes) -> str:
+    """Only the exception type: text from the document never reaches the agent."""
+
+    name = error.decode("utf-8", errors="replace").split(":", 1)[0].strip()
+    return f"converter error: {name if ERROR_TYPE.fullmatch(name) else 'unknown'}"
 
 
 def _identity(text: str) -> tuple[str | None, int, bool]:
@@ -327,7 +385,7 @@ async def convert_file(
     poll: float = SCRATCH_POLL_SECONDS,
 ) -> ConvertResult:
     if not Path(sandbox).is_file():
-        return ConvertResult("failed", "conversion needs macOS sandbox-exec")
+        return ConvertResult("unsupported", "conversion needs macOS sandbox-exec")  # design Non-goals: skipped
     run = _Run(sandbox, python, worker, scratch_root, models_dir,
                private_root or Path.home(), file_limit, scratch_limit, poll)
     identity, reason = await _step(run, staged, "identify", IDENTIFY_SECONDS)

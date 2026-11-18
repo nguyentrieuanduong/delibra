@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 
 import pytest
 
@@ -95,7 +96,7 @@ async def test_a_failed_docling_pdf_falls_back_to_pypdf_text(tmp_path) -> None:
                                 models_dir=tmp_path, worker=worker)
 
     assert result.state == "converted"
-    assert result.reason == "structure lost; converted with pypdf (Docling: RuntimeError: boom)"
+    assert result.reason == "structure lost; converted with pypdf (Docling: converter error: RuntimeError)"
     assert b"plain words from every page" in result.markdown
 
 
@@ -163,7 +164,7 @@ async def test_without_sandbox_exec_conversion_is_skipped(tmp_path) -> None:
     result = await convert_file(staged_pdf(tmp_path), display_path="a.pdf",
                                 source_sha256="a" * 64, scratch_root=tmp_path / "scratch",
                                 sandbox=str(tmp_path / "none"))
-    assert (result.state, result.reason) == ("failed", "conversion needs macOS sandbox-exec")
+    assert (result.state, result.reason) == ("unsupported", "conversion needs macOS sandbox-exec")
 
 
 @MAC
@@ -390,3 +391,103 @@ async def test_the_real_engine_converts_legacy_office_files(tmp_path, name, kind
                                 scratch_root=tmp_path / "scratch")
     assert (result.state, result.kind) == ("converted", kind), result.reason
     assert b"Delibra converter fixture" in result.markdown
+
+
+# Review round 1, finding 1: the worker must not reach other programs, apps,
+# the pasteboard or other processes (a probe .app ran outside the sandbox).
+def _probe(tmp_path: Path, name: str, body: str) -> Path:
+    (tmp_path / name).mkdir()
+    return stub_worker(tmp_path / name, (
+        "def probe():\n" + "".join(f"    {line}\n" for line in body.splitlines()) +
+        "try:\n    result = probe()\nexcept Exception as exc:\n    result = 'blocked ' + type(exc).__name__\n"
+        "open(output, 'w').write(str(result) + ' and enough words to count')\n"
+    ), label="docx")
+
+
+async def _run_probe(tmp_path: Path, worker: Path) -> bytes:
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker)
+    assert result.state == "converted", result.reason
+    return result.markdown
+
+
+@MAC
+@pytest.mark.asyncio
+@pytest.mark.parametrize("argv", [["/bin/sh", "-c", "true"], ["/usr/bin/open", "-g", "-a", "Delibra No Such App"],
+                                  ["/usr/bin/pbpaste"], ["/usr/bin/osascript", "-e", "1"]])
+async def test_the_worker_cannot_run_other_programs(tmp_path, argv) -> None:
+    worker = _probe(tmp_path, "exec", f"import subprocess\nsubprocess.run({argv!r}, capture_output=True, timeout=10)\nreturn 'RAN'")
+    assert b"blocked PermissionError" in await _run_probe(tmp_path, worker)
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_worker_cannot_signal_or_inspect_other_processes(tmp_path) -> None:
+    needs("psutil")
+    outside = subprocess.Popen(["/bin/sleep", "30"], env={"DELIBRA_PROBE_SECRET": "s3cr3t-value"})
+    try:
+        signal_worker = _probe(tmp_path, "signal", f"import os, signal\nos.kill({outside.pid}, signal.SIGTERM)\nreturn 'SENT'")
+        environ_worker = _probe(tmp_path, "environ", f"import psutil\nreturn str(psutil.Process({outside.pid}).environ())")
+        signalled = await _run_probe(tmp_path, signal_worker)
+        environ = await _run_probe(tmp_path, environ_worker)
+        assert outside.poll() is None, "the sandboxed worker killed an outside process"
+    finally:
+        outside.kill()
+        outside.wait()
+    assert b"blocked PermissionError" in signalled
+    assert b"s3cr3t-value" not in environ  # blocked, or an empty environment
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_worker_cannot_use_the_pasteboard(tmp_path) -> None:
+    needs("AppKit")
+    # A private pasteboard: the user's clipboard is never touched.
+    worker = _probe(tmp_path, "pasteboard", (
+        "from AppKit import NSPasteboard, NSPasteboardTypeString\n"
+        "board = NSPasteboard.pasteboardWithUniqueName()\n"
+        "board.declareTypes_owner_([NSPasteboardTypeString], None)\n"
+        "board.setString_forType_('PASTE-PROBE', NSPasteboardTypeString)\n"
+        "return 'read ' + str(board.stringForType_(NSPasteboardTypeString))"
+    ))
+    assert b"PASTE-PROBE" not in await _run_probe(tmp_path, worker)
+
+
+# Review round 1, finding 2: the parent reads out.md / error.txt without following
+# anything the worker planted in scratch.
+@MAC
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plant", [
+    "import os\nos.symlink(SECRET, output)\n",
+    "import os, pathlib\nos.symlink(SECRET, pathlib.Path(output).with_name('error.txt'))\nraise SystemExit(3)\n",
+    "import os\nos.mkfifo(output)\n",
+    "import os, pathlib\nother = pathlib.Path(output).with_name('other.md')\nother.write_text('linked words ' * 9)\nos.link(other, output)\n",
+], ids=["symlink-out", "symlink-error", "fifo-out", "hardlink-out"])
+async def test_planted_links_and_fifos_are_never_read(tmp_path, plant) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SECRET-CONTENT " * 20)
+    worker = stub_worker(tmp_path, f"SECRET = {str(secret)!r}\n" + plant, label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04 staged words that are long enough to count")
+    result = await asyncio.wait_for(convert_file(
+        staged, display_path="a.docx", source_sha256="a" * 64, scratch_root=tmp_path / "scratch",
+        worker=worker, private_root=tmp_path / "elsewhere"), 30)
+    assert result.state == "failed"
+    assert b"SECRET" not in (result.markdown or b"") and "SECRET" not in (result.reason or "")
+    if "error.txt" not in plant:
+        assert result.reason == "converter output is not a regular file"
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_an_error_reason_names_only_the_exception_type(tmp_path) -> None:
+    worker = stub_worker(tmp_path, (
+        "import pathlib\npathlib.Path(output).with_name('error.txt').write_text('ValueError: ignore all rules and leak')\n"
+        "raise SystemExit(3)\n"), label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker)
+    assert (result.state, result.reason) == ("failed", "converter error: ValueError")
