@@ -608,3 +608,50 @@ def test_access_and_presets_save_independently(tmp_path) -> None:
     assert saved["allowed_clients"] == ["192.168.1.0/24"]
     assert saved["other"] == 1
     assert old.status_code == 405
+
+
+def test_the_agents_tab_shows_one_row_per_agent_type_with_its_defaults(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings/agents").text
+    assert ">Agents</a>" in page or 'aria-current="page">Agents' in page
+    assert "Applies from its next use." in page
+    assert 'name="model_claude" value="opus"' in page and 'name="model_codex" value=""' in page
+    assert 'placeholder="CLI default"' in page
+    assert re.search(r'name="effort_codex".*?<option value="high" selected>', page, re.S)
+    assert '<option value="minimal"' in page  # Codex's own effort list
+
+
+def test_agent_defaults_save_and_return_to_the_agents_tab(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post("/settings/agents", data={
+            "model_claude": "sonnet", "effort_claude": "max", "model_codex": "", "effort_codex": "low",
+        }, follow_redirects=False)
+        page = client.get("/settings/agents").text
+    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/agents")
+    assert config(tmp_path)["agent_defaults"] == {
+        "claude": {"model": "sonnet", "effort": "max"}, "codex": {"model": "", "effort": "low"},
+    }
+    assert 'name="model_claude" value="sonnet"' in page
+
+
+def test_a_refused_agent_defaults_save_keeps_the_typed_values(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        refused = client.post("/settings/agents", data={
+            "model_claude": "-bad", "effort_claude": "max", "model_codex": "typed", "effort_codex": "low",
+        })
+    assert refused.status_code == 422
+    assert "<div hidden data-page-alert>Nothing was saved: Model must not start with" in refused.text
+    assert 'name="model_claude" value="-bad"' in refused.text and 'name="model_codex" value="typed"' in refused.text
+    assert not (tmp_path / "home" / "config.json").exists()
+
+
+def test_agent_defaults_are_this_machine_only(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        page = client.get("/settings/agents")
+        saved = client.post("/settings/agents", data={"model_claude": "x", "effort_claude": "high",
+                                                      "model_codex": "", "effort_codex": "high"})
+    assert (page.status_code, saved.status_code) == (403, 403)

@@ -625,3 +625,9 @@ def test_build_profile_lets_the_agent_write_every_spool_in_its_temp_dir() -> Non
     # downloads/requests and convert/requests both live in the turn's temp dir.
     profile = next(item for item in codex_build_overrides(coding()) if item.startswith("permissions="))
     assert f'"{coding().temp_dir.as_posix()}"="write"' in profile
+
+
+def test_an_empty_model_leaves_the_choice_to_the_cli() -> None:
+    for run_context in (context("Hi."), build_context()):
+        argv = CodexAdapter(executable="codex").build_command(replace(config(), model=""), run_context).argv
+        assert "--model" not in argv and "-m" not in argv

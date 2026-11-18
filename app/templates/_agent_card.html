@@ -18,14 +18,14 @@
           {% if agent_view.selected %}aria-current="true"{% endif %}
         >{{ agent.name }}</a>
       </h3>
-      <p class="agent-card-model">{{ agent.model }} · {{ agent.effort }}</p>
+      <p class="agent-card-model">{{ agent.model|model_label }} · {{ agent.effort }}</p>
     </div>
     {% with agent_card_oob=false %}{% include "_agent_status.html" %}{% endwith %}
   </div>
   {# Collapsed on render; app.js reopens what the reader opened (user, 2026-11-13). #}
   <details class="agent-details">
     <summary>Agent information</summary>
-    <p>{{ agent.agent }} · {{ agent.model }} · {{ agent.effort }}</p>
+    <p>{{ agent.agent }} · {{ agent.model|model_label }} · {{ agent.effort }}</p>
     <section class="agent-role" aria-label="Role instructions">
       <h4>Role instructions</h4>
       {% if agent.role_instructions %}
@@ -116,7 +116,7 @@
         {% else %}
           <p class="immutability-hint">Agent provider cannot change after the first round.</p>
         {% endif %}
-        <label>Model <input name="model" maxlength="200" value="{{ agent.model }}" required></label>
+        <label>Model <input name="model" maxlength="200" value="{{ agent.model }}" placeholder="CLI default"></label>
         <label>Effort
           <select name="effort" required data-effort-select>
             {{ effort_options(effort_levels, agent.agent, agent.effort) }}

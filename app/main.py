@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.agent_defaults import defaults_json, read_agent_defaults
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.auto import AutoManager
@@ -162,6 +163,10 @@ def create_app(
     templates.env.filters["utc_stamp"] = utc_stamp
     templates.env.filters["utc_stamp_range"] = utc_stamp_range
     templates.env.globals["project_url"] = project_url
+    # New agents start from their type's default (Settings → Agents); empty = CLI default.
+    templates.env.globals["agent_defaults"] = lambda: read_agent_defaults(app_settings.home)
+    templates.env.globals["agent_defaults_json"] = lambda: defaults_json(read_agent_defaults(app_settings.home))
+    templates.env.filters["model_label"] = lambda model: model or "CLI default"
     templates.env.globals["static_url"] = static_url
     templates.env.globals["is_loopback_client"] = is_loopback_client
     templates.env.globals["build_capable"] = build_capable

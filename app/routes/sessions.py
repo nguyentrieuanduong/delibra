@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, Response
 
+from app.agent_defaults import normalize_agent_model
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import Project, SessionConfig
@@ -57,9 +58,14 @@ def _validated_configuration(
     }
     if agent not in effort_levels:
         raise HTTPException(status_code=422, detail="Agent must be claude or codex")
-    model = validate_field(model, "Model", maximum=200).strip()
-    if any(character.isspace() or ord(character) < 32 for character in model):
-        raise HTTPException(status_code=422, detail="Model contains invalid characters")
+    # Empty means the CLI's own default model (user decision 2026-11-18).
+    if model and not model.strip():
+        raise HTTPException(status_code=422, detail="Model must be empty or a model name, not blank")
+    model = validate_field(model, "Model", maximum=200, allow_empty=True).strip()
+    try:
+        model = normalize_agent_model(model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if effort not in effort_levels[agent]:
         allowed = ", ".join(effort_levels[agent])
         raise HTTPException(
@@ -146,7 +152,7 @@ async def create_session(
     project_id: str,
     name: str = Form(...),
     agent: str = Form(...),
-    model: str = Form(...),
+    model: str = Form(""),  # empty: the CLI default model
     effort: str = Form(...),
     role_instructions: str = Form(""),
     writable_roots: str = Form(""),

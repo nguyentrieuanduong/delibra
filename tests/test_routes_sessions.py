@@ -1015,3 +1015,30 @@ def test_agent_writable_roots_tick_creates_missing_on_create_and_edit(
     checked = 'name="create_missing_writable_roots" value="true" checked'
     assert checked in settings_page.text
     assert checked in chat_page.text
+
+
+def test_an_empty_model_means_the_cli_default_and_shows_so(tmp_path) -> None:
+    client, project, store = seeded_client(tmp_path)
+    with client:
+        created = create_session(client, project.id, agent="codex", model="", effort="high")
+        refused = create_session(client, project.id, name="Other", model="-x")
+        page = client.get(f"/projects/{project.id}/settings/agents").text
+    assert created.status_code == 303
+    assert [s.model for s in store.list_sessions()] == [""]
+    assert refused.status_code == 422 and "Model must not start with" in refused.text
+    assert "codex · CLI default · high" in page
+
+
+def test_create_forms_start_from_the_default_of_the_selected_agent_type(tmp_path) -> None:
+    from app.agent_defaults import AgentDefault, save_agent_defaults
+
+    client, project, _store = seeded_client(tmp_path)
+    save_agent_defaults(tmp_path / "home", {"claude": AgentDefault("opus", "high"), "codex": AgentDefault("", "xhigh")})
+    with client:
+        pages = [client.get(f"/projects/{project.id}/settings/agents").text, client.get(f"/projects/{project.id}/chat").text]
+    for page in pages:
+        form = page[page.index('name="name"') - 2000:]
+        form = form[: form.index("</form>")]
+        assert 'name="model" maxlength="200" value="opus" placeholder="CLI default"' in form
+        assert "required" not in form[form.index('name="model"'):form.index('name="model"') + 120]
+        assert 'data-agent-defaults="' in form and "&#34;codex&#34;: {&#34;model&#34;: &#34;&#34;, &#34;effort&#34;: &#34;xhigh&#34;}" in form

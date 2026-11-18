@@ -1,4 +1,4 @@
-"""Global settings: access lists, guidance presets and the global instruction, this machine only."""
+"""Global settings: access lists, guidance presets, the global instruction and agent defaults, this machine only."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import os
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.agent_defaults import EFFORT_LEVELS, AgentDefault, read_agent_defaults, save_agent_defaults
 from app.coding import (
     SKILLS_MAX_BYTES,
     SKILLS_MAX_FILES,
@@ -56,6 +57,7 @@ GLOBAL_TABS = (
     ("access", "Access", "/settings"),
     ("instruction", "Instruction", "/settings/instruction"),
     ("presets", "Presets", "/settings/presets"),
+    ("agents", "Agents", "/settings/agents"),
 )
 GLOBAL_TABS_LABELS = tuple((key, label) for key, label, _url in GLOBAL_TABS)
 
@@ -238,6 +240,7 @@ def _settings_page(
     error: str | None = None,
     status_code: int = 200,
     global_instruction: str | None = None,
+    agent_rows: list[dict[str, object]] | None = None,
 ):
     if global_instruction is None:
         try:
@@ -261,6 +264,9 @@ def _settings_page(
             "error": error,
             "global_instruction": global_instruction,
             "health": request.app.state.health,
+            "agent_rows": (
+                agent_rows if agent_rows is not None else _agent_rows(read_agent_defaults(request.app.state.settings.home))
+            ),
             "tab": tab,
             "tab_label": dict(GLOBAL_TABS_LABELS)[tab],
             "settings_tabs": GLOBAL_TABS,
@@ -422,6 +428,36 @@ async def save_presets(request: Request):
             return await refused(_sentence(str(exc)))
         request.app.state.settings = replace(settings, guidance_presets=presets)
     return RedirectResponse("/settings/presets", status_code=303)
+
+
+def _agent_rows(defaults: dict[str, AgentDefault]) -> list[dict[str, object]]:
+    """One row per agent type Delibra supports, from the effort lists."""
+
+    return [
+        {"agent": agent, "levels": levels, "model": defaults[agent].model, "effort": defaults[agent].effort}
+        for agent, levels in EFFORT_LEVELS.items()
+    ]
+
+
+@router.post("/settings/agents")
+async def save_agent_default_settings(request: Request):
+    _require_local(request)
+    form = await request.form()
+    typed = {
+        agent: AgentDefault(str(form.get(f"model_{agent}", "")).strip(), str(form.get(f"effort_{agent}", "")))
+        for agent in EFFORT_LEVELS
+    }
+    async with request.app.state.global_settings_lock:
+        settings = request.app.state.settings
+        try:
+            await asyncio.to_thread(save_agent_defaults, settings.home, typed)
+        except (ValueError, StorageError, OSError) as exc:
+            return _settings_page(
+                request, "agents", [], settings.allowed_clients, settings.allowed_hosts,
+                error=f"Nothing was saved: {_sentence(str(exc))}", status_code=422,
+                agent_rows=_agent_rows(typed),
+            )
+    return RedirectResponse("/settings/agents", status_code=303)
 
 
 @router.post("/settings/global-instruction")

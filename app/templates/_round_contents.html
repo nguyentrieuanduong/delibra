@@ -29,7 +29,7 @@
   {% endif %}
 {%- endmacro %}
 {% if round.record %}
-  <p class="provenance">{{ round.record.agent }} · {{ round.record.model }} · {{ round.record.effort }} · {{ round.record.status }}</p>
+  <p class="provenance">{{ round.record.agent }} · {{ round.record.model|model_label }} · {{ round.record.effort }} · {{ round.record.status }}</p>
   {% if round.record.source.type == 'pass' %}
     <p class="provenance">
       Passed from session {{ round.record.source.from_session }}, round {{ round.record.source.from_round }}

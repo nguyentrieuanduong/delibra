@@ -79,6 +79,12 @@ class CodingContext:
     convert: bool = False
 
 
+def model_option(model: str) -> list[str]:
+    """`--model <model>`, or nothing: an empty model leaves the choice to the CLI."""
+
+    return ["--model", model] if model else []
+
+
 def build_command_environment(coding: CodingContext) -> dict[str, str]:
     """Variables every build-turn command gets, for both providers.
 

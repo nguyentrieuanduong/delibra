@@ -11,6 +11,7 @@ from app.agents.base import (
     RunContext,
     build_system_instructions,
     system_instructions,
+    model_option,
 )
 from app.agents.errors import (
     ProviderErrorInfo,
@@ -204,8 +205,7 @@ class ClaudeAdapter:
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--model",
-            config.model,
+            *model_option(config.model),
             "--effort",
             config.effort,
             *add_directories,
@@ -304,8 +304,7 @@ class ClaudeAdapter:
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--model",
-            config.model,
+            *model_option(config.model),
             "--effort",
             config.effort,
             "--add-dir",
