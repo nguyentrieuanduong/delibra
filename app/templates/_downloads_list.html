@@ -6,8 +6,16 @@
   {% if unreadable %}
     <p class="warning">Download records are unreadable (<code>.delibra/downloads/requests.json</code>). Build commits stay off until the file is repaired.</p>
   {% elif not downloads %}
-    <p class="hint">{% if downloads_enabled %}No downloads yet. Build agents request them here.{% else %}Delibra downloads are off for this project (Settings → Coding).{% endif %}</p>
+    <p class="hint">{% if downloads_enabled %}No downloads yet. Agents request them here.{% else %}Delibra downloads are off for this project (Settings → General).{% endif %}</p>
   {% endif %}
   <ol class="downloads">{% for download in downloads %}{% include "_download_item.html" %}{% endfor %}</ol>
+  {% if conversions %}
+    <h3 class="downloads-conversions-heading">Conversions</h3>
+    <ul class="downloads-conversions">
+      {% for item in conversions %}
+        <li>{{ item.id }} · <code>{{ item.path }}</code> · {{ item.state }}{% if item.reason %} · {{ item.reason }}{% endif %}{% if item.output %} · <a href="{{ project_url(project.name, '/files/view?' ~ {'path': item.output}|urlencode) }}">Markdown</a>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
 </div>
 {% if oob_summary|default(false) %}{% include "_downloads_summary.html" %}{% endif %}

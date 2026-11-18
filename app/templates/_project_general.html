@@ -71,3 +71,53 @@
     {% endfor %}
   </form>
 </section>
+<section aria-labelledby="downloads-heading">
+  <h2 id="downloads-heading">Downloads and documents</h2>
+  {{ takes_effect("next_turn") }}
+  {% if not coding_local %}<p class="hint">Only this machine can change download settings.</p>{% endif %}
+  <form method="post" action="{{ project_url(project.name, '/download-settings') }}">
+    {# A refused save shows what was sent (typed); otherwise the saved policy. #}
+    {% set dl_enabled = typed.get('downloads_enabled') if 'downloads_enabled' in typed else coding.downloads.enabled %}
+    {% set dl_model_check = typed.get('downloads_model_check') if 'downloads_model_check' in typed else coding.downloads.model_check %}
+    {% set dl_approval = typed.get('downloads_approval', coding.downloads.approval) %}
+    {% set dl_convert = typed.get('downloads_convert') if 'downloads_convert' in typed else coding.downloads.convert %}
+    {% set dl_provider = typed.get('downloads_check_provider', coding.downloads.check_provider) %}
+    <fieldset class="coding-downloads">
+      <legend>Downloads</legend>
+      <label class="auto-choice"><input type="checkbox" name="downloads_enabled" value="true"{% if dl_enabled %} checked{% endif %}> Let Delibra download files agents request</label>
+      <label>Download folder <input name="downloads_folder" value="{{ typed.get('downloads_folder', coding.downloads.folder) }}" maxlength="4096" required></label>
+      <p class="hint">Inside the project. Delibra never commits this folder, even files already tracked there.</p>
+      <label>Approval
+        <select name="downloads_approval">
+          <option value="manual"{% if dl_approval == 'manual' %} selected{% endif %}>Manual: I approve each download</option>
+          <option value="automatic"{% if dl_approval == 'automatic' %} selected{% endif %}>Automatic after checks</option>
+        </select>
+      </label>
+      <label class="auto-choice"><input type="checkbox" name="downloads_model_check" value="true"{% if dl_model_check %} checked{% endif %}> Model check of each URL</label>
+      <label>Model check provider
+        <select name="downloads_check_provider">
+          <option value="claude"{% if dl_provider == 'claude' %} selected{% endif %}>Claude</option>
+          <option value="codex"{% if dl_provider == 'codex' %} selected{% endif %}>Codex</option>
+        </select>
+      </label>
+      <label>Model check model <input name="downloads_check_model" value="{{ typed.get('downloads_check_model', coding.downloads.check_model) }}" maxlength="200" required></label>
+      <p class="hint">Delibra fetches from public addresses only. URLs with credentials, secrets, email addresses or encoded data are refused; you can allow them from the Downloads panel.</p>
+      <label class="auto-choice"><input type="checkbox" name="downloads_convert" value="true"{% if dl_convert %} checked{% endif %}> Convert documents to Markdown (PDF, Word, Excel, PowerPoint)</label>
+      <p class="hint">Downloaded documents get a Markdown copy beside them; agents can also ask for a project document. Conversion runs in a sandbox with no network. Chat replies, discussion turns and build turns all use these settings.</p>
+    </fieldset>
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save downloads</button>
+  </form>
+  {% set models = converter_models %}
+  <p class="converter-models">Converter models (PDF layout and tables):
+    {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB
+    {% elif models.status == "downloading" %}Downloading…
+    {% elif models.status == "failed" %}<span class="warning">Failed: {{ models.error }}</span>
+    {% else %}Not downloaded{% endif %}
+  </p>
+  {% if models.status in ("absent", "failed") %}
+    <form method="post" action="{{ project_url(project.name, '/converter-models') }}">
+      <button type="submit"{% if not coding_local %} disabled{% endif %}>{% if models.status == "failed" %}Retry{% else %}Download models (about 0.7 GB){% endif %}</button>
+    </form>
+    <p class="hint">Until then PDFs are converted to plain text with pypdf (no tables or headings). Office files do not need the models.</p>
+  {% endif %}
+</section>

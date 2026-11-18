@@ -2656,7 +2656,7 @@ def test_project_writable_roots_refusal_pops_up_and_keeps_input(
 def test_saving_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding/downloads", data={
+        response = client.post(f"{prefix}/download-settings", data={
             "downloads_enabled": "true", "downloads_folder": "raw/src",
             "downloads_approval": "automatic", "downloads_model_check": "true",
             "downloads_check_provider": "codex", "downloads_check_model": "gpt-5.5-mini",
@@ -2670,7 +2670,7 @@ def test_saving_download_settings(tmp_path: Path, monkeypatch) -> None:
 def test_a_deliberate_sonnet_model_check_is_saved_as_chosen(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding/downloads", data={
+        response = client.post(f"{prefix}/download-settings", data={
             "downloads_folder": "raw", "downloads_check_provider": "claude",
             "downloads_check_model": "sonnet",
         }, follow_redirects=False)
@@ -2697,7 +2697,7 @@ def test_the_coding_mode_form_keeps_download_settings(tmp_path: Path, monkeypatc
 def test_an_unsafe_download_folder_is_refused(tmp_path: Path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding/downloads", data={
+        response = client.post(f"{prefix}/download-settings", data={
             "downloads_enabled": "true", "downloads_folder": "../out",
         })
     assert response.status_code == 422
@@ -2709,7 +2709,7 @@ def test_an_unsafe_download_folder_is_refused(tmp_path: Path, monkeypatch) -> No
 def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{prefix}/settings/coding").text
+        page = client.get(f"{prefix}/settings").text
     assert 'name="downloads_folder" value="docs/source/raw"' in page
     assert 'name="downloads_check_model" value="haiku"' in page
 
@@ -2801,7 +2801,7 @@ def test_each_coding_form_saves_only_its_own_fields(tmp_path, monkeypatch) -> No
             follow_redirects=False,
         )
         downloads = client.post(
-            f"{prefix}/coding/downloads",
+            f"{prefix}/download-settings",
             data={"downloads_enabled": "true", "downloads_folder": "raw",
                   "downloads_approval": "automatic", "downloads_check_provider": "claude",
                   "downloads_check_model": "sonnet"},
@@ -2812,9 +2812,8 @@ def test_each_coding_form_saves_only_its_own_fields(tmp_path, monkeypatch) -> No
         )
 
     assert [r.status_code for r in (guidance, network, downloads, mode)] == [303] * 4
-    assert {r.headers["location"] for r in (guidance, network, downloads, mode)} == {
-        f"{prefix}/settings/coding"
-    }
+    assert {r.headers["location"] for r in (guidance, network, mode)} == {f"{prefix}/settings/coding"}
+    assert downloads.headers["location"] == f"{prefix}/settings"  # moved to General (2026-11-18)
     policy = ProjectStore(project).coding_policy()
     assert policy.guidance_files == [str(guide)]
     assert policy.guidance_skills == [skills[0]]
@@ -2846,7 +2845,7 @@ def test_a_refused_coding_form_pops_up_and_keeps_the_typed_text(tmp_path, monkey
         ("/writable-roots", "writable_roots", "out", lambda s, t: s.effective_writable_roots() == ["out"]),
         ("/coding/network", "network_allowlist", "example.org",
          lambda s, t: s.coding_policy().network_allowlist == ["example.org"]),
-        ("/coding/downloads", "downloads_folder", "other/raw",
+        ("/download-settings", "downloads_folder", "other/raw",
          lambda s, t: (s.coding_policy().downloads.folder, s.coding_policy().downloads.enabled) == ("other/raw", True)),
         ("/coding/guidance", "guidance_files", "{guide}",
          lambda s, t: s.coding_policy().guidance_files == [str(t / "guide.md")]),
@@ -3014,7 +3013,7 @@ def test_agent_forms_on_the_settings_page_return_to_agents(tmp_path: Path) -> No
     "path, data",
     [
         ("/coding/git-exclude", {"git_exclude": "out/"}),
-        ("/coding/downloads", {"downloads_folder": "raw", "downloads_enabled": "true"}),
+        ("/download-settings", {"downloads_folder": "raw", "downloads_enabled": "true"}),
         ("/coding", {"enabled": "true"}),
     ],
 )
@@ -3166,7 +3165,7 @@ def test_a_coding_form_without_a_text_field_keeps_its_saved_value(tmp_path, monk
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         network = client.post(f"{prefix}/coding/network", data={}, follow_redirects=False)
         downloads = client.post(
-            f"{prefix}/coding/downloads", data={"downloads_folder": "other"}, follow_redirects=False
+            f"{prefix}/download-settings", data={"downloads_folder": "other"}, follow_redirects=False
         )
         emptied = client.post(
             f"{prefix}/coding/network", data={"network_allowlist": ""}, follow_redirects=False
@@ -3197,7 +3196,7 @@ def test_a_network_form_without_its_field_keeps_the_allowlist(tmp_path, monkeypa
 def test_a_refused_downloads_save_keeps_every_field(tmp_path, monkeypatch) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        response = client.post(f"{prefix}/coding/downloads", data={
+        response = client.post(f"{prefix}/download-settings", data={
             "downloads_enabled": "true", "downloads_folder": "../out", "downloads_approval": "automatic",
             "downloads_model_check": "true", "downloads_check_provider": "codex",
             "downloads_check_model": "typed-model",
@@ -3259,18 +3258,18 @@ def test_every_docker_action_button_locks_live_with_auto(tmp_path, monkeypatch, 
 
 def test_the_coding_tab_orders_its_sections(tmp_path, monkeypatch) -> None:
     # User decision 2026-11-18: mode and its environment, Docker, guidance and
-    # skills, Git ignore list, downloads, network access.
+    # skills, Git ignore list, network access (downloads moved to General).
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get(f"{prefix}/settings/coding").text
 
     markers = [
         'id="coding-mode-heading"', 'class="coding-env-status"', 'id="docker-heading"',
-        'id="coding-guidance-heading"', 'id="coding-git-exclude-heading"',
-        'id="coding-downloads-heading"', 'id="coding-network-heading"',
+        'id="coding-guidance-heading"', 'id="coding-git-exclude-heading"', 'id="coding-network-heading"',
     ]
     positions = [page.index(marker) for marker in markers]
     assert positions == sorted(positions), list(zip(markers, positions))
+    assert "downloads_folder" not in page
     mode_form_end = page.index("</form>", positions[0])
     # The environment line sits right under the coding mode form.
     assert page[mode_form_end + len("</form>"):positions[1]].strip().startswith("<p")
@@ -3466,3 +3465,71 @@ def test_a_lan_agents_tab_roots_refusal_pops_up_and_keeps_the_input(tmp_path) ->
     assert chat_page.json()["detail"] == "Only this machine can change an agent's writable roots"
     assert unchanged == before
     assert [s.name for s in store.list_sessions()] == ["Alpha"]
+
+
+def test_download_settings_live_on_general_and_save_there(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        general = client.get(f"{prefix}/settings").text
+        coding = client.get(f"{prefix}/settings/coding").text
+        saved = client.post(f"{prefix}/download-settings", data={
+            "downloads_folder": "raw", "downloads_enabled": "true", "downloads_approval": "manual",
+            "downloads_check_provider": "claude", "downloads_check_model": "sonnet",
+        }, follow_redirects=False)
+        old = client.post(f"{prefix}/coding/downloads", data={"downloads_folder": "raw"})
+
+    assert 'id="downloads-heading"' in general
+    assert 'name="downloads_convert"' in general
+    assert 'name="downloads_folder"' not in coding
+    assert (saved.status_code, saved.headers["location"]) == (303, f"{prefix}/settings")
+    policy = ProjectStore(project).coding_policy().downloads
+    assert (policy.enabled, policy.folder, policy.convert, policy.check_model) == (True, "raw", False, "sonnet")
+    assert old.status_code in (404, 405)
+
+
+def test_a_refused_download_save_stays_on_general_with_the_alert(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/download-settings", data={
+            "downloads_enabled": "true", "downloads_folder": "../out", "downloads_convert": "true",
+        })
+    assert response.status_code == 422
+    assert "<div hidden data-page-alert>Nothing was saved: Download folder" in response.text
+    assert 'name="downloads_folder" value="../out"' in response.text
+    assert 'id="downloads-heading"' in response.text and 'id="turn-timeout-heading"' in response.text
+    assert ProjectStore(project).coding_policy().downloads.enabled is False
+
+
+def test_download_settings_save_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        response = client.post(f"{prefix}/download-settings", data={
+            "downloads_enabled": "true", "downloads_folder": "raw",
+        })
+    assert response.status_code == 403
+    assert ProjectStore(project).coding_policy().downloads.enabled is False
+
+
+def test_the_converter_models_download_starts_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    homes = []
+
+    async def fake_download(home):
+        homes.append(home)
+
+    monkeypatch.setattr("app.routes.projects.download_models", fake_download)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        general = client.get(f"{prefix}/settings").text
+        started = client.post(f"{prefix}/converter-models", follow_redirects=False)
+        for _ in range(100):
+            if homes:
+                break
+            time.sleep(0.01)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        refused = client.post(f"{prefix}/converter-models", follow_redirects=False)
+
+    assert "Converter models (PDF layout and tables):" in general and "Not downloaded" in general
+    assert "Download models (about 0.7 GB)" in general
+    assert (started.status_code, started.headers["location"]) == (303, f"{prefix}/settings")
+    assert homes == [app.state.settings.home]
+    assert refused.status_code == 403

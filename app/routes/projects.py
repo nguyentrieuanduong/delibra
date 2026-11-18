@@ -31,6 +31,7 @@ from app.coding import (
     preset_guidance_lists,
     private_resolution_warnings,
 )
+from app.converter_models import download_models, models_state
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
@@ -460,8 +461,9 @@ async def _save_coding_part(
     locked: bool,
     typed: dict[str, str],
     refresh_excludes: bool,
+    tab: str = "coding",
 ) -> Response:
-    """Save one Coding form: replace its fields, keep every other saved field."""
+    """Save one form of the coding policy: replace its fields, keep every other saved field."""
 
     project = request_project(request, project_id)
     resolved_project_id = project.id
@@ -493,8 +495,8 @@ async def _save_coding_part(
     except StorageError as exc:
         # A locked form saved just before the 5-second lock poll noticed Auto
         # starting gets the same pop-up, with 409 (ConflictError) instead of 422.
-        return await render_refusal(request, project, "coding", exc, typed)
-    return RedirectResponse(settings_tab_url(project.name, "coding"), status_code=303)
+        return await render_refusal(request, project, tab, exc, typed)
+    return RedirectResponse(settings_tab_url(project.name, tab), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding")
@@ -657,13 +659,14 @@ DOWNLOAD_TEXT_FIELDS = (
 )
 
 
-@router.post("/projects/{project_id}/coding/downloads")
-async def save_coding_downloads(
+@router.post("/projects/{project_id}/download-settings")
+async def save_download_settings(
     request: Request,
     project_id: str,
     downloads_folder: str = Form(...),
     downloads_enabled: bool = Form(False),
     downloads_model_check: bool = Form(False),
+    downloads_convert: bool = Form(False),
 ):
     require_loopback_client(request)
     sent = await request.form()
@@ -681,6 +684,7 @@ async def save_coding_downloads(
             "enabled": downloads_enabled,
             "folder": downloads_folder,
             "model_check": downloads_model_check,
+            "convert": downloads_convert,
             "check_model": str(values["check_model"]).strip(),
             # What the form sends is a choice, never the old default (Task 2c).
             CHECK_MODEL_DEFAULT_KEY: CHECK_MODEL_DEFAULT_VERSION,
@@ -693,9 +697,25 @@ async def save_coding_downloads(
             "downloads_folder": downloads_folder,
             "downloads_enabled": "true" if downloads_enabled else "",
             "downloads_model_check": "true" if downloads_model_check else "",
+            "downloads_convert": "true" if downloads_convert else "",
         },
         refresh_excludes=True,
+        tab="general",
     )
+
+
+@router.post("/projects/{project_id}/converter-models")
+async def download_converter_models(request: Request, project_id: str):
+    """Fetch Docling's PDF models once (about 0.7 GB) over this machine's network."""
+
+    require_loopback_client(request)
+    project = request_project(request, project_id)
+    task = request.app.state.converter_models_task
+    if task is None or task.done():
+        request.app.state.converter_models_task = asyncio.create_task(
+            download_models(request.app.state.settings.home), name="delibra-converter-models"
+        )
+    return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)
 
 
 @router.post("/projects/{project_id}/coding/env/retry")
@@ -1063,6 +1083,7 @@ async def render_project_settings(
                 coding.git_exclude if coding.git_exclude is not None else default_git_exclude()
             ),
             "coding_local": is_loopback_client(request),
+            "converter_models": models_state(request.app.state.settings.home),
             "guidance_presets": request.app.state.settings.guidance_presets,
             "docker_lima": docker_lima,
             "turn_timeout_seconds": effective_turn_timeout,

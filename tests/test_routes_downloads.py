@@ -109,3 +109,46 @@ def test_every_rendering_of_the_list_carries_the_store_epoch(tmp_path):
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         pages = [client.get(f"{base(project)}/{path}").text for path in ("chat", "downloads", "downloads/list")]
     assert all(stamp in page for page in pages)
+
+
+def test_the_empty_panel_points_to_the_general_tab(tmp_path):
+    app, project, _store = downloads_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        listing = client.get(f"{base(project)}/downloads/list").text
+    assert "Delibra downloads are off for this project (Settings → General)." in listing
+
+
+def test_the_panel_lists_conversions_with_a_link_to_the_markdown(tmp_path):
+    from app.convert_store import ConversionStore
+
+    app, project, store = downloads_app(tmp_path)
+    conversions = ConversionStore(store.root)
+    record = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
+    conversions.update(record.id, state="converted", output="raw/converted/a.pdf.md", source_sha256="f" * 64)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        pages = [client.get(f"{base(project)}/{path}").text for path in ("downloads/list", "downloads", "chat")]
+    for page in pages:  # the list, the panel and the chat page that embeds it
+        assert "Conversions" in page and "C1" in page and "<code>a.pdf</code>" in page
+        assert "/files/view?path=raw%2Fconverted%2Fa.pdf.md" in page
+
+
+def test_a_conversion_change_makes_the_panel_revision_newer(tmp_path):
+    import re
+    from app.convert_store import ConversionStore
+
+    app, project, store = downloads_app(tmp_path)
+    add(store, "https://arxiv.org/pdf/1")
+    conversions = ConversionStore(store.root)
+
+    def shown(client):
+        text = client.get(f"{base(project)}/downloads/list").text
+        return int(re.search(r'data-revision="(\d+)"', text).group(1)), re.search(r'data-epoch="([^"]*)"', text).group(1)
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        before, epoch = shown(client)
+        record = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
+        added, epoch_added = shown(client)
+        conversions.update(record.id, state="failed", reason="x")
+        updated, epoch_updated = shown(client)
+    assert before < added < updated
+    assert epoch_added == epoch_updated
