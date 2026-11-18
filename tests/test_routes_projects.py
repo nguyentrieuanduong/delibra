@@ -3267,6 +3267,7 @@ def test_project_writable_roots_save_from_this_machine_only(tmp_path, monkeypatc
     # A LAN viewer sees the list, why it cannot change it, and no live controls.
     assert "Only this machine can change this list." in section(lan_page)
     assert 'data-picker-target="project-writable-roots"' not in section(lan_page)
+    assert re.search(r'<textarea id="project-writable-roots"[^>]*readonly', section(lan_page))
     assert '<button type="submit" disabled>Save writable roots</button>' in section(lan_page)
     assert "Only this machine can change this list." not in section(local_page)
     assert '<button type="submit">Save writable roots</button>' in section(local_page)
@@ -3405,7 +3406,22 @@ def test_a_lan_agents_tab_roots_refusal_pops_up_and_keeps_the_input(tmp_path) ->
         chat_page = client.post(
             f"{prefix}/sessions/{alpha}/edit", data={"model": "x", "writable_roots": "out"}
         )
+        unchanged = store.load_session(alpha)
+        # The re-rendered (read-only) box shows the saved roots, so resending the
+        # page as it now stands saves the typed model.
+        shown_roots = re.search(
+            rf'id="session-writable-roots-{alpha}"[^>]*>([^<]*)</textarea>', stale_edit.text
+        ).group(1)
+        retry = client.post(
+            f"{prefix}/sessions/{alpha}/edit",
+            data={"model": "typed-model", "writable_roots": shown_roots, "return_to": "settings"},
+            follow_redirects=False,
+        )
 
+    assert shown_roots == "src"
+    assert re.search(r'id="new-session-writable-roots"[^>]*></textarea>', create.text)
+    assert retry.status_code == 303
+    assert store.load_session(alpha).model == "typed-model"
     for response in (stale_edit, create):
         assert response.status_code == 403
         assert "<div hidden data-page-alert>Nothing was saved: Only this machine can change an agent&#39;s writable roots</div>" in response.text
@@ -3414,5 +3430,5 @@ def test_a_lan_agents_tab_roots_refusal_pops_up_and_keeps_the_input(tmp_path) ->
     assert 'value="Beta"' in create.text
     assert chat_page.status_code == 403
     assert chat_page.json()["detail"] == "Only this machine can change an agent's writable roots"
-    assert store.load_session(alpha) == before
+    assert unchanged == before
     assert [s.name for s in store.list_sessions()] == ["Alpha"]

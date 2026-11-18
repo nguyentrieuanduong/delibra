@@ -84,6 +84,21 @@ def _refuse_agent_roots() -> None:
     raise HTTPException(status_code=403, detail=AGENT_ROOTS_HERE)
 
 
+def _typed_roots(request: Request, roots: str, create_missing: bool) -> dict[str, str]:
+    """The roots to show again after a refusal: what was typed, on this machine only.
+
+    A network viewer's box is read-only, so a refused (stale) page shows the saved
+    roots again; resending it then keeps them and saves the other fields.
+    """
+
+    if not is_loopback_client(request):
+        return {}
+    return {
+        "writable_roots": roots,
+        "create_missing_writable_roots": "true" if create_missing else "",
+    }
+
+
 def _roots_differ(sent: str, saved: list[str]) -> bool:
     """Whether a submitted roots box changes the saved list (an invalid one does)."""
 
@@ -141,9 +156,8 @@ async def create_session(
 ):
     typed = {
         "form": "create", "name": name, "agent": agent, "model": model, "effort": effort,
-        "role_instructions": role_instructions, "writable_roots": writable_roots,
-        "create_missing_writable_roots": "true" if create_missing_writable_roots else "",
-    }
+        "role_instructions": role_instructions,
+    } | _typed_roots(request, writable_roots, create_missing_writable_roots)
     return await _on_agents_tab(request, project_id, return_to, typed, _create_session(
         request, project_id, name, agent, model, effort, role_instructions,
         writable_roots, create_missing_writable_roots, return_to,
@@ -239,11 +253,11 @@ async def edit_session(
     sent = await request.form()
     typed = {"form": f"edit:{session_id}"} | {
         key: str(sent[key])
-        for key in ("agent", "model", "effort", "role_instructions", "writable_roots")
+        for key in ("agent", "model", "effort", "role_instructions")
         if key in sent
     }
     if "writable_roots" in sent:
-        typed["create_missing_writable_roots"] = "true" if create_missing_writable_roots else ""
+        typed |= _typed_roots(request, str(sent["writable_roots"]), create_missing_writable_roots)
     return await _on_agents_tab(request, project_id, return_to, typed, _edit_session(
         request, project_id, session_id, name, agent, model, effort, role_instructions,
         writable_roots, create_missing_writable_roots, return_to, selected_agent,
