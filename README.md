@@ -112,12 +112,25 @@ than silently falling back to the restrictive default.
   WAN/any-network setting, which gives up DNS-rebinding protection entirely.
   Use a named entry or a range unless you genuinely cannot.
 
-The **Settings** page (header link, this machine only) has three tabs, each
+The **Settings** page (header link, this machine only) has four tabs, each
 its own page with its own Save button: **Access** (`/settings`, both lists),
-**Instruction** (`/settings/instruction`, the global instruction below) and
-**Presets** (`/settings/presets`, build guidance presets). Access and Presets
-each write only their own keys of `config.json` and apply the change to the
-next request without a restart. A list whose environment variable is set is
+**Instruction** (`/settings/instruction`, the global instruction below),
+**Presets** (`/settings/presets`, build guidance presets) and **Agents**
+(`/settings/agents`, defaults for new agents below). Access, Presets and
+Agents each write only their own keys of `config.json` and apply the change to
+the next request without a restart.
+
+**Defaults for new agents.** The **Agents** tab has one row per agent type
+(Claude, Codex): a default model and a default effort from that type's own
+effort list. Built-in defaults: Claude `opus` + `high`, Codex an empty model +
+`high`. The create-agent forms (chat sidebar and the project's Agents tab)
+start from the selected type's defaults, and switching the Agent select
+switches model and effort, except a field you already changed in that form.
+An empty model means the CLI's own default model: Delibra then passes no
+`--model` option, and agent cards show "CLI default". A model is empty or one
+token of at most 200 characters with no spaces that does not start with `-`.
+Existing agents and their edit forms are not changed, and the Delibra
+downloads model check keeps its own setting. A list whose environment variable is set is
 shown read-only. Hand edits to `config.json` still need a restart.
 
 **Global instruction.** The **Instruction** tab holds one instruction text (at most
