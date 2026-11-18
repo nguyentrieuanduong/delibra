@@ -2834,3 +2834,20 @@ async def test_a_chat_reply_has_no_convert_spool_when_conversion_is_off(tmp_path
     assert "convert/requests" not in contexts[0].system_note
     assert manager.downloads.events == []
     assert not (store.workspace_dir(session_id) / "convert").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent, waits", [("claude", False), ("codex", True)])
+async def test_only_codex_chat_replies_get_the_wait_loop(tmp_path: Path, agent: str, waits: bool) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts, agent=agent)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, approval="automatic")
+    store.replace_coding_policy(policy)
+    manager.downloads = RecordingDownloads()
+
+    await manager.wait(await manager.start(project_id, session_id, "Find the paper"))
+
+    note = contexts[0].system_note
+    assert ("until grep" in note) is waits
+    assert ("read the status file again later in your turn" in note) is not waits

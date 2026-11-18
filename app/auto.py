@@ -29,10 +29,8 @@ from app.coding import (
 )
 from app.coding_env import probe_env_python, server_environment
 from app.config import Settings
-from app.download_manager import DownloadManager, DownloadTurn
-from app.download_rules import (
-    CONVERT_DIR, CONVERT_SPOOL, DOWNLOAD_SPOOL, DOWNLOADS_DIR, STATUS_NAME, convert_prompt, downloads_prompt,
-)
+from app.download_manager import DownloadManager, DownloadTurn, turn_spool_notes
+from app.download_rules import DOWNLOAD_SPOOL, DOWNLOADS_DIR
 from app.download_store import project_download_excludes
 from app.docker_backend import DockerController, DockerStopFailed, DockerUnavailable
 from app.health import probe_build_version
@@ -84,7 +82,6 @@ from app.questions import (
     discard_outbox,
     outbox_rule_expressible,
     prepare_outbox,
-    prepare_spool,
     questions_prompt,
     take_outbox,
 )
@@ -2312,19 +2309,9 @@ class AutoManager:
         outbox_root = self._outbox_root(store, record, participant.session_id)
         download_policy, download_unavailable = self._download_policy(store, record, participant)
         temp_root = self._outbox_root(store, record, participant.session_id)
-        downloads_dir = temp_root / DOWNLOADS_DIR
         downloads_on = download_policy is not None and download_policy.enabled
         convert_on = download_policy is not None and download_policy.convert
-        convert_note = (
-            convert_prompt(
-                temp_root / CONVERT_DIR / STATUS_NAME, temp_root / CONVERT_DIR / CONVERT_SPOOL,
-                f"{download_policy.folder}/converted",
-                # Build turns and Codex have a shell; Claude discussion turns do not.
-                shell=record.kind == "build" or participant.agent == "codex",
-            )
-            if download_policy is not None and convert_on
-            else ""
-        )
+        spool_notes = ""
         view: QuestionView | None = None
         notes_view: NoteView | None = None
         unavailable: str | None = None
@@ -2346,16 +2333,11 @@ class AutoManager:
                         participant.agent, outbox_root
                     )
                     turn_cycle = current.current_cycle
-                    if current.kind != "build":
-                        # Build turns get theirs when the runner recreates the temp dir.
-                        if downloads_on:
-                            prepare_spool(
-                                temp_root, DOWNLOADS_DIR, DOWNLOAD_SPOOL, extra_names=(STATUS_NAME,)
-                            )
-                        if convert_on:
-                            prepare_spool(
-                                temp_root, CONVERT_DIR, CONVERT_SPOOL, extra_names=(STATUS_NAME,)
-                            )
+                    if download_policy is not None:
+                        spool_notes = turn_spool_notes(
+                            temp_root, download_policy, agent=participant.agent,
+                            build=current.kind == "build",
+                        )
                     notes_view, notes_path, notes_live = self._prepare_notes_locked(
                         store, current, view_path
                     )
@@ -2400,17 +2382,7 @@ class AutoManager:
                                     else ""
                                 )
                                 + disagreement_note(spool_dir is not None)
-                                + (
-                                    downloads_prompt(
-                                        downloads_dir / STATUS_NAME,
-                                        downloads_dir / DOWNLOAD_SPOOL,
-                                        manual=download_policy.approval == "manual",
-                                        shell=True,
-                                    )
-                                    if download_policy is not None and downloads_on
-                                    else ""
-                                )
-                                + convert_note
+                                + spool_notes
                             )
                             if current.kind == "build"
                             else (
@@ -2428,18 +2400,7 @@ class AutoManager:
                                     else ""
                                 )
                                 + disagreement_note(spool_dir is not None)
-                                + (
-                                    downloads_prompt(
-                                        downloads_dir / STATUS_NAME,
-                                        downloads_dir / DOWNLOAD_SPOOL,
-                                        manual=download_policy.approval == "manual",
-                                        # Claude discussion turns have no shell (design Part A).
-                                        shell=participant.agent == "codex",
-                                    )
-                                    if download_policy is not None and downloads_on
-                                    else ""
-                                )
-                                + convert_note
+                                + spool_notes
                             )
                         ) + questions_prompt(
                             view_path, spool_dir, pause_enabled=current.pause_on_blocking_questions

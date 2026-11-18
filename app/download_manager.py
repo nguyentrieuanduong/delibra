@@ -24,14 +24,15 @@ from app.download_model_check import (
 )
 from app.convert_store import ConversionRecord, ConversionStore, render_convert_status
 from app.download_rules import (
-    CONVERT_DIR, CONVERT_REQUEST_MAX_BYTES, CONVERT_SPOOL, REQUEST_FILE_MAX_BYTES, TURN_MAX_CONVERSIONS,
-    TURN_MAX_REQUESTS, RequestError, converted_output, parse_convert_request, parse_request, url_flags,
+    CONVERT_DIR, CONVERT_REQUEST_MAX_BYTES, CONVERT_SPOOL, DOWNLOAD_SPOOL, DOWNLOADS_DIR, REQUEST_FILE_MAX_BYTES,
+    STATUS_NAME, TURN_MAX_CONVERSIONS, TURN_MAX_REQUESTS, RequestError, convert_prompt, converted_output,
+    downloads_prompt, parse_convert_request, parse_request, url_flags,
 )
 from app.download_store import (
     DownloadRecord, DownloadStore, render_index, render_status,
     write_project_file, write_turn_status,
 )
-from app.questions import OutboxError, read_spool_file, remove_spool_entry, scan_spool
+from app.questions import OutboxError, prepare_spool, read_spool_file, remove_spool_entry, scan_spool
 from app.storage import StorageError
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +46,35 @@ SETTLE_SECONDS = 75
 UNREADABLE_WARNING = "download records are unreadable; download requests were not read"
 NOT_CONVERTIBLE = "not a convertible project file"
 T = TypeVar("T")
+
+
+def has_shell(agent: str, *, build: bool) -> bool:
+    """Build turns and Codex turns run in a shell; Claude chat and discussion turns
+    do not (`--tools` without Bash), so they get no wait loop (design Part A)."""
+
+    return build or agent == "codex"
+
+
+def turn_spool_notes(temp_root: Path, policy: DownloadPolicy, *, agent: str, build: bool) -> str:
+    """The turn's download and convert notes. Discussion and chat turns get fresh
+    spools in `temp_root` here; build turns get theirs when the runner recreates
+    the temp dir."""
+
+    shell = has_shell(agent, build=build)
+    notes = ""
+    if policy.enabled:
+        directory = temp_root / DOWNLOADS_DIR
+        if not build:
+            prepare_spool(temp_root, DOWNLOADS_DIR, DOWNLOAD_SPOOL, extra_names=(STATUS_NAME,))
+        notes += downloads_prompt(directory / STATUS_NAME, directory / DOWNLOAD_SPOOL,
+                                  manual=policy.approval == "manual", shell=shell)
+    if policy.convert:
+        directory = temp_root / CONVERT_DIR
+        if not build:
+            prepare_spool(temp_root, CONVERT_DIR, CONVERT_SPOOL, extra_names=(STATUS_NAME,))
+        notes += convert_prompt(directory / STATUS_NAME, directory / CONVERT_SPOOL,
+                                f"{policy.folder}/converted", shell=shell)
+    return notes
 
 
 @dataclass(frozen=True)
@@ -82,7 +112,7 @@ class DownloadTurn:
 
     @property
     def spool(self) -> Path:
-        return self.temp_dir / "downloads" / "requests"
+        return self.temp_dir / DOWNLOADS_DIR / DOWNLOAD_SPOOL
 
     @property
     def convert_spool(self) -> Path:

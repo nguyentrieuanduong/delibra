@@ -554,3 +554,20 @@ async def test_a_harvest_after_shutdown_records_but_starts_nothing(tmp_path) -> 
     manager.recover(turn.store_root)
     assert DownloadStore(turn.store_root).get("D1").state == "failed"
     assert [r.state for r in ConversionStore(turn.store_root).load()] == ["failed"]
+
+
+@pytest.mark.parametrize("agent, build, shell", [
+    ("claude", False, False), ("codex", False, True), ("claude", True, True), ("codex", True, True),
+])
+def test_turn_notes_follow_the_one_shell_rule(tmp_path, agent, build, shell) -> None:
+    from app.download_manager import has_shell, turn_spool_notes
+
+    assert has_shell(agent, build=build) is shell
+    workspace = tmp_path / agent / str(build)
+    workspace.mkdir(parents=True)
+    notes = turn_spool_notes(workspace, DownloadPolicy(enabled=True, convert=True), agent=agent, build=build)
+    assert ("until grep" in notes) is shell
+    assert f"{(workspace / 'downloads' / 'requests').as_posix()}/" in notes
+    assert f"{(workspace / 'convert' / 'requests').as_posix()}/ named like c1.json" in notes
+    # Discussion and chat turns get fresh spools here; build turns get them from the runner.
+    assert (workspace / "convert" / "requests").is_dir() is not build

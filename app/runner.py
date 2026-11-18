@@ -37,11 +37,9 @@ from app.global_instruction import read_global_instruction
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
 from app.coding import DownloadPolicy
-from app.download_manager import DownloadManager, DownloadTurn
-from app.download_rules import (
-    CONVERT_DIR, CONVERT_SPOOL, DOWNLOAD_SPOOL, DOWNLOADS_DIR, STATUS_NAME, convert_prompt, downloads_prompt,
-)
-from app.questions import QUESTIONS_DIR, SPOOL_NAME, prepare_spool
+from app.download_manager import DownloadManager, DownloadTurn, turn_spool_notes
+from app.download_rules import CONVERT_DIR, CONVERT_SPOOL, DOWNLOAD_SPOOL, DOWNLOADS_DIR
+from app.questions import QUESTIONS_DIR, SPOOL_NAME
 from app.models import (
     AutoQuotaOverride,
     AutoRoundDescriptor,
@@ -654,32 +652,14 @@ class RunManager:
                 sent="to you in this conversation",
                 overrides="the message",
             ).strip()
-            downloads_note = convert_note = ""
+            spool_notes = ""
             turn_policy = store.coding_policy().downloads
             if self.downloads is not None and (turn_policy.enabled or turn_policy.convert):
                 download_policy = turn_policy
-                workspace_dir = store.workspace_dir(session_id)
-                # Claude chat turns have no shell (design Part A).
-                shell = config.agent == "codex"
-                if turn_policy.enabled:
-                    spool = prepare_spool(
-                        workspace_dir, DOWNLOADS_DIR, DOWNLOAD_SPOOL, extra_names=(STATUS_NAME,)
-                    )
-                    downloads_note = downloads_prompt(
-                        spool.with_name(STATUS_NAME), spool,
-                        manual=turn_policy.approval == "manual", shell=shell,
-                    ).strip()
-                if turn_policy.convert:
-                    spool = prepare_spool(
-                        workspace_dir, CONVERT_DIR, CONVERT_SPOOL, extra_names=(STATUS_NAME,)
-                    )
-                    convert_note = convert_prompt(
-                        spool.with_name(STATUS_NAME), spool, f"{turn_policy.folder}/converted",
-                        shell=shell,
-                    ).strip()
-            system_note = "\n\n".join(
-                part for part in (skills_note, notes_note, downloads_note, convert_note) if part
-            )
+                spool_notes = turn_spool_notes(
+                    store.workspace_dir(session_id), turn_policy, agent=config.agent, build=False
+                ).strip()
+            system_note = "\n\n".join(part for part in (skills_note, notes_note, spool_notes) if part)
 
         round_n = store.allocate_round(session_id)
         key = RunKey(project_id, session_id, round_n)
