@@ -162,3 +162,12 @@ def test_unreadable_conversion_records_are_named_in_the_panel(tmp_path):
         pages = [client.get(f"{base(project)}/{path}").text for path in ("downloads/list", "chat")]
     for page in pages:
         assert "Conversion records are unreadable (<code>.delibra/downloads/conversions.json</code>)" in page
+
+
+
+def test_the_downloads_panel_sits_in_the_right_column_above_the_files(tmp_path):
+    app, project, _store = downloads_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{base(project)}/chat").text
+    files = page.index('class="workspace-files"')
+    assert files < page.index('id="downloads-panel"') < page.index('id="file-browser-host"')

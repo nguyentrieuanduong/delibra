@@ -1729,7 +1729,7 @@ def test_no_guidance_presets_links_to_global_settings(tmp_path, monkeypatch) -> 
         lan = client.get(f"{prefix}/settings/coding").text
 
     assert 'name="guidance_preset"' not in local
-    assert 'Add guidance presets in <a href="/settings/presets">Settings</a>.' in local
+    assert 'Add guidance presets in <a href="/settings/instruction">Settings</a>.' in local
     assert 'href="/settings"' not in lan
     assert "Guidance presets are set on this machine's Settings page." in lan
 
@@ -2526,7 +2526,7 @@ def test_no_preset_with_skills_links_to_global_settings_from_the_chat_section(
 
     section = page.split('id="chat-skills-heading"', 1)[1].split("</section>", 1)[0]
     assert 'name="chat_preset"' not in section
-    assert 'Add presets with skills in <a href="/settings/presets">Settings</a>.' in section
+    assert 'Add presets with skills in <a href="/settings/instruction">Settings</a>.' in section
 
 
 def test_the_project_global_instruction_switch_renders_and_saves(tmp_path: Path) -> None:
@@ -3510,51 +3510,15 @@ def test_download_settings_save_from_this_machine_only(tmp_path, monkeypatch) ->
     assert ProjectStore(project).coding_policy().downloads.enabled is False
 
 
-def test_the_converter_models_download_starts_from_this_machine_only(tmp_path, monkeypatch) -> None:
+
+
+def test_general_shows_a_one_line_models_status_linking_to_settings(tmp_path, monkeypatch) -> None:
     app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
-    homes = []
-
-    async def fake_download(home):
-        homes.append(home)
-
-    monkeypatch.setattr("app.routes.projects.download_models", fake_download)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         general = client.get(f"{prefix}/settings").text
-        started = client.post(f"{prefix}/converter-models", follow_redirects=False)
-        for _ in range(100):
-            if homes:
-                break
-            time.sleep(0.01)
-    with TestClient(app, base_url="http://localhost", client=LAN) as client:
-        refused = client.post(f"{prefix}/converter-models", follow_redirects=False)
-
-    assert "Converter models (PDF layout and tables):" in general and "Not downloaded" in general
-    assert "Download models (about 0.7 GB)" in general
-    assert (started.status_code, started.headers["location"]) == (303, f"{prefix}/settings")
-    assert homes == [app.state.settings.home]
-    assert refused.status_code == 403
-
-
-def test_the_models_download_is_not_restarted_needlessly(tmp_path, monkeypatch) -> None:
-    import asyncio
-    from app.converter_models import READY_NAME, models_dir
-
-    app, _project, _dir, prefix = coding_project(tmp_path, monkeypatch)
-    started = []
-
-    async def fake_download(home):
-        started.append(home)
-
-    monkeypatch.setattr("app.routes.projects.download_models", fake_download)
-    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        target = models_dir(app.state.settings.home)
-        target.mkdir(parents=True)
-        (target / READY_NAME).write_text("x")
-        ready = client.post(f"{prefix}/converter-models", follow_redirects=False)
-        target.joinpath(READY_NAME).unlink()
-        app.state.download_manager._convert_slot = asyncio.Semaphore(0)  # a conversion holds the slot
-        busy = client.post(f"{prefix}/converter-models", follow_redirects=False)
-    assert (ready.status_code, ready.headers["location"]) == (303, f"{prefix}/settings")
-    assert busy.status_code == 409
-    assert "Nothing was saved: A conversion is running" in busy.text
-    assert started == []
+        old = client.post(f"{prefix}/converter-models", follow_redirects=False)
+    section = general[general.index('id="downloads-heading"'):]
+    assert 'name="downloads_convert"' in section
+    assert 'Converter models: Not downloaded · <a href="/settings/converter">Settings → Converter</a>' in section
+    assert "Download models" not in section
+    assert old.status_code in (404, 405)

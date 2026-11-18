@@ -1,0 +1,18 @@
+{% from "_form_macros.html" import takes_effect %}
+<section aria-labelledby="converter-heading" class="global-settings">
+  <h2 id="converter-heading">Document converter</h2>
+  {{ takes_effect("now") }}
+  <p class="hint">Delibra converts PDFs, Word, Excel and PowerPoint files to Markdown in a sandbox with no network; each project turns it on or off under General → Downloads and documents. The PDF layout and table models are downloaded once for this machine into <code>$DELIBRA_HOME/models/docling</code>. Until then PDFs are converted to plain text with pypdf (no tables or headings); Office files do not need the models.</p>
+  {% set models = converter_models %}
+  <p class="converter-models">Converter models (PDF layout and tables):
+    {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB
+    {% elif models.status == "downloading" %}Downloading…
+    {% elif models.status == "failed" %}<span class="warning">Failed: {{ models.error }}</span>
+    {% else %}Not downloaded{% endif %}
+  </p>
+  {% if models.status in ("absent", "failed") %}
+    <form method="post" action="/settings/converter-models">
+      <button type="submit">{% if models.status == "failed" %}Retry{% else %}Download models (about 0.7 GB){% endif %}</button>
+    </form>
+  {% endif %}
+</section>

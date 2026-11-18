@@ -130,13 +130,15 @@ than silently falling back to the restrictive default.
   WAN/any-network setting, which gives up DNS-rebinding protection entirely.
   Use a named entry or a range unless you genuinely cannot.
 
-The **Settings** page (header link, this machine only) has four tabs, each
-its own page with its own Save button: **Access** (`/settings`, both lists),
-**Instruction** (`/settings/instruction`, the global instruction below),
-**Presets** (`/settings/presets`, build guidance presets) and **Agents**
-(`/settings/agents`, defaults for new agents below). Access, Presets and
-Agents each write only their own keys of `config.json` and apply the change to
-the next request without a restart. A list whose environment variable is set is
+The **Settings** page (header link, this machine only) has four tabs:
+**Access** (`/settings`, both lists), **Instruction** (`/settings/instruction`:
+the global instruction below and, under it, the build guidance presets, since
+both are instructions for agents; the old `/settings/presets` link lands
+there), **Agents** (`/settings/agents`, defaults for new agents below) and
+**Converter** (`/settings/converter`, the document converter's models for this
+machine). Each form has its own Save button; Access, presets and Agents each
+write only their own keys of `config.json` and apply the change to the next
+request without a restart. A list whose environment variable is set is
 shown read-only. Hand edits to `config.json` still need a restart.
 
 **Defaults for new agents.** The **Agents** tab has one row per agent type
@@ -864,7 +866,7 @@ Turning it on does three things:
   you are asked, as a blocking question, only if they have not agreed within
   3 cycles. Leave out finishing-work and using-git-worktrees: they merge,
   push or work outside the project, and Delibra makes the build commits.
-  Presets made on the **Presets** tab of **Settings** (header link, this machine only) add a **Use
+  Presets made on the **Instruction** tab of **Settings** (header link, this machine only) add a **Use
   <name> guidance** button that sets both lists. A preset holds fixed lists:
   **Choose pasted files…** and **Choose skills…** browse this machine's
   folders, where you tick files or folders and add them; a folder adds the
@@ -1043,7 +1045,8 @@ kept.
   again later in the turn instead; a download that finishes after the turn is
   listed there in the next one. In Manual mode agents do not wait and list
   pending ids in their report.
-- **Approval.** The **Downloads** panel under Questions on the Chat page
+- **Approval.** The **Downloads** panel at the top of the Chat page's right
+  column (above the project files, so the conversation keeps its width)
   lists every request, awaiting ones first, and updates live while the page
   is open, also after the run ended. Manual requests wait for **Approve**
   (or **Approve all**) or **Refuse**. If a completed turn leaves a request
@@ -1157,7 +1160,11 @@ Delibra converts documents to Markdown itself, so agents without a shell
   `/Volumes` or a terminal; only that one program may start, and it may not
   fork; no apps or LaunchServices, Apple events, pasteboard, preference
   writes, launchd jobs, mounts, or signals to or inspection of other
-  processes; only Apple's own system services. The source is first copied in
+  processes; only Apple's own system services. Known remaining risk: the
+  mach-lookup rule still allows every `com.apple.*` service except the
+  pasteboard, because Vision and Metal need some of them; a measured
+  allow-list (about 19 services, captured from the sandbox log) is planned to
+  replace it. The source is first copied in
   through a no-follow descriptor, and the server reads the worker's output
   without following links. Without `sandbox-exec` (not
   macOS) conversion is skipped with `conversion needs macOS sandbox-exec`; it
@@ -1173,8 +1180,9 @@ Delibra converts documents to Markdown itself, so agents without a shell
   path and SHA-256. Fewer than 20 characters of text adds `no text found; the
   file may be scanned images`.
 - **Models.** PDF layout and table models (about 0.7 GB: layout "Heron" and
-  TableFormer) download once from General → **Download models** (this
-  machine only) into `$DELIBRA_HOME/models/docling`; a download cut by a
+  TableFormer) download once for the machine from Settings → **Converter** →
+  **Download models** (this machine only) into `$DELIBRA_HOME/models/docling`;
+  each project's General tab shows a one-line status with a link there; a download cut by a
   restart shows `Failed: interrupted` with **Retry**. Until then PDFs are
   converted to plain text with pypdf (`structure lost; converted with pypdf
   (Docling: Docling models are not downloaded)`); Office files need no

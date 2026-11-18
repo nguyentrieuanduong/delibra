@@ -137,7 +137,7 @@ def test_saving_writes_config_keeps_other_keys_and_applies_presets(tmp_path, mon
         )
 
     assert (saved_access.status_code, saved_access.headers["location"]) == (303, "/settings")
-    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/presets")
+    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/instruction")
     assert config(tmp_path) == {
         "extra": 1,
         "allowed_clients": [],
@@ -572,7 +572,7 @@ def test_only_this_machine_may_save_the_global_instruction(tmp_path) -> None:
     assert not (tmp_path / "home" / "instructions.md").exists()
 
 
-def test_global_settings_has_access_instruction_and_presets_tabs(tmp_path) -> None:
+def test_global_settings_has_access_and_instruction_with_presets_tabs(tmp_path) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         access = client.get("/settings").text
@@ -584,7 +584,8 @@ def test_global_settings_has_access_instruction_and_presets_tabs(tmp_path) -> No
     assert access == same
     assert 'id="access-heading"' in access and 'id="presets-heading"' not in access
     assert 'id="global-instruction-heading"' in instruction and 'id="access-heading"' not in instruction
-    assert 'id="presets-heading"' in presets and 'id="global-instruction-heading"' not in presets
+    assert presets == instruction  # /settings/presets now lands on the Instruction tab
+    assert 'id="presets-heading"' in instruction
     assert '<a href="/settings/instruction" aria-current="page">Instruction</a>' in instruction
     assert unknown.status_code == 404
 
@@ -604,7 +605,7 @@ def test_access_and_presets_save_independently(tmp_path) -> None:
 
     saved = config(tmp_path)
     assert (access.status_code, access.headers["location"]) == (303, "/settings")
-    assert (presets.status_code, presets.headers["location"]) == (303, "/settings/presets")
+    assert (presets.status_code, presets.headers["location"]) == (303, "/settings/instruction")
     assert saved["allowed_clients"] == ["192.168.1.0/24"]
     assert saved["other"] == 1
     assert old.status_code == 405
@@ -663,3 +664,70 @@ def test_a_blank_default_model_is_refused_like_an_agents_model(tmp_path) -> None
         refused = client.post("/settings/agents", data={
             "model_claude": "   ", "effort_claude": "high", "model_codex": "", "effort_codex": "high"})
     assert refused.status_code == 422 and "not blank" in refused.text
+
+
+
+def test_the_global_tabs_are_access_instruction_agents_converter(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings").text
+        moved = client.get("/settings/presets", follow_redirects=False)
+        instruction = client.get("/settings/instruction").text
+        saved = client.post("/settings/presets", data={"preset_count": "0"}, follow_redirects=False)
+    tabs = re.findall(r'<a [^>]*href="(/settings[^"]*)"[^>]*>(Access|Instruction|Presets|Agents|Converter)</a>', page)
+    assert [label for _href, label in tabs] == ["Access", "Instruction", "Agents", "Converter"]
+    assert (moved.status_code, moved.headers["location"]) == (303, "/settings/instruction")
+    assert instruction.index('name="global_instruction"') < instruction.index('name="preset_count"')
+    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/instruction")
+
+
+def test_the_converter_tab_downloads_the_models_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    app = make_app(tmp_path)
+    homes = []
+
+    async def fake_download(home):
+        homes.append(home)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings/converter").text
+        started = client.post("/settings/converter-models", follow_redirects=False)
+        for _ in range(100):
+            if homes:
+                break
+            _time.sleep(0.01)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        refused = client.post("/settings/converter-models", follow_redirects=False)
+        hidden = client.get("/settings/converter")
+    assert "Converter models (PDF layout and tables):" in page and "Not downloaded" in page
+    assert "Download models (about 0.7 GB)" in page
+    assert (started.status_code, started.headers["location"]) == (303, "/settings/converter")
+    assert homes == [app.state.settings.home]
+    assert (refused.status_code, hidden.status_code) == (403, 403)
+
+
+def test_the_models_download_is_not_restarted_needlessly(tmp_path, monkeypatch) -> None:
+    import asyncio
+    from app.converter_models import READY_NAME, models_dir
+
+    app = make_app(tmp_path)
+    started = []
+
+    async def fake_download(home):
+        started.append(home)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        target = models_dir(app.state.settings.home)
+        target.mkdir(parents=True)
+        (target / READY_NAME).write_text("x")
+        ready = client.post("/settings/converter-models", follow_redirects=False)
+        target.joinpath(READY_NAME).unlink()
+        app.state.download_manager._convert_slot = asyncio.Semaphore(0)  # a conversion holds the slot
+        busy = client.post("/settings/converter-models", follow_redirects=False)
+    assert (ready.status_code, ready.headers["location"]) == (303, "/settings/converter")
+    assert busy.status_code == 409
+    assert "Nothing was saved: A conversion is running" in busy.text
+    assert started == []

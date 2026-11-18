@@ -74,7 +74,7 @@
     {% if coding_local %}{{ browse_button("/browse?mode=guidance", "coding-guidance-skills") }}{% endif %}
     {{ takes_effect("next_turn") }}
     <p class="hint">Markdown files build agents read when they need them (a skill's SKILL.md with its references/ files). Delibra keeps one copy in <code>.delibra/skills/build/</code> and refreshes it when a file changes. At most 512 files and 4 MB. One absolute path per line.</p>
-    {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings/presets">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
+    {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings/instruction">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
     <button type="submit"{% if not coding_local %} disabled{% endif %}>Save build guidance</button>
     {% for preset in guidance_presets %}
     <button type="submit" name="guidance_preset" value="{{ preset.name }}"{% if not coding_local %} disabled{% endif %}>Use {{ preset.name }} guidance</button>

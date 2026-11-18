@@ -10,6 +10,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.agent_defaults import EFFORT_LEVELS, AgentDefault, read_agent_defaults, save_agent_defaults, typed_model
+from app.converter_models import download_models, models_state, ready_models_dir
 from app.coding import (
     SKILLS_MAX_BYTES,
     SKILLS_MAX_FILES,
@@ -55,9 +56,9 @@ HOSTS_ENV = "DELIBRA_ALLOWED_HOSTS"
 ACCESS_FIELD_MAX = 65536
 GLOBAL_TABS = (
     ("access", "Access", "/settings"),
-    ("instruction", "Instruction", "/settings/instruction"),
-    ("presets", "Presets", "/settings/presets"),
+    ("instruction", "Instruction", "/settings/instruction"),  # global instruction + presets
     ("agents", "Agents", "/settings/agents"),
+    ("converter", "Converter", "/settings/converter"),
 )
 GLOBAL_TABS_LABELS = tuple((key, label) for key, label, _url in GLOBAL_TABS)
 
@@ -267,6 +268,7 @@ def _settings_page(
             "agent_rows": (
                 agent_rows if agent_rows is not None else _agent_rows(read_agent_defaults(request.app.state.settings.home))
             ),
+            "converter_models": models_state(request.app.state.settings.home),
             "tab": tab,
             "tab_label": dict(GLOBAL_TABS_LABELS)[tab],
             "settings_tabs": GLOBAL_TABS,
@@ -317,7 +319,7 @@ async def _global_tab(request: Request, tab: str):
     settings = request.app.state.settings
     rows = (
         await asyncio.to_thread(_preset_rows, _saved_rows(settings.guidance_presets))
-        if tab == "presets"
+        if tab == "instruction"
         else []
     )
     return _settings_page(request, tab, rows, settings.allowed_clients, settings.allowed_hosts)
@@ -407,7 +409,7 @@ async def save_presets(request: Request):
             shown = await asyncio.to_thread(_preset_rows, rows, error_row, message)
             return _settings_page(
                 request,
-                "presets",
+                "instruction",
                 shown,
                 settings.allowed_clients,
                 settings.allowed_hosts,
@@ -427,7 +429,38 @@ async def save_presets(request: Request):
         except (StorageError, OSError) as exc:
             return await refused(_sentence(str(exc)))
         request.app.state.settings = replace(settings, guidance_presets=presets)
-    return RedirectResponse("/settings/presets", status_code=303)
+    return RedirectResponse("/settings/instruction", status_code=303)
+
+
+@router.get("/settings/presets")
+async def presets_moved(request: Request):
+    """Presets live on the Instruction tab now (2026-11-18): old links still land."""
+
+    _require_local(request)
+    return RedirectResponse("/settings/instruction", status_code=303)
+
+
+@router.post("/settings/converter-models")
+async def download_converter_models(request: Request, force: str = Form("")):
+    """Fetch Docling's PDF models once for this machine (about 0.7 GB)."""
+
+    _require_local(request)
+    settings = request.app.state.settings
+    if ready_models_dir(settings.home) is not None and force != "true":
+        return RedirectResponse("/settings/converter", status_code=303)
+    if request.app.state.download_manager.converting():
+        # Replacing the models under a running Docling step would break it (review round 1).
+        return _settings_page(
+            request, "converter", [], settings.allowed_clients, settings.allowed_hosts,
+            error="Nothing was saved: A conversion is running; download the models when it has finished",
+            status_code=409,
+        )
+    task = request.app.state.converter_models_task
+    if task is None or task.done():
+        request.app.state.converter_models_task = asyncio.create_task(
+            download_models(settings.home), name="delibra-converter-models"
+        )
+    return RedirectResponse("/settings/converter", status_code=303)
 
 
 def _agent_rows(defaults: dict[str, AgentDefault]) -> list[dict[str, object]]:

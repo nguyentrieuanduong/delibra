@@ -67,7 +67,7 @@
     {% for preset in guidance_presets if preset.skills %}
     <button type="submit" name="chat_preset" value="{{ preset.name }}"{% if not coding_local %} disabled{% endif %}>Use {{ preset.name }} skills</button>
     {% else %}
-    <p class="hint">{% if coding_local %}Add presets with skills in <a href="/settings/presets">Settings</a>.{% else %}Presets are set on this machine's Settings page.{% endif %}</p>
+    <p class="hint">{% if coding_local %}Add presets with skills in <a href="/settings/instruction">Settings</a>.{% else %}Presets are set on this machine's Settings page.{% endif %}</p>
     {% endfor %}
   </form>
 </section>
@@ -108,16 +108,5 @@
     <button type="submit"{% if not coding_local %} disabled{% endif %}>Save downloads</button>
   </form>
   {% set models = converter_models %}
-  <p class="converter-models">Converter models (PDF layout and tables):
-    {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB
-    {% elif models.status == "downloading" %}Downloading…
-    {% elif models.status == "failed" %}<span class="warning">Failed: {{ models.error }}</span>
-    {% else %}Not downloaded{% endif %}
-  </p>
-  {% if models.status in ("absent", "failed") %}
-    <form method="post" action="{{ project_url(project.name, '/converter-models') }}">
-      <button type="submit"{% if not coding_local %} disabled{% endif %}>{% if models.status == "failed" %}Retry{% else %}Download models (about 0.7 GB){% endif %}</button>
-    </form>
-    <p class="hint">Until then PDFs are converted to plain text with pypdf (no tables or headings). Office files do not need the models.</p>
-  {% endif %}
+  <p class="converter-models">Converter models: {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB{% elif models.status == "downloading" %}Downloading…{% elif models.status == "failed" %}Failed{% else %}Not downloaded{% endif %} · <a href="/settings/converter">Settings → Converter</a></p>
 </section>
