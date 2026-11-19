@@ -18,7 +18,10 @@ def _refresh_status(page: Any) -> None:
     page.evaluate(
         """() => {
           window.statusBeforeRefresh = document.getElementById("auto-status");
-          const refresh = document.querySelector("#auto-status [hx-target='#auto-status']");
+          // The SSE refresher itself: the first [hx-target] in #auto-status
+          // is the Add cycles form, which has no hx-get, so htmx.ajax fetched
+          // the whole chat page into #auto-status.
+          const refresh = document.querySelector("#auto-status span[hx-get][hx-target='#auto-status']");
           htmx.ajax("GET", refresh.getAttribute("hx-get"), {
             target: "#auto-status",
             swap: "outerHTML",

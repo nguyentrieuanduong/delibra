@@ -440,8 +440,10 @@ def test_a_status_refresh_keeps_the_open_stop_disclosure_open(
     page.evaluate(
         """() => {
           window.statusBeforeRefresh = document.getElementById("auto-status");
+          // The SSE refresher itself: the first [hx-target] in #auto-status
+          // is a form with no hx-get, which made htmx.ajax GET the whole page.
           const refresh = document.querySelector(
-            "#auto-status [hx-target='#auto-status']"
+            "#auto-status span[hx-get][hx-target='#auto-status']"
           );
           htmx.ajax("GET", refresh.getAttribute("hx-get"), {
             target: "#auto-status",
