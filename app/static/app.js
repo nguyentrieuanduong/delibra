@@ -1555,6 +1555,12 @@ function settingsFormsDirty(forms, snapshots, submitting) {
   });
 }
 
+// The form a page leave belongs to: a submit cancelled by its own confirm
+// (Cancel) is not a save, so the unsaved-changes warning must still apply.
+function submittedForm(event, current) {
+  return event.defaultPrevented ? current : event.target;
+}
+
 // Global Prompts tab: ticked "Replace in <project>" boxes ask first (2026-11-17).
 function promptReplaceMessage(names, submitterValue) {
   if (!names.length) return null;
@@ -1574,6 +1580,7 @@ function confirmPromptReplace(form, event, ask) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     promptReplaceMessage,
+    submittedForm,
     confirmPromptReplace,
     applyAgentDefaults,
     formSnapshot,
@@ -1678,7 +1685,7 @@ if (typeof document !== "undefined") {
     });
     let submittingForm = null;
     document.addEventListener("submit", function (event) {
-      submittingForm = event.target;
+      submittingForm = submittedForm(event, submittingForm);
     });
     window.addEventListener("beforeunload", function (event) {
       if (settingsFormsDirty(settingsForms, settingsSnapshots, submittingForm)) {
