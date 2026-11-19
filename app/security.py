@@ -100,6 +100,8 @@ def is_loopback_client(request: Request) -> bool:
 
 
 CODING_ONLY_HERE = "Only this machine may enable coding or start build runs"
+# Prompts that reach build runs, downloads or the model check (PromptSpec.lan_editable).
+PROMPT_ONLY_HERE = "Only this machine can change this prompt"
 
 
 def require_loopback_client(

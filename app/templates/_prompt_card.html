@@ -1,5 +1,5 @@
 {% from "_form_macros.html" import takes_effect %}
-{% macro prompt_card(card, action_url, preview_url, scope, overridden_in=None) %}
+{% macro prompt_card(card, action_url, preview_url, scope, overridden_in=None, editable=True) %}
 {% set spec = card.spec %}
 <article class="prompt-card" id="prompt-{{ spec.id }}">
   <h3>{{ spec.title }}
@@ -10,7 +10,7 @@
   {{ takes_effect(spec.effect) }}
   <form method="post" action="{{ action_url }}"{% if scope == "global" %} onsubmit="return confirmPromptReplace(this, event)"{% endif %}>
     <label>Template
-      <textarea name="template" rows="6" maxlength="10000">{{ card.text }}</textarea>
+      <textarea name="template" rows="6" maxlength="10000"{% if not editable %} readonly{% endif %}>{{ card.text }}</textarea>
     </label>
     {% if spec.placeholders %}
       <ul class="prompt-placeholders">
@@ -29,7 +29,7 @@
     {% endif %}
     <details class="prompt-preview-box"><summary>Preview</summary>
       <pre class="prompt-preview{% if card.failed %} warning{% endif %}" id="prompt-preview-{{ spec.id }}">{{ card.preview }}</pre>
-      <button type="button" hx-post="{{ preview_url }}" hx-include="closest form" hx-target="#prompt-preview-{{ spec.id }}" hx-swap="outerHTML">Preview typed text</button>
+      {% if editable %}<button type="button" hx-post="{{ preview_url }}" hx-include="closest form" hx-target="#prompt-preview-{{ spec.id }}" hx-swap="outerHTML">Preview typed text</button>{% endif %}
     </details>
     {% if overridden_in and spec.id in overridden_in %}
       <fieldset class="prompt-overrides"><legend>Overridden in</legend>
@@ -43,6 +43,7 @@
         <div class="prompt-compare" id="prompt-compare-{{ spec.id }}"></div>
       </fieldset>
     {% endif %}
+    {% if not editable %}<p class="hint">Only this machine can change this prompt.</p>{% else %}
     <div class="prompt-actions">
       {% if scope == "global" %}
         <button type="submit" name="action" value="save">Save</button>
@@ -52,6 +53,7 @@
         {% if card.source == "project" %}<button type="submit" name="action" value="use_global">Use global</button>{% endif %}
       {% endif %}
     </div>
+    {% endif %}
   </form>
 </article>
 {% endmacro %}

@@ -3,6 +3,6 @@
   <h2 id="prompts-heading">Prompts</h2>
   <p class="hint">The fixed texts Delibra sends to this project's agents. Each uses the global text ({% if coding_local %}<a href="/settings/prompts">Settings → Prompts</a>{% else %}set on this machine's Settings page{% endif %}) unless you save an override here; overridden prompts are listed first. Locked parts are Delibra's protocol and are shown read-only.</p>
   {% for card in prompt_cards %}
-    {{ prompt_card(card, project_url(project.name, '/prompts/' ~ card.spec.id), project_url(project.name, '/prompts/' ~ card.spec.id ~ '/preview'), "project") }}
+    {{ prompt_card(card, project_url(project.name, '/prompts/' ~ card.spec.id), project_url(project.name, '/prompts/' ~ card.spec.id ~ '/preview'), "project", editable=coding_local or card.spec.lan_editable) }}
   {% endfor %}
 </section>

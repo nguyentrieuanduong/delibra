@@ -45,6 +45,7 @@ from app.routes.settings import prompt_preview_response
 from app.questions import QuestionStore
 from app.security import (
     CODING_ONLY_HERE,
+    PROMPT_ONLY_HERE,
     is_loopback_client,
     require_loopback_client,
     validate_field,
@@ -378,6 +379,8 @@ async def save_project_prompt(
     # Allowed LAN clients may edit project prompts (user decision 2026-11-16).
     if prompt_id not in CATALOGUE or action not in ("save", "use_global"):
         raise HTTPException(status_code=404, detail="Unknown prompt")
+    if not CATALOGUE[prompt_id].lan_editable:
+        require_loopback_client(request, PROMPT_ONLY_HERE)
     project = request_project(request, project_id)
     resolved_project_id = project.id
     try:
@@ -398,6 +401,8 @@ async def save_project_prompt(
 
 @router.post("/projects/{project_id}/prompts/{prompt_id}/preview", response_class=HTMLResponse)
 async def preview_project_prompt(request: Request, project_id: str, prompt_id: str, template: str = Form("")):
+    if prompt_id in CATALOGUE and not CATALOGUE[prompt_id].lan_editable:
+        require_loopback_client(request, PROMPT_ONLY_HERE)
     request_project(request, project_id)
     return prompt_preview_response(request, prompt_id, template)
 

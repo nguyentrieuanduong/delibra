@@ -285,9 +285,11 @@ def test_project_preview_renders_without_saving(tmp_path) -> None:
     app, settings = make_app(tmp_path)
     project, prefix = a_project(settings, tmp_path)
     with TestClient(app, base_url="http://localhost", client=LAN) as client:
-        shown = client.post(f"{prefix}/prompts/build_handover/preview", data={"template": "{name} stopped: {reason}."})
+        shown = client.post(f"{prefix}/prompts/auto_discussion/preview", data={"template": "{context} {verdict_rules}"})
+        local_only = client.post(f"{prefix}/prompts/build_handover/preview", data={"template": "{name} {reason}"})
 
-    assert "Alpha stopped: timed out." in shown.text
+    assert "/path/to/workspace/inputs/round-07/auto-context.md State your conclusion" in shown.text
+    assert local_only.status_code == 403
     assert ProjectStore(project).prompt_overrides() == {}
 
 
@@ -303,3 +305,48 @@ def test_lan_clients_can_edit_project_prompts(tmp_path) -> None:
     assert ProjectStore(project).prompt_overrides() == {"compact": "Short."}
     assert "Save override" in page
     assert 'href="/settings/prompts"' not in page  # no link into the local-only global tab
+
+
+@pytest.mark.parametrize("prompt_id", ["build_turn", "model_check", "notes", "stateless_claude"])
+def test_lan_clients_cannot_change_prompts_that_reach_build_runs_or_downloads(tmp_path, prompt_id) -> None:
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    before = ProjectStore(project).manifest_path.read_bytes()
+    template = CATALOGUE[prompt_id].default
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        saved = client.post(f"{prefix}/prompts/{prompt_id}", data={"template": template, "action": "save"})
+        reset = client.post(f"{prefix}/prompts/{prompt_id}", data={"action": "use_global"})
+
+    assert (saved.status_code, reset.status_code) == (403, 403)
+    assert "Only this machine can change this prompt" in saved.text
+    assert ProjectStore(project).manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("prompt_id", ["pass", "auto_discussion"])
+def test_lan_clients_can_change_chat_pass_and_discussion_only_prompts(tmp_path, prompt_id) -> None:
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    template = CATALOGUE[prompt_id].default + " Be brief."
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        saved = client.post(f"{prefix}/prompts/{prompt_id}", data={"template": template, "action": "save"},
+                            follow_redirects=False)
+
+    assert saved.status_code == 303
+    assert ProjectStore(project).prompt_overrides() == {prompt_id: template}
+
+
+def test_lan_viewers_see_local_only_prompts_read_only(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    _project, prefix = a_project(settings, tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan_page = client.get(f"{prefix}/settings/prompts").text
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        local_page = client.get(f"{prefix}/settings/prompts").text
+
+    build = card(lan_page, "build_turn", "docker_lima")
+    assert "<textarea name=\"template\" rows=\"6\" maxlength=\"10000\" readonly>" in build
+    assert "Only this machine can change this prompt." in build
+    assert "Save override" not in build and "Preview typed text" not in build
+    discussion = card(lan_page, "auto_discussion", "auto_compaction")
+    assert "Save override" in discussion and " readonly>" not in discussion
+    assert "Only this machine can change this prompt." not in local_page
