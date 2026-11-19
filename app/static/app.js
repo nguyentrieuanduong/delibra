@@ -1577,8 +1577,50 @@ function confirmPromptReplace(form, event, ask) {
   return (ask || window.confirm.bind(window))(message);
 }
 
+// Settings that feed the chat system part (design 2026-11-19): a resumed native
+// chat keeps the version it started with, so saving one asks first. The server
+// marks the form only while an affected agent has a native chat session.
+const ONGOING_CHATS_MESSAGE =
+  "Ongoing chats keep the version they started with until you Compact or Clear context. " +
+  "New chat sessions and Auto turns use this from their next turn. Save?";
+
+function controlChanged(control) {
+  if (control.type === "checkbox" || control.type === "radio") {
+    return control.checked !== control.defaultChecked;
+  }
+  if (control.tagName === "SELECT") {
+    return Array.prototype.some.call(control.options || [], function (option) {
+      return option.selected !== option.defaultSelected;
+    });
+  }
+  return control.value !== control.defaultValue;
+}
+
+// No field list (a page shown after a refused save holds unsaved values) means
+// every save counts; otherwise a listed field must differ from what the page showed,
+// or the save must come from a listed button (a skills preset).
+function ongoingChatsFieldsChanged(form, submitter) {
+  const listed = form.getAttribute("data-confirm-fields");
+  if (listed === null) return true;
+  const names = listed.split(/\s+/).filter(Boolean);
+  if (submitter && names.includes(submitter.name)) return true;
+  return Array.prototype.some.call(form.elements || [], function (control) {
+    return names.includes(control.name) && controlChanged(control);
+  });
+}
+
+function confirmOngoingChats(form, submitter, ask) {
+  if (!form || typeof form.hasAttribute !== "function" || !form.hasAttribute("data-confirm-ongoing-chats")) {
+    return true;
+  }
+  if (!ongoingChatsFieldsChanged(form, submitter)) return true;
+  return (ask || window.confirm.bind(window))(ONGOING_CHATS_MESSAGE);
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    ONGOING_CHATS_MESSAGE,
+    confirmOngoingChats,
     promptReplaceMessage,
     submittedForm,
     confirmPromptReplace,
@@ -1676,6 +1718,25 @@ if (typeof document !== "undefined") {
   const streamRetries = new WeakMap();
 
   initializeDynamicPresentation(document);
+
+  // Capture phase: a cancelled save must be prevented before the unsaved-changes
+  // bookkeeping below reads defaultPrevented. htmx forms ask in htmx:confirm instead,
+  // since htmx sends them itself.
+  document.addEventListener(
+    "submit",
+    function (event) {
+      const form = event.target;
+      if (!form || typeof form.hasAttribute !== "function" || form.hasAttribute("hx-post")) return;
+      if (!confirmOngoingChats(form, event.submitter)) event.preventDefault();
+    },
+    true
+  );
+  document.addEventListener("htmx:confirm", function (event) {
+    const form = event.detail && event.detail.elt;
+    if (!form || form.tagName !== "FORM") return;
+    const trigger = event.detail.triggeringEvent;
+    if (!confirmOngoingChats(form, trigger && trigger.submitter)) event.preventDefault();
+  });
 
   if (document.body && document.body.classList.contains("settings-page")) {
     const settingsForms = document.querySelectorAll("main form[method='post']");

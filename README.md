@@ -218,12 +218,30 @@ Each section says when a change takes effect:
 | Rule | Line shown | Settings |
 |---|---|---|
 | Now | Applies from its next use. | Access lists; presets (copied only when a Use button is pressed); the Pass prompt; default turn time limit (new messages and new Auto runs) |
-| Next turn | A running Auto run uses this from its next turn. | Use of the global instruction; the global instruction text; every other prompt (global or project); writable project directories; command network access; downloads and document conversion (all fields, folder included); chat skills; build skills |
+| New session | New chat sessions and Auto turns use this from their next turn; ongoing chats keep their version until Compact or Clear context. | Use of the global instruction; the global instruction text; an agent's role instructions; chat skills; downloads and document conversion (all fields, folder included) |
+| Next turn | A running Auto run uses this from its next turn. | Every other prompt (global or project); writable project directories; command network access; build skills |
 | Next check | Used from the next check. | The URL model check prompt |
 | Next commit | A running Auto run uses this from its next build commit. | Git ignore list |
 | Next run | A running Auto run keeps what it started with; new runs use this. | Build guidance files |
 | New agent | Allowed during Auto; a running Auto run keeps its participants. | Creating an agent (the new agent does not join a running Auto run) |
 | Locked | Locked while an Auto run is active. | Coding on/off; Docker (all actions); editing and deleting agents; Reset |
+
+### When changes reach an agent
+
+The global instruction, the project's use of it, an agent's role instructions,
+chat skills and the downloads and documents settings all go into the system part
+Delibra sends with an agent's turn. A chat resumes the provider CLI's own
+session, and on a resume both CLIs keep the system part the session started
+with, so an ongoing chat keeps the old version until its agent card's
+**Compact** or **Clear context** starts a fresh session (starting an Auto run
+and changing writable directories do too). New chat sessions and every Auto
+turn, which always starts a fresh session, use the change from their next turn.
+This keeps provider caching cheap and a conversation's behaviour predictable.
+While an affected agent has an ongoing chat, saving one of these settings asks
+first: "Ongoing chats keep the version they started with until you Compact or
+Clear context. New chat sessions and Auto turns use this from their next turn.
+Save?" Cancel saves nothing and keeps what you typed. (Role instructions can be
+edited only before an agent's first round, so in practice their save never asks.)
 
 While an Auto run is active, the Coding, Agents and Reset tabs show which of
 their settings are locked ("Auto run #N is active: … locked until it ends.").
@@ -685,7 +703,9 @@ observation shown to the user even if the shared monitor changes before submit,
 and the resumption audit retains each grant after the active override is cleared.
 
 An Auto run manages its own context, because it never uses a session's staged
-history: every Auto turn is stateless with the prompt Auto assembles. The setup
+history: every Auto turn is stateless with the prompt Auto assembles. Each turn
+starts in a fresh agent session, so setting changes reach the next Auto turn
+([When changes reach an agent](#when-changes-reach-an-agent)). The setup
 box chooses a mode — **compact**, **clear**, or **off** — a trigger unit, an
 interval, and a summarizer (the next agent to speak by default, or a named
 participant). It defaults to **off**, so Auto sends everything unless the

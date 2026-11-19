@@ -1,5 +1,6 @@
 {% from "_path_picker_macros.html" import browse_button, writable_roots_field %}
-{% from "_form_macros.html" import takes_effect %}
+{% from "_form_macros.html" import confirm_ongoing_chats, takes_effect %}
+{% set refused = error is not none %}
 <section aria-labelledby="turn-timeout-heading">
   <h2 id="turn-timeout-heading">Default message turn time limit</h2>
   {{ takes_effect("now") }}
@@ -41,8 +42,8 @@
 </section>
 <section aria-labelledby="global-instruction-heading">
   <h2 id="global-instruction-heading">Global instruction</h2>
-  {{ takes_effect("next_turn") }}
-  <form method="post" action="{{ project_url(project.name, '/global-instruction') }}">
+  {{ takes_effect("new_session") }}
+  <form method="post" action="{{ project_url(project.name, '/global-instruction') }}"{{ confirm_ongoing_chats(ongoing_chats, "use_global_instruction", refused) }}>
     <label class="auto-choice"><input type="checkbox" name="use_global_instruction" value="true"{% if use_global_instruction %} checked{% endif %}> Use the global instruction in this project</label>
     <p class="hint">
       {% if global_instruction_state == "set" %}Added before each agent's role instructions on every chat, discussion and build turn.
@@ -55,9 +56,9 @@
 </section>
 <section aria-labelledby="chat-skills-heading">
   <h2 id="chat-skills-heading">Skills for chat and discussion</h2>
-  {{ takes_effect("next_turn") }}
+  {{ takes_effect("new_session") }}
   {% if not coding_local %}<p class="hint">Only this machine can change this list.</p>{% endif %}
-  <form method="post" action="{{ project_url(project.name, '/chat-skills') }}">
+  <form method="post" action="{{ project_url(project.name, '/chat-skills') }}"{{ confirm_ongoing_chats(ongoing_chats, "chat_skills chat_preset", refused) }}>
     <label>Skills for chat and discussion
       <textarea id="chat-skills" name="chat_skills" maxlength="262144">{{ chat_skills_text }}</textarea>
     </label>
@@ -73,9 +74,10 @@
 </section>
 <section aria-labelledby="downloads-heading">
   <h2 id="downloads-heading">Downloads and documents</h2>
-  {{ takes_effect("next_turn") }}
+  {{ takes_effect("new_session") }}
   {% if not coding_local %}<p class="hint">Only this machine can change download settings.</p>{% endif %}
-  <form method="post" action="{{ project_url(project.name, '/download-settings') }}">
+  {# The fields the chat spool notes are written from: the switches, approval, folder. #}
+  <form method="post" action="{{ project_url(project.name, '/download-settings') }}"{{ confirm_ongoing_chats(ongoing_chats, "downloads_enabled downloads_convert downloads_approval downloads_folder", refused) }}>
     {# A refused save shows what was sent (typed); otherwise the saved policy. #}
     {% set dl_enabled = typed.get('downloads_enabled') if 'downloads_enabled' in typed else coding.downloads.enabled %}
     {% set dl_model_check = typed.get('downloads_model_check') if 'downloads_model_check' in typed else coding.downloads.model_check %}
