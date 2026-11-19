@@ -350,3 +350,54 @@ def test_lan_viewers_see_local_only_prompts_read_only(tmp_path) -> None:
     discussion = card(lan_page, "auto_discussion", "auto_compaction")
     assert "Save override" in discussion and " readonly>" not in discussion
     assert "Only this machine can change this prompt." not in local_page
+
+
+def test_an_invalid_stored_prompt_refuses_a_chat_message_with_its_reason(tmp_path) -> None:
+    from app.models import SessionConfig
+
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    store = ProjectStore(project)
+    store.create_session(SessionConfig(
+        id="1" * 32, name="Alpha", agent="claude", model="m", effort="low", role_instructions="",
+        cli_session_id=None, status="idle", created_at="2026-11-19T00:00:00Z",
+    ))
+    store.set_prompt_override("notes", "{nope}")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/chat/run", data={"session_id": "1" * 32, "prompt": "Hi"})
+
+    assert response.status_code == 422
+    assert "Notes prompt is invalid: Notes has an unknown placeholder {nope}; fix it in Settings" in response.text
+    assert store.load_session("1" * 32).rounds == []
+
+
+@pytest.mark.parametrize("damage", [b"{not json", b'{"prompt_overrides": 3}'])
+def test_one_corrupt_project_does_not_stop_the_global_tab(tmp_path, damage) -> None:
+    app, settings = make_app(tmp_path)
+    stores = overriding_projects(settings, ["Alpha", "Beta"])
+    manifest = stores["Beta"].manifest_path
+    manifest.write_bytes(damage if damage.startswith(b"{not") else
+                         json.dumps({**json.loads(manifest.read_text()), "prompt_overrides": 3}).encode())
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings/prompts")
+
+    assert page.status_code == 200
+    shown = card(page.text, "compact", "stateless_claude")
+    assert f'value="{stores["Alpha"].project.id}"' in shown
+    assert f'value="{stores["Beta"].project.id}"' not in shown
+
+
+def test_a_registered_project_that_cannot_be_changed_is_named(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    stores = overriding_projects(settings, ["Alpha", "Beta"])
+    beta = stores["Beta"]
+    beta.manifest_path.write_text(json.dumps({**json.loads(beta.manifest_path.read_text()), "prompt_overrides": 3}))
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post("/settings/prompts/compact", data={
+            "template": "Global summary.", "action": "save",
+            "replace": [stores["Alpha"].project.id, beta.project.id],
+        })
+
+    assert response.status_code == 200
+    assert "Saved. The override was not replaced in Beta: project prompt overrides are invalid" in response.text
+    assert stores["Alpha"].prompt_overrides() == {}
