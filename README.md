@@ -1477,6 +1477,29 @@ the traceback when there is one. Access lines (`GET /… 200`) never reach the f
 
 Run the suite with `envs/bin/python -m pytest -q`.
 
+The suite runs in parallel by default: `pytest.ini` adds
+`-n auto --dist loadgroup` (pytest-xdist, one worker per CPU). On a 10-core
+Mac that is about a minute instead of about five serially. Every test runs in
+both modes; each test keeps its state in its own `tmp_path`, and an autouse
+fixture points `DELIBRA_HOME` there, so nothing touches `~/.delibra`. The
+browser tests run in two xdist groups (`BROWSER_GROUPS` in `tests/conftest.py`),
+one test at a time per group, because with a Chromium per worker their timing
+races fail under load.
+
+To run serially, for example to read one failure's output in order or to
+debug with `pdb`, add `-n 0`:
+
+```sh
+envs/bin/python -m pytest -q -n 0
+envs/bin/python -m pytest -q -n 0 tests/test_auto.py
+```
+
+A single file also runs fine with the default options; for a small file
+`-n 0` is quicker, because starting the workers takes a few seconds. Use
+`-n 0` rather than `-p no:xdist`: without the plugin, pytest rejects the `-n`
+in `pytest.ini`. An environment built before this change needs
+`envs/bin/pip install -r requirements.lock` once to get pytest-xdist.
+
 Pytest invokes the JavaScript contract files through
 `tests/test_routes_chat.py`. Those tests skip when Node is absent; the
 optional pre-push check below refuses that reduced suite. To run the

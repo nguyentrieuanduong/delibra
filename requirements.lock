@@ -17,6 +17,7 @@ docling-ibm-models==4.0.4
 docling-parse==7.26.0
 docling-slim==2.150.1
 et_xmlfile==2.0.0
+execnet==2.1.2
 Faker==40.54.0
 fastapi==0.139.2
 filelock==4.2.12
@@ -81,6 +82,7 @@ pypdf==7.1.0
 pypdfium2==5.15.2
 pytest==9.1.1
 pytest-asyncio==1.4.0
+pytest-xdist==3.8.0
 python-dateutil==4.0.0
 python-docx==1.2.0
 python-dotenv==1.2.4

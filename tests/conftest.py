@@ -9,6 +9,32 @@ from app.models import AutoArtifact, AutoParticipant, AutoRunRecord
 from app.storage import ProjectStore
 
 
+# Browser tests run in this many xdist groups: at most this many Chromium
+# pages at once (measured 2026-11-19: 1 group ~91 s wall, 2 ~59 s, 3 ~60 s).
+BROWSER_GROUPS = 2
+
+
+@pytest.hookimpl(tryfirst=True)  # before xdist reads the groups off the items
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Keep the browser tests to BROWSER_GROUPS xdist workers, one test at a time each.
+
+    They pass serially, but with a Chromium and a live server on every one of
+    ten workers, some of them lose a timing race (a scroll position read
+    before a timeline swap landed was seen). Two of the races seen first were
+    real bugs and are fixed (a question added twice; a test helper that
+    swapped the whole page into #auto-status), but ten browsers at once were
+    never shown stable, so they stay grouped. Grouping keeps every one of them
+    in the run; `--dist loadgroup` (pytest.ini) sends each group, whole files
+    at a time, to a single worker. No effect without xdist.
+    """
+
+    browser = [item for item in items if item.get_closest_marker("browser") is not None]
+    files = sorted({item.path for item in browser})
+    for item in browser:
+        group = files.index(item.path) % BROWSER_GROUPS
+        item.add_marker(pytest.mark.xdist_group(f"browser-{group}"))
+
+
 @pytest.fixture(autouse=True)
 def _private_delibra_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point DELIBRA_HOME at this test's own (absent) folder.
