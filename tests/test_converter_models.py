@@ -434,3 +434,40 @@ def test_check_fetches_at_most_twenty_commits_lazily() -> None:
                           iter_commits=lambda repo: endless())
     result = hub.check(api, ["org/a"])["repos"]["org/a"]
     assert len(result["commits"]) == 20 and len(pulled) <= 21
+
+
+
+def test_startup_cleanup_never_stops_the_app(tmp_path, monkeypatch, caplog) -> None:
+    import app.converter_models as cm
+
+    home = tmp_path / "home"
+    _old(home, "20261119T010000Z", ready=True)  # no docling: a restore is due
+    (home / "models" / "docling.staging-1").mkdir()
+
+    def broken(*args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(cm.os, "replace", broken)
+    monkeypatch.setattr(cm.shutil, "rmtree", broken)
+    mark_interrupted(home)  # must not raise
+    assert "read-only file system" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_status_write_after_the_swap_keeps_the_new_models(tmp_path, monkeypatch, caplog) -> None:
+    import app.converter_models as cm
+
+    home = tmp_path / "home"
+    old_install(home)
+    real_write = cm._write_status
+
+    def write(home_, status, error=None):
+        if status == "ready":
+            raise OSError("disk full")
+        return real_write(home_, status, error)
+
+    monkeypatch.setattr(cm, "_write_status", write)
+    await download_models(home, hub=fake_hub(tmp_path), self_test=passes)
+    assert (models_dir(home) / MANIFEST_NAME).exists()  # the new set stays in place
+    assert models_state(home).status == "ready"  # not "downloading", not "failed"
+    assert "disk full" in caplog.text

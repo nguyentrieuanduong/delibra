@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -44,6 +45,7 @@ MODEL_REPOS: tuple[tuple[str, str], ...] = (
     ("docling-project/docling-layout-heron-onnx", "main"),
     ("docling-project/docling-models", "v2.3.0"),  # TableFormer
 )
+LOGGER = logging.getLogger(__name__)
 _COMMIT = re.compile(r"[0-9a-f]{7,40}")
 SelfTest = Callable[[Path, Path], Awaitable[str | None]]
 # The server's one conversion slot: held for the self-test and the swap, so no user
@@ -168,10 +170,16 @@ def _cleanup_leftovers(home: Path) -> None:
     if not models_dir(home).exists():
         ready = [old for old in olds if (old / READY_NAME).is_file()]
         if ready:  # stopped between the two renames: the newest working set comes back
-            os.replace(ready[-1], models_dir(home))
-            olds.remove(ready[-1])
+            try:
+                os.replace(ready[-1], models_dir(home))
+                olds.remove(ready[-1])
+            except OSError:  # never stop the app from starting over a leftover
+                LOGGER.warning("could not restore the converter models from %s", ready[-1].name, exc_info=True)
     for leftover in [*olds, *(path for pattern in _LEFTOVERS for path in models.glob(pattern))]:
-        shutil.rmtree(leftover, ignore_errors=True)
+        try:
+            shutil.rmtree(leftover)
+        except OSError:
+            LOGGER.warning("could not remove the leftover folder %s", leftover.name, exc_info=True)
 
 
 def mark_interrupted(home: Path) -> None:
@@ -302,7 +310,11 @@ async def download_models(
             if reason is not None:
                 raise RuntimeError(reason)
             _swap(home, staging)
-        _write_status(home, "ready")
+        try:
+            _write_status(home, "ready")
+        except OSError:  # the new models are in place and tested; only the status line is stale
+            LOGGER.warning("converter models replaced, but the status could not be written", exc_info=True)
+            _status_path(home).unlink(missing_ok=True)  # never left at "downloading"
     except asyncio.CancelledError:
         raise  # shutdown: the next start marks it interrupted and cleans up
     except Exception as exc:  # any failure keeps the old models; never stuck on "downloading"

@@ -918,13 +918,14 @@ def test_one_models_action_at_a_time(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         _converter_home(app, check=CHECKED)
-        app.state.converter_models_lock = asyncio.Lock()
-        app.state.converter_models_lock._locked = True  # a check is running (held by another request)
+        lock = app.state.converter_models_lock
+        client.portal.call(lock.acquire)  # a check is running (held by another request)
         responses = {path: client.post(path, data=data, follow_redirects=False) for path, data in (
             ("/settings/converter-models", {"force": "true"}), ("/settings/converter-models/check", {}),
             ("/settings/converter-models/remove", {}),
             ("/settings/converter-models/version", {"revision_0": "main", "revision_1": "main", "revision_2": "v2.3.0"}))}
         page = client.get("/settings/converter").text
+        client.portal.call(lock.release)
     assert {path: r.status_code for path, r in responses.items()} == dict.fromkeys(responses, 409)
     assert "Models action refused: Another models action is running" in responses["/settings/converter-models/check"].text
     assert "Models action refused: Another models action is running" in responses["/settings/converter-models/remove"].text
@@ -958,3 +959,46 @@ def test_downloads_hold_the_conversion_slot_for_the_self_test(tmp_path, monkeypa
                 break
             _time.sleep(0.01)
     assert seen == [True]
+
+
+
+def test_the_models_lock_is_released_after_a_failing_download(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    calls = []
+
+    async def boom(home, revisions=None, **kwargs):
+        calls.append(1)
+        raise ValueError("x")
+
+    def wait(condition) -> bool:
+        for _ in range(300):
+            if condition():
+                return True
+            _time.sleep(0.01)
+        return False
+
+    monkeypatch.setattr("app.routes.settings.download_models", boom)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        first = client.post("/settings/converter-models", follow_redirects=False)
+        assert wait(lambda: calls and not app.state.converter_models_lock.locked())
+        second = client.post("/settings/converter-models", follow_redirects=False)
+        assert wait(lambda: len(calls) == 2)
+    assert (first.status_code, second.status_code) == (303, 303)
+
+
+def test_remove_waits_for_the_conversion_slot(tmp_path, monkeypatch) -> None:
+    from app.converter_models import models_dir
+
+    held = []
+
+    def remove(home):
+        held.append(app.state.download_manager.converting())
+
+    monkeypatch.setattr("app.routes.settings.remove_models", remove)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app)
+        client.post("/settings/converter-models/remove", follow_redirects=False)
+    assert held == [True] and models_dir(app.state.settings.home).exists()

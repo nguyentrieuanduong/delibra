@@ -572,7 +572,8 @@ async def remove_converter_models(request: Request):
     busy = _models_busy(request)
     if busy is not None:
         return _models_refusal(request, busy, 409, download=False)
-    async with request.app.state.converter_models_lock:
+    # The conversion slot too: no conversion may load the models while they go.
+    async with request.app.state.converter_models_lock, request.app.state.download_manager.conversion_slot():
         await asyncio.to_thread(remove_models, request.app.state.settings.home)
     return RedirectResponse("/settings/converter", status_code=303)
 
