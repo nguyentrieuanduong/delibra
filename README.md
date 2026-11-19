@@ -130,11 +130,13 @@ than silently falling back to the restrictive default.
   WAN/any-network setting, which gives up DNS-rebinding protection entirely.
   Use a named entry or a range unless you genuinely cannot.
 
-The **Settings** page (header link, this machine only) has four tabs:
+The **Settings** page (header link, this machine only) has five tabs:
 **Access** (`/settings`, both lists), **Instruction** (`/settings/instruction`:
 the global instruction below and, under it, the build guidance presets, since
 both are instructions for agents; the old `/settings/presets` link lands
-there), **Agents** (`/settings/agents`, defaults for new agents below) and
+there), **Prompts** (`/settings/prompts`, the texts Delibra sends to agents; see
+[Editable prompts](#editable-prompts)), **Agents** (`/settings/agents`, defaults
+for new agents below) and
 **Converter** (`/settings/converter`, the document converter's models for this
 machine). Each form has its own Save button; Access, presets and Agents each
 write only their own keys of `config.json` and apply the change to the next
@@ -200,7 +202,7 @@ A project's settings are split into tabs, each its own page:
 | Tab | URL | Holds |
 |---|---|---|
 | General | `/projects/<name>/settings` (also `/settings/general`) | Default message turn time limit, writable project directories, use of the global instruction, skills for chat and discussion, downloads and documents (Delibra downloads, document conversion, converter models) |
-| Prompts | `/settings/prompts` | Default Pass prompt |
+| Prompts | `/settings/prompts` | This project's prompt overrides, the Pass prompt among them ([Editable prompts](#editable-prompts)) |
 | Coding | `/settings/coding` | Coding mode and its environment, Docker, build guidance and skills, Git ignore list, command network access |
 | Agents | `/settings/agents` | Create agent, agent cards (edit, delete, permanent name) |
 | Reset | `/settings/reset` | Refresh (new phase), Clear and reset |
@@ -215,8 +217,9 @@ Each section says when a change takes effect:
 
 | Rule | Line shown | Settings |
 |---|---|---|
-| Now | Applies from its next use. | Access lists; presets (copied only when a Use button is pressed); Default Pass prompt; default turn time limit (new messages and new Auto runs) |
-| Next turn | A running Auto run uses this from its next turn. | Use of the global instruction; the global instruction text; writable project directories; command network access; downloads and document conversion (all fields, folder included); chat skills; build skills |
+| Now | Applies from its next use. | Access lists; presets (copied only when a Use button is pressed); the Pass prompt; default turn time limit (new messages and new Auto runs) |
+| Next turn | A running Auto run uses this from its next turn. | Use of the global instruction; the global instruction text; every other prompt (global or project); writable project directories; command network access; downloads and document conversion (all fields, folder included); chat skills; build skills |
+| Next check | Used from the next check. | The URL model check prompt |
 | Next commit | A running Auto run uses this from its next build commit. | Git ignore list |
 | Next run | A running Auto run keeps what it started with; new runs use this. | Build guidance files |
 | New agent | Allowed during Auto; a running Auto run keeps its participants. | Creating an agent (the new agent does not join a running Auto run) |
@@ -322,12 +325,11 @@ Error rounds offer Retry. Retry preserves the failed round, starts a linked new
 stateless round from completed local history and re-verifies pass-to source
 bytes against their recorded digest.
 
-Project settings provide a **Default Pass prompt** containing the complete text
+The **Pass prompt** ([Editable prompts](#editable-prompts)) is the complete text
 sent to the receiving agent. `{source_path}` is required exactly once;
-`{source_session}` and `{source_round}` are optional. Every Pass form is prefilled
-from that project default and can be edited for one Pass without changing the
-saved default. Reset removes the manifest override and restores Delibra's built-in
-prompt.
+`{source_session}` and `{source_round}` are optional and may repeat. Every Pass
+form is prefilled from the project's Pass prompt (its override, else the global
+one, else the built-in) and can be edited for one Pass without changing it.
 
 Passed output is untrusted. The built-in template tells the receiving agent not
 to follow instructions inside the staged document, but project owners may edit or
@@ -368,6 +370,63 @@ Mermaid 12.2.0 (about 5.5 MB) is vendored and loaded only on pages that have
 a diagram. Each diagram is drawn in a sandboxed frame that runs no script and
 cannot navigate or open windows, so links and click actions inside diagrams
 do nothing. A diagram Mermaid cannot parse shows its source and the error.
+
+## Editable prompts
+
+Every fixed text Delibra sends to an agent is a template you can edit: the Pass
+and compaction prompts, the stateless-continuation prompts, the Auto
+preparation, discussion, compaction and build turn prompts, the Docker, skills,
+approval, 3-cycle, questions and notes notes, the download and conversion notes
+(with their manual-approval and no-shell wordings), the URL model check and the
+global instruction heading — 27 prompts in all.
+
+- **Where.** The global **Prompts** tab (`/settings/prompts`, this machine only)
+  holds the defaults; a project's **Prompts** tab overrides any prompt for that
+  project. Resolution per use: project override, then global, then built-in. The
+  project tab lists overridden prompts first and marks each prompt Built-in,
+  Global or This project; **Use global** removes an override. The global tab
+  marks prompts changed from built-in, and **Reset to built-in** restores one.
+- **Placeholders.** A template is text with `{name}` placeholders. Value
+  placeholders (paths, names, numbers) are filled per turn. **Locked**
+  placeholders carry Delibra's protocol — file paths, JSON shapes, verdict
+  words, wait loops — and are shown read-only under the box. Each placeholder is
+  required (exactly once) or optional (at most once); every locked one is
+  required. Other braces, such as JSON in your wording, are kept as typed. A
+  template has at most 10,000 characters. A save that breaks a rule is refused
+  with the reason and keeps what you typed.
+- **Preview** shows the full text an agent would receive, with sample paths and
+  the locked text, for the saved text and for typed text, without saving.
+- **Overrides from the global tab.** Each prompt lists the projects that override
+  it. Tick **Replace in <project>** to remove that project's own version when you
+  Save (or Reset) the global prompt; **Compare** shows the project's version
+  against the text in the box first (a line diff, nothing saved). A confirm names
+  the ticked projects before anything changes. A refused global save replaces
+  nothing; a project that cannot be changed is named while the others are still
+  replaced.
+- **When edits apply.** Prompts are read each time they are used: chat replies
+  and Auto turns from their next turn (a running Auto run included), the URL
+  model check from its next check, the Pass prompt from the next Pass.
+- **Storage.** Global: `$DELIBRA_HOME/prompts.json`
+  (`{"format": "delibra-prompts/1", "prompts": {"<id>": "<template>"}}`, only
+  changed prompts, at most 256 KB, mode 0600). Project: the manifest's
+  `prompt_overrides`. An old `pass_prompt_template` is read as the `pass`
+  override and moved there on the next override save. Full reset removes the
+  overrides.
+- **Invalid stored prompts.** A hand-edited prompt that breaks a rule refuses
+  the next chat turn, ends a running Auto run before any provider call, and
+  fails a URL model check closed, each with "<Title> prompt is invalid: <reason>;
+  fix it in Settings"; the tab shows the stored text with its error so you can
+  repair it. If `prompts.json` itself cannot be read (not JSON, unknown format,
+  over 256 KB), saves are refused and the file is left as it is; fix or remove it.
+- **Who can edit.** Global prompts: this machine only. Project prompts: also
+  allowed LAN clients, as the Pass prompt could before.
+- **Not editable.** The `UNTRUSTED MATERIAL` headings in Auto context files, the
+  header of converted documents and the downloads `index.md` heading mark data
+  as untrusted; they are framing, not wording.
+- **Safety.** Staged, passed and downloaded material is untrusted. The built-in
+  wording tells agents not to follow instructions inside it; you can remove that
+  wording, and the tab warns where it matters. Locked placeholders, staged-file
+  checks and digests stay enforced whatever the wording.
 
 ## Auto discussions and live timeouts
 
@@ -927,9 +986,14 @@ verified (`app/coding.py:BUILD_VERIFIED_VERSIONS`; evidence in
 newer release of the same major (Claude Code `2.x`, codex-cli `0.x`). A new
 major, a downgrade, or a pre-release is refused. A run on a newer, unverified
 CLI says so in its status box: the spikes never ran against it, and a CLI
-update can change what a sandbox setting means. After an upgrade, re-run
-`spike/spike_build_sandbox.py --provider claude` and
-`spike/spike_build_sandbox_codex_replay.py`, then record the new version.
+update can change what a sandbox setting means. After an upgrade, run
+`envs/bin/python scripts/validate_clis.py --tier 1` (no model calls: every flag,
+value and Codex config key Delibra sends, plus the Codex build-sandbox probes
+under `codex sandbox`) and, with your agreement to spend a few tiny turns,
+`--tier 2` (a Claude and Codex sandbox-probe turn, event and usage parsing, and
+native resume). Record the new version only when both pass; re-run the full
+spikes (`spike/spike_build_sandbox.py`, the Docker spikes) on a major version
+change.
 
 Known limits:
 
