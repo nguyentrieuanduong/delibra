@@ -418,8 +418,13 @@ global instruction heading — 27 prompts in all.
   fix it in Settings"; the tab shows the stored text with its error so you can
   repair it. If `prompts.json` itself cannot be read (not JSON, unknown format,
   over 256 KB), saves are refused and the file is left as it is; fix or remove it.
-- **Who can edit.** Global prompts: this machine only. Project prompts: also
-  allowed LAN clients, as the Pass prompt could before.
+- **Who can edit.** Global prompts: this machine only. Project overrides: this
+  machine, and allowed LAN clients only for the prompts that reach nothing but chat
+  replies, the Pass dialog and Auto discussion runs — Pass prompt, Compact summary,
+  Chat skills note and Discussion turn (LAN clients may already start those). Every
+  prompt that reaches a build run (its preparation, compaction and build turns),
+  downloads, conversion or the model check is shown read-only to LAN clients ("Only
+  this machine can change this prompt.").
 - **Not editable.** The `UNTRUSTED MATERIAL` headings in Auto context files, the
   header of converted documents and the downloads `index.md` heading mark data
   as untrusted; they are framing, not wording.
@@ -982,7 +987,7 @@ again. Discussion runs keep their existing pause-on-quota behaviour.
 
 **Verified versions.** Build runs accept the CLI versions whose sandbox was
 verified (`app/coding.py:BUILD_VERIFIED_VERSIONS`; evidence in
-`spike/FINDINGS.md`), Claude Code `2.1.296` and codex-cli `0.162.1`, or any
+`spike/FINDINGS.md`), Claude Code `2.1.322` and codex-cli `0.169.0`, or any
 newer release of the same major (Claude Code `2.x`, codex-cli `0.x`). A new
 major, a downgrade, or a pre-release is refused. A run on a newer, unverified
 CLI says so in its status box: the spikes never ran against it, and a CLI

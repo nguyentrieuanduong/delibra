@@ -33,7 +33,7 @@ async def test_version_drift_is_reported(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_the_installed_usage_verified_clis_show_no_warning(tmp_path: Path) -> None:
-    reported = {"claude": "2.1.296 (Claude Code)", "codex": "codex-cli 0.162.1"}
+    reported = {"claude": "2.1.322 (Claude Code)", "codex": "codex-cli 0.169.0"}
     commands = {}
     for name, version in reported.items():
         executable = tmp_path / name
@@ -43,7 +43,7 @@ async def test_the_installed_usage_verified_clis_show_no_warning(tmp_path: Path)
 
     health = await probe_all(commands)
 
-    assert USAGE_VERIFIED_VERSIONS == {"claude": "2.1.296", "codex": "0.162.1"}
+    assert USAGE_VERIFIED_VERSIONS == {"claude": "2.1.322", "codex": "0.169.0"}
     assert [(item.name, item.warning) for item in health] == [
         ("claude", None),
         ("codex", None),

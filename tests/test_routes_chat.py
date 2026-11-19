@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from app.agents.base import AgentEvent, Command, RunContext
+from app.coding import BUILD_VERIFIED_VERSIONS
 from app.config import Settings
 from app.health import ProviderHealth
 from app.main import create_app
@@ -816,7 +817,7 @@ def test_footer_marks_only_an_available_build_verified_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, available: bool
 ) -> None:
     provider_health = [
-        ProviderHealth("claude", "claude", available, "2.1.296 (Claude Code)", None),
+        ProviderHealth("claude", "claude", available, BUILD_VERIFIED_VERSIONS["claude"], None),
     ]
 
     async def deterministic_probe_all(_commands: dict[str, str]) -> list[ProviderHealth]:
