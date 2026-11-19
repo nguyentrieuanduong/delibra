@@ -79,7 +79,7 @@ async def test_bad_spool_files_warn_and_create_nothing(tmp_path):
 
 @pytest.mark.asyncio
 async def test_model_check_flags_and_fails_closed(tmp_path):
-    async def check(provider, executable, model, items, work_root):
+    async def check(provider, executable, model, items, work_root, prompts=None):
         return {rid: ("flag", "looks encoded") for rid, _ in items}
     manager, turn = setup(tmp_path, approval="automatic", model_check=True, check=check)
     manager.begin_turn(turn); drop(turn, "a", url="https://a.org/x.pdf")
@@ -87,11 +87,40 @@ async def test_model_check_flags_and_fails_closed(tmp_path):
     assert status(turn)[0] == {"id": "D1", "request": "a.json", "url": "(URL hidden)", "state": "refused",
                                "reason": "flagged by model check"}
     assert DownloadStore(turn.store_root).get("D1").check_note == "looks encoded"
-    async def broken(*args): raise CheckError("model check unavailable: timed out")
+    async def broken(*args, **kwargs): raise CheckError("model check unavailable: timed out")
     manager2, turn2 = setup(tmp_path / "2", approval="automatic", model_check=True, check=broken)
     manager2.begin_turn(turn2); drop(turn2, "a", url="https://a.org/x.pdf")
     manager2.harvest(turn2, final=True); await manager2.settle(turn2)
     assert status(turn2)[0]["reason"] == "model check unavailable: timed out"
+
+@pytest.mark.asyncio
+async def test_each_model_check_reads_the_prompts_and_fails_closed_on_an_invalid_one(tmp_path):
+    from app.prompts import PromptError, Prompts
+
+    seen = []
+
+    async def check(provider, executable, model, items, work_root, prompts=None):
+        seen.append(prompts.render("model_check", answer_format="FORMAT"))
+        return {rid: ("allow", "") for rid, _ in items}
+
+    loads = iter([Prompts({"model_check": "Edited check. {answer_format}"}, {})])
+
+    def loader():
+        prompts = next(loads, None)
+        if prompts is None:
+            raise PromptError("URL model check prompt is invalid: x; fix it in Settings")
+        return prompts
+
+    manager, turn = setup(tmp_path, approval="automatic", model_check=True, check=check)
+    turn.prompts_loader = loader
+    manager.begin_turn(turn); drop(turn, "a", url="https://a.org/x.pdf")
+    manager.harvest(turn, final=False); await manager.settle(turn); await drain(manager)
+    drop(turn, "b", url="https://a.org/y.pdf")
+    manager.harvest(turn, final=True); await manager.settle(turn); await drain(manager)
+    assert seen == ["Edited check. FORMAT"]
+    assert status(turn)[1]["reason"] == (
+        "model check unavailable: URL model check prompt is invalid: x; fix it in Settings"
+    )
 
 @pytest.mark.parametrize(("commands", "error", "reason"), [
     ({}, None, "model check unavailable: the CLI is not configured"),
@@ -113,7 +142,7 @@ async def test_check_chunks_run_concurrently(tmp_path, monkeypatch):
     # Plan review B4: 45 requests are three calls in flight at once.
     monkeypatch.setattr("app.download_manager.BATCH_WINDOW_SECONDS", 0)
     started, all_in = [], asyncio.Event()
-    async def check(provider, executable, model, items, work_root):
+    async def check(provider, executable, model, items, work_root, prompts=None):
         started.append(len(items))
         if len(started) == 3:
             all_in.set()
@@ -132,7 +161,7 @@ async def test_settle_leaves_nothing_checking(tmp_path, monkeypatch):
     # Plan review B4: a slow check cannot outlive the turn's pause decision.
     monkeypatch.setattr("app.download_manager.BATCH_WINDOW_SECONDS", 0)
     monkeypatch.setattr("app.download_manager.SETTLE_SECONDS", 0.2)
-    async def slow(*args):
+    async def slow(*args, **kwargs):
         await asyncio.sleep(30)
     manager, turn = setup(tmp_path, approval="automatic", model_check=True, check=slow)
     manager.begin_turn(turn)

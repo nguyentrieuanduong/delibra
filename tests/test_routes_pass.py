@@ -446,7 +446,7 @@ def test_pass_forms_use_escaped_effective_template_in_session_chat_and_fragment(
 ) -> None:
     app, _, project, store, source, _, _, _ = setup(tmp_path)
     custom = "Inspect </textarea><b>unsafe</b> at {source_path}"
-    store.set_pass_prompt_template(custom)
+    store.set_prompt_override("pass", custom)
     base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
     with TestClient(app, base_url="http://localhost") as client:
         responses = (
@@ -473,7 +473,7 @@ def test_per_pass_template_override_renders_without_changing_project_default(
     app, _, project, store, source, target, _, contexts = setup(tmp_path)
     saved = "Saved default {source_path}"
     override = "Override {source_session} #{source_round}: {source_path}"
-    store.set_pass_prompt_template(saved)
+    store.set_prompt_override("pass", saved)
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/sessions/{source.id}/pass",
@@ -483,7 +483,7 @@ def test_per_pass_template_override_renders_without_changing_project_default(
         finish(client, f"/projects/{quote(project.name, safe='')}/sessions/{target.id}", 1)
 
     assert contexts[0].user_prompt == "Override Source #1: inputs/round-01/source.md"
-    assert store.effective_pass_prompt_template() == saved
+    assert store.prompt_overrides().get("pass", BUILT_IN_PASS_PROMPT_TEMPLATE) == saved
 
 
 def test_a_passed_round_shows_its_start_at_once(tmp_path: Path) -> None:

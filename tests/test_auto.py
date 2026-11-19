@@ -7334,3 +7334,33 @@ async def test_a_codex_discussion_turn_gets_the_wait_loop(tmp_path) -> None:
     assert factory.calls, terminal.terminal_reason
     first = str(factory.calls[0]["prompt"])
     assert "until grep" in first and "read the status file again later in your turn" not in first
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_stored_prompt_ends_the_run_before_any_provider_call(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+    store.set_prompt_override("auto_discussion", "No placeholders")
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    assert terminal.status == "error"
+    assert terminal.terminal_reason == (
+        "Discussion turn prompt is invalid: Discussion turn must contain {context} exactly once; "
+        "fix it in Settings"
+    )
+    assert factory.created == 0
+
+
+@pytest.mark.asyncio
+async def test_a_project_prompt_edit_reaches_the_next_auto_turn(tmp_path: Path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("Alpha"), PlannedOutput("Beta")]
+    )
+    store.set_prompt_override("questions_read", "EDITED answers in {view_path}.")
+
+    _, terminal = await _one_cycle(manager, project_id, session_ids)
+
+    assert terminal.status == "limit_reached"
+    assert all("EDITED answers in" in call["prompt"] for call in factory.calls)

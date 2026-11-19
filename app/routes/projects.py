@@ -40,6 +40,7 @@ from app.models import Project
 from app.notes import NoteStore, chat_note_store
 from app.project_reset import CLEAR_SCOPES, PartialClearError, clear_project
 from app.project_routing import request_project
+from app.prompts import pass_template
 from app.questions import QuestionStore
 from app.security import (
     CODING_ONLY_HERE,
@@ -378,7 +379,7 @@ async def save_pass_prompt(
         validated = validate_pass_prompt_template_field(pass_prompt_template)
         async with request.app.state.locks.registry_project_sessions(resolved_project_id):
             project = request.app.state.registry.get(resolved_project_id)
-            ProjectStore(project).set_pass_prompt_template(validated)
+            ProjectStore(project).set_prompt_override("pass", validated)
     except NotFoundError:
         raise
     except (HTTPException, StorageError) as exc:
@@ -986,7 +987,7 @@ async def reset_pass_prompt(request: Request, project_id: str):
     resolved_project_id = project.id
     async with request.app.state.locks.registry_project_sessions(resolved_project_id):
         project = request.app.state.registry.get(resolved_project_id)
-        ProjectStore(project).reset_pass_prompt_template()
+        ProjectStore(project).set_prompt_override("pass", None)
     return RedirectResponse(
         settings_tab_url(project.name, "prompts"),
         status_code=303,
@@ -1049,7 +1050,7 @@ async def render_project_settings(
             "legacy_session_ids": frozenset(migration.legacy_session_ids),
             "migration_issues": migration_issues,
             "auto_migration_issues": auto_migration_issues,
-            "pass_prompt_template": store.effective_pass_prompt_template(),
+            "pass_prompt_template": pass_template(request.app.state.settings.home, store),
             "writable_roots_text": (
                 writable_roots_text
                 if writable_roots_text is not None

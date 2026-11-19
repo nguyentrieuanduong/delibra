@@ -8,11 +8,19 @@ Delibra sent before prompts became editable (tests/fixtures/prompts/golden.json)
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+import difflib
+import json
+from pathlib import Path
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.pass_prompts import BUILT_IN_PASS_PROMPT_TEMPLATE
+from app.storage import StorageError, atomic_write_bytes
+
+if TYPE_CHECKING:
+    from app.storage import ProjectStore
 
 PROMPT_MAX_CHARS = 10_000
 TOKEN = re.compile(r"\{([a-z_]+)\}")
@@ -428,3 +436,120 @@ _SPECS = (
     ),
 )
 CATALOGUE: dict[str, PromptSpec] = {spec.id: spec for spec in _SPECS}
+
+
+PROMPTS_FILENAME = "prompts.json"
+PROMPTS_FORMAT = "delibra-prompts/1"
+PROMPTS_FILE_MAX_BYTES = 256 * 1024
+
+
+def checked_template(prompt_id: str, text: object) -> str:
+    """`text` validated as the template of a catalogued prompt; raises PromptError."""
+
+    spec = CATALOGUE.get(prompt_id)
+    if spec is None:
+        raise PromptError(f"Unknown prompt {prompt_id!r}")
+    return validate_template(spec, text)
+
+
+def _stored(prompts: Mapping[str, object]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for prompt_id, text in prompts.items():
+        spec = CATALOGUE.get(prompt_id)
+        if spec is None:
+            continue  # a prompt a later Delibra removed: ignore it
+        try:
+            out[prompt_id] = validate_template(spec, text)
+        except PromptError as exc:
+            raise PromptError(f"{spec.title} prompt is invalid: {exc}; fix it in Settings") from exc
+    return out
+
+
+def _read_file(home: Path) -> dict[str, object]:
+    """The stored entries exactly as written (unvalidated); {} when there is no file."""
+
+    path = home / PROMPTS_FILENAME
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(PROMPTS_FILE_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return {}
+    if len(raw) > PROMPTS_FILE_MAX_BYTES:
+        raise PromptError(f"prompts.json is larger than 256 KB; fix or remove {path}")
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise PromptError(f"prompts.json is not valid JSON; fix or remove {path}") from exc
+    if not isinstance(data, dict) or data.get("format") != PROMPTS_FORMAT or not isinstance(data.get("prompts"), dict):
+        raise PromptError(f"prompts.json has an unknown format; fix or remove {path}")
+    return data["prompts"]
+
+
+def read_global_prompts(home: Path) -> dict[str, str]:
+    return _stored(_read_file(home))
+
+
+def save_global_prompt(home: Path, prompt_id: str, text: str | None) -> None:
+    """Save or reset one prompt; every other stored entry is kept exactly as it was.
+
+    Review B6 (2026-11-16): a file Delibra cannot read is refused, never replaced, so
+    no save erases other customizations. Other entries are not validated here: an
+    invalid one survives unrelated saves and is repaired by saving or resetting it.
+    """
+
+    if text is not None:
+        text = checked_template(prompt_id, text)
+    elif prompt_id not in CATALOGUE:
+        raise PromptError(f"Unknown prompt {prompt_id!r}")
+    prompts = _read_file(home)
+    if text is None:
+        prompts.pop(prompt_id, None)
+    else:
+        prompts[prompt_id] = text
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = json.dumps({"format": PROMPTS_FORMAT, "prompts": prompts}, ensure_ascii=False, indent=1)
+    atomic_write_bytes(home / PROMPTS_FILENAME, payload.encode("utf-8"), mode=0o600)
+
+
+class Prompts:
+    """The templates one use reads: project override, then global, then built-in."""
+
+    def __init__(self, global_prompts: Mapping[str, str], overrides: Mapping[str, str]) -> None:
+        self._global = dict(global_prompts)
+        self._overrides = dict(overrides)
+
+    def source(self, prompt_id: str) -> str:
+        if prompt_id in self._overrides:
+            return "project"
+        if prompt_id in self._global:
+            return "global"
+        return "built-in"
+
+    def template(self, prompt_id: str) -> str:
+        if prompt_id in self._overrides:
+            return self._overrides[prompt_id]
+        return self._global.get(prompt_id, CATALOGUE[prompt_id].default)
+
+    def render(self, prompt_id: str, **values: str) -> str:
+        return render_template(CATALOGUE[prompt_id], self.template(prompt_id), values)
+
+
+BUILT_IN = Prompts({}, {})
+
+
+def load_prompts(home: Path, store: ProjectStore | None = None) -> Prompts:
+    """Read per use, so an edit reaches the next turn; raises PromptError when invalid."""
+
+    overrides = _stored(store.prompt_overrides()) if store is not None else {}
+    return Prompts(read_global_prompts(home), overrides)
+
+
+def pass_template(home: Path, store: ProjectStore) -> str:
+    """The Pass dialog's starting text. With an invalid stored prompt it is the
+    built-in; the turn itself then refuses with the reason."""
+
+    try:
+        return load_prompts(home, store).template("pass")
+    except (PromptError, StorageError):
+        return CATALOGUE["pass"].default
+

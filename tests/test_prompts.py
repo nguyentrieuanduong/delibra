@@ -83,3 +83,223 @@ def test_the_catalogue_has_every_prompt_once_and_valid_defaults() -> None:
         assert validate_template(spec, spec.default) == spec.default
         assert all(p.sample or not p.locked for p in spec.placeholders), spec.id
 
+
+def make_store(tmp_path):
+    from app.storage import ProjectStore, RegistryStore
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("P", project_dir)
+    return ProjectStore(project)
+
+
+def test_resolution_prefers_project_then_global_then_built_in(tmp_path) -> None:
+    import json
+
+    from app.prompts import CATALOGUE, load_prompts, save_global_prompt
+
+    store = make_store(tmp_path)
+    home = tmp_path / "home"
+    assert load_prompts(home, store).source("compact") == "built-in"
+
+    save_global_prompt(home, "compact", "Global summary.")
+    assert load_prompts(home, store).render("compact") == "Global summary."
+    assert load_prompts(home, store).source("compact") == "global"
+    assert (home / "prompts.json").stat().st_mode & 0o777 == 0o600
+
+    store.set_prompt_override("compact", "Project summary.")
+    assert load_prompts(home, store).render("compact") == "Project summary."
+    assert load_prompts(home, store).source("compact") == "project"
+    assert load_prompts(home, None).render("compact") == "Global summary."
+
+    store.set_prompt_override("compact", None)
+    save_global_prompt(home, "compact", None)
+    assert load_prompts(home, store).template("compact") == CATALOGUE["compact"].default
+    assert json.loads((home / "prompts.json").read_text())["prompts"] == {}
+
+
+def test_a_legacy_pass_template_is_the_pass_override_and_moves_on_write(tmp_path) -> None:
+    import json
+
+    store = make_store(tmp_path)
+    manifest = json.loads(store.manifest_path.read_text())
+    manifest["pass_prompt_template"] = "Old {source_path}"
+    store.manifest_path.write_text(json.dumps(manifest))
+
+    assert store.prompt_overrides() == {"pass": "Old {source_path}"}
+    store.set_prompt_override("compact", "Shorter.")
+
+    saved = json.loads(store.manifest_path.read_text())
+    assert "pass_prompt_template" not in saved
+    assert saved["prompt_overrides"] == {"pass": "Old {source_path}", "compact": "Shorter."}
+
+
+def test_full_reset_drops_the_overrides(tmp_path) -> None:
+    store = make_store(tmp_path)
+    store.set_prompt_override("compact", "Shorter.")
+    store.reset_settings()
+    assert store.prompt_overrides() == {}
+
+
+def test_malformed_overrides_are_refused(tmp_path) -> None:
+    import json
+
+    from app.storage import StorageError
+
+    store = make_store(tmp_path)
+    manifest = json.loads(store.manifest_path.read_text())
+    manifest["prompt_overrides"] = {"compact": 3}
+    store.manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(StorageError, match="project prompt overrides are invalid"):
+        store.prompt_overrides()
+
+
+def test_an_invalid_stored_prompt_refuses_with_its_title(tmp_path) -> None:
+    import json
+
+    from app.prompts import load_prompts
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "prompts.json").write_text(json.dumps(
+        {"format": "delibra-prompts/1", "prompts": {"auto_discussion": "No placeholders"}}
+    ))
+    with pytest.raises(PromptError) as error:
+        load_prompts(home, None)
+    assert str(error.value) == (
+        "Discussion turn prompt is invalid: Discussion turn must contain {context} exactly once; "
+        "fix it in Settings"
+    )
+
+
+def test_saving_one_prompt_keeps_every_other_entry_even_an_invalid_one(tmp_path) -> None:
+    import json
+
+    from app.prompts import CATALOGUE, load_prompts, save_global_prompt
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "prompts.json").write_text(json.dumps({"format": "delibra-prompts/1", "prompts": {
+        "auto_discussion": "No placeholders", "compact": "Valid summary.",
+    }}))
+    third = CATALOGUE["model_check"].default + "\nOne more line."
+
+    save_global_prompt(home, "model_check", third)
+
+    stored = json.loads((home / "prompts.json").read_text())["prompts"]
+    assert stored == {"auto_discussion": "No placeholders", "compact": "Valid summary.", "model_check": third}
+    save_global_prompt(home, "auto_discussion", None)  # Reset repairs the invalid entry
+    assert load_prompts(home, None).render("compact") == "Valid summary."
+
+
+@pytest.mark.parametrize(
+    "content, message",
+    [
+        (b'{"format": "delibra-prompts/1", "prompts": {"compact": "Mine."', "not valid JSON; fix or remove"),
+        (b'{"format": "other", "prompts": {}}', "has an unknown format; fix or remove"),
+        (b'{"format": "delibra-prompts/1", "prompts": {}}' + b" " * (256 * 1024), "larger than 256 KB"),
+    ],
+)
+def test_an_unreadable_prompts_file_refuses_saves_and_keeps_its_bytes(tmp_path, content, message) -> None:
+    from app.prompts import load_prompts, save_global_prompt
+
+    home = tmp_path / "home"
+    home.mkdir()
+    path = home / "prompts.json"
+    path.write_bytes(content)
+
+    with pytest.raises(PromptError, match=message):
+        save_global_prompt(home, "notes", None)
+    with pytest.raises(PromptError, match=message):
+        load_prompts(home, None)
+    assert path.read_bytes() == content
+
+
+def test_saving_refuses_unknown_ids_and_bad_templates(tmp_path) -> None:
+    from app.prompts import save_global_prompt
+
+    home = tmp_path / "home"
+    with pytest.raises(PromptError):
+        save_global_prompt(home, "nope", "x")
+    with pytest.raises(PromptError):
+        save_global_prompt(home, "nope", None)
+    with pytest.raises(PromptError):
+        save_global_prompt(home, "auto_discussion", "Read {context}.")
+    assert not (home / "prompts.json").exists()
+
+
+def _call_sites(prompts, w):
+    """Each catalogued prompt's real call site, rendered with `prompts`."""
+
+    from pathlib import Path
+
+    from app.agents.base import RunContext
+    from app.agents.claude import ClaudeAdapter
+    from app.agents.codex import CodexAdapter
+    from app.auto import (
+        build_turn_prompt, compaction_prompt, disagreement_note, discussion_prompt, docker_note,
+        guidance_gate_note, preparation_prompt, skills_turn_note,
+    )
+    from app.build_handover import render_handover
+    from app.coding import DownloadPolicy
+    from app.download_manager import turn_spool_notes
+    from app.download_model_check import check_prompt
+    from app.notes import notes_prompt
+    from app.questions import questions_prompt
+    from app.skill_folders import chat_skills_note
+    from tests.prompt_cases import _config
+
+    context = RunContext(user_prompt="Q", resume_id=None, resume_strategy="stateless", staged_history=[],
+                         staged_source=None, global_instruction="G", prompts=prompts)
+    policy = DownloadPolicy(enabled=True, approval="manual", convert=True)
+    return {
+        "pass": prompts.template("pass"),
+        "compact": prompts.render("compact"),
+        "stateless_claude": ClaudeAdapter().build_command(_config("claude"), context).stdin,
+        "stateless_codex": CodexAdapter().build_command(_config("codex"), context).stdin,
+        "chat_skills": chat_skills_note(w / "i.md", prompts=prompts),
+        "auto_preparation": preparation_prompt("c.md", prompts=prompts),
+        "auto_discussion": discussion_prompt("c.md", prompts=prompts),
+        "auto_compaction": compaction_prompt("c.md", prompts=prompts),
+        "build_turn": build_turn_prompt("c.md", prompts=prompts),
+        "docker_lima": docker_note("lima", prompts=prompts),
+        "docker_local": docker_note("local", prompts=prompts),
+        "build_handover": render_handover("A", "r", b"", [], prompts=prompts).decode(),
+        "skills_turn": skills_turn_note(w / "s", "c.md", prompts=prompts),
+        "guidance_gate": guidance_gate_note(True, prompts=prompts),
+        "disagreement": disagreement_note(True, prompts=prompts),
+        "questions_read": questions_prompt(w / "q.json", None, pause_enabled=True, prompts=prompts),
+        "questions_ask": questions_prompt(w / "q.json", w / "o", pause_enabled=True, prompts=prompts),
+        "notes": notes_prompt(w / "n.json", live=True, marks_path=None, prompts=prompts),
+        "notes_reading_live": notes_prompt(w / "n.json", live=True, marks_path=None, prompts=prompts),
+        "notes_reading_copy": notes_prompt(w / "n.json", live=False, marks_path=None, prompts=prompts),
+        "downloads": "".join(turn_spool_notes(w, policy, agent="codex", build=True, prompts=prompts)),
+        "downloads_manual": "".join(turn_spool_notes(w, policy, agent="codex", build=True, prompts=prompts)),
+        "downloads_reread": "".join(turn_spool_notes(
+            w, DownloadPolicy(enabled=True, approval="automatic", convert=False), agent="claude", build=False,
+            prompts=prompts)),
+        "convert": "".join(turn_spool_notes(w, policy, agent="codex", build=True, prompts=prompts)),
+        "convert_reread": "".join(turn_spool_notes(
+            w, DownloadPolicy(enabled=False, convert=True), agent="claude", build=False, prompts=prompts)),
+        "model_check": check_prompt([("D1", "https://example.org")], prompts=prompts),
+        "global_header": ClaudeAdapter().build_command(_config("claude"), context).stdin,
+    }
+
+
+def test_an_edited_template_reaches_every_call_site(tmp_path) -> None:
+    from app.prompts import CATALOGUE, Prompts
+
+    edited = {
+        spec.id: "EDITED-" + spec.id.upper() + " " + " ".join(
+            "{" + p.name + "}" for p in spec.placeholders if p.required or p.locked
+        )
+        for spec in CATALOGUE.values()
+    }
+    for scope in ("global", "project"):
+        prompts = Prompts(edited, {}) if scope == "global" else Prompts({}, edited)
+        (tmp_path / scope).mkdir()
+        shown = _call_sites(prompts, tmp_path / scope)
+        assert set(shown) == set(CATALOGUE)
+        for prompt_id, text in shown.items():
+            assert "EDITED-" + prompt_id.upper() in text, (scope, prompt_id)
+

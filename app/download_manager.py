@@ -32,6 +32,7 @@ from app.download_store import (
     DownloadRecord, DownloadStore, render_index, render_status,
     write_project_file, write_turn_status,
 )
+from app.prompts import BUILT_IN, PromptError, Prompts
 from app.questions import OutboxError, prepare_spool, read_spool_file, remove_spool_entry, scan_spool
 from app.storage import StorageError
 
@@ -55,7 +56,9 @@ def has_shell(agent: str, *, build: bool) -> bool:
     return build or agent == "codex"
 
 
-def turn_spool_notes(temp_root: Path, policy: DownloadPolicy, *, agent: str, build: bool) -> tuple[str, ...]:
+def turn_spool_notes(
+    temp_root: Path, policy: DownloadPolicy, *, agent: str, build: bool, prompts: Prompts = BUILT_IN
+) -> tuple[str, ...]:
     """The turn's download and convert notes. Discussion and chat turns get fresh
     spools in `temp_root` here; build turns get theirs when the runner recreates
     the temp dir."""
@@ -67,13 +70,13 @@ def turn_spool_notes(temp_root: Path, policy: DownloadPolicy, *, agent: str, bui
         if not build:
             prepare_spool(temp_root, DOWNLOADS_DIR, DOWNLOAD_SPOOL, extra_names=(STATUS_NAME,))
         notes.append(downloads_prompt(directory / STATUS_NAME, directory / DOWNLOAD_SPOOL,
-                                      manual=policy.approval == "manual", shell=shell))
+                                      manual=policy.approval == "manual", shell=shell, prompts=prompts))
     if policy.convert:
         directory = temp_root / CONVERT_DIR
         if not build:
             prepare_spool(temp_root, CONVERT_DIR, CONVERT_SPOOL, extra_names=(STATUS_NAME,))
         notes.append(convert_prompt(directory / STATUS_NAME, directory / CONVERT_SPOOL,
-                                    f"{policy.folder}/converted", shell=shell))
+                                    f"{policy.folder}/converted", shell=shell, prompts=prompts))
     return tuple(notes)
 
 
@@ -109,6 +112,8 @@ class DownloadTurn:
     convert: bool = False  # the turn has a convert spool (design Part B)
     convert_files: dict[str, str] = field(default_factory=dict)  # id -> this turn's request file
     convert_unparsable: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # Read on each model check, so a prompt edit applies from the next check (design).
+    prompts_loader: Callable[[], Prompts] = field(default=lambda: BUILT_IN)
 
     @property
     def spool(self) -> Path:
@@ -476,9 +481,13 @@ class DownloadManager:
             if not command:
                 raise CheckError("model check unavailable: the CLI is not configured")
             items = [(rid, store.get(rid).url) for rid in chunk]
+            try:
+                prompts = await asyncio.to_thread(turn.prompts_loader)
+            except PromptError as exc:
+                raise CheckError(f"model check unavailable: {exc}") from exc
             verdicts = await self.model_check(
                 policy.check_provider, command, policy.check_model, items,
-                self.settings.build_tmp_root,
+                self.settings.build_tmp_root, prompts=prompts,
             )
         except CheckError as exc:
             verdicts = {rid: ("unavailable", exc.reason) for rid in chunk}

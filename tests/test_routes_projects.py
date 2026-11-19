@@ -785,7 +785,7 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
     assert "</textarea><script>" not in rendered.text
     assert store.active_auto_run_id() == "f" * 32
     assert reset.status_code == 303
-    assert store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
+    assert store.prompt_overrides().get("pass", BUILT_IN_PASS_PROMPT_TEMPLATE) == BUILT_IN_PASS_PROMPT_TEMPLATE
 
     with TestClient(app, base_url="http://localhost") as client:
         after_reset = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
@@ -806,14 +806,14 @@ def test_project_pass_prompt_rejects_invalid_update_without_mutation(
     project = RegistryStore(settings.home).register("Pass settings", project_path)
     store = ProjectStore(project)
     original = "Keep {source_path}"
-    store.set_pass_prompt_template(original)
+    store.set_prompt_override("pass", original)
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
             f"/projects/{quote(project.name, safe='')}/pass-prompt",
             data={"pass_prompt_template": template},
         )
     assert response.status_code == 422
-    assert store.effective_pass_prompt_template() == original
+    assert store.prompt_overrides().get("pass", BUILT_IN_PASS_PROMPT_TEMPLATE) == original
 
 
 def test_index_renders_a_stale_project_and_rebinds_its_moved_directory(
@@ -3053,7 +3053,7 @@ def test_a_refused_prompt_or_time_limit_save_pops_up_on_its_tab(
 ) -> None:
     app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
     store = ProjectStore(project)
-    store.set_pass_prompt_template("Keep {source_path}")
+    store.set_prompt_override("pass", "Keep {source_path}")
     before = store.manifest_path.read_bytes()
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         response = client.post(f"{prefix}{path}", data=data)

@@ -733,7 +733,7 @@ def test_unrelated_manifest_write_preserves_writable_roots_representation(
         manifest["writable_roots"] = stored_roots
     atomic_write_json(store.manifest_path, manifest)
 
-    ProjectStore(project).set_pass_prompt_template(BUILT_IN_PASS_PROMPT_TEMPLATE)
+    ProjectStore(project).set_prompt_override("pass", BUILT_IN_PASS_PROMPT_TEMPLATE)
 
     persisted = json.loads(store.manifest_path.read_text(encoding="utf-8"))
     if stored_roots is None:
@@ -1257,7 +1257,7 @@ async def test_lock_coordinator_order_is_stable_and_mixed_contention_has_no_dead
     )
 
 
-def test_pass_prompt_template_is_backward_compatible_persistent_and_resettable(tmp_path: Path) -> None:
+def test_prompt_overrides_are_backward_compatible_persistent_and_removable(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     registry = RegistryStore(tmp_path / "home")
@@ -1266,7 +1266,7 @@ def test_pass_prompt_template_is_backward_compatible_persistent_and_resettable(t
     manifest_path = project_dir / ".delibra" / "manifest.json"
     legacy_bytes = manifest_path.read_bytes()
 
-    assert store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
+    assert store.prompt_overrides() == {}
     assert manifest_path.read_bytes() == legacy_bytes
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1274,15 +1274,15 @@ def test_pass_prompt_template_is_backward_compatible_persistent_and_resettable(t
     manifest["future_key"] = {"keep": True}
     atomic_write_json(manifest_path, manifest)
     custom = "Use {source_path}; session={source_session}; round={source_round}"
-    assert store.set_pass_prompt_template(custom) == custom
+    store.set_prompt_override("pass", custom)
     registry.unregister(project.id)
     imported = registry.register("Imported", project_dir)
     imported_store = ProjectStore(imported)
-    assert imported_store.effective_pass_prompt_template() == custom
+    assert imported_store.prompt_overrides() == {"pass": custom}
 
-    imported_store.reset_pass_prompt_template()
+    imported_store.set_prompt_override("pass", None)
     reset = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert imported_store.effective_pass_prompt_template() == BUILT_IN_PASS_PROMPT_TEMPLATE
+    assert imported_store.prompt_overrides() == {}
     assert "pass_prompt_template" not in reset
     assert "shared_markdown_path" not in reset  # removed feature: dropped on write
     assert reset["future_key"] == {"keep": True}
