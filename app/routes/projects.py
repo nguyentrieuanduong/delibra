@@ -36,7 +36,7 @@ from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
 from app.download_store import DownloadStore
 from app.global_instruction import GlobalInstructionError, read_global_instruction
-from app.models import Project
+from app.models import Project, holds_native_chat
 from app.notes import NoteStore, chat_note_store
 from app.project_reset import CLEAR_SCOPES, PartialClearError, clear_project
 from app.project_routing import request_project
@@ -1092,6 +1092,10 @@ async def render_project_settings(
             ),
             "use_global_instruction": store.use_global_instruction(),
             "global_instruction_state": global_instruction_state,
+            # Saving a setting that feeds the chat system part asks first (2026-11-19).
+            "ongoing_chats": holds_native_chat(sessions),
+            # Whether chat skills are on as saved: only switching them on or off asks.
+            "chat_skills_on": bool(store.chat_skills()),
             "error": error,
             "tab": tab,
             "tab_label": dict(PROJECT_TABS)[tab],

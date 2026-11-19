@@ -1436,6 +1436,16 @@ class SessionConfig:
         return result
 
 
+def holds_native_chat(sessions: Iterable[SessionConfig]) -> bool:
+    """Whether any of these agents resumes a native CLI chat session.
+
+    A resumed session keeps the system part it started with, so a change to
+    what feeds that part reaches it only after Compact or Clear context.
+    """
+
+    return any(session.cli_session_id for session in sessions)
+
+
 @dataclass(frozen=True)
 class RunKey:
     project_id: str

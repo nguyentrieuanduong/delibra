@@ -1,5 +1,5 @@
 {% from "_path_picker_macros.html" import writable_roots_field %}
-{% from "_form_macros.html" import effort_options %}
+{% from "_form_macros.html" import effort_options, takes_effect %}
 <article
   class="agent-card{% if agent_view.selected %} selected{% endif %}"
   data-session-id="{{ agent_view.session.id }}"
@@ -126,6 +126,7 @@
           <label>Role instructions
             <textarea name="role_instructions" maxlength="20000">{{ agent.role_instructions }}</textarea>
           </label>
+          {{ takes_effect("new_session") }}
         {% else %}
           <p class="immutability-hint">Role instructions cannot change after the first round.</p>
         {% endif %}

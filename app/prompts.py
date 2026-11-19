@@ -252,6 +252,7 @@ _SPECS = (
         "skill's description says it applies; its other files sit beside it.",
         (_p("index_path", "the chat skills index", sample="/path/to/.delibra/skills/chat-index.md"),),
         lan_editable=True,  # chat replies only; Auto turns use skills_turn
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "auto_preparation", "Preparation turn", "Auto discussion", "Auto preparation turns",
@@ -381,12 +382,14 @@ _SPECS = (
                sample=MARKING.format(marks="/path/to/notes-read.json")),
             _p("overrides", "what notes override", sample="the topic"),
         ),
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "notes_reading_live", "Notes: live file", "Every Auto turn", "Turns whose notes file updates live",
         "The user can add a note at any time, including while you are working, so read the file "
         "at the start of your turn, again before each significant decision, and again before "
         "finishing.",
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "notes_reading_copy", "Notes: turn-start copy", "Every Auto turn", "Turns given a turn-start copy",
@@ -411,14 +414,17 @@ _SPECS = (
                          ("Claude chat and discussion turns (no shell)", "the Downloads: no shell prompt"))),
         ),
         untrusted_warning=True,
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "downloads_manual", "Downloads: manual approval", "Downloads and conversion",
         "Turns with downloads on and manual approval", _MANUAL,
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "downloads_reread", "Downloads: no shell", "Downloads and conversion",
         "Claude chat and discussion turns with downloads on", _DOWNLOAD_REREAD,
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "convert", "Conversion requests", "Downloads and conversion", "Turns with conversion on",
@@ -438,10 +444,12 @@ _SPECS = (
                          ("Claude chat and discussion turns (no shell)", "the Conversion: no shell prompt"))),
         ),
         untrusted_warning=True,
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "convert_reread", "Conversion: no shell", "Downloads and conversion",
         "Claude chat and discussion turns with conversion on", _CONVERT_REREAD,
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
     PromptSpec(
         "model_check", "URL model check", "Downloads and conversion", "Download model checks",
@@ -457,6 +465,7 @@ _SPECS = (
     PromptSpec(
         "global_header", "Global instruction heading", "Other", "Every turn with a global instruction",
         "Global instructions from the user:",
+        effect="new_session",  # in the chat system part (design 2026-11-19)
     ),
 )
 CATALOGUE: Mapping[str, PromptSpec] = MappingProxyType({spec.id: spec for spec in _SPECS})

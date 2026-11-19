@@ -110,6 +110,11 @@
     </p>
     <fieldset>
       <legend>Context management</legend>
+      <p class="hint auto-fresh-session-note">
+        <strong>Auto starts every agent turn in a fresh agent session.</strong>
+        Delibra builds each turn's context itself (the topic plus the discussion so far);
+        Compact or Clear here limits how much it sends.
+      </p>
       <label class="auto-choice">
         <input type="radio" name="context_mode" value="compact">
         Compact: one agent summarizes the discussion so far

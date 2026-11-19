@@ -1577,8 +1577,69 @@ function confirmPromptReplace(form, event, ask) {
   return (ask || window.confirm.bind(window))(message);
 }
 
+// Settings that feed the chat system part (design 2026-11-19): a resumed native
+// chat keeps the version it started with, so saving one asks first. The server
+// marks the form only while an affected agent has a native chat session.
+const ONGOING_CHATS_MESSAGE =
+  "Ongoing chats keep the version they started with until you Compact or Clear context. " +
+  "New chat sessions and Auto turns use this from their next turn. Save?";
+
+function controlChanged(control) {
+  if (control.type === "checkbox" || control.type === "radio") {
+    return control.checked !== control.defaultChecked;
+  }
+  if (control.tagName === "SELECT") {
+    return Array.prototype.some.call(control.options || [], function (option) {
+      return option.selected !== option.defaultSelected;
+    });
+  }
+  return control.value !== control.defaultValue;
+}
+
+// Buttons send a value but show none: only the submitter's own name counts for them.
+const NON_FIELD_TYPES = ["submit", "button", "reset", "image"];
+
+// No field list (a page shown after a refused save holds unsaved values) means
+// every save counts; otherwise a listed field must differ from what the page showed.
+function ongoingChatsFieldsChanged(form) {
+  const listed = form.getAttribute("data-confirm-fields");
+  if (listed === null) return true;
+  const names = listed.split(/\s+/).filter(Boolean);
+  return Array.prototype.some.call(form.elements || [], function (control) {
+    return names.includes(control.name) && !NON_FIELD_TYPES.includes(control.type) && controlChanged(control);
+  });
+}
+
+// Chat skills (review F2): the chat note names only the skills index, which every
+// send rewrites, so list edits reach ongoing chats; only turning skills on (empty to
+// listed) or off asks. The saved state comes from the server; a preset button
+// always leaves skills on.
+function ongoingChatsSwitched(form, submitter) {
+  const savedOn = form.getAttribute("data-confirm-saved-on") === "true";
+  const field = form.getAttribute("data-confirm-switch");
+  const on =
+    (submitter && submitter.name && submitter.name === form.getAttribute("data-confirm-switch-on")) ||
+    Array.prototype.some.call(form.elements || [], function (control) {
+      return control.name === field && String(control.value || "").trim() !== "";
+    });
+  return Boolean(on) !== savedOn;
+}
+
+function confirmOngoingChats(form, submitter, ask) {
+  if (!form || typeof form.hasAttribute !== "function" || !form.hasAttribute("data-confirm-ongoing-chats")) {
+    return true;
+  }
+  const matters = form.hasAttribute("data-confirm-switch")
+    ? ongoingChatsSwitched(form, submitter)
+    : ongoingChatsFieldsChanged(form);
+  if (!matters) return true;
+  return (ask || window.confirm.bind(window))(ONGOING_CHATS_MESSAGE);
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    ONGOING_CHATS_MESSAGE,
+    confirmOngoingChats,
     promptReplaceMessage,
     submittedForm,
     confirmPromptReplace,
@@ -1676,6 +1737,16 @@ if (typeof document !== "undefined") {
   const streamRetries = new WeakMap();
 
   initializeDynamicPresentation(document);
+
+  // Capture phase: a cancelled save must be prevented before the unsaved-changes
+  // bookkeeping below reads defaultPrevented. Only plain settings forms are marked.
+  document.addEventListener(
+    "submit",
+    function (event) {
+      if (!confirmOngoingChats(event.target, event.submitter)) event.preventDefault();
+    },
+    true
+  );
 
   if (document.body && document.body.classList.contains("settings-page")) {
     const settingsForms = document.querySelectorAll("main form[method='post']");

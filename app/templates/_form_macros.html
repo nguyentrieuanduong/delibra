@@ -7,5 +7,13 @@
 {%- endmacro %}
 
 {% macro takes_effect(rule) -%}
-  <p class="takes-effect">{% if rule == "now" %}Applies from its next use.{% elif rule == "next_turn" %}A running Auto run uses this from its next turn.{% elif rule == "next_check" %}Used from the next check.{% elif rule == "next_run" %}A running Auto run keeps what it started with; new runs use this.{% elif rule == "next_commit" %}A running Auto run uses this from its next build commit.{% elif rule == "new_agent" %}Allowed during Auto; a running Auto run keeps its participants.{% else %}Locked while an Auto run is active.{% endif %}</p>
+  <p class="takes-effect">{% if rule == "now" %}Applies from its next use.{% elif rule == "next_turn" %}A running Auto run uses this from its next turn.{% elif rule == "next_check" %}Used from the next check.{% elif rule == "next_run" %}A running Auto run keeps what it started with; new runs use this.{% elif rule == "next_commit" %}A running Auto run uses this from its next build commit.{% elif rule == "new_agent" %}Allowed during Auto; a running Auto run keeps its participants.{% elif rule == "new_session" %}New chat sessions and Auto turns use this from their next turn; ongoing chats keep their version until Compact or Clear context.{% elif rule == "skills_list" %}Changes to the list reach ongoing chats from their next turn; turning skills on or off waits for a new session (Compact or Clear context).{% else %}Locked while an Auto run is active.{% endif %}</p>
+{%- endmacro %}
+
+{#- Form attributes for a setting that feeds the chat system part (design 2026-11-19):
+    app.js asks before saving while an affected agent resumes a native chat. `fields`
+    names the inputs that feed that part; after a refused save the form shows unsaved
+    values, so `refused` drops the filter and every save asks. #}
+{% macro confirm_ongoing_chats(ongoing, fields, refused=false) -%}
+  {%- if ongoing %} data-confirm-ongoing-chats{% if not refused %} data-confirm-fields="{{ fields }}"{% endif %}{% endif -%}
 {%- endmacro %}

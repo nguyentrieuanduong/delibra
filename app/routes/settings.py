@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import logging
 import os
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -43,6 +44,7 @@ from app.global_instruction import (
     read_global_instruction,
     save_global_instruction,
 )
+from app.models import holds_native_chat
 from app.path_picker import display_path, kilobytes
 from app.prompts import (
     CATALOGUE, PromptError, compare_rows, display_prompts, preview, prompt_cards, save_global_prompt,
@@ -57,6 +59,7 @@ from app.storage import ProjectStore, RegistryStore, StorageError
 from app.urls import project_url
 
 router = APIRouter()
+LOGGER = logging.getLogger(__name__)
 
 CLIENTS_ENV = "DELIBRA_ALLOWED_CLIENTS"
 HOSTS_ENV = "DELIBRA_ALLOWED_HOSTS"
@@ -252,6 +255,8 @@ def _settings_page(
     agent_rows: list[dict[str, object]] | None = None,
     converter_typed: dict[str, str] | None = None,
     prompts_view: dict[str, object] | None = None,
+    ongoing_chats: bool = True,
+    instruction_refused: bool = False,
 ):
     if rows is None:
         # The Instruction tab carries the presets form: every rendering of it, a refused
@@ -286,6 +291,10 @@ def _settings_page(
             "access_field_max": ACCESS_FIELD_MAX,
             "error": error,
             "global_instruction": global_instruction,
+            # Unknown (the default) asks: better one confirm too many than none.
+            "ongoing_chats": ongoing_chats,
+            # Only then does the box hold unsaved text, so "unchanged" proves nothing.
+            "instruction_refused": instruction_refused,
             "health": request.app.state.health,
             "agent_rows": (
                 agent_rows if agent_rows is not None else _agent_rows(read_agent_defaults(request.app.state.settings.home))
@@ -347,7 +356,28 @@ async def _global_tab(request: Request, tab: str):
         else []
     )
     view = await _prompts_view(request) if tab == "prompts" else None
-    return _settings_page(request, tab, rows, settings.allowed_clients, settings.allowed_hosts, prompts_view=view)
+    ongoing = await asyncio.to_thread(_global_instruction_in_ongoing_chats, request) if tab == "instruction" else True
+    return _settings_page(
+        request, tab, rows, settings.allowed_clients, settings.allowed_hosts, prompts_view=view, ongoing_chats=ongoing
+    )
+
+
+def _global_instruction_in_ongoing_chats(request: Request) -> bool:
+    """Whether a project that uses the global instruction has an agent resuming a native chat.
+
+    That chat keeps the instruction it started with (design 2026-11-19).
+    """
+
+    for project in request.app.state.registry.list_projects():
+        try:
+            store = ProjectStore(project)
+            if store.use_global_instruction() and holds_native_chat(store.list_sessions()):
+                return True
+        except (StorageError, OSError, ValueError, TypeError, KeyError) as exc:
+            # A broken project (unreadable folder, malformed config) must not take this
+            # tab down; it runs no turns, and its own pages say why.
+            LOGGER.warning("ongoing-chat check skipped project %s: %s", project.name, exc)
+    return False
 
 
 async def _prompts_view(
@@ -454,6 +484,7 @@ async def save_presets(request: Request):
                 settings.allowed_hosts,
                 error=f"Nothing was saved: {message}",
                 status_code=422,
+                ongoing_chats=await asyncio.to_thread(_global_instruction_in_ongoing_chats, request),
             )
 
         try:
@@ -651,6 +682,8 @@ async def save_global_instruction_text(request: Request, global_instruction: str
                 error=f"Nothing was saved: {_sentence(str(exc))}",
                 status_code=422,
                 global_instruction=global_instruction,
+                ongoing_chats=await asyncio.to_thread(_global_instruction_in_ongoing_chats, request),
+                instruction_refused=True,
             )
     return RedirectResponse("/settings/instruction", status_code=303)
 
