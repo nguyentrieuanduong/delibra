@@ -226,3 +226,80 @@ def test_compare_shows_the_project_version_against_the_typed_global_text(tmp_pat
     assert missing.status_code == 404
     assert lan.status_code == 403
 
+
+def a_project(settings, tmp_path, name="P"):
+    project_dir = tmp_path / name.lower()
+    project_dir.mkdir()
+    project = RegistryStore(settings.home).register(name, project_dir)
+    return project, f"/projects/{quote(project.name, safe='')}"
+
+
+def test_a_project_override_wins_and_use_global_removes_it(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post("/settings/prompts/compact", data={"template": "Global summary.", "action": "save"})
+        global_page = client.get(f"{prefix}/settings/prompts").text
+        saved = client.post(f"{prefix}/prompts/compact", data={"template": "Project summary.", "action": "save"},
+                            follow_redirects=False)
+        page = client.get(f"{prefix}/settings/prompts").text
+        back = client.post(f"{prefix}/prompts/compact", data={"action": "use_global"}, follow_redirects=False)
+
+    assert ">Global</span>" in card(global_page, "compact", "stateless_claude")
+    assert (saved.status_code, saved.headers["location"]) == (303, f"{prefix}/settings/prompts#prompt-compact")
+    assert page.index('id="prompt-compact"') < page.index('id="prompt-pass"')  # overridden prompts first
+    shown = page[page.index('id="prompt-compact"'):page.index('id="prompt-pass"')]
+    assert "This project" in shown and ">Project summary.</textarea>" in shown and "Use global" in shown
+    assert back.status_code == 303
+    assert ProjectStore(project).prompt_overrides() == {}
+
+
+def test_a_refused_project_prompt_pops_up_and_keeps_the_text(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    before = ProjectStore(project).manifest_path.read_bytes()
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post(f"{prefix}/prompts/notes", data={"template": "Notes {sent} {nope}", "action": "save"})
+        unknown = client.post(f"{prefix}/prompts/nope", data={"template": "x", "action": "save"})
+
+    assert response.status_code == 422
+    message = "Nothing was saved: Notes has an unknown placeholder {nope}"
+    assert f"<div hidden data-page-alert>{escape(message)}</div>" in response.text
+    assert ">Notes {sent} {nope}</textarea>" in response.text
+    assert ProjectStore(project).manifest_path.read_bytes() == before
+    assert unknown.status_code == 404
+
+
+def test_an_invalid_project_override_is_shown_on_its_card(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    ProjectStore(project).set_prompt_override("compact", "{nope}")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get(f"{prefix}/settings/prompts").text
+
+    assert "Compact summary prompt is invalid: Compact summary has an unknown placeholder {nope}" in page
+    assert ">{nope}</textarea>" in page
+
+
+def test_project_preview_renders_without_saving(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        shown = client.post(f"{prefix}/prompts/build_handover/preview", data={"template": "{name} stopped: {reason}."})
+
+    assert "Alpha stopped: timed out." in shown.text
+    assert ProjectStore(project).prompt_overrides() == {}
+
+
+def test_lan_clients_can_edit_project_prompts(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    project, prefix = a_project(settings, tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        page = client.get(f"{prefix}/settings/prompts").text
+        saved = client.post(f"{prefix}/prompts/compact", data={"template": "Short.", "action": "save"},
+                            follow_redirects=False)
+
+    assert saved.status_code == 303
+    assert ProjectStore(project).prompt_overrides() == {"compact": "Short."}
+    assert "Save override" in page
+    assert 'href="/settings/prompts"' not in page  # no link into the local-only global tab

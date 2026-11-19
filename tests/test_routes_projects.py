@@ -465,13 +465,13 @@ def test_legacy_uuid_pass_prompt_redirects_to_canonical_project_name(
 
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
-            f"{legacy_project_prefix}/pass-prompt",
-            data={"pass_prompt_template": "Review {source_path}"},
+            f"{legacy_project_prefix}/prompts/pass",
+            data={"template": "Review {source_path}", "action": "save"},
             follow_redirects=False,
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/projects/Route%20Matrix/settings/prompts"
+    assert response.headers["location"] == "/projects/Route%20Matrix/settings/prompts#prompt-pass"
 
 
 def test_canonical_project_request_resolves_registry_once(
@@ -767,20 +767,21 @@ def test_project_settings_saves_escapes_and_resets_default_pass_prompt(
         reserve_auto_run(store, auto_id="f" * 32)
         initial = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
         saved = client.post(
-            f"/projects/{quote(project.name, safe='')}/pass-prompt",
-            data={"pass_prompt_template": custom},
+            f"/projects/{quote(project.name, safe='')}/prompts/pass",
+            data={"template": custom, "action": "save"},
             follow_redirects=False,
         )
         rendered = client.get(f"/projects/{quote(project.name, safe='')}/settings/prompts")
         reset = client.post(
-            f"/projects/{quote(project.name, safe='')}/pass-prompt/reset",
+            f"/projects/{quote(project.name, safe='')}/prompts/pass",
+            data={"action": "use_global"},
             follow_redirects=False,
         )
 
     assert "Review the following document and give your critique." in initial.text
     assert "{source_path}" in initial.text
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"/projects/{quote(project.name, safe='')}/settings/prompts"
+    assert saved.headers["location"] == f"/projects/{quote(project.name, safe='')}/settings/prompts#prompt-pass"
     assert "&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in rendered.text
     assert "</textarea><script>" not in rendered.text
     assert store.active_auto_run_id() == "f" * 32
@@ -809,8 +810,8 @@ def test_project_pass_prompt_rejects_invalid_update_without_mutation(
     store.set_prompt_override("pass", original)
     with TestClient(app, base_url="http://localhost") as client:
         response = client.post(
-            f"/projects/{quote(project.name, safe='')}/pass-prompt",
-            data={"pass_prompt_template": template},
+            f"/projects/{quote(project.name, safe='')}/prompts/pass",
+            data={"template": template, "action": "save"},
         )
     assert response.status_code == 422
     assert store.prompt_overrides().get("pass", BUILT_IN_PASS_PROMPT_TEMPLATE) == original
@@ -2717,7 +2718,7 @@ def test_the_settings_page_shows_download_settings(tmp_path: Path, monkeypatch) 
 SETTINGS_TABS = {
     "general": ("Default message turn time limit", "Writable project directories",
                 "Use the global instruction in this project", "Skills for chat and discussion"),
-    "prompts": ("Default Pass prompt",),
+    "prompts": ('id="prompts-heading"', 'id="prompt-pass"'),
     "coding": ('id="coding-heading"', "Docker for build runs"),
     "agents": ("Create session",),
     "reset": ('id="reset-heading"',),
@@ -2961,8 +2962,8 @@ def test_the_lock_fragment_is_inactive_without_auto(tmp_path, monkeypatch) -> No
 @pytest.mark.parametrize(
     "path, data, tab",
     [
-        ("/pass-prompt", {"pass_prompt_template": "Read {source_path}"}, "prompts"),
-        ("/pass-prompt/reset", {}, "prompts"),
+        ("/prompts/pass", {"template": "Read {source_path}", "action": "save"}, "prompts"),
+        ("/prompts/pass", {"action": "use_global"}, "prompts"),
         ("/turn-timeout", {"turn_timeout_seconds": "5"}, "general"),
         ("/global-instruction", {}, "general"),
         ("/writable-roots", {"writable_roots": ""}, "general"),
@@ -2979,7 +2980,7 @@ def test_every_settings_save_returns_to_its_tab(tmp_path, monkeypatch, path, dat
 
     expected = f"{prefix}/settings" if tab == "general" else f"{prefix}/settings/{tab}"
     assert response.status_code == 303
-    assert response.headers["location"] == expected
+    assert response.headers["location"].split("#")[0] == expected
 
 
 def test_agent_forms_on_the_settings_page_return_to_agents(tmp_path: Path) -> None:
@@ -3039,9 +3040,9 @@ def test_the_exclude_refresh_runs_under_the_project_lock(tmp_path, monkeypatch, 
 @pytest.mark.parametrize(
     "path, data, tab, kept, sentence",
     [
-        ("/pass-prompt", {"pass_prompt_template": "No placeholder <here>"}, "Prompts",
+        ("/prompts/pass", {"template": "No placeholder <here>", "action": "save"}, "Prompts",
          ">No placeholder &lt;here&gt;</textarea>", "must contain {source_path} exactly once"),
-        ("/pass-prompt", {"pass_prompt_template": ""}, "Prompts", "</textarea>", "Pass prompt must not be empty"),
+        ("/prompts/pass", {"template": "", "action": "save"}, "Prompts", "</textarea>", "Pass prompt must not be empty"),
         ("/turn-timeout", {"turn_timeout_seconds": "0"}, "General", 'value="0"', "Project turn time limit must be"),
         ("/turn-timeout", {"turn_timeout_seconds": "seven"}, "General", 'value="seven"', "Project turn time limit must be"),
         # Over Python's int-parsing digit limit: still the normal refusal, never a 500.
