@@ -44,13 +44,17 @@ from app.global_instruction import (
     save_global_instruction,
 )
 from app.path_picker import display_path, kilobytes
+from app.prompts import (
+    CATALOGUE, PromptError, compare_rows, display_prompts, preview, prompt_cards, save_global_prompt,
+)
 from app.security import (
     AccessPolicy,
     is_loopback_client,
     normalize_allowed_client,
     normalize_allowed_host,
 )
-from app.storage import StorageError
+from app.storage import ProjectStore, RegistryStore, StorageError
+from app.urls import project_url
 
 router = APIRouter()
 
@@ -60,6 +64,7 @@ ACCESS_FIELD_MAX = 65536
 GLOBAL_TABS = (
     ("access", "Access", "/settings"),
     ("instruction", "Instruction", "/settings/instruction"),  # global instruction + presets
+    ("prompts", "Prompts", "/settings/prompts"),
     ("agents", "Agents", "/settings/agents"),
     ("converter", "Converter", "/settings/converter"),
 )
@@ -246,6 +251,7 @@ def _settings_page(
     global_instruction: str | None = None,
     agent_rows: list[dict[str, object]] | None = None,
     converter_typed: dict[str, str] | None = None,
+    prompt_typed: dict[str, str] | None = None,
 ):
     if rows is None:
         # The Instruction tab carries the presets form: every rendering of it, a refused
@@ -256,6 +262,15 @@ def _settings_page(
             if tab == "instruction"
             else []
         )
+    prompts_context: dict[str, object] = {}
+    if tab == "prompts":
+        prompts, problem = display_prompts(request.app.state.settings.home)
+        # A refused save's own message wins; otherwise the stored problem pops up.
+        error = error or problem
+        prompts_context = {
+            "cards": prompt_cards(prompts, typed=prompt_typed),
+            "overridden_in": _overrides_by_prompt(request),
+        }
     if global_instruction is None:
         try:
             # At most 64 KB, read inline like the config.json this page reads.
@@ -283,6 +298,7 @@ def _settings_page(
             ),
             **(_converter_context(request.app.state.settings.home, converter_typed or {},
                                   request.app.state.converter_models_lock.locked()) if tab == "converter" else {}),
+            **prompts_context,
             "tab": tab,
             "tab_label": dict(GLOBAL_TABS_LABELS)[tab],
             "settings_tabs": GLOBAL_TABS,
@@ -665,6 +681,128 @@ async def edit_preset_files(request: Request):
     listing = await asyncio.to_thread(_file_listing, entries, view, message, list_name)
     return request.app.state.templates.TemplateResponse(
         request=request, name="_preset_files.html", context={"listing": listing}
+    )
+
+
+def _overrides_by_prompt(request: Request) -> dict[str, list[tuple[str, str, str]]]:
+    """Prompt id -> (project id, name, its Prompts tab URL) for every project overriding it."""
+
+    found: dict[str, list[tuple[str, str, str]]] = {}
+    for project in request.app.state.registry.list_projects():
+        try:
+            overrides = ProjectStore(project).prompt_overrides()
+        except StorageError:
+            continue  # an unreadable project cannot be listed; its own tab says why
+        for prompt_id in overrides:
+            found.setdefault(prompt_id, []).append(
+                (project.id, project.name, project_url(project.name, f"/settings/prompts#prompt-{prompt_id}"))
+            )
+    return found
+
+
+@router.post("/settings/prompts/{prompt_id}")
+async def save_global_prompt_route(
+    request: Request,
+    prompt_id: str,
+    template: str = Form(""),
+    action: str = Form("save"),
+    replace: list[str] = Form([]),
+):
+    _require_local(request)
+    if prompt_id not in CATALOGUE or action not in ("save", "reset"):
+        raise HTTPException(status_code=404, detail="Unknown prompt")
+    async with request.app.state.global_settings_lock:
+        settings = request.app.state.settings
+        try:
+            await asyncio.to_thread(
+                save_global_prompt, settings.home, prompt_id, template if action == "save" else None
+            )
+        except (PromptError, OSError, StorageError) as exc:
+            return _settings_page(
+                request, "prompts", [], settings.allowed_clients, settings.allowed_hosts,
+                error=f"Nothing was saved: {_sentence(str(exc))}", status_code=422,
+                prompt_typed={prompt_id: template},
+            )
+    # Only after the global save succeeded: a refused save replaces nothing (2026-11-17).
+    failures = await _replace_overrides(request, prompt_id, replace)
+    if failures:
+        settings = request.app.state.settings
+        return _settings_page(
+            request, "prompts", [], settings.allowed_clients, settings.allowed_hosts,
+            error=f"Saved. The override was not replaced in {'; '.join(failures)}",
+        )
+    return RedirectResponse(f"/settings/prompts#prompt-{prompt_id}", status_code=303)
+
+
+async def _replace_overrides(request: Request, prompt_id: str, project_ids: list[str]) -> list[str]:
+    """Remove `prompt_id`'s override in each chosen project; "Name: reason" per failure.
+
+    Runs after the global save, one project lock at a time (project routes never take
+    the global settings lock, so the order cannot deadlock). Overrides are read per
+    use, so a running Auto run picks the change up from its next turn.
+    """
+
+    failures: list[str] = []
+    registry = request.app.state.registry
+    for project_id in dict.fromkeys(project_ids):
+        try:
+            async with request.app.state.locks.registry_project_sessions(project_id):
+                project = registry.get(project_id)
+                await asyncio.to_thread(ProjectStore(project).set_prompt_override, prompt_id, None)
+        except (StorageError, OSError) as exc:  # NotFoundError is a StorageError
+            failures.append(f"{_project_label(registry, project_id)}: {exc}")
+    return failures
+
+
+def _project_label(registry: RegistryStore, project_id: str) -> str:
+    try:
+        return registry.get(project_id).name
+    except StorageError:
+        return "an unknown project"
+
+
+@router.post("/settings/prompts/{prompt_id}/compare", response_class=HTMLResponse)
+async def compare_global_prompt(
+    request: Request, prompt_id: str, template: str = Form(""), project: str = Form("")
+):
+    """A project's override against the typed global text; nothing is saved."""
+
+    _require_local(request)
+    spec = CATALOGUE.get(prompt_id)
+    try:
+        record = request.app.state.registry.get(project)
+        override = ProjectStore(record).prompt_overrides().get(prompt_id)
+    except StorageError:
+        override = None
+    if spec is None or override is None:
+        raise HTTPException(status_code=404, detail="That project does not override this prompt")
+    rows = compare_rows(override, template)
+    return request.app.state.templates.TemplateResponse(
+        request=request, name="_prompt_compare.html",
+        context={"project_name": record.name, "rows": rows,
+                 "identical": all(kind == "same" for kind, _ in rows)},
+    )
+
+
+@router.post("/settings/prompts/{prompt_id}/preview", response_class=HTMLResponse)
+async def preview_global_prompt(request: Request, prompt_id: str, template: str = Form("")):
+    _require_local(request)
+    return prompt_preview_response(request, prompt_id, template)
+
+
+def prompt_preview_response(request: Request, prompt_id: str, template: str) -> HTMLResponse:
+    """The rendered text for typed, unsaved template text; nothing is stored."""
+
+    spec = CATALOGUE.get(prompt_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="Unknown prompt")
+    try:
+        shown, failed = preview(spec, template), False
+    except PromptError as exc:
+        shown, failed = str(exc), True
+    return request.app.state.templates.TemplateResponse(
+        request=request, name="_prompt_preview.html",
+        context={"spec": spec, "preview": shown, "failed": failed},
     )
 
 

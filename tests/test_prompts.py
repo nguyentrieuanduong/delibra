@@ -303,3 +303,12 @@ def test_an_edited_template_reaches_every_call_site(tmp_path) -> None:
         for prompt_id, text in shown.items():
             assert "EDITED-" + prompt_id.upper() in text, (scope, prompt_id)
 
+
+def test_compare_rows_mark_what_only_the_project_or_the_global_has() -> None:
+    from app.prompts import compare_rows
+
+    rows = compare_rows("Read {context}.\nBe brief.\nEnd.", "Read {context}.\nBe very brief.\nEnd.")
+    assert rows == [
+        ("same", "Read {context}."), ("project", "Be brief."), ("global", "Be very brief."), ("same", "End."),
+    ]
+    assert compare_rows("a", "a") == [("same", "a")]

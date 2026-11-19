@@ -1555,8 +1555,26 @@ function settingsFormsDirty(forms, snapshots, submitting) {
   });
 }
 
+// Global Prompts tab: ticked "Replace in <project>" boxes ask first (2026-11-17).
+function promptReplaceMessage(names, submitterValue) {
+  if (!names.length) return null;
+  const target = submitterValue === "reset" ? "the built-in text" : "the global text";
+  return `Replace this prompt in ${names.join(", ")} with ${target}? Their own versions are removed.`;
+}
+
+function confirmPromptReplace(form, event, ask) {
+  const names = Array.from(form.querySelectorAll('input[name="replace"]:checked')).map(
+    (box) => box.dataset.projectName
+  );
+  const message = promptReplaceMessage(names, event && event.submitter ? event.submitter.value : "save");
+  if (message === null) return true;
+  return (ask || window.confirm.bind(window))(message);
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    promptReplaceMessage,
+    confirmPromptReplace,
     applyAgentDefaults,
     formSnapshot,
     settingsFormsDirty,

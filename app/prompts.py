@@ -553,3 +553,68 @@ def pass_template(home: Path, store: ProjectStore) -> str:
     except (PromptError, StorageError):
         return CATALOGUE["pass"].default
 
+
+def sample_values(spec: PromptSpec) -> dict[str, str]:
+    return {placeholder.name: placeholder.sample for placeholder in spec.placeholders}
+
+
+def preview(spec: PromptSpec, template: str) -> str:
+    """The text an agent would receive, with sample values; raises PromptError."""
+
+    return render_template(spec, validate_template(spec, template), sample_values(spec))
+
+
+def display_prompts(home: Path, store: ProjectStore | None = None) -> tuple[Prompts, str | None]:
+    """What the Prompts tabs show, and the first problem found.
+
+    Every stored text is shown, an invalid one too (its preview names the error), so
+    the user can repair it there; an unreadable file shows the built-ins.
+    """
+
+    problem: str | None = None
+    try:
+        stored = _read_file(home)
+    except PromptError as exc:
+        stored, problem = {}, str(exc)
+    overrides: Mapping[str, object] = {}
+    if store is not None:
+        try:
+            overrides = store.prompt_overrides()
+        except StorageError as exc:
+            problem = problem or str(exc)
+    for entries in (stored, overrides):
+        try:
+            _stored(entries)
+        except PromptError as exc:
+            problem = problem or str(exc)
+
+    def texts(entries: Mapping[str, object]) -> dict[str, str]:
+        return {key: value for key, value in entries.items() if key in CATALOGUE and isinstance(value, str)}
+
+    return Prompts(texts(stored), texts(overrides)), problem
+
+
+def prompt_cards(prompts: Prompts, *, typed: Mapping[str, str] | None = None) -> list[dict[str, object]]:
+    """One view per prompt, catalogue order, for both Prompts tabs."""
+
+    cards = []
+    for spec in CATALOGUE.values():
+        text = (typed or {}).get(spec.id, prompts.template(spec.id))
+        try:
+            shown, failed = preview(spec, text), False
+        except PromptError as exc:
+            shown, failed = str(exc), True
+        cards.append({"spec": spec, "text": text, "source": prompts.source(spec.id), "preview": shown,
+                      "failed": failed})
+    return cards
+
+
+def compare_rows(project_text: str, global_text: str) -> list[tuple[str, str]]:
+    """Line diff for the Compare view: ("same" | "project" | "global", line)."""
+
+    kinds = {"  ": "same", "- ": "project", "+ ": "global"}  # ndiff's "? " hint lines are skipped
+    return [
+        (kinds[line[:2]], line[2:])
+        for line in difflib.ndiff(project_text.splitlines(), global_text.splitlines())
+        if line[:2] in kinds
+    ]
