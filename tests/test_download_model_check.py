@@ -54,7 +54,7 @@ async def test_a_failing_or_slow_cli_fails_closed(tmp_path: Path, monkeypatch) -
         await run_model_check("claude", script(tmp_path, "exit 3\n"), "m", [("D1", "u")], tmp_path)
     monkeypatch.setattr("app.download_model_check.CHECK_TIMEOUT_SECONDS", 0.5)
     with pytest.raises(CheckError, match="timed out"):
-        await run_model_check("claude", script(tmp_path, "sleep 5\n"), "m", [("D1", "u")], tmp_path)
+        await run_model_check("claude", script(tmp_path, "exec sleep 5\n"), "m", [("D1", "u")], tmp_path)
 
 @pytest.mark.asyncio
 async def test_a_cancelled_check_kills_the_cli(tmp_path: Path) -> None:

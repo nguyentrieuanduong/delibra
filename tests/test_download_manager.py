@@ -78,7 +78,8 @@ async def test_bad_spool_files_warn_and_create_nothing(tmp_path):
     assert len(manager.turn_warnings(turn)) == 2
 
 @pytest.mark.asyncio
-async def test_model_check_flags_and_fails_closed(tmp_path):
+async def test_model_check_flags_and_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.download_manager.BATCH_WINDOW_SECONDS", 0)  # batching is not under test
     async def check(provider, executable, model, items, work_root, prompts=None):
         return {rid: ("flag", "looks encoded") for rid, _ in items}
     manager, turn = setup(tmp_path, approval="automatic", model_check=True, check=check)
@@ -94,7 +95,8 @@ async def test_model_check_flags_and_fails_closed(tmp_path):
     assert status(turn2)[0]["reason"] == "model check unavailable: timed out"
 
 @pytest.mark.asyncio
-async def test_each_model_check_reads_the_prompts_and_fails_closed_on_an_invalid_one(tmp_path):
+async def test_each_model_check_reads_the_prompts_and_fails_closed_on_an_invalid_one(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.download_manager.BATCH_WINDOW_SECONDS", 0)  # batching is not under test
     from app.prompts import PromptError, Prompts
 
     seen = []

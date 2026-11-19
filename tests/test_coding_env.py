@@ -272,6 +272,6 @@ async def test_probe_env_python_times_out(
     tmp_path: Path, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("app.coding_env.PROBE_TIMEOUT_SECONDS", 0.2)
-    write_python(project / "envs" / "bin" / "python", "sleep 5\n")
+    write_python(project / "envs" / "bin" / "python", "exec sleep 5\n")
 
     assert await probe_env_python(project, environ=environ(tmp_path / "bin")) is None
