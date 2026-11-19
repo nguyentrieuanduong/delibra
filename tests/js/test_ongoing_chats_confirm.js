@@ -21,6 +21,11 @@ function select(name, chosen, saved) {
   return { name, type: "select-one", tagName: "SELECT", options };
 }
 
+function button(name, value) {
+  // Buttons have no defaultValue: comparing one would always count as a change.
+  return { name, type: "submit", tagName: "BUTTON", value };
+}
+
 function form(elements, attributes) {
   const attrs = attributes || {};
   return {
@@ -75,6 +80,7 @@ test("a save that leaves every listed field as shown does not ask", () => {
       select("downloads_approval", "manual", "manual"),
       // Not a system-part field: the model check does not change the chat notes.
       text("downloads_check_model", "other", "haiku"),
+      button("downloads_enabled", "save"),
     ],
     { ...ONGOING, "data-confirm-fields": "downloads_enabled downloads_approval" }
   );
@@ -92,19 +98,37 @@ test("a changed select among the listed fields asks", () => {
   assert.equal(asked.length, 1);
 });
 
-test("a listed submit button (a skills preset) asks even with the text unchanged", () => {
-  const { asked, ask } = recorder(false);
-  const skills = form([text("chat_skills", "/same.md", "/same.md")], {
-    ...ONGOING,
-    "data-confirm-fields": "chat_skills chat_preset",
-  });
-  assert.equal(confirmOngoingChats(skills, { name: "chat_preset", value: "code-craft" }, ask), false);
-  assert.equal(asked.length, 1);
-});
-
 test("without a field list (a refused page) every save asks", () => {
   const { asked, ask } = recorder(false);
-  const refused = form([text("chat_skills", "/typed.md", "/typed.md")], ONGOING);
+  const refused = form([text("global_instruction", "Typed.", "Typed.")], ONGOING);
   assert.equal(confirmOngoingChats(refused, null, ask), false);
   assert.equal(asked.length, 1);
 });
+
+// Chat skills (review F2): list edits reach ongoing chats; only on <-> off asks.
+function skills(typed, savedOn) {
+  return form([text("chat_skills", typed, typed), button("chat_preset", "code-craft")], {
+    ...ONGOING,
+    "data-confirm-switch": "chat_skills",
+    "data-confirm-switch-on": "chat_preset",
+    "data-confirm-saved-on": savedOn ? "true" : "false",
+  });
+}
+
+const PRESET = { name: "chat_preset", value: "code-craft" };
+const SAVE = { name: "", value: "" };
+
+for (const [label, typed, savedOn, submitter, asks] of [
+  ["off -> a typed list turns skills on", "/a/SKILL.md", false, SAVE, true],
+  ["off -> a preset turns skills on", "", false, PRESET, true],
+  ["off -> still empty (blank lines only)", "  \n\n ", false, SAVE, false],
+  ["on -> an edited list stays on", "/a/SKILL.md\n/b/SKILL.md", true, SAVE, false],
+  ["on -> a preset keeps skills on", "/a/SKILL.md", true, PRESET, false],
+  ["on -> emptied turns skills off", " \n", true, SAVE, true],
+]) {
+  test(`chat skills ${label}: ${asks ? "asks" : "saves without asking"}`, () => {
+    const { asked, ask } = recorder(false);
+    assert.equal(confirmOngoingChats(skills(typed, savedOn), submitter, ask), !asks);
+    assert.equal(asked.length, asks ? 1 : 0);
+  });
+}

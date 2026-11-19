@@ -1,5 +1,5 @@
 {% from "_form_macros.html" import confirm_ongoing_chats, takes_effect %}
-<form method="post" action="/settings/global-instruction" class="global-settings"{{ confirm_ongoing_chats(ongoing_chats, "global_instruction", error is not none) }}>
+<form method="post" action="/settings/global-instruction" class="global-settings"{{ confirm_ongoing_chats(ongoing_chats, "global_instruction", instruction_refused) }}>
   <section aria-labelledby="global-instruction-heading">
     <h2 id="global-instruction-heading">Global instruction</h2>
     {{ takes_effect("new_session") }}

@@ -6,16 +6,19 @@ The confirm is wanted only while an affected agent holds a native chat session
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 import re
 import uuid
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.config import Settings
 from app.main import create_app
-from app.models import RoundRecord, SessionConfig, SourceDescriptor
+from app.models import SessionConfig
 from app.storage import ProjectStore, RegistryStore
 
 MARK = "data-confirm-ongoing-chats"
@@ -80,46 +83,6 @@ def test_general_forms_ask_only_while_an_agent_of_the_project_has_a_native_chat(
     assert MARK not in form_tag(with_session, "/turn-timeout")
 
 
-def test_an_agent_edit_form_asks_only_for_the_agent_holding_a_native_chat(tmp_path: Path) -> None:
-    app, settings = make_app(tmp_path)
-    project, store = add_project(settings, tmp_path, "Agents", ("native-1", None))
-    native_id, fresh_id = (session.id for session in store.list_sessions())
-    prefix = f"/projects/{quote(project.name, safe='')}"
-
-    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        agents_tab = client.get(f"{prefix}/settings/agents").text
-        chat_native = client.get(f"{prefix}/chat?agent={native_id}").text
-        chat_fresh = client.get(f"{prefix}/chat?agent={fresh_id}").text
-
-    assert MARK in form_tag(agents_tab, f"/sessions/{native_id}/edit")
-    assert MARK not in form_tag(agents_tab, f"/sessions/{fresh_id}/edit")
-    assert MARK in form_tag(chat_native, f"/sessions/{native_id}/edit?agent={native_id}")
-    assert MARK not in form_tag(chat_fresh, f"/sessions/{fresh_id}/edit?agent={fresh_id}")
-
-
-def test_an_agent_past_its_first_round_never_asks_since_its_role_is_fixed(tmp_path: Path) -> None:
-    app, settings = make_app(tmp_path)
-    project, store = add_project(settings, tmp_path, "Chatted", ("native-1",))
-    config = store.list_sessions()[0]
-    config.rounds = [
-        RoundRecord(
-            n=1, status="complete", error=None, warnings=[], agent="claude", model="",
-            effort="low", started_at="2026-11-19T00:00:00Z", finished_at="2026-11-19T00:00:01Z",
-            source=SourceDescriptor(type="user"),
-        )
-    ]
-    store.save_session(config)
-    prefix = f"/projects/{quote(project.name, safe='')}"
-
-    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        agents_tab = client.get(f"{prefix}/settings/agents").text
-        chat = client.get(f"{prefix}/chat?agent={config.id}").text
-
-    # A model or roots edit does not touch the system part: no confirm.
-    assert MARK not in form_tag(agents_tab, f"/sessions/{config.id}/edit")
-    assert MARK not in form_tag(chat, f"/sessions/{config.id}/edit?agent={config.id}")
-
-
 def test_the_global_instruction_asks_only_when_a_project_using_it_has_a_native_chat(tmp_path: Path) -> None:
     app, settings = make_app(tmp_path)
     _, store = add_project(settings, tmp_path, "Elsewhere", ("native-1",))
@@ -135,18 +98,95 @@ def test_the_global_instruction_asks_only_when_a_project_using_it_has_a_native_c
     assert MARK not in form_tag(switched_off, "/settings/global-instruction")
 
 
-def test_a_refused_page_asks_on_every_save_of_these_forms(tmp_path: Path) -> None:
-    """After a refusal the form shows unsaved typed values, so 'unchanged' proves nothing."""
+def test_the_skills_form_carries_the_saved_on_or_off_state_not_the_typed_text(tmp_path: Path) -> None:
+    """Only turning skills on or off changes the chat system part (review F2): the page
+    tells the browser whether the saved list is empty, even after a refused save."""
 
     app, settings = make_app(tmp_path)
-    project, _ = add_project(settings, tmp_path, "Refused", ("native-1",))
+    project, store = add_project(settings, tmp_path, "Skills", ("native-1",))
+    skill = tmp_path / "skill" / "SKILL.md"
+    skill.parent.mkdir()
+    skill.write_text("---\nname: s\ndescription: d\n---\n# S\n")
     prefix = f"/projects/{quote(project.name, safe='')}"
 
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        normal = client.get(f"{prefix}/settings").text
+        off = client.get(f"{prefix}/settings").text
         refused = client.post(f"{prefix}/chat-skills", data={"chat_skills": "/no/such/skill/SKILL.md"})
+        saved = client.post(f"{prefix}/chat-skills", data={"chat_skills": str(skill)}, follow_redirects=False)
+        on = client.get(f"{prefix}/settings").text
+
+    assert refused.status_code == 422 and saved.status_code == 303
+    assert store.chat_skills() == [str(skill)]
+    assert 'data-confirm-saved-on="false"' in form_tag(off, "/chat-skills")
+    assert 'data-confirm-saved-on="false"' in form_tag(refused.text, "/chat-skills")
+    assert 'data-confirm-saved-on="true"' in form_tag(on, "/chat-skills")
+
+
+def _unreadable_sessions(store: ProjectStore) -> None:
+    store.sessions_root.chmod(0)
+
+
+def _malformed_config(store: ProjectStore) -> None:
+    config = next(store.sessions_root.iterdir()) / "config.json"
+    data = json.loads(config.read_text())
+    data["rounds"] = "oops"
+    config.write_text(json.dumps(data))
+
+
+@pytest.mark.parametrize("break_project", [_unreadable_sessions, _malformed_config])
+def test_a_broken_project_is_skipped_by_the_global_instruction_check(tmp_path: Path, break_project) -> None:
+    """The Instruction tab never read projects before: a broken one must not take it down."""
+
+    app, settings = make_app(tmp_path)
+    _, broken = add_project(settings, tmp_path, "Broken", ("native-1",))
+    add_project(settings, tmp_path, "Healthy", ("native-2",))
+    try:
+        with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+            # Broken while the server runs (startup migration reads every project).
+            break_project(broken)
+            page = client.get("/settings/instruction")
+    finally:
+        broken.sessions_root.chmod(0o700)
+
+    assert page.status_code == 200
+    # The healthy project still counts.
+    assert MARK in form_tag(page.text, "/settings/global-instruction")
+
+
+def test_a_refused_preset_save_keeps_the_real_state_and_the_field_filter(tmp_path: Path) -> None:
+    """Only a refused instruction save puts unsaved text in the instruction box."""
+
+    app, settings = make_app(tmp_path)
+    _, store = add_project(settings, tmp_path, "Presets", ("native-1",))
+    bad_preset = {"allowed_clients": "", "allowed_hosts": "", "preset_count": "1",
+                  "preset_name_0": "x", "preset_files_0": "relative.md"}
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        with_chat = client.post("/settings/presets", data=bad_preset)
+        store.set_use_global_instruction(False)
+        without_chat = client.post("/settings/presets", data=bad_preset)
+        store.set_use_global_instruction(True)
+        refused_instruction = client.post("/settings/global-instruction", data={"global_instruction": "x" * 70000})
+
+    assert with_chat.status_code == without_chat.status_code == refused_instruction.status_code == 422
+    tag = form_tag(with_chat.text, "/settings/global-instruction")
+    assert MARK in tag and "data-confirm-fields" in tag
+    assert MARK not in form_tag(without_chat.text, "/settings/global-instruction")
+    tag = form_tag(refused_instruction.text, "/settings/global-instruction")
+    assert MARK in tag and "data-confirm-fields" not in tag
+
+
+def test_a_refused_downloads_save_drops_the_filter_on_that_form_only(tmp_path: Path) -> None:
+    app, settings = make_app(tmp_path)
+    project, _ = add_project(settings, tmp_path, "Downloads", ("native-1",))
+    prefix = f"/projects/{quote(project.name, safe='')}"
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        refused = client.post(f"{prefix}/download-settings", data={
+            "downloads_enabled": "true", "downloads_folder": "../outside", "downloads_approval": "manual",
+            "downloads_check_provider": "claude", "downloads_check_model": "haiku",
+        })
 
     assert refused.status_code == 422
-    assert "data-confirm-fields" in form_tag(normal, "/chat-skills")
-    tag = form_tag(refused.text, "/chat-skills")
-    assert MARK in tag and "data-confirm-fields" not in tag
+    assert "data-confirm-fields" not in form_tag(refused.text, "/download-settings")
+    assert "data-confirm-fields" in form_tag(refused.text, "/global-instruction")

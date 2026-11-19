@@ -1,5 +1,5 @@
 {% from "_path_picker_macros.html" import writable_roots_field %}
-{% from "_form_macros.html" import confirm_ongoing_chats, effort_options, takes_effect %}
+{% from "_form_macros.html" import effort_options, takes_effect %}
 <article
   class="agent-card{% if agent_view.selected %} selected{% endif %}"
   data-session-id="{{ agent_view.session.id }}"
@@ -102,7 +102,7 @@
         hx-target="#agent-sidebar"
         hx-swap="outerHTML"
         data-session-config-form
-        data-agent="{{ agent.agent }}"{{ confirm_ongoing_chats(agent.cli_session_id and not agent.rounds, "role_instructions") }}
+        data-agent="{{ agent.agent }}"
       >
         <p class="immutable-agent-name">{{ agent.name }}</p>
         <p class="immutability-hint">Agent name and directory are permanent.</p>

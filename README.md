@@ -218,7 +218,8 @@ Each section says when a change takes effect:
 | Rule | Line shown | Settings |
 |---|---|---|
 | Now | Applies from its next use. | Access lists; presets (copied only when a Use button is pressed); the Pass prompt; default turn time limit (new messages and new Auto runs) |
-| New session | New chat sessions and Auto turns use this from their next turn; ongoing chats keep their version until Compact or Clear context. | Use of the global instruction; the global instruction text; an agent's role instructions; chat skills; downloads and document conversion (all fields, folder included) |
+| New session | New chat sessions and Auto turns use this from their next turn; ongoing chats keep their version until Compact or Clear context. | Use of the global instruction; the global instruction text; an agent's role instructions; downloads and document conversion; the prompts that go into a chat turn's system part (global instruction heading, chat skills note, notes, notes live file, download and conversion requests and their manual-approval and no-shell variants) |
+| Skills list | Changes to the list reach ongoing chats from their next turn; turning skills on or off waits for a new session (Compact or Clear context). | Chat skills |
 | Next turn | A running Auto run uses this from its next turn. | Every other prompt (global or project); writable project directories; command network access; build skills |
 | Next check | Used from the next check. | The URL model check prompt |
 | Next commit | A running Auto run uses this from its next build commit. | Git ignore list |
@@ -229,19 +230,31 @@ Each section says when a change takes effect:
 ### When changes reach an agent
 
 The global instruction, the project's use of it, an agent's role instructions,
-chat skills and the downloads and documents settings all go into the system part
-Delibra sends with an agent's turn. A chat resumes the provider CLI's own
-session, and on a resume both CLIs keep the system part the session started
-with, so an ongoing chat keeps the old version until its agent card's
-**Compact** or **Clear context** starts a fresh session (starting an Auto run
-and changing writable directories do too). New chat sessions and every Auto
+the downloads and documents notes, and the prompts written into those notes all
+go into the system part Delibra sends with an agent's turn. A chat resumes the
+provider CLI's own session, and on a resume both CLIs keep the system part the
+session started with, so an ongoing chat keeps the old version until its agent
+card's **Compact** or **Clear context** starts a fresh session (starting an Auto
+run and changing writable directories do too). New chat sessions and every Auto
 turn, which always starts a fresh session, use the change from their next turn.
 This keeps provider caching cheap and a conversation's behaviour predictable.
-While an affected agent has an ongoing chat, saving one of these settings asks
-first: "Ongoing chats keep the version they started with until you Compact or
-Clear context. New chat sessions and Auto turns use this from their next turn.
-Save?" Cancel saves nothing and keeps what you typed. (Role instructions can be
-edited only before an agent's first round, so in practice their save never asks.)
+
+- **Chat skills:** the system part only names the skills index, which Delibra
+  rewrites on every send, so changes to the list reach ongoing chats from their
+  next turn; turning skills on (an empty list gets entries) or off (the list is
+  emptied) waits for a new session.
+- **Downloads and documents:** only what the chat notes are written from waits
+  for a new session — the download and conversion on/off switches, the approval
+  wording (manual or automatic) and the download folder. Delibra itself applies
+  the approval mode from the next turn, and the model check provider and model
+  from the next check.
+
+While an agent of the project (any project using it, for the global
+instruction) has an ongoing chat, saving a change that waits asks first:
+"Ongoing chats keep the version they started with until you Compact or Clear
+context. New chat sessions and Auto turns use this from their next turn.
+Save?" Cancel saves nothing and keeps what you typed. Prompt edits on the
+Prompts tabs do not ask.
 
 While an Auto run is active, the Coding, Agents and Reset tabs show which of
 their settings are locked ("Auto run #N is active: … locked until it ends.").
@@ -423,7 +436,9 @@ global instruction heading — 27 prompts in all.
   replaced.
 - **When edits apply.** Prompts are read each time they are used: chat replies
   and Auto turns from their next turn (a running Auto run included), the URL
-  model check from its next check, the Pass prompt from the next Pass.
+  model check from its next check, the Pass prompt from the next Pass. Prompts
+  that go into a chat turn's system part reach an ongoing chat only after
+  Compact or Clear context ([When changes reach an agent](#when-changes-reach-an-agent)).
 - **Storage.** Global: `$DELIBRA_HOME/prompts.json`
   (`{"format": "delibra-prompts/1", "prompts": {"<id>": "<template>"}}`, only
   changed prompts, at most 256 KB, mode 0600). Project: the manifest's

@@ -1094,6 +1094,8 @@ async def render_project_settings(
             "global_instruction_state": global_instruction_state,
             # Saving a setting that feeds the chat system part asks first (2026-11-19).
             "ongoing_chats": holds_native_chat(sessions),
+            # Whether chat skills are on as saved: only switching them on or off asks.
+            "chat_skills_on": bool(store.chat_skills()),
             "error": error,
             "tab": tab,
             "tab_label": dict(PROJECT_TABS)[tab],

@@ -1596,24 +1596,43 @@ function controlChanged(control) {
   return control.value !== control.defaultValue;
 }
 
+// Buttons send a value but show none: only the submitter's own name counts for them.
+const NON_FIELD_TYPES = ["submit", "button", "reset", "image"];
+
 // No field list (a page shown after a refused save holds unsaved values) means
-// every save counts; otherwise a listed field must differ from what the page showed,
-// or the save must come from a listed button (a skills preset).
-function ongoingChatsFieldsChanged(form, submitter) {
+// every save counts; otherwise a listed field must differ from what the page showed.
+function ongoingChatsFieldsChanged(form) {
   const listed = form.getAttribute("data-confirm-fields");
   if (listed === null) return true;
   const names = listed.split(/\s+/).filter(Boolean);
-  if (submitter && names.includes(submitter.name)) return true;
   return Array.prototype.some.call(form.elements || [], function (control) {
-    return names.includes(control.name) && controlChanged(control);
+    return names.includes(control.name) && !NON_FIELD_TYPES.includes(control.type) && controlChanged(control);
   });
+}
+
+// Chat skills (review F2): the chat note names only the skills index, which every
+// send rewrites, so list edits reach ongoing chats; only turning skills on (empty to
+// listed) or off asks. The saved state comes from the server; a preset button
+// always leaves skills on.
+function ongoingChatsSwitched(form, submitter) {
+  const savedOn = form.getAttribute("data-confirm-saved-on") === "true";
+  const field = form.getAttribute("data-confirm-switch");
+  const on =
+    (submitter && submitter.name && submitter.name === form.getAttribute("data-confirm-switch-on")) ||
+    Array.prototype.some.call(form.elements || [], function (control) {
+      return control.name === field && String(control.value || "").trim() !== "";
+    });
+  return Boolean(on) !== savedOn;
 }
 
 function confirmOngoingChats(form, submitter, ask) {
   if (!form || typeof form.hasAttribute !== "function" || !form.hasAttribute("data-confirm-ongoing-chats")) {
     return true;
   }
-  if (!ongoingChatsFieldsChanged(form, submitter)) return true;
+  const matters = form.hasAttribute("data-confirm-switch")
+    ? ongoingChatsSwitched(form, submitter)
+    : ongoingChatsFieldsChanged(form);
+  if (!matters) return true;
   return (ask || window.confirm.bind(window))(ONGOING_CHATS_MESSAGE);
 }
 
@@ -1720,23 +1739,14 @@ if (typeof document !== "undefined") {
   initializeDynamicPresentation(document);
 
   // Capture phase: a cancelled save must be prevented before the unsaved-changes
-  // bookkeeping below reads defaultPrevented. htmx forms ask in htmx:confirm instead,
-  // since htmx sends them itself.
+  // bookkeeping below reads defaultPrevented. Only plain settings forms are marked.
   document.addEventListener(
     "submit",
     function (event) {
-      const form = event.target;
-      if (!form || typeof form.hasAttribute !== "function" || form.hasAttribute("hx-post")) return;
-      if (!confirmOngoingChats(form, event.submitter)) event.preventDefault();
+      if (!confirmOngoingChats(event.target, event.submitter)) event.preventDefault();
     },
     true
   );
-  document.addEventListener("htmx:confirm", function (event) {
-    const form = event.detail && event.detail.elt;
-    if (!form || form.tagName !== "FORM") return;
-    const trigger = event.detail.triggeringEvent;
-    if (!confirmOngoingChats(form, trigger && trigger.submitter)) event.preventDefault();
-  });
 
   if (document.body && document.body.classList.contains("settings-page")) {
     const settingsForms = document.querySelectorAll("main form[method='post']");
