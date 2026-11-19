@@ -17,21 +17,14 @@ FINISHED = r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d – \d\d:\d\d:\d\d \+07$"
 
 
 @pytest.fixture
-def hanoi_page() -> Iterator[Any]:
+def hanoi_page(chromium: Any) -> Iterator[Any]:
     """A page whose browser clock is UTC+7, whatever the machine's is."""
 
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        try:
-            context = browser.new_context(timezone_id="Asia/Ho_Chi_Minh")
-            try:
-                yield context.new_page()
-            finally:
-                context.close()
-        finally:
-            browser.close()
+    context = chromium.new_context(timezone_id="Asia/Ho_Chi_Minh")
+    try:
+        yield context.new_page()
+    finally:
+        context.close()
 
 
 @pytest.mark.browser

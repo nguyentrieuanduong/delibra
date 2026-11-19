@@ -206,12 +206,15 @@ def live_server() -> Iterator[LiveServer]:
     assert not stranded, f"runs still active after shutdown: {stranded}"
 
 
-@pytest.fixture
-def page() -> Iterator[Any]:
-    """A Chromium page with guaranteed teardown.
+@pytest.fixture(scope="package")
+def chromium() -> Iterator[Any]:
+    """One Chromium for the browser package, launched once and always closed.
 
-    Owns launch and close once, so the six tests below carry only their
-    own setup and assertions and a teardown bug has one place to live.
+    Package scope, not session scope: while a sync Playwright is open it
+    marks its own loop as the thread's running loop (playwright/_impl/
+    _sync_base.py), which would break pytest-asyncio tests that run on the
+    same worker afterwards. Pytest closes this fixture as soon as the next
+    test lies outside tests/browser/.
     """
 
     from playwright.sync_api import sync_playwright
@@ -219,6 +222,21 @@ def page() -> Iterator[Any]:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         try:
-            yield browser.new_page()
+            yield browser
         finally:
             browser.close()
+
+
+@pytest.fixture
+def page(chromium: Any) -> Iterator[Any]:
+    """A Chromium page in its own browser context, with guaranteed teardown.
+
+    A fresh context per test keeps cookies, storage and cache apart exactly
+    as a fresh browser did; only the browser process is shared.
+    """
+
+    context = chromium.new_context()
+    try:
+        yield context.new_page()
+    finally:
+        context.close()
