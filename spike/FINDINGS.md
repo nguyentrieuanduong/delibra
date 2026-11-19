@@ -728,3 +728,57 @@ S3/S4 were not re-run: the provider sandboxes, read roots and command environmen
 - /opt/homebrew/bin/codex --model gpt-6-sol --ask-for-approval never --search --cd '<TMP>/project' --config 'model_reasoning_effort="low"' --config 'project_root_markers=[]' --config project_doc_max_bytes=0 --config 'developer_instructions="Follow the user'"'"'s instructions exactly."' --config 'default_permissions="delibra_build"' --config 'permissions={delibra_build={extends=":workspace", filesystem={":root"="deny", ":minimal"="read", "/Library/Developer/CommandLineTools"="read", "/Applications/Docker.app/Contents/Resources/bin"="read", "/Applications/Docker.app/Contents/Resources/cli-plugins"="read", "<TMP>/build-tmp"="write", ":workspace_roots"={"."="write", ".delibra"="read", ".git"="read"}}, network={enabled=true, domains={}, unix_sockets={"<TMP>/h/lima/delibra-0f3c7042b7/sock/docker.sock"="allow"}}}}' --config 'shell_environment_policy={inherit="core", set={"CONDA_PREFIX"="<TMP>/project/envs", "TMPDIR"="<TMP>/build-tmp", "PIP_CACHE_DIR"="<TMP>/build-tmp/pip-cache", "GIT_CONFIG_GLOBAL"="/dev/null", "XDG_CONFIG_HOME"="<TMP>/build-tmp/xdg", "PIP_USE_DEPRECATED"="legacy-certs", "DOCKER_HOST"="unix://<TMP>/h/lima/delibra-0f3c7042b7/sock/docker.sock", "DOCKER_CONFIG"="<TMP>/build-tmp/docker", "DOCKER_CLI_HINTS"="false"}}' --config 'features.network_proxy={enabled=true, allow_local_binding=false, allow_upstream_proxy=false}' --disable hooks --disable plugins --disable apps --disable memories --disable goals --disable multi_agent --disable system_proxy_fallback --disable computer_use --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable browser_annotation_api --disable in_app_browser exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config -
 - turn transcripts kept in /var/folders/s0/95bxcn355151vd97d8tg79nm0000gn/T/dlb-spike-codex-turns-zoud8yny
 <!-- DOCKER-SPIKE-CODEX:END -->
+
+## CLI version validation: Claude Code 2.1.322 and codex-cli 0.169.0 (2026-11-19)
+
+- Tool: `scripts/validate_clis.py` (Tier 1 model-free, Tier 2 real turns; see `AGENTS.md`).
+  Commands: `envs/bin/python scripts/validate_clis.py --tier 1 --provider all`, then, approved
+  by the user for this one run, `--tier 2 --provider all` (6 turns: Claude `haiku`, Codex its
+  CLI default model, effort `low`).
+- **Tier 1: PASS for both.**
+  - Every flag and value in the argv Delibra builds (chat, chat with the CLI default model,
+    native resume, stateless/compaction, build, build with Docker, URL model check) is listed
+    by `claude --help`, `codex --help`, `codex exec --help` or `codex exec resume --help`, in
+    the scope it is used; enumerated values are among the listed choices; Claude's effort
+    levels match `--effort`'s list.
+  - Codex: `exec`, `exec resume`, `sandbox`, `app-server`, `features`, `debug` exist. Every
+    `--disable` feature is known to `codex features list` (`multi_agent` is now `deprecated`).
+    `codex exec --strict-config` parsed every variant's argv and `-c` keys up to config load
+    (a trailing unknown probe key stopped it there; empty `CODEX_HOME`, no auth, no model
+    call). `codex debug prompt-input` showed `developer_instructions` in the model-visible
+    input. The S2 build-sandbox replay under `codex sandbox -P delibra_build` (same probe
+    script and verdicts as `spike_build_sandbox.py`; LAN probes against this machine's own
+    address) passed every probe, exit 0 in 1.3 s.
+  - WARN (not a CLI-contract check): the 0.169.0 model catalog (`codex debug models`) lists no
+    model supporting `minimal` effort, which Delibra offers for Codex.
+  - Not checkable model-free: Claude `--tools` names, `--settings` sandbox keys and
+    `--allowedTools` rules; Codex permission-profile fields (strict config does not check
+    them). Tier 2 and the sandbox replay cover their effect.
+- **Tier 2: FAIL for both, on one check.**
+
+| Provider | Check | Status | Detail |
+|---|---|---|---|
+| claude | build sandbox turn: 18 probes (write, read, git, env, network) | PASS | `net_lan_name` RECORDED (rc=22; non-gating for Claude) |
+| claude | `--tools` names (init event) | PASS | Bash, Edit, Glob, Grep, Read, WebFetch, WebSearch, Write |
+| claude | chat turn: result, session id, `turn_usage`, `context_usage` | PASS | resolved `claude-haiku-5-5`, window 1,000,000 |
+| claude | resume: same session, remembers the earlier turn, usage | PASS | |
+| claude | resume: changed `--append-system-prompt` applies | **FAIL** | answered `4817 TAG-ALPHA` (the first turn's system prompt) |
+| codex | exec build sandbox turn: 12 non-network probes | PASS | network probes stay with the replay (exec kills the script at the first blocked host) |
+| codex | chat turn: result, thread id, stdout `turn_usage`, rollout usage | PASS | rollout matches stdout; 2 rate-limit windows |
+| codex | resume: same thread, remembers, rollout usage | PASS | stdout still reports the thread's running total (29,573 in); the rollout's per-turn figure (14,802) is what Delibra uses |
+| codex | resume: changed `developer_instructions` applies | **FAIL** | answered `4817 TAG-ALPHA` |
+| codex | app-server account rate limits (no model call) | PASS | 2 windows |
+
+- **Finding (needs a decision):** on a native resume, neither CLI applied a changed system
+  prompt (Claude `--append-system-prompt`, Codex `developer_instructions`); the resumed turn
+  kept the first turn's. Claude 2.1.322's help documents `--system-prompt-snapshot` (default
+  `on`): the recorded prompt is reused "even when a later launch passes different text". The
+  M4 gate (2026-07-17) verified resume after a model/effort change, never a changed system
+  prompt, so whether 2.1.296 / 0.162.1 behaved the same is unknown. Delibra sends the global
+  instruction and per-turn chat notes (skills, notes, downloads/convert) on the system channel
+  and resumes chat turns natively, so edits to them may not reach a resumed conversation.
+  Build turns are stateless and unaffected.
+- **Versions not bumped:** `BUILD_VERIFIED_VERSIONS` and `USAGE_VERIFIED_VERSIONS` stay at
+  2.1.296 / 0.162.1 because Tier 2 failed for both (rule: bump only when both tiers pass).
+  The build-sandbox and usage checks themselves passed. Docker spikes S3/S4 were **not**
+  re-run; `DOCKER_VERIFIED_VERSIONS` is unchanged.
