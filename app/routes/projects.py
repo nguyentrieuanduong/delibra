@@ -391,8 +391,6 @@ async def save_project_prompt(
     except NotFoundError:
         raise
     except (PromptError, StorageError) as exc:
-        if isinstance(exc, PromptError):
-            exc = StorageError(str(exc))
         return await render_refusal(request, project, "prompts", exc, {f"prompt:{prompt_id}": template})
     return RedirectResponse(
         settings_tab_url(project.name, "prompts") + f"#prompt-{prompt_id}", status_code=303
@@ -1112,7 +1110,7 @@ async def render_refusal(
     request: Request,
     project: Project,
     tab: str,
-    exc: HTTPException | StorageError,
+    exc: HTTPException | StorageError | PromptError,
     typed: dict[str, str] | None = None,
 ) -> HTMLResponse:
     """A refused settings form: its tab again, the pop-up, and what was typed.

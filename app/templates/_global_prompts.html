@@ -5,6 +5,6 @@
   {% set ns = namespace(group="") %}
   {% for card in cards %}
     {% if card.spec.group != ns.group %}{% set ns.group = card.spec.group %}<h3 class="prompt-group">{{ ns.group }}</h3>{% endif %}
-    {{ prompt_card(card, "/settings/prompts/" ~ card.spec.id, "/settings/prompts/" ~ card.spec.id ~ "/preview", "global", overridden_in) }}
+    {{ prompt_card(card, "/settings/prompts/" ~ card.spec.id, "/settings/prompts/" ~ card.spec.id ~ "/preview", "global", overridden_in, replace_ticked=replace_ticked) }}
   {% endfor %}
 </section>

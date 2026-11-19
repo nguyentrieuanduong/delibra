@@ -251,7 +251,7 @@ def _settings_page(
     global_instruction: str | None = None,
     agent_rows: list[dict[str, object]] | None = None,
     converter_typed: dict[str, str] | None = None,
-    prompt_typed: dict[str, str] | None = None,
+    prompts_view: dict[str, object] | None = None,
 ):
     if rows is None:
         # The Instruction tab carries the presets form: every rendering of it, a refused
@@ -262,15 +262,9 @@ def _settings_page(
             if tab == "instruction"
             else []
         )
-    prompts_context: dict[str, object] = {}
-    if tab == "prompts":
-        prompts, problem = display_prompts(request.app.state.settings.home)
+    if prompts_view is not None:
         # A refused save's own message wins; otherwise the stored problem pops up.
-        error = error or problem
-        prompts_context = {
-            "cards": prompt_cards(prompts, typed=prompt_typed),
-            "overridden_in": _overrides_by_prompt(request),
-        }
+        error = error or prompts_view["problem"]
     if global_instruction is None:
         try:
             # At most 64 KB, read inline like the config.json this page reads.
@@ -298,7 +292,7 @@ def _settings_page(
             ),
             **(_converter_context(request.app.state.settings.home, converter_typed or {},
                                   request.app.state.converter_models_lock.locked()) if tab == "converter" else {}),
-            **prompts_context,
+            **(prompts_view or {}),
             "tab": tab,
             "tab_label": dict(GLOBAL_TABS_LABELS)[tab],
             "settings_tabs": GLOBAL_TABS,
@@ -352,7 +346,22 @@ async def _global_tab(request: Request, tab: str):
         if tab == "instruction"
         else []
     )
-    return _settings_page(request, tab, rows, settings.allowed_clients, settings.allowed_hosts)
+    view = await _prompts_view(request) if tab == "prompts" else None
+    return _settings_page(request, tab, rows, settings.allowed_clients, settings.allowed_hosts, prompts_view=view)
+
+
+async def _prompts_view(
+    request: Request, typed: dict[str, str] | None = None, ticked: list[str] | None = None
+) -> dict[str, object]:
+    """The global Prompts tab's cards; the files are read off the event loop."""
+
+    prompts, problem = await asyncio.to_thread(display_prompts, request.app.state.settings.home)
+    return {
+        "cards": prompt_cards(prompts, typed=typed),
+        "overridden_in": await asyncio.to_thread(_overrides_by_prompt, request),
+        "replace_ticked": frozenset(ticked or ()),
+        "problem": problem,
+    }
 
 
 def _access_field(form, key: str, label: str) -> list[str]:
@@ -721,7 +730,7 @@ async def save_global_prompt_route(
             return _settings_page(
                 request, "prompts", [], settings.allowed_clients, settings.allowed_hosts,
                 error=f"Nothing was saved: {_sentence(str(exc))}", status_code=422,
-                prompt_typed={prompt_id: template},
+                prompts_view=await _prompts_view(request, {prompt_id: template}, replace),
             )
     # Only after the global save succeeded: a refused save replaces nothing (2026-11-17).
     failures = await _replace_overrides(request, prompt_id, replace)
@@ -730,6 +739,7 @@ async def save_global_prompt_route(
         return _settings_page(
             request, "prompts", [], settings.allowed_clients, settings.allowed_hosts,
             error=f"Saved. The override was not replaced in {'; '.join(failures)}",
+            prompts_view=await _prompts_view(request),
         )
     return RedirectResponse(f"/settings/prompts#prompt-{prompt_id}", status_code=303)
 

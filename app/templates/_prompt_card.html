@@ -1,5 +1,5 @@
 {% from "_form_macros.html" import takes_effect %}
-{% macro prompt_card(card, action_url, preview_url, scope, overridden_in=None, editable=True) %}
+{% macro prompt_card(card, action_url, preview_url, scope, overridden_in=None, editable=True, replace_ticked=()) %}
 {% set spec = card.spec %}
 <article class="prompt-card" id="prompt-{{ spec.id }}">
   <h3>{{ spec.title }}
@@ -24,7 +24,7 @@
         {% endfor %}
       </ul>
     {% endif %}
-    {% if spec.id in ("pass", "compact", "stateless_claude", "stateless_codex", "auto_preparation", "auto_discussion", "auto_compaction", "build_turn", "downloads", "convert", "model_check") %}
+    {% if spec.untrusted_warning %}
       <p class="warning">Staged, passed and downloaded material is untrusted. Removing the safety wording can expose the agent to prompt injection.</p>
     {% endif %}
     <details class="prompt-preview-box"><summary>Preview</summary>
@@ -36,7 +36,7 @@
         <p class="hint">Tick a project to replace its own version when you save or reset this prompt.</p>
         {% for project_id, name, url in overridden_in[spec.id] %}
           <div class="prompt-override-row">
-            <label class="auto-choice"><input type="checkbox" name="replace" value="{{ project_id }}" data-project-name="{{ name }}"> Replace in <a href="{{ url }}">{{ name }}</a></label>
+            <label class="auto-choice"><input type="checkbox" name="replace" value="{{ project_id }}" data-project-name="{{ name }}"{% if project_id in replace_ticked %} checked{% endif %}> Replace in <a href="{{ url }}">{{ name }}</a></label>
             <button type="button" hx-post="{{ action_url }}/compare" hx-include="closest form" hx-vals='{{ {"project": project_id}|tojson }}' hx-target="#prompt-compare-{{ spec.id }}" hx-swap="innerHTML">Compare</button>
           </div>
         {% endfor %}

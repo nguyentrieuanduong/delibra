@@ -401,3 +401,17 @@ def test_a_registered_project_that_cannot_be_changed_is_named(tmp_path) -> None:
     assert response.status_code == 200
     assert "Saved. The override was not replaced in Beta: project prompt overrides are invalid" in response.text
     assert stores["Alpha"].prompt_overrides() == {}
+
+
+def test_a_refused_global_save_keeps_the_ticked_projects(tmp_path) -> None:
+    app, settings = make_app(tmp_path)
+    stores = overriding_projects(settings, ["Alpha", "Beta"])
+    alpha, beta = stores["Alpha"].project.id, stores["Beta"].project.id
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        response = client.post("/settings/prompts/compact",
+                               data={"template": "{nope}", "action": "save", "replace": [alpha]})
+
+    assert response.status_code == 422
+    shown = card(response.text, "compact", "stateless_claude")
+    assert f'value="{alpha}" data-project-name="Alpha" checked>' in shown
+    assert f'value="{beta}" data-project-name="Beta">' in shown
