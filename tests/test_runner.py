@@ -2866,3 +2866,35 @@ async def test_chat_notes_are_separate_paragraphs(tmp_path: Path) -> None:
 
     note = contexts[0].system_note
     assert "\n\nTo get Markdown from a PDF" in note  # the convert note is its own paragraph
+
+
+@pytest.mark.asyncio
+async def test_each_chat_turn_and_compaction_reads_the_prompts(tmp_path: Path) -> None:
+    from app.prompts import save_global_prompt
+
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    home = manager.settings.home
+    save_global_prompt(home, "notes", "GLOBAL-NOTES at {view_path}.{reading}{marking} {sent} {overrides}")
+    await manager.wait(await manager.start(project_id, session_id, "First"))
+    # Edited between turns: the next turn reads the new text, and a project override wins.
+    store.set_prompt_override("notes", "PROJECT-NOTES at {view_path}.{reading}{marking} {sent} {overrides}")
+    store.set_prompt_override("compact", "PROJECT-COMPACT summary.")
+    await manager.wait(await manager.start(project_id, session_id, "Second"))
+    await manager.wait(await manager.compact(project_id, session_id))
+
+    assert "GLOBAL-NOTES at" in contexts[0].system_note
+    assert "PROJECT-NOTES at" in contexts[1].system_note and "GLOBAL-NOTES" not in contexts[1].system_note
+    assert contexts[2].user_prompt == "PROJECT-COMPACT summary."
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_stored_prompt_refuses_the_chat_turn_before_a_round(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    store.set_prompt_override("questions_read", "No placeholders")
+
+    with pytest.raises(StorageError, match=r"^Questions: reading answers prompt is invalid: .*fix it in Settings$"):
+        await manager.start(project_id, session_id, "Question")
+    assert store.load_session(session_id).rounds == []
+    assert contexts == []

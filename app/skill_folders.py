@@ -20,6 +20,7 @@ import shutil
 from typing import Literal
 
 from app.coding import CodingPolicyError, read_skill_library, render_skill_index
+from app.prompts import BUILT_IN, Prompts
 from app.storage import (
     StorageError,
     _assert_no_symlink_components,
@@ -204,10 +205,5 @@ def _retire(root: Path, folder: Path, mode: SkillMode) -> Path | None:
     return retired
 
 
-def chat_skills_note(index_path: Path) -> str:
-    return (
-        f"Skills you may read are listed in {index_path.as_posix()} with each one's "
-        "name, path and description. Read a skill's SKILL.md before acting when your "
-        "role, the message or the skill's description says it applies; its other "
-        "files sit beside it."
-    )
+def chat_skills_note(index_path: Path, *, prompts: Prompts = BUILT_IN) -> str:
+    return prompts.render("chat_skills", index_path=index_path.as_posix())

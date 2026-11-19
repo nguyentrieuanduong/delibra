@@ -40,13 +40,15 @@ from app.models import Project
 from app.notes import NoteStore, chat_note_store
 from app.project_reset import CLEAR_SCOPES, PartialClearError, clear_project
 from app.project_routing import request_project
+from app.prompts import CATALOGUE, PromptError, checked_template, display_prompts, pass_template, prompt_cards
+from app.routes.settings import prompt_preview_response
 from app.questions import QuestionStore
 from app.security import (
     CODING_ONLY_HERE,
+    PROMPT_ONLY_HERE,
     is_loopback_client,
     require_loopback_client,
     validate_field,
-    validate_pass_prompt_template_field,
 )
 from app.storage import (
     ConflictError,
@@ -366,31 +368,41 @@ async def reset_project(request: Request, project_id: str, scope: str = Form(...
     return RedirectResponse(settings_tab_url(project.name, "reset"), status_code=303)
 
 
-@router.post("/projects/{project_id}/pass-prompt")
-async def save_pass_prompt(
+@router.post("/projects/{project_id}/prompts/{prompt_id}")
+async def save_project_prompt(
     request: Request,
     project_id: str,
-    pass_prompt_template: str = Form(""),
+    prompt_id: str,
+    template: str = Form(""),
+    action: str = Form("save"),
 ):
+    # Allowed LAN clients may edit project prompts (user decision 2026-11-16).
+    if prompt_id not in CATALOGUE or action not in ("save", "use_global"):
+        raise HTTPException(status_code=404, detail="Unknown prompt")
+    if not CATALOGUE[prompt_id].lan_editable:
+        require_loopback_client(request, PROMPT_ONLY_HERE)
     project = request_project(request, project_id)
     resolved_project_id = project.id
     try:
-        validated = validate_pass_prompt_template_field(pass_prompt_template)
+        text = checked_template(prompt_id, template) if action == "save" else None
         async with request.app.state.locks.registry_project_sessions(resolved_project_id):
             project = request.app.state.registry.get(resolved_project_id)
-            ProjectStore(project).set_pass_prompt_template(validated)
+            ProjectStore(project).set_prompt_override(prompt_id, text)
     except NotFoundError:
         raise
-    except (HTTPException, StorageError) as exc:
-        if isinstance(exc, HTTPException) and exc.status_code != 422:
-            raise
-        return await render_refusal(
-            request, project, "prompts", exc, {"pass_prompt_template": pass_prompt_template}
-        )
+    except (PromptError, StorageError) as exc:
+        return await render_refusal(request, project, "prompts", exc, {f"prompt:{prompt_id}": template})
     return RedirectResponse(
-        settings_tab_url(project.name, "prompts"),
-        status_code=303,
+        settings_tab_url(project.name, "prompts") + f"#prompt-{prompt_id}", status_code=303
     )
+
+
+@router.post("/projects/{project_id}/prompts/{prompt_id}/preview", response_class=HTMLResponse)
+async def preview_project_prompt(request: Request, project_id: str, prompt_id: str, template: str = Form("")):
+    if prompt_id in CATALOGUE and not CATALOGUE[prompt_id].lan_editable:
+        require_loopback_client(request, PROMPT_ONLY_HERE)
+    request_project(request, project_id)
+    return prompt_preview_response(request, prompt_id, template)
 
 
 @router.post("/projects/{project_id}/writable-roots")
@@ -980,19 +992,6 @@ async def save_global_instruction_use(
     return RedirectResponse(settings_tab_url(project.name, "general"), status_code=303)
 
 
-@router.post("/projects/{project_id}/pass-prompt/reset")
-async def reset_pass_prompt(request: Request, project_id: str):
-    project = request_project(request, project_id)
-    resolved_project_id = project.id
-    async with request.app.state.locks.registry_project_sessions(resolved_project_id):
-        project = request.app.state.registry.get(resolved_project_id)
-        ProjectStore(project).reset_pass_prompt_template()
-    return RedirectResponse(
-        settings_tab_url(project.name, "prompts"),
-        status_code=303,
-    )
-
-
 async def render_project_settings(
     request: Request,
     project: Project,
@@ -1029,6 +1028,18 @@ async def render_project_settings(
         request.app.state.settings.run_timeout,
         maximum=request.app.state.settings.max_run_timeout,
     )
+    prompt_cards_view: list[dict[str, object]] = []
+    if tab == "prompts":
+        prompts, problem = display_prompts(request.app.state.settings.home, store)
+        error = error or problem
+        typed_prompts = {
+            key.removeprefix("prompt:"): value
+            for key, value in (typed or {}).items() if key.startswith("prompt:")
+        }
+        # Stable sort: this project's overrides first, catalogue order otherwise.
+        prompt_cards_view = sorted(
+            prompt_cards(prompts, typed=typed_prompts), key=lambda card: card["source"] != "project"
+        )
     try:
         global_text = await asyncio.to_thread(
             read_global_instruction, request.app.state.settings.home
@@ -1049,7 +1060,7 @@ async def render_project_settings(
             "legacy_session_ids": frozenset(migration.legacy_session_ids),
             "migration_issues": migration_issues,
             "auto_migration_issues": auto_migration_issues,
-            "pass_prompt_template": store.effective_pass_prompt_template(),
+            "pass_prompt_template": pass_template(request.app.state.settings.home, store),
             "writable_roots_text": (
                 writable_roots_text
                 if writable_roots_text is not None
@@ -1088,6 +1099,7 @@ async def render_project_settings(
                 (key, label, settings_tab_url(project.name, key)) for key, label in PROJECT_TABS
             ],
             "typed": typed or {},
+            "prompt_cards": prompt_cards_view,
             **_settings_lock_context(store, tab),
         },
         status_code=status_code,
@@ -1098,7 +1110,7 @@ async def render_refusal(
     request: Request,
     project: Project,
     tab: str,
-    exc: HTTPException | StorageError,
+    exc: HTTPException | StorageError | PromptError,
     typed: dict[str, str] | None = None,
 ) -> HTMLResponse:
     """A refused settings form: its tab again, the pop-up, and what was typed.

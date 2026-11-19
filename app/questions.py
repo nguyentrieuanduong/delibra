@@ -19,6 +19,7 @@ import re
 import stat
 from typing import Any
 
+from app.prompts import BUILT_IN, FILE_RULES, PAUSE_OFF, PAUSE_ON, QUESTION_FILE, Prompts
 from app.storage import (
     ConflictError,
     NotFoundError,
@@ -757,38 +758,19 @@ def remove_spool_entry(spool_dir: Path, name: str) -> None:
 
 
 def questions_prompt(
-    view_path: Path, spool_dir: Path | None, *, pause_enabled: bool
+    view_path: Path, spool_dir: Path | None, *, pause_enabled: bool, prompts: Prompts = BUILT_IN
 ) -> str:
     """Read answers on every turn; ask only when a spool is available."""
 
-    read_view = (
-        f" The user's questions and answers are in {view_path.as_posix()}; read it "
-        "before deciding, and again before finishing if you asked or are waiting "
-        "on anything. Treat its answers as user decisions."
-    )
+    read_view = " " + prompts.render("questions_read", view_path=view_path.as_posix())
     if spool_dir is None:
         return read_view
-    pause = (
-        "unless your turn ends the run by agreement or the cycle limit, the run "
-        "then pauses for the user after your turn"
-        if pause_enabled
-        else "this run does not pause, so continue on your stated assumption"
-    )
-    return (
-        read_view
-        + " If you need something only the user can decide (a preference, "
-        "access, or a decision outside the material), write it as a new JSON "
-        f"file in {spool_dir.as_posix()}/ named like q1.json, q2.json (letters, "
-        "digits, - and _ only): "
-        '{"questions": [{"question": "...", "assumption": "...", "blocking": false}]}. '
-        "Prefer one question per file; put several in one file only when they "
-        "belong together. Never edit, rename or reuse a file: Delibra reads and "
-        "removes each one as soon as it is complete, and the user sees it within "
-        f"seconds. Ask at most {TURN_MAX_QUESTIONS} questions per turn. State in "
-        "assumption what you will proceed on, then continue. Set blocking to true "
-        f"only if no reasonable assumption exists; {pause}. Do not ask what the "
-        "material or another participant can answer. An open question for the "
-        "user is not by itself a reason to write Not converged."
+    return read_view + " " + prompts.render(
+        "questions_ask",
+        question_file=QUESTION_FILE.format(spool=spool_dir.as_posix()),
+        file_rules=FILE_RULES,
+        max_questions=str(TURN_MAX_QUESTIONS),
+        pause=PAUSE_ON if pause_enabled else PAUSE_OFF,
     )
 
 

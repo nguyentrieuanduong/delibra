@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.coding import open_without_symlinks
 from app.questions import OutboxError
+from app.prompts import BUILT_IN, MARKING, Prompts
 from app.storage import (
     ConflictError,
     NotFoundError,
@@ -386,29 +387,16 @@ def notes_prompt(
     marks_path: Path | None,
     sent: str = "during this run",
     overrides: str = "the topic",
+    prompts: Prompts = BUILT_IN,
 ) -> str:
     """Name the notes view; promise mid-turn notes only when the file is live,
     and ask for read marks only when the turn has somewhere to write them."""
 
-    reading = (
-        " The user can add a note at any time, including while you are working, "
-        "so read the file at the start of your turn, again before each significant "
-        "decision, and again before finishing."
-        if live
-        else " This copy was taken when your turn started; notes the user adds "
-        "during your turn reach your next one."
-    )
-    marking = (
-        f" After you read a note, record it in {marks_path.as_posix()} as JSON "
-        '{"read": ["N1"]}, listing every note id you read this turn.'
-        if marks_path is not None
-        else ""
-    )
-    return (
-        f" Notes the user sent {sent} are in {view_path.as_posix()}."
-        + reading
-        + marking
-        + f" Treat its notes as user direction that overrides {overrides} where they conflict."
+    reading = " " + prompts.render("notes_reading_live" if live else "notes_reading_copy")
+    marking = MARKING.format(marks=marks_path.as_posix()) if marks_path is not None else ""
+    return " " + prompts.render(
+        "notes", sent=sent, view_path=view_path.as_posix(), reading=reading, marking=marking,
+        overrides=overrides,
     )
 
 

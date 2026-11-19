@@ -13,6 +13,7 @@ from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import Project, SessionConfig
 from app.project_routing import request_project
+from app.prompts import pass_template
 from app.routes.auto import project_auto_record
 from app.routes.chat import sidebar_response
 from app.routes.projects import _writable_roots_field, render_refusal, settings_tab_url
@@ -519,7 +520,7 @@ async def session_page(request: Request, project_id: str, session_id: str):
             "active_key": active_key,
             "auto_active": store.active_auto_run_id() is not None,
             "health": request.app.state.health,
-            "pass_prompt_template": store.effective_pass_prompt_template(),
+            "pass_prompt_template": pass_template(request.app.state.settings.home, store),
         },
     )
 
@@ -560,7 +561,7 @@ async def round_fragment(
             "agent_card_oob": chat_view,
             "agent_view": card,
             "auto_active": store.active_auto_run_id() is not None,
-            "pass_prompt_template": store.effective_pass_prompt_template(),
+            "pass_prompt_template": pass_template(request.app.state.settings.home, store),
             **(
                 chat_notes_context(
                     store,

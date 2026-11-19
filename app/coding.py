@@ -32,8 +32,9 @@ ENV_TOOLS = frozenset({"conda", "venv", "existing"})
 # 2026-10-21); a new major, a downgrade or a pre-release is refused until
 # the spikes are re-run against it.
 BUILD_VERIFIED_VERSIONS: dict[str, str] = {
-    "claude": "2.1.296 (Claude Code)",
-    "codex": "codex-cli 0.162.1",
+    # scripts/validate_clis.py Tier 1 + 2, spike/FINDINGS.md 2026-11-19.
+    "claude": "2.1.322 (Claude Code)",
+    "codex": "codex-cli 0.169.0",
 }
 _LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
 # CLI versions whose build sandbox reached the Docker socket, and only that

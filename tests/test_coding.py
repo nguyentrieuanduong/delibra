@@ -702,3 +702,8 @@ def test_check_model_rejects_unsafe_values(value: str) -> None:
 def test_invalid_download_fields_are_rejected_on_load() -> None:
     with pytest.raises(CodingPolicyError):
         CodingPolicy.from_manifest({"coding": {"downloads": {"approval": "sometimes"}}})
+
+
+def test_the_verified_build_versions_are_the_validated_clis_and_docker_keeps_its_own() -> None:
+    assert BUILD_VERIFIED_VERSIONS == {"claude": "2.1.322 (Claude Code)", "codex": "codex-cli 0.169.0"}
+    assert DOCKER_VERIFIED_VERSIONS == {"claude": "2.1.296 (Claude Code)", "codex": "codex-cli 0.163.0"}

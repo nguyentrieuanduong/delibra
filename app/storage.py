@@ -48,7 +48,6 @@ from app.models import (
     TurnUsage,
 )
 from app.pass_prompts import (
-    BUILT_IN_PASS_PROMPT_TEMPLATE,
     PassPromptTemplateError,
     validate_pass_prompt_template,
 )
@@ -1661,11 +1660,37 @@ class ProjectStore:
         manifest["name"] = selected
         atomic_write_json(self.manifest_path, manifest)
 
-    def effective_pass_prompt_template(self) -> str:
-        return self._load_manifest().get(
-            "pass_prompt_template",
-            BUILT_IN_PASS_PROMPT_TEMPLATE,
-        )
+    def prompt_overrides(self) -> dict[str, str]:
+        """This project's prompt overrides, as stored (app.prompts validates them on use).
+
+        A legacy `pass_prompt_template` reads as the `pass` override until the next
+        override write moves it (design 2026-11-15, editable prompts).
+        """
+
+        manifest = self._load_manifest()
+        overrides = manifest.get("prompt_overrides", {})
+        if not isinstance(overrides, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in overrides.items()
+        ):
+            raise OwnershipError("project prompt overrides are invalid")
+        merged = dict(overrides)
+        legacy = manifest.get("pass_prompt_template")
+        if isinstance(legacy, str) and "pass" not in merged:
+            merged["pass"] = legacy
+        return merged
+
+    def set_prompt_override(self, prompt_id: str, text: str | None) -> None:
+        """Store (or with None remove) one override; a legacy Pass template moves along."""
+
+        manifest = self._load_manifest()
+        overrides = self.prompt_overrides()
+        if text is None:
+            overrides.pop(prompt_id, None)
+        else:
+            overrides[prompt_id] = text
+        manifest.pop("pass_prompt_template", None)
+        manifest["prompt_overrides"] = overrides
+        atomic_write_json(self.manifest_path, manifest)
 
     def configured_turn_timeout_seconds(self) -> int | None:
         return self._load_manifest().get("turn_timeout_seconds")
@@ -1894,18 +1919,6 @@ class ProjectStore:
             resolve_project_subdirectory(self.project_path, relative_path)
             for relative_path in self.session_writable_roots(session_id)
         )
-
-    def set_pass_prompt_template(self, template: object) -> str:
-        validated = validate_pass_prompt_template(template)
-        manifest = self._load_manifest()
-        manifest["pass_prompt_template"] = validated
-        atomic_write_json(self.manifest_path, manifest)
-        return validated
-
-    def reset_pass_prompt_template(self) -> None:
-        manifest = self._load_manifest()
-        manifest.pop("pass_prompt_template", None)
-        atomic_write_json(self.manifest_path, manifest)
 
     def require_settings_resettable(self) -> None:
         policy = self.coding_policy()

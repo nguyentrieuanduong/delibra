@@ -1,0 +1,10 @@
+{% from "_prompt_card.html" import prompt_card %}
+<section aria-labelledby="prompts-heading" class="prompts-tab">
+  <h2 id="prompts-heading">Prompts</h2>
+  <p class="hint">The fixed texts Delibra sends to agents. Locked parts are Delibra's protocol (file paths, JSON shapes, verdict words, wait loops) and are shown read-only. A project can override any prompt on its own Prompts tab. Changed prompts are saved to <code>$DELIBRA_HOME/prompts.json</code>.</p>
+  {% set ns = namespace(group="") %}
+  {% for card in cards %}
+    {% if card.spec.group != ns.group %}{% set ns.group = card.spec.group %}<h3 class="prompt-group">{{ ns.group }}</h3>{% endif %}
+    {{ prompt_card(card, "/settings/prompts/" ~ card.spec.id, "/settings/prompts/" ~ card.spec.id ~ "/preview", "global", overridden_in, replace_ticked=replace_ticked) }}
+  {% endfor %}
+</section>

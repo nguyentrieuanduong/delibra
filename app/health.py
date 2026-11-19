@@ -145,10 +145,10 @@ async def probe_build_version(name: str, executable: str) -> str | None:
     return health.version if health.available else None
 
 
-# The CLI versions the M5 usage gate last passed on (spike/FINDINGS.md,
-# 2026-10-16). A mismatch stays a warning: rate-limit and usage fields are
-# feature-detected, never inferred from the version string.
-USAGE_VERIFIED_VERSIONS: dict[str, str] = {"claude": "2.1.296", "codex": "0.162.1"}
+# The CLI versions whose usage parsing was last verified (scripts/validate_clis.py
+# Tier 2, spike/FINDINGS.md 2026-11-19). A mismatch stays a warning: rate-limit
+# and usage fields are feature-detected, never inferred from the version string.
+USAGE_VERIFIED_VERSIONS: dict[str, str] = {"claude": "2.1.322", "codex": "0.169.0"}
 
 
 async def probe_all(commands: dict[str, str]) -> list[ProviderHealth]:

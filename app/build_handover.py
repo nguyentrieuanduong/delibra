@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from app.prompts import BUILT_IN, Prompts
+
 # Delibra owns only the root `.delibra` and `envs`; same-named directories
 # deeper down are project code. `.git` is skipped at every depth (nested
 # repositories and submodules).
@@ -65,10 +67,12 @@ def modified_files_since(
     return sorted(found)
 
 
-def render_handover(name: str, reason: str, partial: bytes, files: list[str]) -> bytes:
+def render_handover(
+    name: str, reason: str, partial: bytes, files: list[str], *, prompts: Prompts = BUILT_IN
+) -> bytes:
     listing = "\n".join(f"- {item}" for item in files) or "- none"
     return (
-        f"{name} could not finish its turn ({reason}). Continue the same step.\n\n"
+        prompts.render("build_handover", name=name, reason=reason) + "\n\n"
         "Partial output of that turn:\n\n"
     ).encode() + partial[-HANDOVER_PARTIAL_LIMIT:] + (
         f"\n\nProject files modified during that turn:\n{listing}\n"

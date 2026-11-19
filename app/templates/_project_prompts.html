@@ -1,16 +1,8 @@
-{% from "_form_macros.html" import takes_effect %}
-<section aria-labelledby="pass-prompt-heading">
-  <h2 id="pass-prompt-heading">Default Pass prompt</h2>
-  {{ takes_effect("now") }}
-  <form method="post" action="{{ project_url(project.name, '/pass-prompt') }}">
-    <label>Prompt template
-      <textarea name="pass_prompt_template" maxlength="10000" required>{{ typed.get('pass_prompt_template', pass_prompt_template) }}</textarea>
-    </label>
-    <p>Supported placeholders: <code>{source_path}</code> (required exactly once), <code>{source_session}</code>, and <code>{source_round}</code>.</p>
-    <p class="warning">Passed output is untrusted. Removing the safety wording can expose the receiving agent to prompt injection.</p>
-    <button type="submit">Save default Pass prompt</button>
-  </form>
-  <form method="post" action="{{ project_url(project.name, '/pass-prompt/reset') }}">
-    <button type="submit">Reset to built-in default</button>
-  </form>
+{% from "_prompt_card.html" import prompt_card %}
+<section aria-labelledby="prompts-heading" class="prompts-tab">
+  <h2 id="prompts-heading">Prompts</h2>
+  <p class="hint">The fixed texts Delibra sends to this project's agents. Each uses the global text ({% if coding_local %}<a href="/settings/prompts">Settings → Prompts</a>{% else %}set on this machine's Settings page{% endif %}) unless you save an override here; overridden prompts are listed first. Locked parts are Delibra's protocol and are shown read-only.</p>
+  {% for card in prompt_cards %}
+    {{ prompt_card(card, project_url(project.name, '/prompts/' ~ card.spec.id), project_url(project.name, '/prompts/' ~ card.spec.id ~ '/preview'), "project", editable=coding_local or card.spec.lan_editable) }}
+  {% endfor %}
 </section>

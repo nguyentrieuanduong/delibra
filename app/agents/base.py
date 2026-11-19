@@ -8,8 +8,7 @@ from typing import Literal, Protocol
 
 from app.agents.errors import ProviderErrorInfo
 from app.models import ContextReading, RateLimitReading, SessionConfig, TurnUsage
-
-GLOBAL_INSTRUCTION_HEADER = "Global instructions from the user:"
+from app.prompts import BUILT_IN, Prompts
 
 
 EventKind = Literal[
@@ -134,11 +133,13 @@ class RunContext:
     # The user's global instruction (Settings), read for this turn; "" when
     # unset or the project switched it off. Sent on the system channel.
     global_instruction: str = ""
+    # The turn's resolved prompt templates (project override, global, built-in).
+    prompts: Prompts = BUILT_IN
 
 
 def _global_section(context: RunContext) -> str:
     text = context.global_instruction.rstrip()
-    return f"{GLOBAL_INSTRUCTION_HEADER}\n{text}" if text else ""
+    return f"{context.prompts.render('global_header')}\n{text}" if text else ""
 
 
 def system_instructions(config: SessionConfig, context: RunContext) -> str:

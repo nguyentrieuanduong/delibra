@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from app.auto import ACTIVE_AUTO_STATUSES
 from app.models import Project, SessionConfig
 from app.project_routing import request_project
+from app.prompts import pass_template
 from app.routes.auto import (
     auto_status_context,
     project_auto_record,
@@ -206,7 +207,7 @@ async def chat_page(
             "auto_migration_warning": auto_projection.warning,
             "health": request.app.state.health,
             **usage_badge_context(request),
-            "pass_prompt_template": store.effective_pass_prompt_template(),
+            "pass_prompt_template": pass_template(request.app.state.settings.home, store),
             **sidebar,
         },
     )
@@ -234,7 +235,7 @@ async def chat_timeline(request: Request, project_id: str) -> HTMLResponse:
                 auto_numbers=auto_numbers,
             ),
             "auto_active": store.active_auto_run_id() is not None,
-            "pass_prompt_template": store.effective_pass_prompt_template(),
+            "pass_prompt_template": pass_template(request.app.state.settings.home, store),
         },
     )
 

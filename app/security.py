@@ -10,11 +10,8 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
-from app.pass_prompts import (
-    PASS_PROMPT_TEMPLATE_MAX_CHARS,
-    PassPromptTemplateError,
-    validate_pass_prompt_template,
-)
+from app.pass_prompts import PASS_PROMPT_TEMPLATE_MAX_CHARS
+from app.prompts import PromptError, checked_template
 from app.storage import normalize_agent_name, sanitize_name
 
 
@@ -103,6 +100,8 @@ def is_loopback_client(request: Request) -> bool:
 
 
 CODING_ONLY_HERE = "Only this machine may enable coding or start build runs"
+# Prompts that reach build runs, downloads or the model check (PromptSpec.lan_editable).
+PROMPT_ONLY_HERE = "Only this machine can change this prompt"
 
 
 def require_loopback_client(
@@ -428,7 +427,8 @@ def validate_pass_prompt_template_field(value: str) -> str:
         "Pass prompt",
         maximum=PASS_PROMPT_TEMPLATE_MAX_CHARS,
     )
+    # The same rule as a stored Pass prompt (review round 1, 2026-11-19).
     try:
-        return validate_pass_prompt_template(value)
-    except PassPromptTemplateError as exc:
+        return checked_template("pass", value)
+    except PromptError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

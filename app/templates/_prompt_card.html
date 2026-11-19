@@ -1,0 +1,59 @@
+{% from "_form_macros.html" import takes_effect %}
+{% macro prompt_card(card, action_url, preview_url, scope, overridden_in=None, editable=True, replace_ticked=()) %}
+{% set spec = card.spec %}
+<article class="prompt-card" id="prompt-{{ spec.id }}">
+  <h3>{{ spec.title }}
+    {% if scope == "global" and card.source != "built-in" %}<span class="badge">Changed from built-in</span>{% endif %}
+    {% if scope == "project" %}<span class="badge">{{ {"built-in": "Built-in", "global": "Global", "project": "This project"}[card.source] }}</span>{% endif %}
+  </h3>
+  <p class="hint">Used in: {{ spec.used_in }}</p>
+  {{ takes_effect(spec.effect) }}
+  <form method="post" action="{{ action_url }}"{% if scope == "global" %} onsubmit="return confirmPromptReplace(this, event)"{% endif %}>
+    <label>Template
+      <textarea name="template" rows="6" maxlength="10000"{% if not editable %} readonly{% endif %}>{{ card.text }}</textarea>
+    </label>
+    {% if spec.placeholders %}
+      <ul class="prompt-placeholders">
+        {% for p in spec.placeholders %}
+          <li><code>{{ '{' ~ p.name ~ '}' }}</code> {{ p.meaning }} ({{ "locked" if p.locked else ("required" if p.required else "optional") }})
+            {% if p.locked %}
+              {% if p.variants %}{% for label, text in p.variants %}<div class="prompt-locked"><span>{{ label }}:</span> <code>{{ text }}</code></div>{% endfor %}
+              {% else %}<div class="prompt-locked"><code>{{ p.sample }}</code></div>{% endif %}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if spec.untrusted_warning %}
+      <p class="warning">Staged, passed and downloaded material is untrusted. Removing the safety wording can expose the agent to prompt injection.</p>
+    {% endif %}
+    <details class="prompt-preview-box"><summary>Preview</summary>
+      <pre class="prompt-preview{% if card.failed %} warning{% endif %}" id="prompt-preview-{{ spec.id }}">{{ card.preview }}</pre>
+      {% if editable %}<button type="button" hx-post="{{ preview_url }}" hx-include="closest form" hx-target="#prompt-preview-{{ spec.id }}" hx-swap="outerHTML">Preview typed text</button>{% endif %}
+    </details>
+    {% if overridden_in and spec.id in overridden_in %}
+      <fieldset class="prompt-overrides"><legend>Overridden in</legend>
+        <p class="hint">Tick a project to replace its own version when you save or reset this prompt.</p>
+        {% for project_id, name, url in overridden_in[spec.id] %}
+          <div class="prompt-override-row">
+            <label class="auto-choice"><input type="checkbox" name="replace" value="{{ project_id }}" data-project-name="{{ name }}"{% if project_id in replace_ticked %} checked{% endif %}> Replace in <a href="{{ url }}">{{ name }}</a></label>
+            <button type="button" hx-post="{{ action_url }}/compare" hx-include="closest form" hx-vals='{{ {"project": project_id}|tojson }}' hx-target="#prompt-compare-{{ spec.id }}" hx-swap="innerHTML">Compare</button>
+          </div>
+        {% endfor %}
+        <div class="prompt-compare" id="prompt-compare-{{ spec.id }}"></div>
+      </fieldset>
+    {% endif %}
+    {% if not editable %}<p class="hint">Only this machine can change this prompt.</p>{% else %}
+    <div class="prompt-actions">
+      {% if scope == "global" %}
+        <button type="submit" name="action" value="save">Save</button>
+        <button type="submit" name="action" value="reset">Reset to built-in</button>
+      {% else %}
+        <button type="submit" name="action" value="save">Save override</button>
+        {% if card.source == "project" %}<button type="submit" name="action" value="use_global">Use global</button>{% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
+  </form>
+</article>
+{% endmacro %}

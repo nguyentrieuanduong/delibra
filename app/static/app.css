@@ -434,3 +434,16 @@ textarea { min-height: 7rem; }
 .settings-tabs a { border: 1px solid transparent; border-bottom: none; padding: .4rem .8rem; text-decoration: none; }
 .settings-tabs a[aria-current="page"] { border-color: #ccc; border-radius: .3rem .3rem 0 0; font-weight: 600; margin-bottom: -1px; background: Canvas; }
 .takes-effect { font-size: .85rem; margin: 0 0 .5rem; opacity: .75; }
+
+/* Prompts tabs (editable prompts). */
+.prompt-card { border-top: 1px solid #ddd; padding-top: .5rem; margin-top: 1rem; }
+.prompt-card textarea { width: 100%; }
+.prompt-preview { white-space: pre-wrap; max-height: 20rem; overflow: auto; }
+.prompt-locked code { white-space: pre-wrap; }
+.prompt-placeholders { font-size: .9rem; }
+.badge { font-size: .75rem; opacity: .75; font-weight: normal; margin-left: .5rem; }
+.prompt-override-row { display: flex; gap: .5rem; align-items: center; }
+.prompt-diff span { display: block; white-space: pre-wrap; }
+.compare-project { background: #fdecea; }
+.compare-global { background: #e6f4ea; }
+.prompt-actions { display: flex; gap: .5rem; }

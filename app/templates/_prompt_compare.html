@@ -1,0 +1,8 @@
+<div class="prompt-compare-view">
+  <p>{{ project_name }}'s version compared with the text in the box above (not saved):
+    <span class="compare-project">− only in {{ project_name }}</span> ·
+    <span class="compare-global">+ only in the box</span></p>
+  {% if identical %}<p>They are identical.</p>
+  {% else %}<pre class="prompt-diff">{% for kind, line in rows %}<span class="compare-{{ kind }}">{{ {"same": "  ", "project": "− ", "global": "+ "}[kind] }}{{ line }}</span>{% endfor %}</pre>{% endif %}
+  <button type="button" onclick="this.closest('.prompt-compare').replaceChildren()">Close</button>
+</div>
