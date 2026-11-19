@@ -148,6 +148,13 @@
   {% if run_open_questions|default(0) %}<p class="auto-open-questions">{{ run_open_questions }} open question{% if run_open_questions != 1 %}s{% endif %} for you from this run.</p>{% endif %}
   {% if auto.terminal_reason %}<p class="auto-terminal-reason">{{ auto.terminal_reason }}</p>{% endif %}
   {% if auto_active %}
+    {#- The spans below take their in-flight htmx-request class here, not on
+        themselves: the stream is hx-preserve'd, so htmx processes them again
+        when an #auto-status swap settles, and htmx 1.9 re-initialises an
+        element whose attributes changed -- wiping its request lock (a second
+        fetch then went out with the same cursor and Q1 was added twice) and
+        adding its SSE listeners a second time. #}
+    <span hidden id="auto-fetch-busy-{{ auto.id }}"></span>
     <span
       hidden
       id="auto-status-stream-{{ auto.id }}"
@@ -161,6 +168,7 @@
         hx-trigger="sse:status, sse:reset, sse:questions"
         hx-target="#auto-status"
         hx-swap="outerHTML"
+        hx-indicator="#auto-fetch-busy-{{ auto.id }}"
       ></span>
       <span
         hidden
@@ -168,6 +176,7 @@
         hx-trigger="sse:status, sse:reset"
         hx-target="#chat-timeline"
         hx-swap="outerHTML"
+        hx-indicator="#auto-fetch-busy-{{ auto.id }}"
       ></span>
       <span
         hidden
@@ -176,6 +185,7 @@
         hx-include="#questions-cursor"
         hx-target="#questions-list"
         hx-swap="afterbegin"
+        hx-indicator="#auto-fetch-busy-{{ auto.id }}"
       ></span>
     </span>
   {% endif %}
