@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 
 from app.models import AutoArtifact, AutoParticipant, AutoRunRecord
 from app.storage import ProjectStore
+
+
+@pytest.fixture(autouse=True)
+def _private_delibra_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point DELIBRA_HOME at this test's own (absent) folder.
+
+    Settings.from_env() falls back to ~/.delibra, so a test that reads the
+    environment without setting DELIBRA_HOME would read the operator's real
+    config.json -- its result would depend on that machine, and parallel
+    workers would share it. A test that needs a populated home still sets
+    DELIBRA_HOME itself; monkeypatch applies its value over this one.
+    """
+
+    monkeypatch.setenv("DELIBRA_HOME", str(tmp_path / "delibra-home"))
 
 
 @pytest.fixture

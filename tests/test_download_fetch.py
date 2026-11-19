@@ -4,6 +4,20 @@ from pathlib import Path
 import pytest
 from app.download_fetch import FILE_MAX_BYTES, FetchError, Fetcher
 
+# Every server a test starts; the autouse fixture below stops them, so a
+# worker does not keep a listening thread per test for the rest of the run.
+_SERVERS: list[ThreadingHTTPServer] = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_servers():
+    yield
+    while _SERVERS:
+        httpd = _SERVERS.pop()
+        httpd.shutdown()
+        httpd.server_close()
+
+
 class Server:
     def __init__(self, routes):
         hits = self.hits = []
@@ -20,7 +34,9 @@ class Server:
             def log_message(self, *args): pass
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        # A short poll so the teardown's shutdown() returns at once, not after 0.5 s.
+        threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        _SERVERS.append(self.httpd)
     def resolve(self, mapping):
         async def resolve(host, port):
             if host not in mapping: raise OSError("unknown")
@@ -155,7 +171,9 @@ class SlowDripServer:
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        # A short poll so the teardown's shutdown() returns at once, not after 0.5 s.
+        threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        _SERVERS.append(self.httpd)
 
 
 @pytest.mark.asyncio
