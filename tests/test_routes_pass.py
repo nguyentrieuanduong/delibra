@@ -496,3 +496,14 @@ def test_a_passed_round_shows_its_start_at_once(tmp_path: Path) -> None:
     started_at = store.load_session(target.id).rounds[0].started_at
     assert passed.status_code == 202
     assert f'datetime="{started_at}"' in passed.text
+
+
+def test_the_pass_dialog_uses_the_stored_prompts_rule(tmp_path: Path) -> None:
+    app, _settings, project, store, source, target, _failed, _ = setup(tmp_path)
+    source_base = f"/projects/{quote(project.name, safe='')}/sessions/{source.id}"
+    with TestClient(app, base_url="http://localhost") as client:
+        refused = client.post(f"{source_base}/pass", data=pass_form_data(target.id, "No path here."))
+
+    assert refused.status_code == 422
+    assert "Pass prompt must contain {source_path} exactly once" in refused.text
+    assert store.load_session(target.id).rounds == []

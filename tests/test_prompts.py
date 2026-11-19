@@ -312,3 +312,108 @@ def test_compare_rows_mark_what_only_the_project_or_the_global_has() -> None:
         ("same", "Read {context}."), ("project", "Be brief."), ("global", "Be very brief."), ("same", "End."),
     ]
     assert compare_rows("a", "a") == [("same", "a")]
+
+
+def test_a_legacy_pass_template_with_other_tokens_keeps_working(tmp_path) -> None:
+    import json
+
+    from app.prompts import CATALOGUE, load_prompts, pass_template
+
+    legacy = "Review {source_path}. Answer as {json}."
+    assert validate_template(CATALOGUE["pass"], legacy) == legacy
+    store = make_store(tmp_path)
+    manifest = json.loads(store.manifest_path.read_text())
+    manifest["pass_prompt_template"] = legacy
+    store.manifest_path.write_text(json.dumps(manifest))
+    home = tmp_path / "home"
+
+    assert load_prompts(home, store).template("pass") == legacy  # turns are not refused
+    assert pass_template(home, store) == legacy  # the dialog is prefilled with it
+    assert render_template(CATALOGUE["pass"], legacy, {"source_path": "s.md", "source_session": "A",
+                                                       "source_round": "1"}) == "Review s.md. Answer as {json}."
+
+
+def test_an_invalid_pass_override_is_named_once() -> None:
+    from app.prompts import _stored
+
+    with pytest.raises(PromptError) as error:
+        _stored({"pass": "No path here."})
+    assert str(error.value).startswith("Pass prompt is invalid: Pass prompt must contain {source_path}")
+
+
+def test_a_save_that_would_make_the_file_too_large_is_refused_before_writing(tmp_path) -> None:
+    from app.prompts import CATALOGUE, load_prompts, save_global_prompt
+
+    home = tmp_path / "home"
+    long_text = "Tóm tắt lịch sử hội thoại đã được chuẩn bị. " * 220  # ~9,900 chars, ~13 KB of UTF-8
+    saved = []
+    for spec in list(CATALOGUE.values()):
+        tokens = " ".join("{" + p.name + "}" for p in spec.placeholders if p.required or p.locked)
+        text = long_text[: 10_000 - len(tokens)] + tokens
+        try:
+            save_global_prompt(home, spec.id, validate_template(spec, text))
+            saved.append(spec.id)
+        except PromptError as exc:
+            assert str(exc) == (
+                "all changed prompts together would be larger than 256 KB; shorten or reset some first"
+            )
+            break
+    else:
+        pytest.fail("the size limit was never reached")
+    assert (home / "prompts.json").stat().st_size <= 256 * 1024
+    assert sorted(load_prompts(home, None)._global) == sorted(saved)  # still readable
+
+
+@pytest.mark.parametrize("kind", ["unreadable", "directory"])
+def test_a_prompts_file_that_cannot_be_opened_is_a_prompt_error_without_paths(tmp_path, kind) -> None:
+    import os
+
+    from app.prompts import load_prompts, save_global_prompt
+
+    home = tmp_path / "home"
+    home.mkdir()
+    path = home / "prompts.json"
+    if kind == "directory":
+        path.mkdir()
+    else:
+        path.write_text("{}")
+        os.chmod(path, 0)
+    try:
+        for action in (lambda: load_prompts(home, None), lambda: save_global_prompt(home, "compact", None)):
+            with pytest.raises(PromptError) as error:
+                action()
+            message = str(error.value)
+            assert message.startswith("the global prompts file in Delibra's home folder cannot be read: ")
+            assert message.endswith("; fix or remove it") and str(tmp_path) not in message
+    finally:
+        if kind == "unreadable":
+            os.chmod(path, 0o600)
+
+
+def test_file_level_messages_name_no_path(tmp_path) -> None:
+    from app.prompts import load_prompts
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "prompts.json").write_text("{bad")
+    with pytest.raises(PromptError) as error:
+        load_prompts(home, None)
+    assert str(error.value) == "prompts.json is not valid JSON; fix or remove it"
+
+
+def test_rendered_defaults_leave_no_declared_token_and_the_catalogue_is_read_only() -> None:
+    from app.prompts import CATALOGUE, preview
+
+    for spec in CATALOGUE.values():
+        rendered = preview(spec, spec.default)
+        assert not any("{" + name + "}" in rendered for name in spec.names), spec.id
+    with pytest.raises(TypeError):
+        CATALOGUE["extra"] = CATALOGUE["pass"]  # type: ignore[index]
+
+
+def test_only_chat_pass_and_discussion_only_prompts_are_lan_editable() -> None:
+    from app.prompts import CATALOGUE
+
+    assert {spec.id for spec in CATALOGUE.values() if spec.lan_editable} == {
+        "pass", "compact", "chat_skills", "auto_discussion",
+    }
