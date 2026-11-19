@@ -163,3 +163,77 @@ def test_help_parsing_never_raises_on_mangled_help() -> None:
         options = v.parse_help("\n".join(mangled))
         assert all(name.startswith("-") for name in options)
         assert all(spec.arity in ("none", "one", "optional", "many") for spec in options.values())
+
+
+def test_unexpected_positionals_fail() -> None:
+    claude = v.check_argv("claude", ["claude", "-p", "stray"], {"claude": CLAUDE})
+    assert [(u.flag, u.problem) for u in claude] == [("-p", None), ("stray", "unexpected argument `stray` for `claude`")]
+    ok = v.check_argv("codex", ["codex", "exec", "resume", "t-1", "-"], CODEX_SCOPES)
+    assert ok == []
+    bad = v.check_argv("codex", ["codex", "exec", "resume", "t-1", "-", "extra"], CODEX_SCOPES)
+    assert [(u.scope, u.flag, u.problem) for u in bad] == [
+        ("codex exec resume", "extra", "unexpected argument `extra` for `codex exec resume`")]
+    assert [u.flag for u in v.check_argv("codex", ["codex", "exec", "hello"], CODEX_SCOPES)] == ["hello"]
+
+
+def test_the_cheapest_codex_model_is_the_listed_affordable_one() -> None:
+    catalog = {"models": [
+        {"slug": "big", "visibility": "list", "priority": 1, "description": "Frontier intelligence."},
+        {"slug": "small-old", "visibility": "list", "priority": 9, "description": "Older fast and efficient model."},
+        {"slug": "small", "visibility": "list", "priority": 4, "description": "Fast and affordable model."},
+        {"slug": "hidden", "visibility": "hide", "priority": 0, "description": "Cheap and affordable."},
+    ]}
+    assert v.cheapest_codex_model(catalog) == "small"
+    assert v.cheapest_codex_model({"models": [catalog["models"][1]]}) == "small-old"
+    assert v.cheapest_codex_model({"models": [catalog["models"][0]]}) == ""
+
+
+@pytest.mark.parametrize("value, status", [
+    ("PASS", "PASS"), ("FAIL (rc=1)", "FAIL"), ("INCONCLUSIVE (control unreachable)", "INCONCLUSIVE"),
+    ("RECORDED (rc=22)", "RECORDED"), ("weird output", "INCONCLUSIVE"), ("PASSED?", "INCONCLUSIVE"),
+])
+def test_spike_rows_are_never_pass_unless_the_spike_said_pass(value: str, status: str) -> None:
+    assert v._spike_row("codex", "sandbox x", value).status == status
+
+
+@pytest.mark.parametrize("text, status", [
+    ("4817 TAG-BRAVO", "PASS"), ("4817 TAG-ALPHA", "FAIL"), ("4817", "INCONCLUSIVE"),
+])
+def test_the_resume_system_prompt_check_has_three_outcomes(text: str, status: str) -> None:
+    from app.agents.base import AgentEvent
+
+    turn = v.Turn([AgentEvent("init", cli_session_id="s"), AgentEvent("result", text)], 0, "", [])
+    checks = {c.name: c.status for c in v._resume_checks("codex", turn, "s")}
+    assert checks["resume: changed system prompt applies"] == status
+    assert checks["resume: same session"] == "PASS"
+
+
+def test_rollout_developer_messages_are_read_per_thread(tmp_path: Path) -> None:
+    import json
+
+    folder = tmp_path / "sessions" / "2026" / "11" / "19"
+    folder.mkdir(parents=True)
+    records = [
+        {"type": "response_item", "payload": {"role": "developer", "content": [{"text": "tag TAG-ALPHA"}]}},
+        {"type": "response_item", "payload": {"role": "user", "content": [{"text": "TAG-BRAVO?"}]}},
+    ]
+    (folder / "rollout-2026-11-19T00-00-00-t-1.jsonl").write_text("\n".join(json.dumps(r) for r in records))
+    assert v.rollout_developer_tags(tmp_path, "t-1", ("TAG-ALPHA", "TAG-BRAVO")) == {"TAG-ALPHA": 1, "TAG-BRAVO": 0}
+
+
+def test_the_lan_override_restores_the_spike_settings() -> None:
+    import spike.spike_build_sandbox as spike
+
+    before = (spike.LAN_IP, spike.LAN_PORT, spike.LAN_NAME, spike.ALLOWLIST)
+    with v.lan_override(spike) as hits:
+        assert spike.LAN_IP != "" and spike.LAN_NAME in spike.ALLOWLIST and hits == []
+    assert (spike.LAN_IP, spike.LAN_PORT, spike.LAN_NAME, spike.ALLOWLIST) == before
+
+
+def test_only_the_last_three_runs_are_kept(tmp_path: Path) -> None:
+    for name in ("tier1-20261101T000000", "tier2-20261102T000000", "tier1-20261103T000000",
+                 "tier1-20261104T000000", "other"):
+        (tmp_path / name).mkdir()
+    v.prune_runs(tmp_path, keep=3)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "other", "tier1-20261103T000000", "tier1-20261104T000000", "tier2-20261102T000000"]

@@ -96,6 +96,16 @@ STATELESS_CONTINUATION_WARNING = (
     "Native context was reset or unavailable; bounded staged history supplied "
     "a stateless continuation."
 )
+# The only variables a provider subprocess inherits from Delibra's environment;
+# credentials such as ANTHROPIC_API_KEY never reach an agent (shared with the
+# spikes and scripts/validate_clis.py so they run the CLIs the same way).
+INHERITED_ENVIRONMENT = ("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM")
+
+
+def inherited_environment() -> dict[str, str]:
+    return {name: os.environ[name] for name in INHERITED_ENVIRONMENT if name in os.environ}
+
+
 class SessionBusy(ConflictError):
     """A second run was requested for a session that is already running."""
 
@@ -1371,11 +1381,7 @@ class RunManager:
         *,
         coding: CodingContext | None = None,
     ) -> dict[str, str]:
-        environment = {
-            name: os.environ[name]
-            for name in ("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM")
-            if name in os.environ
-        }
+        environment = inherited_environment()
         tmpdir = workspace / ".tmp"
         ensure_owned_directory(tmpdir, workspace)
         environment["TMPDIR"] = str(tmpdir)

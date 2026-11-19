@@ -42,6 +42,7 @@ from app.agents.codex import CodexAdapter  # noqa: E402
 from app.coding_env import developer_tools_dir, prepare_env  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.models import SessionConfig  # noqa: E402
+from app.runner import inherited_environment  # noqa: E402
 from spike.spike_add_dir import SpikeStop, cli_path, cli_version, invoke  # noqa: E402
 
 FINDINGS = ROOT / "spike" / "FINDINGS.md"
@@ -297,7 +298,7 @@ def context(tree: Tree, prompt: str, allowlist: tuple[str, ...]) -> RunContext:
 
 def environment(provider: str, tree: Tree) -> dict[str, str]:
     # Mirrors RunManager._subprocess_environment for build turns (Task 12).
-    env = {k: os.environ[k] for k in ("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM") if k in os.environ}
+    env = inherited_environment()
     env["PATH"] = f"{tree.project / 'envs' / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     coding = context(tree, "", ()).coding
     assert coding is not None

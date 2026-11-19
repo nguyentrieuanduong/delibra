@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import json
-import os
 from pathlib import Path
 import re
 import secrets
@@ -42,6 +43,7 @@ from app.agents.claude import ClaudeAdapter  # noqa: E402
 from app.agents.codex import CodexAdapter  # noqa: E402
 from app.download_model_check import claude_argv, codex_argv  # noqa: E402
 from app.models import SessionConfig  # noqa: E402
+from app.runner import inherited_environment  # noqa: E402
 
 SCRATCH = ROOT / "tmp" / "validate-clis"
 PROBE_KEY = "zzzz_delibra_probe"
@@ -148,6 +150,9 @@ class FlagUse:
 
 
 SUBCOMMANDS = {"codex": {"exec": "codex exec"}, "codex exec": {"resume": "codex exec resume"}}
+# The positionals Delibra passes after the subcommands: the stdin marker, and a resume's
+# session id before it. Anything else is a FAIL, never a silent pass.
+POSITIONALS = {"codex exec": ("-",), "codex exec resume": ("<session id>", "-")}
 
 
 def check_argv(provider: str, argv: list[str], scopes: dict[str, dict[str, OptionSpec]]) -> list[FlagUse]:
@@ -157,11 +162,19 @@ def check_argv(provider: str, argv: list[str], scopes: dict[str, dict[str, Optio
     uses: list[FlagUse] = []
     tokens = argv[1:]
     index = 0
+    positionals: list[str] = []
     while index < len(tokens):
         token = tokens[index]
         index += 1
         if not token.startswith("-") or token == "-":
-            scope = SUBCOMMANDS.get(scope, {}).get(token, scope)
+            if not positionals and token in SUBCOMMANDS.get(scope, {}):
+                scope = SUBCOMMANDS[scope][token]
+                continue
+            expected = POSITIONALS.get(scope, ())
+            slot = expected[len(positionals)] if len(positionals) < len(expected) else None
+            if slot is None or (slot != "<session id>" and slot != token):
+                uses.append(FlagUse(scope, token, None, f"unexpected argument `{token}` for `{scope}`"))
+            positionals.append(token)
             continue
         flag, inline_sep, inline = token.partition("=")
         spec = scopes[scope].get(flag)
@@ -254,7 +267,7 @@ def dry_parse_status(returncode: int, output: str) -> tuple[str, str]:
 
     first = next((line.strip() for line in output.splitlines() if line.strip()), "")
     if f"unknown configuration field `{PROBE_KEY}`" in output:
-        return "PASS", "argv parsed; every -c key known and well-typed"
+        return "PASS", "argv parsed; every -c key known and its value accepted (free strings are not checked)"
     if returncode == 0:
         return "INCONCLUSIVE", "the CLI accepted the probe key"
     return "FAIL", first[:300]
@@ -357,10 +370,53 @@ def _run(argv: list[str], *, env: dict[str, str] | None = None, cwd: Path | None
 
 
 def _empty_codex_env(home: Path) -> dict[str, str]:
+    """Every model-free codex call runs here: no login, and nothing written to the real CODEX_HOME."""
+
     home.mkdir(parents=True, exist_ok=True)
-    env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}
-    env["CODEX_HOME"] = str(home)
-    return env
+    return {**inherited_environment(), "CODEX_HOME": str(home)}
+
+
+def cheapest_codex_model(catalog: dict[str, Any]) -> str:
+    """The catalog names no prices: take the listed model described as affordable (else fast
+    or efficient) with the best priority; "" (the CLI default) when none says so."""
+
+    listed = [model for model in catalog.get("models", []) if model.get("visibility") == "list"]
+    for word in ("affordable", "fast", "efficient"):
+        matches = [model for model in listed if word in str(model.get("description", "")).lower()]
+        if matches:
+            return str(min(matches, key=lambda model: model.get("priority", 1_000))["slug"])
+    return ""
+
+
+def codex_catalog(executable: str, root: Path) -> dict[str, Any]:
+    result = _run([executable, "debug", "models", "--bundled"], env=_empty_codex_env(root / "empty-codex-home"),
+                  timeout=60)
+    return json.loads(result.stdout)
+
+
+def rollout_developer_tags(home: Path, thread_id: str, tags: tuple[str, ...]) -> dict[str, int]:
+    """How many developer messages in a thread's rollout carry each tag."""
+
+    counts = dict.fromkeys(tags, 0)
+    for path in home.glob(f"sessions/*/*/*/rollout-*-{thread_id}.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            payload = record.get("payload") if isinstance(record, dict) else None
+            if record.get("type") == "response_item" and isinstance(payload, dict) and payload.get("role") == "developer":
+                text = json.dumps(payload)
+                for tag in tags:
+                    counts[tag] += tag in text
+    return counts
+
+
+def prune_runs(scratch: Path, keep: int = 3) -> None:
+    runs = sorted((path for path in scratch.iterdir() if re.fullmatch(r"tier[12]-\d{8}T\d{6}", path.name)),
+                  key=lambda path: path.name.split("-", 1)[1])
+    for path in runs[:-keep]:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def tier1_claude(executable: str, root: Path) -> list[Check]:
@@ -382,7 +438,8 @@ def tier1_claude(executable: str, root: Path) -> list[Check]:
 
 
 def tier1_codex(executable: str, root: Path) -> list[Check]:
-    help_texts = {scope: _run([executable, *scope.split()[1:], "--help"]).stdout
+    env = _empty_codex_env(root / "empty-codex-home")
+    help_texts = {scope: _run([executable, *scope.split()[1:], "--help"], env=env).stdout
                   for scope in ("codex", "codex exec", "codex exec resume")}
     scopes = {scope: parse_help(text) for scope, text in help_texts.items()}
     variants = argv_variants("codex", executable, root)
@@ -391,7 +448,6 @@ def tier1_codex(executable: str, root: Path) -> list[Check]:
         missing = [name for name in needed if name not in parse_subcommands(help_texts[scope])]
         checks.append(Check("codex", f"`{scope}` subcommands", "FAIL" if missing else "PASS",
                             f"missing: {', '.join(missing)}" if missing else ", ".join(needed)))
-    env = _empty_codex_env(root / "empty-codex-home")
     features = parse_features(_run([executable, "features", "list"], env=env).stdout)
     names = [name for argv in variants.values() for name in disabled_features(argv)]
     checks += check_features("codex", names, features)
@@ -411,7 +467,7 @@ def tier1_codex(executable: str, root: Path) -> list[Check]:
         "codex debug prompt-input" if shown.returncode == 0 else shown.stderr.strip()[:300],
     ))
     try:
-        catalog = json.loads(_run([executable, "debug", "models"], env=env, timeout=60).stdout)
+        catalog = codex_catalog(executable, root)
         checks.append(codex_effort_check(CodexAdapter.EFFORT_LEVELS, catalog))
     except ValueError:
         checks.append(Check("codex", "effort levels (model catalog)", "WARN", "`codex debug models` gave no JSON"))
@@ -421,56 +477,119 @@ def tier1_codex(executable: str, root: Path) -> list[Check]:
     return checks
 
 
-def _sandbox_tree(root: Path, spike: Any) -> Any:
-    """A spike tree under tmp/ with a dummy Codex auth (the replay needs no login)."""
+@dataclass
+class ProbeSetup:
+    spike: Any
+    tree: Any
+    delibra: Any
+    proxy: Any
+    lan_hits: list[str]
+
+    def clear_hits(self) -> None:
+        for hits in (self.delibra.hits, self.proxy.hits, self.lan_hits):
+            hits.clear()
+
+
+def _stop(server: Any) -> None:
+    server.shutdown()
+    server.server_close()
+
+
+@contextmanager
+def lan_override(spike: Any) -> Iterator[list[str]]:
+    """Point the spike's LAN probes at a listener on this machine's own private address
+    (how a LAN-exposed Delibra is reached); the spike's settings are restored afterwards."""
+
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import socket
+    import threading
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("192.0.2.1", 9))  # no packet is sent; selects the outbound interface
+        own_ip = probe.getsockname()[0]
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            hits.append(self.requestline)
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer((own_ip, 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    saved = (spike.LAN_IP, spike.LAN_PORT, spike.LAN_NAME, spike.ALLOWLIST)
+    spike.LAN_IP, spike.LAN_PORT = own_ip, server.server_address[1]
+    spike.LAN_NAME = f"{own_ip.replace('.', '-')}.nip.io"
+    spike.ALLOWLIST = ("pypi.org", "files.pythonhosted.org", spike.LAN_NAME)
+    try:
+        yield hits
+    finally:
+        spike.LAN_IP, spike.LAN_PORT, spike.LAN_NAME, spike.ALLOWLIST = saved
+        _stop(server)
+
+
+@contextmanager
+def probe_tree(root: Path, *, lan: bool) -> Iterator[ProbeSetup]:
+    """The S1/S2 spike tree under tmp/ (dummy Codex auth), its listeners, and cleanup on
+    every exit, a failed tree build included."""
+
+    import spike.spike_build_sandbox as spike
 
     base = root / f"sandbox-{secrets.token_hex(4)}"
     base.mkdir(parents=True)
-    return spike._build_tree_in_root(base, "claude")
+    servers = []
+    try:
+        delibra, server_a = spike.start_listener()
+        servers.append(server_a)
+        proxy, server_b = spike.start_listener()
+        servers.append(server_b)
+        with lan_override(spike) if lan else nullcontext([]) as lan_hits:
+            tree = spike._build_tree_in_root(base, "claude")
+            yield ProbeSetup(spike, tree, delibra, proxy, lan_hits)
+    finally:
+        for server in servers:
+            _stop(server)
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _lan_rows(rows: dict[str, str], hits: list[str], names: tuple[str, ...]) -> dict[str, str]:
+    for name in names:
+        if hits and rows[name].startswith("PASS"):
+            rows[name] = f"FAIL ({len(hits)} request(s) reached the LAN listener)"
+    return rows
 
 
 def codex_sandbox_replay(executable: str, root: Path) -> list[Check]:
     """S2's model-free replay: the build profile Delibra sends, under `codex sandbox`."""
 
-    import spike.spike_build_sandbox as spike
-    from spike.spike_build_sandbox_codex_replay import start_lan_listener
-
-    lan_server, lan_hits = start_lan_listener()
-    delibra, server_a = spike.start_listener()
-    proxy, server_b = spike.start_listener()
-    tree = None
     try:
-        tree = _sandbox_tree(root, spike)
-        commands = spike.probes(tree, delibra, proxy)
-        base = spike.baseline(tree, commands)
-        proxy_seen = bool(proxy.hits)
-        for hits in (delibra.hits, proxy.hits, lan_hits):
-            hits.clear()
-        spike.write_script(tree.project, commands)
-        context = spike.context(tree, "", spike.ALLOWLIST)
-        built = CodexAdapter(executable).build_command(_session("codex"), context).argv
-        argv = [executable]
-        for flag, value in zip(built, built[1:]):
-            if flag in ("--config", "--disable"):
-                argv += [flag, value]
-        argv += ["sandbox", "-P", "delibra_build", "-C", str(tree.project), "--", "sh", "spike-probes.sh"]
-        started = time.monotonic()
-        completed = _run(argv, env=spike.environment("codex", tree), cwd=tree.project, timeout=900)
-        rows = spike.judge(tree, delibra, proxy, "codex", base, proxy_seen)
-        for name in ("net_lan_ip", "net_lan_name"):
-            if lan_hits and rows[name].startswith("PASS"):
-                rows[name] = f"FAIL ({len(lan_hits)} request(s) reached the LAN listener)"
-        rows["codex_sandbox_exit"] = (
-            f"PASS (rc=0 in {time.monotonic() - started:.1f}s)" if completed.returncode == 0
-            else f"FAIL (rc={completed.returncode}: {completed.stderr[-300:]!r})"
-        )
+        with probe_tree(root, lan=True) as setup:
+            spike, tree = setup.spike, setup.tree
+            commands = spike.probes(tree, setup.delibra, setup.proxy)
+            base = spike.baseline(tree, commands)
+            proxy_seen = bool(setup.proxy.hits)
+            setup.clear_hits()
+            spike.write_script(tree.project, commands)
+            context = spike.context(tree, "", spike.ALLOWLIST)
+            built = CodexAdapter(executable).build_command(_session("codex"), context).argv
+            argv = [executable]
+            for flag, value in zip(built, built[1:]):
+                if flag in ("--config", "--disable"):
+                    argv += [flag, value]
+            argv += ["sandbox", "-P", "delibra_build", "-C", str(tree.project), "--", "sh", "spike-probes.sh"]
+            started = time.monotonic()
+            completed = _run(argv, env=spike.environment("codex", tree), cwd=tree.project, timeout=900)
+            rows = _lan_rows(spike.judge(tree, setup.delibra, setup.proxy, "codex", base, proxy_seen),
+                             setup.lan_hits, ("net_lan_ip", "net_lan_name"))
+            rows["codex_sandbox_exit"] = (
+                f"PASS (rc=0 in {time.monotonic() - started:.1f}s)" if completed.returncode == 0
+                else f"FAIL (rc={completed.returncode}: {completed.stderr[-300:]!r})"
+            )
     except Exception as exc:  # the table must survive any failure
         rows = {"sandbox_replay_error": f"INCONCLUSIVE ({type(exc).__name__}: {exc})"}
-    finally:
-        for server in (server_a, server_b, lan_server):
-            server.shutdown()
-        if tree is not None:
-            shutil.rmtree(tree.root, ignore_errors=True)
     return [_spike_row("codex", f"sandbox {name}", value) for name, value in rows.items()]
 
 
@@ -486,8 +605,7 @@ def _spike_row(provider: str, name: str, value: str) -> Check:
 def _turn_env(workspace: Path, *, codex_home: Path | None = None) -> dict[str, str]:
     """What RunManager._subprocess_environment gives a chat turn."""
 
-    env = {name: os.environ[name] for name in ("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM")
-           if name in os.environ}
+    env = inherited_environment()
     (workspace / ".tmp").mkdir(parents=True, exist_ok=True)
     env["TMPDIR"] = str(workspace / ".tmp")
     if codex_home is not None:
@@ -585,43 +703,31 @@ def tier2_claude(executable: str, root: Path) -> list[Check]:
 
 
 def claude_sandbox_turn(executable: str, root: Path) -> list[Check]:
-    import spike.spike_build_sandbox as spike
-    from spike.spike_build_sandbox_codex_replay import start_lan_listener
-
-    lan_server, lan_hits = start_lan_listener()
-    delibra, server_a = spike.start_listener()
-    proxy, server_b = spike.start_listener()
-    tree = None
     checks: list[Check] = []
     try:
-        tree = _sandbox_tree(root, spike)
-        commands = spike.probes(tree, delibra, proxy)
-        base = spike.baseline(tree, commands)
-        proxy_seen = bool(proxy.hits)
-        for hits in (delibra.hits, proxy.hits, lan_hits):
-            hits.clear()
-        spike.write_script(tree.project, commands)
-        adapter = ClaudeAdapter(executable)
-        turn = run_turn(adapter, _session("claude", model="haiku", role="Follow the user's instructions exactly."),
-                        spike.context(tree, spike.PROMPT, spike.ALLOWLIST), spike.environment("claude", tree),
-                        tree.project, root / "claude-sandbox.jsonl")
-        rows = spike.judge(tree, delibra, proxy, "claude", base, proxy_seen)
-        if lan_hits and rows["net_lan_ip"].startswith("PASS"):
-            rows["net_lan_ip"] = f"FAIL ({len(lan_hits)} request(s) reached the LAN listener)"
-        checks += [_spike_row("claude", f"sandbox {name}", value) for name, value in rows.items()]
-        init = next((event for event in turn.raw if event.get("type") == "system" and event.get("subtype") == "init"), {})
-        expected = set(_flag_value(adapter.build_command(_session("claude"), spike.context(tree, "", ())).argv,
-                                   "--tools").split(","))
-        shown = set(init.get("tools") or [])
-        checks.append(Check("claude", "--tools names (init event)", "PASS" if shown == expected else "FAIL",
-                            f"init lists {sorted(shown)}"))
+        with probe_tree(root, lan=True) as setup:
+            spike, tree = setup.spike, setup.tree
+            commands = spike.probes(tree, setup.delibra, setup.proxy)
+            base = spike.baseline(tree, commands)
+            proxy_seen = bool(setup.proxy.hits)
+            setup.clear_hits()
+            spike.write_script(tree.project, commands)
+            adapter = ClaudeAdapter(executable)
+            turn = run_turn(adapter, _session("claude", model="haiku", role="Follow the user's instructions exactly."),
+                            spike.context(tree, spike.PROMPT, spike.ALLOWLIST), spike.environment("claude", tree),
+                            tree.project, root / "claude-sandbox.jsonl")
+            rows = _lan_rows(spike.judge(tree, setup.delibra, setup.proxy, "claude", base, proxy_seen),
+                             setup.lan_hits, ("net_lan_ip",))
+            checks += [_spike_row("claude", f"sandbox {name}", value) for name, value in rows.items()]
+            init = next((event for event in turn.raw
+                         if event.get("type") == "system" and event.get("subtype") == "init"), {})
+            expected = set(_flag_value(adapter.build_command(_session("claude"), spike.context(tree, "", ())).argv,
+                                       "--tools").split(","))
+            shown = set(init.get("tools") or [])
+            checks.append(Check("claude", "--tools names (init event)", "PASS" if shown == expected else "FAIL",
+                                f"init lists {sorted(shown)}"))
     except Exception as exc:  # the table must survive any failure
         checks.append(Check("claude", "sandbox turn", "INCONCLUSIVE", f"{type(exc).__name__}: {exc}"))
-    finally:
-        for server in (server_a, server_b, lan_server):
-            server.shutdown()
-        if tree is not None:
-            shutil.rmtree(tree.root, ignore_errors=True)
     return checks
 
 
@@ -634,7 +740,7 @@ CODEX_EXEC_PROBES = ("write_project", "write_outside", "write_dot_git", "write_d
                      "read_claude_config", "git_status", "env_python")
 
 
-def tier2_codex(executable: str, root: Path) -> list[Check]:
+def tier2_codex(executable: str, root: Path, model: str) -> list[Check]:
     from app.codex_quota import read_codex_account_rate_limits
     from app.config import Settings
     from app.storage import read_codex_rollout_state
@@ -643,7 +749,8 @@ def tier2_codex(executable: str, root: Path) -> list[Check]:
     home = settings.codex_home
     if not (home / "auth.json").is_file():
         return [Check("codex", "Tier 2", "INCONCLUSIVE", "Delibra's Codex home has no auth.json")]
-    checks = codex_sandbox_turn(executable, root, home)
+    checks = [Check("codex", "Tier 2 model", "RECORDED", model or "the CLI default")]
+    checks += codex_sandbox_turn(executable, root, home, model)
     workspace = root / "codex-chat"
     workspace.mkdir(parents=True, exist_ok=True)
     context = replace(_chat(root, prompt=FIRST_PROMPT), workspace=workspace, writable_roots=(), project_root=None)
@@ -656,7 +763,7 @@ def tier2_codex(executable: str, root: Path) -> list[Check]:
                       "PASS" if usage is not None and usage.reported and state.last_tokens else "FAIL",
                       f"rollout {usage}; last_tokens={state.last_tokens}; rate limits={len(state.rate_limits)}")]
 
-    session = _session("codex", model="", role=FIRST_ROLE)
+    session = _session("codex", model=model, role=FIRST_ROLE)
     since = datetime.now(UTC)
     first = run_turn(CodexAdapter(executable), session, context, _turn_env(workspace, codex_home=home), workspace,
                      root / "codex-chat.jsonl")
@@ -667,6 +774,9 @@ def tier2_codex(executable: str, root: Path) -> list[Check]:
                        _turn_env(workspace, codex_home=home), workspace, root / "codex-resume.jsonl")
     checks += _usage_checks("codex", "resume turn", resumed) + rollout(resumed, since, "resume turn")
     checks += _resume_checks("codex", resumed, first.session_id)
+    tags = rollout_developer_tags(home, first.session_id or "-", ("TAG-ALPHA", "TAG-BRAVO"))
+    checks.append(Check("codex", "resume: rollout developer messages", "RECORDED",
+                        f"first instructions recorded {tags['TAG-ALPHA']}x, changed ones {tags['TAG-BRAVO']}x"))
     readings = asyncio.run(read_codex_account_rate_limits(
         home, executable=executable, timeout_seconds=settings.codex_app_server_timeout_seconds))
     checks.append(Check("codex", "app-server account rate limits (no model call)",
@@ -674,34 +784,28 @@ def tier2_codex(executable: str, root: Path) -> list[Check]:
     return checks
 
 
-def codex_sandbox_turn(executable: str, root: Path, home: Path) -> list[Check]:
+def codex_sandbox_turn(executable: str, root: Path, home: Path, model: str) -> list[Check]:
     """Non-network probes only: `codex exec` kills the script at the first blocked host."""
 
-    import spike.spike_build_sandbox as spike
-
-    delibra, server_a = spike.start_listener()
-    proxy, server_b = spike.start_listener()
-    tree = None
     try:
-        tree = _sandbox_tree(root, spike)
-        commands = {name: command for name, command in spike.probes(tree, delibra, proxy).items()
+        with probe_tree(root, lan=False) as setup:
+            spike, tree = setup.spike, setup.tree
+            commands = {name: command for name, command in spike.probes(tree, setup.delibra, setup.proxy).items()
+                        if name in CODEX_EXEC_PROBES}
+            spike.write_script(tree.project, commands)
+            env = spike.environment("codex", tree)
+            env["CODEX_HOME"] = str(home)
+            run_turn(CodexAdapter(executable),
+                     _session("codex", model=model, role="Follow the user's instructions exactly."),
+                     spike.context(tree, spike.PROMPT, spike.ALLOWLIST), env, tree.project,
+                     root / "codex-sandbox.jsonl")
+            base = {name: 0 for name in (*spike.BASELINE_PROBES, "net_allowed")}
+            rows = {name: value
+                    for name, value in spike.judge(tree, setup.delibra, setup.proxy, "codex", base, True).items()
                     if name in CODEX_EXEC_PROBES}
-        spike.write_script(tree.project, commands)
-        env = spike.environment("codex", tree)
-        env["CODEX_HOME"] = str(home)
-        run_turn(CodexAdapter(executable), _session("codex", model="", role="Follow the user's instructions exactly."),
-                 spike.context(tree, spike.PROMPT, spike.ALLOWLIST), env, tree.project, root / "codex-sandbox.jsonl")
-        base = {name: 0 for name in (*spike.BASELINE_PROBES, "net_allowed")}
-        rows = {name: value for name, value in spike.judge(tree, delibra, proxy, "codex", base, True).items()
-                if name in CODEX_EXEC_PROBES}
         return [_spike_row("codex", f"exec sandbox {name}", value) for name, value in rows.items()]
     except Exception as exc:  # the table must survive any failure
         return [Check("codex", "exec sandbox turn", "INCONCLUSIVE", f"{type(exc).__name__}: {exc}")]
-    finally:
-        for server in (server_a, server_b):
-            server.shutdown()
-        if tree is not None:
-            shutil.rmtree(tree.root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------- main
@@ -711,10 +815,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--tier", choices=("1", "2"), required=True)
     parser.add_argument("--provider", choices=("claude", "codex", "all"), default="all")
+    parser.add_argument("--codex-model", default=None,
+                        help="model for Codex Tier 2 turns; default: the cheapest the CLI lists (see cheapest_codex_model)")
     args = parser.parse_args()
     providers = ("claude", "codex") if args.provider == "all" else (args.provider,)
     root = SCRATCH / f"tier{args.tier}-{datetime.now(UTC):%Y%m%dT%H%M%S}"
     root.mkdir(parents=True)
+    prune_runs(SCRATCH)
     checks: list[Check] = []
     versions = {}
     for provider in providers:
@@ -722,11 +829,18 @@ def main() -> int:
         if executable is None:
             checks.append(Check(provider, "installed", "FAIL", f"{provider} is not on PATH"))
             continue
-        versions[provider] = _run([executable, "--version"]).stdout.strip().splitlines()[-1]
-        runner = {("1", "claude"): tier1_claude, ("1", "codex"): tier1_codex,
-                  ("2", "claude"): tier2_claude, ("2", "codex"): tier2_codex}[(args.tier, provider)]
+        env = _empty_codex_env(root / "empty-codex-home") if provider == "codex" else None
+        versions[provider] = _run([executable, "--version"], env=env).stdout.strip().splitlines()[-1]
         (root / provider).mkdir()
-        checks += runner(executable, root / provider)
+        if args.tier == "1":
+            runner = tier1_claude if provider == "claude" else tier1_codex
+            checks += runner(executable, root / provider)
+        elif provider == "claude":
+            checks += tier2_claude(executable, root / provider)
+        else:
+            model = args.codex_model if args.codex_model is not None else cheapest_codex_model(
+                codex_catalog(executable, root))
+            checks += tier2_codex(executable, root / provider, model)
     summary = ", ".join(f"{p} {versions.get(p, '?')}: {verdict(checks, p)}" for p in providers)
     output = f"Tier {args.tier} ({summary})\n\n{render_table(checks)}\n"
     (root / "table.md").write_text(output, encoding="utf-8")
