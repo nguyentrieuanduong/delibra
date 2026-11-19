@@ -421,9 +421,10 @@ global instruction heading — 27 prompts in all.
 - **Who can edit.** Global prompts: this machine only. Project overrides: this
   machine, and allowed LAN clients only for the prompts that reach nothing but chat
   replies, the Pass dialog and Auto discussion runs — Pass prompt, Compact summary,
-  Chat skills note and Discussion turn (LAN clients may already start those). Every
-  prompt that reaches a build run (its preparation, compaction and build turns),
-  downloads, conversion or the model check is shown read-only to LAN clients ("Only
+  Chat skills note, Preparation turn (build runs never prepare) and Discussion turn
+  (LAN clients may already start those). Every prompt that reaches a build run (its
+  compaction and build turns, the stateless continuation they use, the notes they
+  carry), downloads, conversion or the model check is shown read-only to LAN clients ("Only
   this machine can change this prompt.").
 - **Not editable.** The `UNTRUSTED MATERIAL` headings in Auto context files, the
   header of converted documents and the downloads `index.md` heading mark data

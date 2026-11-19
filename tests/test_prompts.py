@@ -415,5 +415,5 @@ def test_only_chat_pass_and_discussion_only_prompts_are_lan_editable() -> None:
     from app.prompts import CATALOGUE
 
     assert {spec.id for spec in CATALOGUE.values() if spec.lan_editable} == {
-        "pass", "compact", "chat_skills", "auto_discussion",
+        "pass", "compact", "chat_skills", "auto_preparation", "auto_discussion",
     }

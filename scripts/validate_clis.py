@@ -32,7 +32,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -376,16 +376,36 @@ def _empty_codex_env(home: Path) -> dict[str, str]:
     return {**inherited_environment(), "CODEX_HOME": str(home)}
 
 
-def cheapest_codex_model(catalog: dict[str, Any]) -> str:
+class ModelChoiceError(Exception):
+    """No Codex model can be named for Tier 2; the account default is never used silently."""
+
+
+def cheapest_codex_model(catalog: dict[str, Any]) -> str | None:
     """The catalog names no prices: take the listed model described as affordable (else fast
-    or efficient) with the best priority; "" (the CLI default) when none says so."""
+    or efficient, whole words) with the best priority; None when none says so."""
 
     listed = [model for model in catalog.get("models", []) if model.get("visibility") == "list"]
     for word in ("affordable", "fast", "efficient"):
-        matches = [model for model in listed if word in str(model.get("description", "")).lower()]
+        pattern = re.compile(rf"\b{word}\b", re.IGNORECASE)
+        matches = [model for model in listed if pattern.search(str(model.get("description", "")))]
         if matches:
             return str(min(matches, key=lambda model: model.get("priority", 1_000))["slug"])
-    return ""
+    return None
+
+
+def resolve_codex_model(requested: str | None, load_catalog: Callable[[], dict[str, Any]]) -> str:
+    if requested is not None:
+        return requested
+    try:
+        catalog = load_catalog()
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise ModelChoiceError(f"could not read `codex debug models --bundled` ({exc}); pass --codex-model") from exc
+    model = cheapest_codex_model(catalog)
+    if model is None:
+        raise ModelChoiceError(
+            "no listed Codex model is described as affordable, fast or efficient; pass --codex-model"
+        )
+    return model
 
 
 def codex_catalog(executable: str, root: Path) -> dict[str, Any]:
@@ -669,9 +689,11 @@ def _resume_checks(provider: str, turn: Turn, first_id: str | None) -> list[Chec
         Check(provider, "resume: same session", "PASS" if turn.session_id and turn.session_id == first_id else "FAIL",
               f"{first_id} -> {turn.session_id}"),
         Check(provider, "resume: remembers the earlier turn", "PASS" if "4817" in text else "FAIL", repr(text[:120])),
+        # KNOWN-ISSUE, not FAIL: accepted by the user on 2026-11-19 until the follow-up
+        # branch (Claude --system-prompt-snapshot off; Codex a fresh turn); it does not gate.
         Check(provider, "resume: changed system prompt applies",
               "PASS" if "TAG-BRAVO" in text and "TAG-ALPHA" not in text
-              else "FAIL" if "TAG-ALPHA" in text else "INCONCLUSIVE", repr(text[:120])),
+              else "KNOWN-ISSUE" if "TAG-ALPHA" in text else "INCONCLUSIVE", repr(text[:120])),
     ]
 
 
@@ -749,7 +771,7 @@ def tier2_codex(executable: str, root: Path, model: str) -> list[Check]:
     home = settings.codex_home
     if not (home / "auth.json").is_file():
         return [Check("codex", "Tier 2", "INCONCLUSIVE", "Delibra's Codex home has no auth.json")]
-    checks = [Check("codex", "Tier 2 model", "RECORDED", model or "the CLI default")]
+    checks = [Check("codex", "Tier 2 model", "RECORDED", model)]
     checks += codex_sandbox_turn(executable, root, home, model)
     workspace = root / "codex-chat"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -838,8 +860,11 @@ def main() -> int:
         elif provider == "claude":
             checks += tier2_claude(executable, root / provider)
         else:
-            model = args.codex_model if args.codex_model is not None else cheapest_codex_model(
-                codex_catalog(executable, root))
+            try:
+                model = resolve_codex_model(args.codex_model, lambda: codex_catalog(executable, root))
+            except ModelChoiceError as exc:
+                checks.append(Check("codex", "Tier 2 model", "INCONCLUSIVE", f"not run: {exc}"))
+                continue
             checks += tier2_codex(executable, root / provider, model)
     summary = ", ".join(f"{p} {versions.get(p, '?')}: {verdict(checks, p)}" for p in providers)
     output = f"Tier {args.tier} ({summary})\n\n{render_table(checks)}\n"

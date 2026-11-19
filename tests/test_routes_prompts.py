@@ -322,7 +322,7 @@ def test_lan_clients_cannot_change_prompts_that_reach_build_runs_or_downloads(tm
     assert ProjectStore(project).manifest_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("prompt_id", ["pass", "auto_discussion"])
+@pytest.mark.parametrize("prompt_id", ["pass", "auto_preparation", "auto_discussion"])
 def test_lan_clients_can_change_chat_pass_and_discussion_only_prompts(tmp_path, prompt_id) -> None:
     app, settings = make_app(tmp_path)
     project, prefix = a_project(settings, tmp_path)
@@ -371,13 +371,15 @@ def test_an_invalid_stored_prompt_refuses_a_chat_message_with_its_reason(tmp_pat
     assert store.load_session("1" * 32).rounds == []
 
 
-@pytest.mark.parametrize("damage", [b"{not json", b'{"prompt_overrides": 3}'])
+@pytest.mark.parametrize("damage", ["not json", "invalid overrides"])
 def test_one_corrupt_project_does_not_stop_the_global_tab(tmp_path, damage) -> None:
     app, settings = make_app(tmp_path)
     stores = overriding_projects(settings, ["Alpha", "Beta"])
     manifest = stores["Beta"].manifest_path
-    manifest.write_bytes(damage if damage.startswith(b"{not") else
-                         json.dumps({**json.loads(manifest.read_text()), "prompt_overrides": 3}).encode())
+    if damage == "not json":
+        manifest.write_text("{not json")
+    else:
+        manifest.write_text(json.dumps({**json.loads(manifest.read_text()), "prompt_overrides": 3}))
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         page = client.get("/settings/prompts")
 

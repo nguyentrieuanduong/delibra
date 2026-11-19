@@ -185,7 +185,10 @@ def test_the_cheapest_codex_model_is_the_listed_affordable_one() -> None:
     ]}
     assert v.cheapest_codex_model(catalog) == "small"
     assert v.cheapest_codex_model({"models": [catalog["models"][1]]}) == "small-old"
-    assert v.cheapest_codex_model({"models": [catalog["models"][0]]}) == ""
+    assert v.cheapest_codex_model({"models": [catalog["models"][0]]}) is None
+    # Whole words only: "unaffordable" and "fastest" are not "affordable" and "fast".
+    near = [{"slug": "x", "visibility": "list", "priority": 1, "description": "Unaffordable, fastest."}]
+    assert v.cheapest_codex_model({"models": near}) is None
 
 
 @pytest.mark.parametrize("value, status", [
@@ -197,7 +200,7 @@ def test_spike_rows_are_never_pass_unless_the_spike_said_pass(value: str, status
 
 
 @pytest.mark.parametrize("text, status", [
-    ("4817 TAG-BRAVO", "PASS"), ("4817 TAG-ALPHA", "FAIL"), ("4817", "INCONCLUSIVE"),
+    ("4817 TAG-BRAVO", "PASS"), ("4817 TAG-ALPHA", "KNOWN-ISSUE"), ("4817", "INCONCLUSIVE"),
 ])
 def test_the_resume_system_prompt_check_has_three_outcomes(text: str, status: str) -> None:
     from app.agents.base import AgentEvent
@@ -237,3 +240,24 @@ def test_only_the_last_three_runs_are_kept(tmp_path: Path) -> None:
     v.prune_runs(tmp_path, keep=3)
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "other", "tier1-20261103T000000", "tier1-20261104T000000", "tier2-20261102T000000"]
+
+
+def test_the_resume_known_issue_does_not_gate() -> None:
+    checks = [v.Check("codex", "flags", "PASS"),
+              v.Check("codex", "resume: changed system prompt applies", "KNOWN-ISSUE", "TAG-ALPHA")]
+    assert v.verdict(checks, "codex") == "PASS"
+
+
+def test_the_codex_tier2_model_is_never_a_silent_account_default() -> None:
+    affordable = {"models": [{"slug": "small", "visibility": "list", "priority": 2,
+                              "description": "Fast and affordable."}]}
+    assert v.resolve_codex_model("chosen", lambda: pytest.fail("no catalog needed")) == "chosen"
+    assert v.resolve_codex_model(None, lambda: affordable) == "small"
+
+    def broken():
+        raise ValueError("Expecting value")
+
+    with pytest.raises(v.ModelChoiceError, match="could not read `codex debug models --bundled`"):
+        v.resolve_codex_model(None, broken)
+    with pytest.raises(v.ModelChoiceError, match="no listed Codex model is described as affordable, fast or efficient"):
+        v.resolve_codex_model(None, lambda: {"models": []})

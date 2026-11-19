@@ -769,7 +769,7 @@ S3/S4 were not re-run: the provider sandboxes, read roots and command environmen
 | codex | exec build sandbox turn: 12 non-network probes | PASS | network probes stay with the replay (exec kills the script at the first blocked host) |
 | codex | chat turn: result, thread id, stdout `turn_usage`, rollout usage | PASS | rollout matches stdout; 2 rate-limit windows |
 | codex | resume: same thread, remembers, rollout usage | PASS | stdout still reports the thread's running total (29,573 in); the rollout's per-turn figure (14,802) is what Delibra uses |
-| codex | resume: changed `developer_instructions` applies | **FAIL** | answered `4817 TAG-ALPHA`; the rollout holds one developer message, the first turn's (the changed instructions were not recorded) |
+| codex | resume: changed `developer_instructions` applies | **FAIL** | answered `4817 TAG-ALPHA`; the rollout has one developer message carrying TAG-ALPHA; no TAG-BRAVO recorded |
 | codex | app-server account rate limits (no model call) | PASS | 2 windows |
 
 - **Every check the verified-version tables cover passed** (user decision 2026-11-19, review
@@ -783,7 +783,7 @@ S3/S4 were not re-run: the provider sandboxes, read roots and command environmen
   resumed turn kept the first turn's Claude `--append-system-prompt` / Codex
   `developer_instructions`. Claude 2.1.322's help documents `--system-prompt-snapshot`
   (default `on`), which reuses the recorded prompt "even when a later launch passes different
-  text"; Codex's rollout recorded no second developer message. The M4 gate (2026-07-17) only
+  text"; Codex's rollout has one developer message carrying TAG-ALPHA, and no TAG-BRAVO was recorded. The M4 gate (2026-07-17) only
   covered a model/effort change, so the old versions may have behaved the same. Delibra sends
   the global instruction and per-turn chat notes (skills, notes, downloads/convert) on that
   channel and resumes chat natively, so edits to them may not reach an ongoing conversation;
