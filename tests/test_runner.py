@@ -17,7 +17,7 @@ from typing import Callable
 import pytest
 
 from app.agents.base import AgentEvent, Command, DockerAccess, RunContext
-from app.coding import CodingEnvState
+from app.coding import CodingEnvState, DownloadPolicy
 from app.coding_env import developer_tools_dir
 from app.global_instruction import GlobalInstructionError, save_global_instruction
 from app.config import Settings
@@ -2658,6 +2658,27 @@ async def test_a_downloads_build_turn_gets_the_request_spool(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_a_converting_build_turn_gets_the_convert_spool(tmp_path, monkeypatch) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    ready_build_project(store)
+    spawned = record_spawns(monkeypatch)
+    record = create_runner_auto_record(store, session_id, status="discussing")
+    record.kind = "build"
+    store.save_auto_run(record)
+    request = replace(auto_run_request(store, record, phase="discussion"), build=True, convert=True)
+    async with manager.locks.registry_project_sessions(project_id, [session_id]):
+        key = await manager.start_auto_locked(project_id, session_id, request)
+    await manager.wait(key)
+    coding = contexts[0].coding
+    assert coding is not None and (coding.downloads, coding.convert) == (False, True)
+    [spawn] = spawned
+    assert spawn["tmp_entries"] == ["convert", "questions"]
+    temp = manager.settings.build_tmp_root / session_id
+    assert (temp / "convert" / "requests").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.asyncio
 async def test_a_failed_turn_logs_a_warning_without_its_text(tmp_path, caplog) -> None:
     caplog.set_level(logging.WARNING, logger="app.runner")
     manager, project_id, session_id, _store = setup_manager(tmp_path, mode="provider-error")
@@ -2727,3 +2748,121 @@ async def test_a_roots_save_during_an_auto_turn_still_resets_the_native_session(
     await manager.wait(key)
 
     assert store.load_session(session_id).cli_session_id is None
+
+
+class RecordingDownloads:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, object]] = []
+
+    def begin_turn(self, turn) -> None:
+        self.events.append(("begin", turn))
+
+    async def stop_watch(self, turn) -> None:
+        self.events.append(("stop", turn))
+
+    def harvest(self, turn, *, final: bool) -> None:
+        self.events.append(("harvest", final))
+
+    def end_turn(self, turn) -> None:
+        self.events.append(("end", turn))
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reply_gets_downloads_when_they_are_on(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, approval="automatic")
+    store.replace_coding_policy(policy)
+    downloads = RecordingDownloads()
+    manager.downloads = downloads
+
+    record = await manager.wait(await manager.start(project_id, session_id, "Find the paper"))
+
+    workspace = store.workspace_dir(session_id)
+    assert (workspace / "downloads" / "requests").is_dir()
+    assert f"{(workspace / 'downloads' / 'requests').as_posix()}/" in contexts[0].system_note
+    assert "read the status file again later in your turn" in contexts[0].system_note
+    turn = downloads.events[0][1]
+    assert (turn.auto_run, turn.round_n, turn.session_id) == (0, record.n, session_id)
+    assert [kind for kind, _ in downloads.events] == ["begin", "stop", "harvest", "end"]
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reply_has_no_downloads_when_they_are_off(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(convert=False)
+    store.replace_coding_policy(policy)
+    manager.downloads = RecordingDownloads()
+
+    await manager.wait(await manager.start(project_id, session_id, "Hi"))
+
+    assert "downloads/requests" not in contexts[0].system_note
+    assert manager.downloads.events == []
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reply_can_convert_with_downloads_off(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    downloads = RecordingDownloads()
+    manager.downloads = downloads
+
+    await manager.wait(await manager.start(project_id, session_id, "Read the report"))
+
+    workspace = store.workspace_dir(session_id)
+    note = contexts[0].system_note
+    assert f"{(workspace / 'convert' / 'requests').as_posix()}/ named like c1.json" in note
+    assert "downloads/requests" not in note
+    turn = downloads.events[0][1]
+    assert (turn.convert, turn.policy.enabled) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reply_has_no_convert_spool_when_conversion_is_off(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(convert=False)
+    store.replace_coding_policy(policy)
+    manager.downloads = RecordingDownloads()
+
+    await manager.wait(await manager.start(project_id, session_id, "Hi"))
+
+    assert "convert/requests" not in contexts[0].system_note
+    assert manager.downloads.events == []
+    assert not (store.workspace_dir(session_id) / "convert").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent, waits", [("claude", False), ("codex", True)])
+async def test_only_codex_chat_replies_get_the_wait_loop(tmp_path: Path, agent: str, waits: bool) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts, agent=agent)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, approval="automatic")
+    store.replace_coding_policy(policy)
+    manager.downloads = RecordingDownloads()
+
+    await manager.wait(await manager.start(project_id, session_id, "Find the paper"))
+
+    note = contexts[0].system_note
+    assert ("until grep" in note) is waits
+    assert ("read the status file again later in your turn" in note) is not waits
+
+
+@pytest.mark.asyncio
+async def test_chat_notes_are_separate_paragraphs(tmp_path: Path) -> None:
+    contexts: list[RunContext] = []
+    manager, project_id, session_id, store = setup_manager(tmp_path, contexts=contexts)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, approval="automatic")
+    store.replace_coding_policy(policy)
+    manager.downloads = RecordingDownloads()
+
+    await manager.wait(await manager.start(project_id, session_id, "Find the paper"))
+
+    note = contexts[0].system_note
+    assert "\n\nTo get Markdown from a PDF" in note  # the convert note is its own paragraph

@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, Response
 
+from app.agent_defaults import EFFORT_LEVELS, typed_model
 from app.agents.claude import ClaudeAdapter
 from app.agents.codex import CodexAdapter
 from app.models import Project, SessionConfig
@@ -51,15 +52,15 @@ def _validated_configuration(
     effort: str,
     role_instructions: str,
 ) -> tuple[str, str, str, str]:
-    effort_levels = {
-        "claude": ClaudeAdapter.EFFORT_LEVELS,
-        "codex": CodexAdapter.EFFORT_LEVELS,
-    }
+    effort_levels = EFFORT_LEVELS
     if agent not in effort_levels:
         raise HTTPException(status_code=422, detail="Agent must be claude or codex")
-    model = validate_field(model, "Model", maximum=200).strip()
-    if any(character.isspace() or ord(character) < 32 for character in model):
-        raise HTTPException(status_code=422, detail="Model contains invalid characters")
+    # Empty means the CLI's own default model (user decision 2026-11-18).
+    model = validate_field(model, "Model", maximum=200, allow_empty=True)
+    try:
+        model = typed_model(model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if effort not in effort_levels[agent]:
         allowed = ", ".join(effort_levels[agent])
         raise HTTPException(
@@ -146,7 +147,7 @@ async def create_session(
     project_id: str,
     name: str = Form(...),
     agent: str = Form(...),
-    model: str = Form(...),
+    model: str = Form(""),  # empty: the CLI default model
     effort: str = Form(...),
     role_instructions: str = Form(""),
     writable_roots: str = Form(""),
@@ -261,6 +262,8 @@ async def edit_session(
     }
     if "writable_roots" in sent:
         typed |= _typed_roots(request, str(sent["writable_roots"]), create_missing_writable_roots)
+    if "model" in sent:
+        model = str(sent["model"])  # an emptied box is a choice: the CLI default (review round 1)
     return await _on_agents_tab(request, project_id, return_to, typed, _edit_session(
         request, project_id, session_id, name, agent, model, effort, role_instructions,
         writable_roots, create_missing_writable_roots, return_to, selected_agent,

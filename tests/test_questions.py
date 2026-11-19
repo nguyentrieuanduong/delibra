@@ -773,3 +773,33 @@ def test_read_spool_file_honours_a_custom_limit(tmp_path: Path) -> None:
     spool.mkdir()
     (spool / "a.json").write_bytes(b"x" * 100)
     assert len(read_spool_file(spool, "a.json", limit=10)) == 11
+
+
+def test_prepare_spool_empties_its_own_directory_and_keeps_others(tmp_path) -> None:
+    from app.questions import prepare_spool
+
+    (tmp_path / "downloads" / "requests").mkdir(parents=True)
+    (tmp_path / "downloads" / "requests" / "d1.json").write_text("{}")
+    (tmp_path / "downloads" / "status.json").write_text("old")
+    (tmp_path / "keep.txt").write_text("x")
+
+    spool = prepare_spool(tmp_path, "downloads", "requests", extra_names=("status.json",))
+
+    assert spool == tmp_path / "downloads" / "requests"
+    assert list(spool.iterdir()) == []
+    assert not (tmp_path / "downloads" / "status.json").exists()
+    assert (tmp_path / "keep.txt").exists()
+
+
+def test_prepare_spool_replaces_a_planted_symlink(tmp_path) -> None:
+    from app.questions import prepare_spool
+
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (tmp_path / "downloads").symlink_to(target)
+
+    spool = prepare_spool(tmp_path, "downloads", "requests")
+
+    assert not (tmp_path / "downloads").is_symlink()
+    assert spool.is_dir()
+    assert list(target.iterdir()) == []

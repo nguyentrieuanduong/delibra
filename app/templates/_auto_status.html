@@ -103,7 +103,7 @@
     <summary>Participants</summary>
     <ol>
       {% for participant in auto.participants %}
-        <li>{{ participant.name }} · {{ participant.agent }} · {{ participant.model }} · {{ participant.effort }}</li>
+        <li>{{ participant.name }} · {{ participant.agent }} · {{ participant.model|model_label }} · {{ participant.effort }}</li>
       {% endfor %}
     </ol>
   </details>

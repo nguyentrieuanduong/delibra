@@ -13,6 +13,7 @@ from app.agents.base import (
     build_system_instructions,
     RunContext,
     system_instructions,
+    model_option,
 )
 from app.agents.errors import (
     ProviderErrorInfo,
@@ -191,8 +192,7 @@ class CodexAdapter:
             )
         global_options = [
             self.executable,
-            "--model",
-            config.model,
+            *model_option(config.model),
             "--sandbox",
             "workspace-write",
             "--ask-for-approval",
@@ -268,8 +268,7 @@ class CodexAdapter:
 
         argv = [
             self.executable,
-            "--model",
-            config.model,
+            *model_option(config.model),
             "--ask-for-approval",
             "never",
             # Research stays available by user decision; hosted search runs

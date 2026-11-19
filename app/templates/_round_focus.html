@@ -6,7 +6,7 @@
 >
   <h2>{{ session.name }} · Round {{ round.n }}</h2>
   <p class="provenance">
-    {{ round.record.agent }} · {{ round.record.model }} · {{ round.record.effort }} · {{ round.record.status }}
+    {{ round.record.agent }} · {{ round.record.model|model_label }} · {{ round.record.effort }} · {{ round.record.status }}
   </p>
   {% if round.record.source.type == 'pass' %}
     <p class="provenance">

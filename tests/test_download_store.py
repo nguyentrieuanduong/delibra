@@ -38,11 +38,11 @@ def test_model_notes_are_never_rendered(tmp_path: Path) -> None:
 
 def test_budget_never_exceeds_the_cap(tmp_path: Path) -> None:
     store = DownloadStore(tmp_path)
-    assert store.reserve(1, RUN_MAX_BYTES - 10, "D1") == RUN_MAX_BYTES - 10
-    assert store.reserve(1, 100, "D2") == 10
-    assert store.reserve(1, 1, "D2") == 0
-    store.release(1, 50, "D1")
-    assert store.reserve(1, 100, "D2") == 50
+    assert store.reserve("1", RUN_MAX_BYTES - 10, "D1") == RUN_MAX_BYTES - 10
+    assert store.reserve("1", 100, "D2") == 10
+    assert store.reserve("1", 1, "D2") == 0
+    store.release("1", 50, "D1")
+    assert store.reserve("1", 100, "D2") == 50
     book = DownloadStore(tmp_path).load()
     assert book.run_bytes == {"1": RUN_MAX_BYTES}
     assert book.reservations == {"D1": RUN_MAX_BYTES - 60, "D2": 60}
@@ -53,8 +53,8 @@ def test_recovery_returns_reservations_of_interrupted_downloads(tmp_path: Path) 
     first, second = add(store), add(store)
     store.update(first.id, state="downloading")
     store.update(second.id, state="downloaded")
-    store.reserve(1, 500, first.id)
-    store.reserve(1, 3, second.id)
+    store.reserve("1", 500, first.id)
+    store.reserve("1", 3, second.id)
     store.finish_reservation(second.id)
     store.recover()
     book = store.load()
@@ -156,3 +156,41 @@ def test_a_recreated_records_file_gets_a_new_epoch(tmp_path: Path) -> None:
     store.path.unlink()
     add(store)
     assert store.load().epoch not in ("", epoch)
+
+
+def test_budget_keys_separate_auto_runs_from_each_chat_reply(tmp_path) -> None:
+    store = DownloadStore(tmp_path)
+    auto = store.add("https://a.example/x.pdf", purpose="p", filename=None, flags=[],
+                     auto_run=3, cycle=1, round_n=2, agent="s" * 32, agent_name="A", folder="raw")
+    chat = store.add("https://a.example/y.pdf", purpose="p", filename=None, flags=[],
+                     auto_run=0, cycle=None, round_n=5, agent="t" * 32, agent_name="B", folder="raw")
+
+    assert auto.budget_key == "3"
+    assert chat.budget_key == f"chat-{'t' * 32}-5"
+    assert store.reserve(chat.budget_key, 100, chat.id) == 100
+    assert store.load().run_bytes == {f"chat-{'t' * 32}-5": 100}
+
+
+def test_an_interrupted_conversion_is_marked_failed_at_startup(tmp_path: Path) -> None:
+    store = DownloadStore(tmp_path)
+    record = add(store, convert=True)
+    store.update(record.id, state="downloaded", path="raw/a.org/x.pdf", convert_state="converting")
+
+    store.recover()
+
+    saved = store.get(record.id)
+    assert (saved.state, saved.convert_state, saved.convert_reason) == (
+        "downloaded", "failed", "interrupted by restart"
+    )
+
+
+def test_status_and_index_show_the_markdown_copy(tmp_path: Path) -> None:
+    store = DownloadStore(tmp_path)
+    record = store.update(add(store, convert=True).id, state="downloaded", path="raw/a.org/x.pdf",
+                          convert_state="converted", converted_path="raw/a.org/x.pdf.md",
+                          convert_reason="structure lost; converted with pypdf (Docling: x)")
+    status = render_status([record]).decode()
+    index = render_index([record]).decode()
+    assert '"converted": "raw/a.org/x.pdf.md"' in status and '"convert_state": "converted"' in status
+    assert "structure lost" in status
+    assert "| Markdown |" in index and "raw/a.org/x.pdf.md" in index

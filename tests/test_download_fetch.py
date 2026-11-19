@@ -172,3 +172,40 @@ async def test_a_download_is_bounded_in_total_not_only_per_read(project, monkeyp
         await fetch(fetcher, project, "http://files.test/slow", budget=budget)
     assert 10**9 - budget.left < 100  # only the bytes received stay charged
     assert not any(p.name.startswith(".part") for p in (project / "raw" / "files.test").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_to_an_installer_is_refused_before_it_is_requested(project):
+    server = Server({"/r": (302, {"Location": "/setup.exe"}, b""), "/setup.exe": (200, {}, b"%PDF-1.7 not really")})
+    fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
+    with pytest.raises(FetchError, match=r"executable file type refused \(\.exe\)"):
+        await fetch(fetcher, project, "http://files.test/r")
+    assert server.hits == ["/r"]
+
+@pytest.mark.asyncio
+async def test_an_accented_name_is_saved_as_ascii(project):
+    server = Server({"/p": (200, {}, b"%PDF-1.7 hello")})
+    fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
+    result = await fetch(fetcher, project, "http://files.test/p", name="Báo cáo.pdf")
+    assert result.path == "raw/files.test/Bao_cao.pdf"
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_whose_saved_name_is_an_installer_is_refused(project):
+    server = Server({"/r": (302, {"Location": "/setup.%EF%BD%85%EF%BD%98%EF%BD%85"}, b""),
+                     "/setup.%EF%BD%85%EF%BD%98%EF%BD%85": (200, {}, b"%PDF-1.7 not really")})
+    fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
+    with pytest.raises(FetchError, match=r"executable file type refused \(\.exe\)"):
+        await fetch(fetcher, project, "http://files.test/r")
+    assert server.hits == ["/r"]
+
+
+@pytest.mark.asyncio
+async def test_downloads_are_quarantined_for_gatekeeper(project):
+    server = Server({"/p": (200, {}, b"%PDF-1.7 hello")})
+    fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
+    result = await fetch(fetcher, project, "http://files.test/p", name="paper.pdf")
+    import subprocess
+    shown = subprocess.run(["/usr/bin/xattr", "-p", "com.apple.quarantine", str(project / result.path)],
+                           capture_output=True, text=True)
+    assert shown.returncode == 0 and shown.stdout.startswith("0081;") and ";Delibra;" in shown.stdout

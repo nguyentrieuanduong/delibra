@@ -74,7 +74,7 @@
     {% if coding_local %}{{ browse_button("/browse?mode=guidance", "coding-guidance-skills") }}{% endif %}
     {{ takes_effect("next_turn") }}
     <p class="hint">Markdown files build agents read when they need them (a skill's SKILL.md with its references/ files). Delibra keeps one copy in <code>.delibra/skills/build/</code> and refreshes it when a file changes. At most 512 files and 4 MB. One absolute path per line.</p>
-    {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings/presets">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
+    {% if not guidance_presets %}<p class="hint">{% if coding_local %}Add guidance presets in <a href="/settings/instruction">Settings</a>.{% else %}Guidance presets are set on this machine's Settings page.{% endif %}</p>{% endif %}
     <button type="submit"{% if not coding_local %} disabled{% endif %}>Save build guidance</button>
     {% for preset in guidance_presets %}
     <button type="submit" name="guidance_preset" value="{{ preset.name }}"{% if not coding_local %} disabled{% endif %}>Use {{ preset.name }} guidance</button>
@@ -91,38 +91,6 @@
       <button type="submit" name="git_exclude_preset" value="default"{% if not coding_local %} disabled{% endif %}>Use Delibra's default ignore list</button>
     </details>
     <button type="submit"{% if not coding_local %} disabled{% endif %}>Save ignore list</button>
-  </form>
-
-  <h3 id="coding-downloads-heading">Delibra downloads</h3>
-  {{ takes_effect("next_turn") }}
-  <form method="post" action="{{ project_url(project.name, '/coding/downloads') }}">
-    {# A refused save shows what was sent (typed); otherwise the saved policy. #}
-    {% set dl_enabled = typed.get('downloads_enabled') if 'downloads_enabled' in typed else coding.downloads.enabled %}
-    {% set dl_model_check = typed.get('downloads_model_check') if 'downloads_model_check' in typed else coding.downloads.model_check %}
-    {% set dl_approval = typed.get('downloads_approval', coding.downloads.approval) %}
-    {% set dl_provider = typed.get('downloads_check_provider', coding.downloads.check_provider) %}
-    <fieldset class="coding-downloads">
-      <legend>Delibra downloads</legend>
-      <label class="auto-choice"><input type="checkbox" name="downloads_enabled" value="true"{% if dl_enabled %} checked{% endif %}> Let Delibra download files build agents request</label>
-      <label>Download folder <input name="downloads_folder" value="{{ typed.get('downloads_folder', coding.downloads.folder) }}" maxlength="4096" required></label>
-      <p class="hint">Inside the project. Delibra never commits this folder, even files already tracked there.</p>
-      <label>Approval
-        <select name="downloads_approval">
-          <option value="manual"{% if dl_approval == 'manual' %} selected{% endif %}>Manual: I approve each download</option>
-          <option value="automatic"{% if dl_approval == 'automatic' %} selected{% endif %}>Automatic after checks</option>
-        </select>
-      </label>
-      <label class="auto-choice"><input type="checkbox" name="downloads_model_check" value="true"{% if dl_model_check %} checked{% endif %}> Model check of each URL</label>
-      <label>Model check provider
-        <select name="downloads_check_provider">
-          <option value="claude"{% if dl_provider == 'claude' %} selected{% endif %}>Claude</option>
-          <option value="codex"{% if dl_provider == 'codex' %} selected{% endif %}>Codex</option>
-        </select>
-      </label>
-      <label>Model check model <input name="downloads_check_model" value="{{ typed.get('downloads_check_model', coding.downloads.check_model) }}" maxlength="200" required></label>
-      <p class="hint">Delibra fetches from public addresses only. URLs with credentials, secrets, email addresses or encoded data are refused; you can allow them from the Downloads panel.</p>
-    </fieldset>
-    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save downloads</button>
   </form>
 
   <h3 id="coding-network-heading">Build-agent command network access</h3>

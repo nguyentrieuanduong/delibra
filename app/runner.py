@@ -36,7 +36,9 @@ from app.docker_backend import write_cli_config
 from app.global_instruction import read_global_instruction
 from app.config import Settings
 from app.pass_prompts import PassPromptTemplateError, render_pass_prompt
-from app.download_rules import DOWNLOAD_SPOOL, DOWNLOADS_DIR
+from app.coding import DownloadPolicy
+from app.download_manager import DownloadManager, DownloadTurn, turn_spool_notes
+from app.download_rules import CONVERT_DIR, CONVERT_SPOOL, DOWNLOAD_SPOOL, DOWNLOADS_DIR
 from app.questions import QUESTIONS_DIR, SPOOL_NAME
 from app.models import (
     AutoQuotaOverride,
@@ -146,6 +148,8 @@ class ActiveRun:
     # Roots may be saved mid-turn (design 2026-11-15), which resets the native
     # session on disk; finalize must not write the old id back.
     start_roots: tuple[str, ...] | None = None
+    # A chat reply's Delibra downloads turn; None when downloads are off.
+    download_turn: DownloadTurn | None = None
     task: asyncio.Task[None] | None = None
     captured: bytearray = field(default_factory=bytearray)
     stderr_tail: bytearray = field(default_factory=bytearray)
@@ -212,6 +216,8 @@ class AutoRunRequest:
     docker: DockerAccess | None = None
     # Build runs with Delibra downloads on: create the request spool.
     downloads: bool = False
+    # Build runs with conversions on: create the convert request spool.
+    convert: bool = False
 
 
 class RunManager:
@@ -242,6 +248,8 @@ class RunManager:
         self._completed: dict[RunKey, CompletedRun] = {}
         self._discard_tasks: set[asyncio.Task[None]] = set()
         self._developer_tools_cache: tuple[Path | None, float] | None = None
+        # Set by the app; chat replies get Delibra downloads only when present.
+        self.downloads: DownloadManager | None = None
 
     def has_active_project(self, project_id: str) -> bool:
         validate_id(project_id, "project id")
@@ -629,6 +637,7 @@ class RunManager:
         chat_turn = auto_request is None and not request.compact
         chat_notes_seen: tuple[str, ...] | None = None
         system_note = ""
+        download_policy: DownloadPolicy | None = None
         if chat_turn:
             skills_note = await self._chat_skills_note(store, project_id, session_id)
             notes = chat_note_store(store, session_id)
@@ -643,7 +652,16 @@ class RunManager:
                 sent="to you in this conversation",
                 overrides="the message",
             ).strip()
-            system_note = "\n\n".join(part for part in (skills_note, notes_note) if part)
+            spool_notes: tuple[str, ...] = ()
+            turn_policy = store.coding_policy().downloads
+            if self.downloads is not None and (turn_policy.enabled or turn_policy.convert):
+                download_policy = turn_policy
+                spool_notes = turn_spool_notes(
+                    store.workspace_dir(session_id), turn_policy, agent=config.agent, build=False
+                )
+            system_note = "\n\n".join(
+                part.strip() for part in (skills_note, notes_note, *spool_notes) if part.strip()
+            )
 
         round_n = store.allocate_round(session_id)
         key = RunKey(project_id, session_id, round_n)
@@ -809,7 +827,8 @@ class RunManager:
         coding_context = None
         if auto_request is not None and auto_request.build:
             coding_context = await self._build_coding_context(
-                store, session_id, auto_request.docker, downloads=auto_request.downloads
+                store, session_id, auto_request.docker, downloads=auto_request.downloads,
+                convert=auto_request.convert,
             )
         context = RunContext(
             user_prompt=execution_prompt,
@@ -966,6 +985,14 @@ class RunManager:
             await self._finalize_safely_locked(active, None)
             return key
 
+        if download_policy is not None and self.downloads is not None:
+            active.download_turn = DownloadTurn(
+                project_id=project_id, project_root=store.project_path, store_root=store.root,
+                temp_dir=workspace, auto_run=0, cycle=None, round_n=round_n,
+                agent=session_id, agent_name=config.name, session_id=session_id,
+                policy=download_policy, convert=download_policy.convert,
+            )
+            self.downloads.begin_turn(active.download_turn)
         active.task = asyncio.create_task(
             self._run_active(active, command.stdin),
             name=f"delibra-run-{session_id}-{round_n}",
@@ -1262,6 +1289,7 @@ class RunManager:
         session_id: str,
         docker: DockerAccess | None = None,
         downloads: bool = False,
+        convert: bool = False,
     ) -> CodingContext:
         """Recreate the turn's private temp dir and describe its capabilities.
 
@@ -1289,6 +1317,9 @@ class RunManager:
         if downloads:
             (temp_dir / DOWNLOADS_DIR).mkdir(mode=0o700)
             (temp_dir / DOWNLOADS_DIR / DOWNLOAD_SPOOL).mkdir(mode=0o700)
+        if convert:
+            (temp_dir / CONVERT_DIR).mkdir(mode=0o700)
+            (temp_dir / CONVERT_DIR / CONVERT_SPOOL).mkdir(mode=0o700)
         if docker is not None:
             write_cli_config(temp_dir / "docker", docker.plugin_dirs)
         tools = await self.developer_tools()
@@ -1307,6 +1338,7 @@ class RunManager:
             read_roots=(tools,) if tools is not None else (),
             docker=docker,
             downloads=downloads,
+            convert=convert,
         )
 
     def _discard_tree(self, path: Path) -> None:
@@ -1961,6 +1993,16 @@ class RunManager:
             except Exception:
                 LOGGER.exception("Could not read chat note marks for %s", active.key)
                 active.warnings.append("Notes could not be credited to this reply")
+        if active.download_turn is not None and self.downloads is not None:
+            turn = active.download_turn
+            try:
+                await self.downloads.stop_watch(turn)
+                # Every outcome keeps what the agent requested, as Auto does. No
+                # settle: a chat reply never pauses; model checks finish in the background.
+                self.downloads.harvest(turn, final=True)
+            finally:
+                self.downloads.end_turn(turn)
+            active.warnings.extend(turn.warnings)
         record.warnings = list(dict.fromkeys(active.warnings))
         record.finished_at = utc_now()
         record.usage = active.usage

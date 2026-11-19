@@ -77,11 +77,13 @@ textarea { min-height: 7rem; }
   display: grid;
   gap: .75rem;
   grid-area: files;
-  grid-template-rows: minmax(10rem, 2fr) minmax(12rem, 3fr);
+  /* Downloads (capped, scrolls), then the file browser and the reader. */
+  grid-template-rows: auto minmax(10rem, 2fr) minmax(12rem, 3fr);
   min-height: 0;
   min-width: 0;
 }
 #file-browser-host, #file-reader { min-height: 0; overflow: auto; }
+.workspace-files > .downloads-panel { margin: 0; max-height: 35vh; overflow: auto; overflow-wrap: anywhere; }
 .file-reader-empty { opacity: .55; }
 /* Keeps the large bold `header` text, but not its 2rem bottom margin. */
 .file-view-header {
@@ -102,7 +104,7 @@ textarea { min-height: 7rem; }
   display: grid;
   gap: 0;
   grid-area: conversation;
-  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }

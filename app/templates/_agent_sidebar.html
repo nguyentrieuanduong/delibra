@@ -15,6 +15,7 @@
       hx-swap="outerHTML"
       data-session-config-form
       data-agent="claude"
+      data-agent-defaults="{{ agent_defaults_json() }}"
     >
       <label>Name
         <input name="name" maxlength="200" required>
@@ -28,10 +29,10 @@
           <option value="codex">Codex</option>
         </select>
       </label>
-      <label>Model <input name="model" maxlength="200" value="sonnet" required></label>
+      {% set new_default = agent_defaults()['claude'] %}<label>Model <input name="model" maxlength="200" value="{{ new_default.model }}" placeholder="CLI default"></label>
       <label>Effort
         <select name="effort" required data-effort-select>
-          {{ effort_options(effort_levels, 'claude', 'high') }}
+          {{ effort_options(effort_levels, 'claude', new_default.effort) }}
         </select>
       </label>
       <label>Role instructions

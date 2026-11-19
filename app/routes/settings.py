@@ -1,4 +1,4 @@
-"""Global settings: access lists, guidance presets and the global instruction, this machine only."""
+"""Global settings: access lists, guidance presets, the global instruction and agent defaults, this machine only."""
 
 from __future__ import annotations
 
@@ -9,6 +9,11 @@ import os
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.agent_defaults import EFFORT_LEVELS, AgentDefault, read_agent_defaults, save_agent_defaults, typed_model
+from app.converter_models import (
+    MODEL_REPOS, check_listing, check_updates, download_models, installed_models, load_check, models_state,
+    ready_models_dir, remove_models, resolve_revision,
+)
 from app.coding import (
     SKILLS_MAX_BYTES,
     SKILLS_MAX_FILES,
@@ -54,8 +59,9 @@ HOSTS_ENV = "DELIBRA_ALLOWED_HOSTS"
 ACCESS_FIELD_MAX = 65536
 GLOBAL_TABS = (
     ("access", "Access", "/settings"),
-    ("instruction", "Instruction", "/settings/instruction"),
-    ("presets", "Presets", "/settings/presets"),
+    ("instruction", "Instruction", "/settings/instruction"),  # global instruction + presets
+    ("agents", "Agents", "/settings/agents"),
+    ("converter", "Converter", "/settings/converter"),
 )
 GLOBAL_TABS_LABELS = tuple((key, label) for key, label, _url in GLOBAL_TABS)
 
@@ -232,13 +238,24 @@ def _saved_rows(presets: tuple[GuidancePreset, ...]) -> list[dict[str, object]]:
 def _settings_page(
     request: Request,
     tab: str,
-    rows: list[dict[str, object]],
+    rows: list[dict[str, object]] | None,
     clients: list[str] | tuple[str, ...],
     hosts: list[str] | tuple[str, ...],
     error: str | None = None,
     status_code: int = 200,
     global_instruction: str | None = None,
+    agent_rows: list[dict[str, object]] | None = None,
+    converter_typed: dict[str, str] | None = None,
 ):
+    if rows is None:
+        # The Instruction tab carries the presets form: every rendering of it, a refused
+        # instruction save included, lists the saved presets, or saving that form would
+        # delete them (final review F1).
+        rows = (
+            _preset_rows(_saved_rows(request.app.state.settings.guidance_presets))
+            if tab == "instruction"
+            else []
+        )
     if global_instruction is None:
         try:
             # At most 64 KB, read inline like the config.json this page reads.
@@ -261,6 +278,11 @@ def _settings_page(
             "error": error,
             "global_instruction": global_instruction,
             "health": request.app.state.health,
+            "agent_rows": (
+                agent_rows if agent_rows is not None else _agent_rows(read_agent_defaults(request.app.state.settings.home))
+            ),
+            **(_converter_context(request.app.state.settings.home, converter_typed or {},
+                                  request.app.state.converter_models_lock.locked()) if tab == "converter" else {}),
             "tab": tab,
             "tab_label": dict(GLOBAL_TABS_LABELS)[tab],
             "settings_tabs": GLOBAL_TABS,
@@ -311,7 +333,7 @@ async def _global_tab(request: Request, tab: str):
     settings = request.app.state.settings
     rows = (
         await asyncio.to_thread(_preset_rows, _saved_rows(settings.guidance_presets))
-        if tab == "presets"
+        if tab == "instruction"
         else []
     )
     return _settings_page(request, tab, rows, settings.allowed_clients, settings.allowed_hosts)
@@ -340,7 +362,7 @@ async def save_access(request: Request):
             return _settings_page(
                 request,
                 "access",
-                [],
+                None,
                 settings.allowed_clients if clients_env else typed_clients,
                 settings.allowed_hosts if hosts_env else typed_hosts,
                 error=f"Nothing was saved: {message}",
@@ -401,7 +423,7 @@ async def save_presets(request: Request):
             shown = await asyncio.to_thread(_preset_rows, rows, error_row, message)
             return _settings_page(
                 request,
-                "presets",
+                "instruction",
                 shown,
                 settings.allowed_clients,
                 settings.allowed_hosts,
@@ -421,7 +443,170 @@ async def save_presets(request: Request):
         except (StorageError, OSError) as exc:
             return await refused(_sentence(str(exc)))
         request.app.state.settings = replace(settings, guidance_presets=presets)
-    return RedirectResponse("/settings/presets", status_code=303)
+    return RedirectResponse("/settings/instruction", status_code=303)
+
+
+@router.get("/settings/presets")
+async def presets_moved(request: Request):
+    """Presets live on the Instruction tab now (2026-11-18): old links still land."""
+
+    _require_local(request)
+    return RedirectResponse("/settings/instruction", status_code=303)
+
+
+def _models_refusal(
+    request: Request, reason: str, status_code: int, typed: dict[str, str] | None = None, *,
+    download: bool = True,
+):
+    settings = request.app.state.settings
+    prefix = "Models were not downloaded" if download else "Models action refused"
+    return _settings_page(
+        request, "converter", None, settings.allowed_clients, settings.allowed_hosts,
+        error=f"{prefix}: {_sentence(reason)}", status_code=status_code,
+        converter_typed=typed,
+    )
+
+
+def _models_busy(request: Request) -> str | None:
+    """Why a models action must wait: a conversion uses them, or another action runs."""
+
+    if request.app.state.converter_models_lock.locked():
+        return "another models action is running"
+    if request.app.state.download_manager.converting():
+        return "a conversion is running; try again when it has finished"
+    return None
+
+
+async def _start_models_download(request: Request, revisions: dict[str, str] | None = None) -> None:
+    """Take the models lock now (no other action can slip in), release it when done."""
+
+    lock = request.app.state.converter_models_lock
+    await lock.acquire()
+    manager = request.app.state.download_manager
+
+    async def run() -> None:
+        try:
+            await download_models(request.app.state.settings.home, revisions, slot=manager.conversion_slot)
+        finally:
+            lock.release()
+
+    request.app.state.converter_models_task = asyncio.create_task(run(), name="delibra-converter-models")
+
+
+def _converter_context(home, typed: dict[str, str], busy: bool) -> dict[str, object]:
+    """Installed models, the last check and, per repo, what the check found."""
+
+    check = load_check(home)
+    installed = {row.repo_id: row for row in installed_models(home)}
+    repos = []
+    for index, (repo, default) in enumerate(MODEL_REPOS):
+        listing = check_listing(check, repo)
+        default_commit = next((ref["commit"] for ref in listing.get("refs") or [] if ref["name"] == default), None)
+        row = installed.get(repo)
+        repos.append({
+            "index": index, "repo_id": repo, "default": default, "installed": row, "listing": listing,
+            "update_available": bool(default_commit and row is not None and row.commit and row.commit != default_commit),
+            "selected": typed.get(f"revision_{index}", default), "sha": typed.get(f"sha_{index}", ""),
+        })
+    return {
+        "converter_models": models_state(home), "converter_check": check, "converter_repos": repos,
+        "converter_non_default": any(row.default is False for row in installed.values()),
+        "converter_busy": busy,
+    }
+
+
+@router.post("/settings/converter-models")
+async def download_converter_models(request: Request, force: str = Form("")):
+    """Download Docling's default revisions (first download, or Update when forced)."""
+
+    _require_local(request)
+    settings = request.app.state.settings
+    if ready_models_dir(settings.home) is not None and force != "true":
+        return RedirectResponse("/settings/converter", status_code=303)
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409)
+    await _start_models_download(request)
+    return RedirectResponse("/settings/converter", status_code=303)
+
+
+@router.post("/settings/converter-models/check")
+async def check_converter_models(request: Request):
+    """List each model repo's versions; nothing is downloaded."""
+
+    _require_local(request)
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409, download=False)
+    async with request.app.state.converter_models_lock:
+        await check_updates(request.app.state.settings.home)
+    return RedirectResponse("/settings/converter", status_code=303)
+
+
+@router.post("/settings/converter-models/version")
+async def choose_converter_models(request: Request):
+    """Download the versions picked from the last check (or typed commits)."""
+
+    _require_local(request)
+    form = await request.form()
+    typed = {key: str(value) for key, value in form.items() if key.startswith(("revision_", "sha_"))}
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409, typed)
+    home = request.app.state.settings.home
+    check = load_check(home)
+    try:
+        revisions = {
+            repo: resolve_revision(repo, typed.get(f"revision_{index}", default), typed.get(f"sha_{index}", ""), check)
+            for index, (repo, default) in enumerate(MODEL_REPOS)
+        }
+    except ValueError as exc:
+        return _models_refusal(request, str(exc), 422, typed)
+    await _start_models_download(request, revisions)
+    return RedirectResponse("/settings/converter", status_code=303)
+
+
+@router.post("/settings/converter-models/remove")
+async def remove_converter_models(request: Request):
+    _require_local(request)
+    busy = _models_busy(request)
+    if busy is not None:
+        return _models_refusal(request, busy, 409, download=False)
+    # The conversion slot too: no conversion may load the models while they go.
+    async with request.app.state.converter_models_lock, request.app.state.download_manager.conversion_slot():
+        await asyncio.to_thread(remove_models, request.app.state.settings.home)
+    return RedirectResponse("/settings/converter", status_code=303)
+
+
+def _agent_rows(defaults: dict[str, AgentDefault]) -> list[dict[str, object]]:
+    """One row per agent type Delibra supports, from the effort lists."""
+
+    return [
+        {"agent": agent, "levels": levels, "model": defaults[agent].model, "effort": defaults[agent].effort}
+        for agent, levels in EFFORT_LEVELS.items()
+    ]
+
+
+@router.post("/settings/agents")
+async def save_agent_default_settings(request: Request):
+    _require_local(request)
+    form = await request.form()
+    typed = {
+        agent: AgentDefault(str(form.get(f"model_{agent}", "")), str(form.get(f"effort_{agent}", "")))
+        for agent in EFFORT_LEVELS
+    }
+    async with request.app.state.global_settings_lock:
+        settings = request.app.state.settings
+        try:
+            typed = {agent: AgentDefault(typed_model(item.model), item.effort) for agent, item in typed.items()}
+            await asyncio.to_thread(save_agent_defaults, settings.home, typed)
+        except (ValueError, StorageError, OSError) as exc:
+            return _settings_page(
+                request, "agents", None, settings.allowed_clients, settings.allowed_hosts,
+                error=f"Nothing was saved: {_sentence(str(exc))}", status_code=422,
+                agent_rows=_agent_rows(typed),
+            )
+    return RedirectResponse("/settings/agents", status_code=303)
 
 
 @router.post("/settings/global-instruction")
@@ -435,7 +620,7 @@ async def save_global_instruction_text(request: Request, global_instruction: str
             return _settings_page(
                 request,
                 "instruction",
-                [],
+                None,
                 settings.allowed_clients,
                 settings.allowed_hosts,
                 error=f"Nothing was saved: {_sentence(str(exc))}",

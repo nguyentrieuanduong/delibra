@@ -91,3 +91,26 @@ def test_the_panel_follows_a_recreated_records_file(
     assert response.ok
     expect(page.locator("#download-D1")).to_contain_text("arxiv.org/pdf/new", timeout=5_000)
     expect(page.locator("#download-D1 .download-state")).to_have_text("downloaded", timeout=5_000)
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("width", [1400, 900])
+def test_the_panel_sits_in_the_right_column_above_the_files(
+    live_server: LiveServer, page: Any, tmp_path: Path, width: int
+) -> None:
+    app = live_server(["success"], tmp_path)
+    downloads = DownloadStore(app["store"].root)
+    record = downloads.add("https://arxiv.org/pdf/1", purpose="paper", filename=None, flags=[],
+                           auto_run=1, cycle=1, round_n=1, agent="a" * 32, agent_name="Alpha", folder="raw")
+    downloads.update(record.id, state="awaiting", reason="waiting for your approval")
+    page.set_viewport_size({"width": width, "height": 900})
+    page.goto(f"{app['base_url']}/projects/Verify/chat")
+    panel = page.locator("#downloads-panel")
+    expect(panel).to_have_attribute("open", "", timeout=10_000)
+    files = page.locator(".workspace-files").bounding_box()
+    timeline = page.locator("#chat-timeline-frame").bounding_box()
+    box = panel.bounding_box()
+    browser = page.locator("#file-browser-host").bounding_box()
+    assert box["x"] >= timeline["x"] + timeline["width"]  # right of the reading column
+    assert files["x"] - 1 <= box["x"] and box["x"] + box["width"] <= files["x"] + files["width"] + 1
+    assert box["y"] + box["height"] <= browser["y"] + 1  # above the file browser

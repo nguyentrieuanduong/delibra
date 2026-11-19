@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
+from app.convert_store import ConversionStore
 from app.download_store import DownloadBook, DownloadStore
 from app.models import Project
 from app.project_routing import request_project
@@ -30,15 +31,40 @@ def downloads_panel_context(request: Request, project: Project) -> dict:
     else:
         unreadable = False
     records = sorted(reversed(book.requests), key=lambda record: record.state != "awaiting")
+    conversions, conversions_revision, conversions_epoch = _conversions(store)
+    revision, epoch = panel_revision(book.revision, book.epoch, conversions_revision, conversions_epoch)
     return {
         "project": project,
         "unreadable": unreadable,
-        "revision": book.revision,
-        "epoch": book.epoch,
+        "revision": revision,
+        "epoch": epoch,
         "downloads": records,
+        "conversions": conversions or [],
+        "conversions_unreadable": conversions is None,
         "awaiting_count": sum(1 for r in records if r.state == "awaiting"),
         "downloads_enabled": store.coding_policy().downloads.enabled,
     }
+
+
+CONVERSIONS_SHOWN = 50
+
+
+def _conversions(store: ProjectStore) -> tuple[list | None, int, str]:
+    """The newest conversions first (None when unreadable), with the store's revision and epoch."""
+
+    conversions = ConversionStore(store.root)
+    try:
+        revision, epoch = conversions.revision()
+        return list(reversed(conversions.load()))[:CONVERSIONS_SHOWN], revision, epoch
+    except StorageError:
+        return None, 0, ""
+
+
+def panel_revision(downloads: int, downloads_epoch: str, conversions: int, conversions_epoch: str) -> tuple[int, str]:
+    """One number for both stores: each only grows, so any change makes the sum newer."""
+
+    epoch = f"{downloads_epoch}.{conversions_epoch}" if conversions_epoch else downloads_epoch
+    return downloads + conversions, epoch
 
 
 def _require_local(request: Request) -> None:
@@ -92,7 +118,9 @@ async def downloads_stream(request: Request, project_id: str) -> EventSourceResp
                 book = store.load()
             except StorageError:
                 continue
-            yield {"event": "downloads", "data": json.dumps({"revision": book.revision, "epoch": book.epoch})}
+            _shown, conversions, conversions_epoch = _conversions(ProjectStore(project))
+            revision, epoch = panel_revision(book.revision, book.epoch, conversions, conversions_epoch)
+            yield {"event": "downloads", "data": json.dumps({"revision": revision, "epoch": epoch})}
 
     return EventSourceResponse(events(), ping=15)
 

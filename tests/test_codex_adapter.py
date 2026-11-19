@@ -619,3 +619,15 @@ def test_a_codex_build_turn_carries_the_global_instruction_before_the_role() -> 
 def test_a_codex_build_turn_without_a_global_instruction_keeps_the_role_exactly() -> None:
     command = CodexAdapter(executable="codex").build_command(config(), build_context())
     assert developer_instructions(command) == "Begin with ROLE-CODEX-OK."
+
+
+def test_build_profile_lets_the_agent_write_every_spool_in_its_temp_dir() -> None:
+    # downloads/requests and convert/requests both live in the turn's temp dir.
+    profile = next(item for item in codex_build_overrides(coding()) if item.startswith("permissions="))
+    assert f'"{coding().temp_dir.as_posix()}"="write"' in profile
+
+
+def test_an_empty_model_leaves_the_choice_to_the_cli() -> None:
+    for run_context in (context("Hi."), build_context()):
+        argv = CodexAdapter(executable="codex").build_command(replace(config(), model=""), run_context).argv
+        assert "--model" not in argv and "-m" not in argv

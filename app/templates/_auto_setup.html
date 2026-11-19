@@ -33,7 +33,7 @@
             <li class="auto-order-item" data-auto-order-item>
               <label class="auto-choice">
                 <input type="checkbox" name="participant_id" value="{{ session.id }}" checked>
-                {{ session.name }} · {{ session.agent }} · {{ session.model }}
+                {{ session.name }} · {{ session.agent }} · {{ session.model|model_label }}
               </label>
               <button type="button" data-auto-order-move="up" aria-label="Move {{ session.name }} up"{% if loop.first %} disabled{% endif %}>↑</button>
               <button type="button" data-auto-order-move="down" aria-label="Move {{ session.name }} down"{% if loop.last %} disabled{% endif %}>↓</button>

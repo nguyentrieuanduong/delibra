@@ -137,7 +137,7 @@ def test_saving_writes_config_keeps_other_keys_and_applies_presets(tmp_path, mon
         )
 
     assert (saved_access.status_code, saved_access.headers["location"]) == (303, "/settings")
-    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/presets")
+    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/instruction")
     assert config(tmp_path) == {
         "extra": 1,
         "allowed_clients": [],
@@ -572,7 +572,7 @@ def test_only_this_machine_may_save_the_global_instruction(tmp_path) -> None:
     assert not (tmp_path / "home" / "instructions.md").exists()
 
 
-def test_global_settings_has_access_instruction_and_presets_tabs(tmp_path) -> None:
+def test_global_settings_has_access_and_instruction_with_presets_tabs(tmp_path) -> None:
     app = make_app(tmp_path)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         access = client.get("/settings").text
@@ -584,7 +584,8 @@ def test_global_settings_has_access_instruction_and_presets_tabs(tmp_path) -> No
     assert access == same
     assert 'id="access-heading"' in access and 'id="presets-heading"' not in access
     assert 'id="global-instruction-heading"' in instruction and 'id="access-heading"' not in instruction
-    assert 'id="presets-heading"' in presets and 'id="global-instruction-heading"' not in presets
+    assert presets == instruction  # /settings/presets now lands on the Instruction tab
+    assert 'id="presets-heading"' in instruction
     assert '<a href="/settings/instruction" aria-current="page">Instruction</a>' in instruction
     assert unknown.status_code == 404
 
@@ -604,7 +605,400 @@ def test_access_and_presets_save_independently(tmp_path) -> None:
 
     saved = config(tmp_path)
     assert (access.status_code, access.headers["location"]) == (303, "/settings")
-    assert (presets.status_code, presets.headers["location"]) == (303, "/settings/presets")
+    assert (presets.status_code, presets.headers["location"]) == (303, "/settings/instruction")
     assert saved["allowed_clients"] == ["192.168.1.0/24"]
     assert saved["other"] == 1
     assert old.status_code == 405
+
+
+def test_the_agents_tab_shows_one_row_per_agent_type_with_its_defaults(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings/agents").text
+    assert ">Agents</a>" in page or 'aria-current="page">Agents' in page
+    assert "Applies from its next use." in page
+    assert 'name="model_claude" value="opus"' in page and 'name="model_codex" value=""' in page
+    assert 'placeholder="CLI default"' in page
+    assert re.search(r'name="effort_codex".*?<option value="high" selected>', page, re.S)
+    assert '<option value="minimal"' in page  # Codex's own effort list
+
+
+def test_agent_defaults_save_and_return_to_the_agents_tab(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        saved = client.post("/settings/agents", data={
+            "model_claude": "sonnet", "effort_claude": "max", "model_codex": "", "effort_codex": "low",
+        }, follow_redirects=False)
+        page = client.get("/settings/agents").text
+    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/agents")
+    assert config(tmp_path)["agent_defaults"] == {
+        "claude": {"model": "sonnet", "effort": "max"}, "codex": {"model": "", "effort": "low"},
+    }
+    assert 'name="model_claude" value="sonnet"' in page
+
+
+def test_a_refused_agent_defaults_save_keeps_the_typed_values(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        refused = client.post("/settings/agents", data={
+            "model_claude": "-bad", "effort_claude": "max", "model_codex": "typed", "effort_codex": "low",
+        })
+    assert refused.status_code == 422
+    assert "<div hidden data-page-alert>Nothing was saved: Model must not start with" in refused.text
+    assert 'name="model_claude" value="-bad"' in refused.text and 'name="model_codex" value="typed"' in refused.text
+    assert not (tmp_path / "home" / "config.json").exists()
+
+
+def test_agent_defaults_are_this_machine_only(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        page = client.get("/settings/agents")
+        saved = client.post("/settings/agents", data={"model_claude": "x", "effort_claude": "high",
+                                                      "model_codex": "", "effort_codex": "high"})
+    assert (page.status_code, saved.status_code) == (403, 403)
+
+
+def test_a_blank_default_model_is_refused_like_an_agents_model(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        refused = client.post("/settings/agents", data={
+            "model_claude": "   ", "effort_claude": "high", "model_codex": "", "effort_codex": "high"})
+    assert refused.status_code == 422 and "not blank" in refused.text
+
+
+
+def test_the_global_tabs_are_access_instruction_agents_converter(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings").text
+        moved = client.get("/settings/presets", follow_redirects=False)
+        instruction = client.get("/settings/instruction").text
+        saved = client.post("/settings/presets", data={"preset_count": "0"}, follow_redirects=False)
+    tabs = re.findall(r'<a [^>]*href="(/settings[^"]*)"[^>]*>(Access|Instruction|Presets|Agents|Converter)</a>', page)
+    assert [label for _href, label in tabs] == ["Access", "Instruction", "Agents", "Converter"]
+    assert (moved.status_code, moved.headers["location"]) == (303, "/settings/instruction")
+    assert instruction.index('name="global_instruction"') < instruction.index('name="preset_count"')
+    assert (saved.status_code, saved.headers["location"]) == (303, "/settings/instruction")
+
+
+def test_the_converter_tab_downloads_the_models_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    app = make_app(tmp_path)
+    homes = []
+
+    async def fake_download(home, revisions=None, **kwargs):
+        homes.append(home)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        page = client.get("/settings/converter").text
+        started = client.post("/settings/converter-models", follow_redirects=False)
+        for _ in range(100):
+            if homes:
+                break
+            _time.sleep(0.01)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        refused = client.post("/settings/converter-models", follow_redirects=False)
+        hidden = client.get("/settings/converter")
+    assert "Converter models (PDF layout and tables):" in page and "Not downloaded" in page
+    assert "Download models (about 0.7 GB)" in page
+    assert (started.status_code, started.headers["location"]) == (303, "/settings/converter")
+    assert homes == [app.state.settings.home]
+    assert (refused.status_code, hidden.status_code) == (403, 403)
+
+
+def test_the_models_download_is_not_restarted_needlessly(tmp_path, monkeypatch) -> None:
+    import asyncio
+    from app.converter_models import READY_NAME, models_dir
+
+    app = make_app(tmp_path)
+    started = []
+
+    async def fake_download(home, revisions=None, **kwargs):
+        started.append(home)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        target = models_dir(app.state.settings.home)
+        target.mkdir(parents=True)
+        (target / READY_NAME).write_text("x")
+        ready = client.post("/settings/converter-models", follow_redirects=False)
+        target.joinpath(READY_NAME).unlink()
+        app.state.download_manager._convert_slot = asyncio.Semaphore(0)  # a conversion holds the slot
+        busy = client.post("/settings/converter-models", follow_redirects=False)
+    assert (ready.status_code, ready.headers["location"]) == (303, "/settings/converter")
+    assert busy.status_code == 409
+    assert "Models were not downloaded: A conversion is running" in busy.text
+    assert started == []
+
+
+def test_a_refused_global_instruction_save_keeps_the_presets_on_the_page(tmp_path) -> None:
+    # Final review F1: the refused page showed no presets, and saving presets from it
+    # deleted them all.
+    from html import unescape
+
+    guide = tmp_path / "keep.md"
+    guide.write_text("# Keep\n")
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post("/settings/presets", data={"preset_count": "1", "preset_name_0": "keep",
+                                               "preset_files_0": str(guide)}, follow_redirects=False)
+        refused = client.post("/settings/global-instruction", data={"global_instruction": "x" * 70_000})
+        page = refused.text
+        form_html = page[page.index('action="/settings/presets"'):]
+        form_html = form_html[: form_html.index("</form>")]
+        fields = {name: unescape(value) for tag, name, value in
+                  re.findall(r'(<input[^>]*name="(preset_[a-z_0-9]+)"[^>]*value="([^"]*)")', form_html)
+                  if 'type="checkbox"' not in tag}  # an unticked box is not sent
+        fields |= {name: unescape(text) for name, text in
+                   re.findall(r'<textarea[^>]*name="(preset_[a-z_0-9]+)"[^>]*>([^<]*)</textarea>', form_html)}
+        resaved = client.post("/settings/presets", data=fields, follow_redirects=False)
+    assert refused.status_code == 422
+    assert fields.get("preset_name_0") == "keep"
+    assert resaved.status_code == 303
+    assert [preset.name for preset in app.state.settings.guidance_presets] == ["keep"]
+
+
+def test_a_busy_models_download_is_not_called_nothing_saved(tmp_path) -> None:
+    import asyncio
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        app.state.download_manager._convert_slot = asyncio.Semaphore(0)
+        busy = client.post("/settings/converter-models", follow_redirects=False)
+    assert busy.status_code == 409
+    assert "<div hidden data-page-alert>Models were not downloaded: A conversion is running" in busy.text
+
+
+# Task 14: Settings -> Converter actions.
+def _converter_home(app, *, ready: bool = True, revision: str = "main", check: dict | None = None):
+    from app.converter_models import MANIFEST_NAME, MODEL_REPOS, READY_NAME, models_dir
+
+    home = app.state.settings.home
+    target = models_dir(home)
+    if ready:
+        target.mkdir(parents=True)
+        (target / READY_NAME).write_text("x")
+        (target / MANIFEST_NAME).write_text(json.dumps({"models": [
+            {"repo_id": repo, "revision": revision if n == 0 else default, "commit": ("b" if n == 0 else "c") * 40,
+             "downloaded_at": "2026-11-19T00:00:00Z", "default": (revision if n == 0 else default) == default}
+            for n, (repo, default) in enumerate(MODEL_REPOS)]}))
+    if check is not None:
+        (home / "models").mkdir(parents=True, exist_ok=True)
+        (home / "models" / "docling-check.json").write_text(json.dumps(check))
+    return MODEL_REPOS
+
+
+CHECKED = {"checked_at": "2026-11-19T01:00:00Z", "repos": {
+    "docling-project/docling-layout-heron": {"refs": [{"name": "main", "kind": "branch", "commit": "d" * 40}],
+                                             "commits": [{"commit": "d" * 40, "title": "new", "date": None},
+                                                         {"commit": "b" * 40, "title": "old", "date": None}]},
+    "docling-project/docling-layout-heron-onnx": {"refs": [{"name": "main", "kind": "branch", "commit": "c" * 40}], "commits": []},
+    "docling-project/docling-models": {"refs": [{"name": "v2.3.0", "kind": "tag", "commit": "c" * 40}], "commits": []},
+}}
+
+
+def test_the_converter_tab_lists_installed_models_and_a_checked_update(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        page = client.get("/settings/converter").text
+    assert "docling-project/docling-layout-heron" in page and "main @ bbbbbbb" in page
+    assert "Update available" in page  # main now points to ddddddd
+    assert '<select name="revision_0"' in page and '<option value="' + "d" * 40 + '"' in page
+    assert 'name="sha_0"' in page and "Download chosen versions" in page and "Remove models" in page
+
+
+def test_a_non_default_version_carries_the_warning(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, revision="b" * 40)
+        page = client.get("/settings/converter").text
+    assert "Not the version this Docling release expects; conversions may fail or differ." in page
+
+
+def test_check_for_updates_runs_and_returns(tmp_path, monkeypatch) -> None:
+    calls = []
+
+    async def fake_check(home):
+        calls.append(home)
+
+    monkeypatch.setattr("app.routes.settings.check_updates", fake_check)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        done = client.post("/settings/converter-models/check", follow_redirects=False)
+    assert (done.status_code, done.headers["location"], calls) == (303, "/settings/converter", [app.state.settings.home])
+
+
+def test_a_chosen_version_downloads_those_revisions(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    chosen = []
+
+    async def fake_download(home, revisions=None, **kwargs):
+        chosen.append(revisions)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        repos = _converter_home(app, check=CHECKED)
+        done = client.post("/settings/converter-models/version", data={
+            "revision_0": "main", "sha_0": "bbbbbbb", "revision_1": "main", "revision_2": "v2.3.0"},
+            follow_redirects=False)
+        for _ in range(100):
+            if chosen:
+                break
+            _time.sleep(0.01)
+    assert (done.status_code, done.headers["location"]) == (303, "/settings/converter")
+    assert chosen == [{repos[0][0]: "b" * 40, repos[1][0]: "main", repos[2][0]: "v2.3.0"}]
+
+
+def test_an_invalid_commit_is_refused_and_kept(tmp_path, monkeypatch) -> None:
+    async def never(*args, **kwargs):
+        raise AssertionError("must not download")
+
+    monkeypatch.setattr("app.routes.settings.download_models", never)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        refused = client.post("/settings/converter-models/version", data={
+            "revision_0": "main", "sha_0": "xyz123!", "revision_1": "main", "revision_2": "v2.3.0"})
+    assert refused.status_code == 422
+    assert "<div hidden data-page-alert>Models were not downloaded: A commit must be 40 hex characters" in refused.text
+    assert 'name="sha_0" value="xyz123!"' in refused.text
+
+
+def test_models_actions_are_refused_while_converting_and_from_the_lan(tmp_path) -> None:
+    import asyncio
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        app.state.download_manager._convert_slot = asyncio.Semaphore(0)
+        responses = [client.post(path, data=data, follow_redirects=False) for path, data in (
+            ("/settings/converter-models", {"force": "true"}), ("/settings/converter-models/check", {}),
+            ("/settings/converter-models/remove", {}),
+            ("/settings/converter-models/version", {"revision_0": "main", "revision_1": "main", "revision_2": "v2.3.0"}))]
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        lan = [client.post(path, follow_redirects=False).status_code
+               for path in ("/settings/converter-models/check", "/settings/converter-models/remove",
+                            "/settings/converter-models/version")]
+    assert [r.status_code for r in responses] == [409] * 4
+    assert all("A conversion is running" in r.text for r in responses)
+    assert lan == [403] * 3
+
+
+def test_remove_models_falls_back_to_not_downloaded(tmp_path) -> None:
+    from app.converter_models import models_dir
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app)
+        removed = client.post("/settings/converter-models/remove", follow_redirects=False)
+        page = client.get("/settings/converter").text
+    assert (removed.status_code, removed.headers["location"]) == (303, "/settings/converter")
+    assert not models_dir(app.state.settings.home).exists() and "Not downloaded" in page
+
+
+def test_no_update_is_offered_when_the_default_points_to_the_installed_commit(tmp_path) -> None:
+    current = json.loads(json.dumps(CHECKED))
+    current["repos"]["docling-project/docling-layout-heron"]["refs"][0]["commit"] = "b" * 40
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=current)
+        page = client.get("/settings/converter").text
+    assert "Update available" not in page
+
+
+def test_one_models_action_at_a_time(tmp_path, monkeypatch) -> None:
+    # Task 14 review 1: a running Check must block Update, Choose, Remove and another Check.
+    import asyncio
+
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app, check=CHECKED)
+        lock = app.state.converter_models_lock
+        client.portal.call(lock.acquire)  # a check is running (held by another request)
+        responses = {path: client.post(path, data=data, follow_redirects=False) for path, data in (
+            ("/settings/converter-models", {"force": "true"}), ("/settings/converter-models/check", {}),
+            ("/settings/converter-models/remove", {}),
+            ("/settings/converter-models/version", {"revision_0": "main", "revision_1": "main", "revision_2": "v2.3.0"}))}
+        page = client.get("/settings/converter").text
+        client.portal.call(lock.release)
+    assert {path: r.status_code for path, r in responses.items()} == dict.fromkeys(responses, 409)
+    assert "Models action refused: Another models action is running" in responses["/settings/converter-models/check"].text
+    assert "Models action refused: Another models action is running" in responses["/settings/converter-models/remove"].text
+    assert "Models were not downloaded: Another models action is running" in responses["/settings/converter-models"].text
+    assert page.count("disabled") >= 4 and "A models action is running" in page
+
+
+def test_remove_asks_first_with_the_size(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app)
+        page = client.get("/settings/converter").text
+    assert ("return confirm('Remove the converter models (0 MB)? PDFs will be converted as plain text until you "
+            "download them again.')") in page
+
+
+def test_downloads_hold_the_conversion_slot_for_the_self_test(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    seen = []
+
+    async def fake_download(home, revisions=None, *, slot=None):
+        seen.append(slot() is app.state.download_manager._convert_slot)
+
+    monkeypatch.setattr("app.routes.settings.download_models", fake_download)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post("/settings/converter-models", follow_redirects=False)
+        for _ in range(100):
+            if seen:
+                break
+            _time.sleep(0.01)
+    assert seen == [True]
+
+
+
+def test_the_models_lock_is_released_after_a_failing_download(tmp_path, monkeypatch) -> None:
+    import time as _time
+
+    calls = []
+
+    async def boom(home, revisions=None, **kwargs):
+        calls.append(1)
+        raise ValueError("x")
+
+    def wait(condition) -> bool:
+        for _ in range(300):
+            if condition():
+                return True
+            _time.sleep(0.01)
+        return False
+
+    monkeypatch.setattr("app.routes.settings.download_models", boom)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        first = client.post("/settings/converter-models", follow_redirects=False)
+        assert wait(lambda: calls and not app.state.converter_models_lock.locked())
+        second = client.post("/settings/converter-models", follow_redirects=False)
+        assert wait(lambda: len(calls) == 2)
+    assert (first.status_code, second.status_code) == (303, 303)
+
+
+def test_remove_waits_for_the_conversion_slot(tmp_path, monkeypatch) -> None:
+    from app.converter_models import models_dir
+
+    held = []
+
+    def remove(home):
+        held.append(app.state.download_manager.converting())
+
+    monkeypatch.setattr("app.routes.settings.remove_models", remove)
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        _converter_home(app)
+        client.post("/settings/converter-models/remove", follow_redirects=False)
+    assert held == [True] and models_dir(app.state.settings.home).exists()

@@ -508,11 +508,10 @@ class RecordingAutoAdapter:
             (outbox_root / "questions" / "outbox" / name).write_text(
                 text, encoding="utf-8"
             )
-        if context.coding is not None and context.coding.downloads:
+        download_spool = outbox_root / "downloads" / "requests"
+        if self.output.downloads and download_spool.is_dir():
             for name, text in self.output.downloads:
-                (context.coding.temp_dir / "downloads" / "requests" / name).write_text(
-                    text, encoding="utf-8"
-                )
+                (download_spool / name).write_text(text, encoding="utf-8")
         if self.output.notes_read is not None:
             (outbox_root / "questions" / "notes-read.json").write_text(
                 self.output.notes_read, encoding="utf-8"
@@ -6954,6 +6953,55 @@ async def test_a_build_turn_prompt_names_the_download_spool_only_when_on(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_a_discussion_turn_gets_a_download_spool_and_the_no_shell_note(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue", downloads=(request_file("https://arxiv.org/pdf/1"),)),
+                   PlannedOutput("B", "continue")]
+    )
+    enable_downloads(store, approval="automatic")
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    created = await manager.create(
+        project_id, topic="Discuss the paper", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+    )
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    await manager.downloads.idle()
+
+    workspace = store.workspace_dir(session_ids[0])
+    first = str(factory.calls[0]["prompt"])
+    assert f"{(workspace / 'downloads' / 'requests').as_posix()}/" in first
+    assert "until grep" not in first
+    assert "read the status file again later in your turn" in first
+    record = DownloadStore(store.root).get("D1")
+    assert (record.state, record.auto_run, record.agent) == ("downloaded", created.number, session_ids[0])
+    assert '"id": "D1"' in (workspace / "downloads" / "status.json").read_text()
+
+
+@pytest.mark.asyncio
+async def test_a_discussion_turn_gets_the_convert_note_only_when_conversion_is_on(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue"),
+                   PlannedOutput("C", "continue"), PlannedOutput("D", "continue")]
+    )
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    for _ in range(2):
+        created = await manager.create(
+            project_id, topic="Discuss the report", participant_ids=session_ids,
+            agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+        )
+        await wait_for_auto_terminal(manager, project_id, created.id)
+        policy = store.coding_policy()
+        policy.downloads = DownloadPolicy(convert=False)
+        store.replace_coding_policy(policy)
+
+    workspace = store.workspace_dir(session_ids[0])
+    on, off = str(factory.calls[0]["prompt"]), str(factory.calls[2]["prompt"])
+    assert f"{(workspace / 'convert' / 'requests').as_posix()}/ named like c1.json" in on
+    assert "downloads/requests" not in on
+    assert "convert/requests" not in off
+
+
+@pytest.mark.asyncio
 async def test_an_awaiting_download_pauses_a_non_terminal_turn(tmp_path, monkeypatch) -> None:
     manager, _factory, project_id, session_ids, store = auto_manager_fixture(
         tmp_path, [PlannedOutput("A", "continue", downloads=(request_file("https://arxiv.org/pdf/1"),)),
@@ -7265,3 +7313,24 @@ async def test_the_skills_refresh_precedes_the_compaction_decision(tmp_path, mon
     decisions = [index for index, step in enumerate(order) if step == "decision"]
     assert len(decisions) == len(terminal.discussion)
     assert all(index > 0 and order[index - 1] == "refresh" for index in decisions), order
+
+
+@pytest.mark.asyncio
+async def test_a_codex_discussion_turn_gets_the_wait_loop(tmp_path) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "continue"), PlannedOutput("B", "continue")]
+    )
+    codex = store.load_session(session_ids[0])
+    codex.agent, codex.model, codex.effort = "codex", "", "high"
+    store.save_session(codex)
+    enable_downloads(store, approval="automatic")
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    created = await manager.create(
+        project_id, topic="Discuss the paper", participant_ids=session_ids,
+        agreement_policy="all_agree", max_cycles=1, preparation_enabled=False,
+    )
+    terminal = await wait_for_auto_terminal(manager, project_id, created.id)
+
+    assert factory.calls, terminal.terminal_reason
+    first = str(factory.calls[0]["prompt"])
+    assert "until grep" in first and "read the status file again later in your turn" not in first

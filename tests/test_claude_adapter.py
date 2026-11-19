@@ -778,3 +778,22 @@ def test_build_argv_grants_the_download_spool_only_when_on() -> None:
     assert [a for a in on if a != on[on.index("--allowedTools") + 1]] == [
         a for a in off if a != allowed_off
     ]
+
+
+def test_build_argv_grants_the_convert_spool_beside_the_download_spool() -> None:
+    off_context = build_context()
+    on_context = replace(off_context, coding=replace(off_context.coding, downloads=True, convert=True))
+    on = ClaudeAdapter(executable="claude").build_command(config(), on_context).argv
+    off = ClaudeAdapter(executable="claude").build_command(config(), off_context).argv
+    temp = off_context.coding.temp_dir.as_posix()
+    allowed_on = on[on.index("--allowedTools") + 1]
+    assert allowed_on.endswith(f",Edit(/{temp}/downloads/requests/**),Edit(/{temp}/convert/requests/**)")
+    assert "convert/requests" not in off[off.index("--allowedTools") + 1]
+
+
+def test_an_empty_model_leaves_the_choice_to_the_cli() -> None:
+    chat = RunContext(user_prompt="Hi.", resume_id=None, resume_strategy="native", staged_history=[],
+                      staged_source=None, workspace=Path("/session/workspace"))
+    for context in (chat, build_context()):
+        argv = ClaudeAdapter(executable="claude").build_command(replace(config(), model=""), context).argv
+        assert "--model" not in argv and "-m" not in argv

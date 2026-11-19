@@ -686,9 +686,15 @@ def normalize_check_model(value: object) -> str:
     return value
 
 
+# Stored in every saved downloads block. A block without it predates the haiku
+# default (2026-11-18): its claude + sonnet pair was the old default, not a choice.
+CHECK_MODEL_DEFAULT_KEY = "check_model_default"
+CHECK_MODEL_DEFAULT_VERSION = 2
+
+
 @dataclass(frozen=True)
 class DownloadPolicy:
-    """Delibra downloads for build turns (design "Settings")."""
+    """Delibra downloads and document conversion for every turn kind (design 2026-11-15)."""
 
     enabled: bool = False
     folder: str = DEFAULT_DOWNLOAD_FOLDER
@@ -696,6 +702,7 @@ class DownloadPolicy:
     model_check: bool = False
     check_provider: str = "claude"
     check_model: str = "haiku"
+    convert: bool = True  # Markdown copies of documents (design 2026-11-15, Part B)
 
     @classmethod
     def from_dict(cls, data: object) -> "DownloadPolicy":
@@ -704,23 +711,32 @@ class DownloadPolicy:
         default = cls()
         enabled = data.get("enabled", default.enabled)
         model_check = data.get("model_check", default.model_check)
+        convert = data.get("convert", default.convert)
         approval = data.get("approval", default.approval)
         provider = data.get("check_provider", default.check_provider)
-        if type(enabled) is not bool or type(model_check) is not bool:
+        if type(enabled) is not bool or type(model_check) is not bool or type(convert) is not bool:
             raise CodingPolicyError("download settings are invalid")
         if approval not in DOWNLOAD_APPROVALS or provider not in CHECK_PROVIDERS:
             raise CodingPolicyError("download settings are invalid")
+        check_model = normalize_check_model(data.get("check_model", default.check_model))
+        if (
+            data.get(CHECK_MODEL_DEFAULT_KEY) != CHECK_MODEL_DEFAULT_VERSION
+            and provider == "claude"
+            and check_model == "sonnet"
+        ):
+            check_model = default.check_model  # one-time move off the old default
         return cls(
             enabled=enabled,
             folder=normalize_download_folder(data.get("folder", default.folder)),
             approval=approval,
             model_check=model_check,
             check_provider=provider,
-            check_model=normalize_check_model(data.get("check_model", default.check_model)),
+            check_model=check_model,
+            convert=convert,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), CHECK_MODEL_DEFAULT_KEY: CHECK_MODEL_DEFAULT_VERSION}
 
 
 @dataclass

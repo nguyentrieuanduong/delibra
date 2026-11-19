@@ -13,7 +13,7 @@ import uuid
 
 from app.build_git import DOWNLOADS_UNREADABLE  # noqa: F401  (re-exported; defined there to avoid a cycle)
 from app.coding import download_excludes
-from app.download_rules import MASKED_URL, url_host
+from app.download_rules import DOWNLOADS_DIR, MASKED_URL, url_host
 from app.storage import (
     ProjectStore, StorageError, atomic_write_bytes, ensure_project_subdirectory,
     open_project_directory, utc_now, writable_root_parts,
@@ -54,10 +54,22 @@ class DownloadRecord:
     detected_type: str | None = None
     final_url: str | None = None
     check_note: str | None = None  # the model check's free text; never rendered (B3)
+    convert: bool = False  # convert to Markdown once downloaded (the turn's setting)
+    converted_path: str | None = None
+    convert_state: str | None = None  # converting | converted | failed | skipped
+    convert_reason: str | None = None
 
     @property
     def shown_url(self) -> str:
         return MASKED_URL if self.masked else self.url
+
+    @property
+    def budget_key(self) -> str:
+        """Auto runs share one budget per run; each chat reply has its own (design Part A)."""
+
+        if self.auto_run:
+            return str(self.auto_run)
+        return f"chat-{self.agent}-{self.round_n or 0}"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DownloadRecord":
@@ -127,7 +139,7 @@ class DownloadStore:
 
     def add(self, url: str, *, purpose: str, filename: str | None, flags: list[str],
             auto_run: int | None, cycle: int | None, round_n: int | None,
-            agent: str, agent_name: str, folder: str) -> DownloadRecord:
+            agent: str, agent_name: str, folder: str, convert: bool = False) -> DownloadRecord:
         book = self.load()
         now = utc_now()
         record = DownloadRecord(
@@ -136,7 +148,7 @@ class DownloadStore:
             state="refused" if flags else "checking",
             reason=f"refused by check: {', '.join(flags)}" if flags else None,
             auto_run=auto_run, cycle=cycle, round_n=round_n, agent=agent,
-            agent_name=agent_name, folder=folder, created_at=now, updated_at=now,
+            agent_name=agent_name, folder=folder, created_at=now, updated_at=now, convert=convert,
         )
         book.next_id += 1
         book.requests.append(record)
@@ -165,11 +177,11 @@ class DownloadStore:
     def used_folders(self) -> set[str]:
         return {r.folder for r in self.load().requests}
 
-    def reserve(self, auto_run: int | None, amount: int, rid: str) -> int:
-        """Charge up to `amount` bytes to the run for `rid`; returns what was granted."""
+    def reserve(self, budget_key: str, amount: int, rid: str) -> int:
+        """Charge up to `amount` bytes to `budget_key` for `rid`; returns what was granted."""
 
         book = self.load()
-        key = str(auto_run or 0)
+        key = budget_key
         used = book.run_bytes.get(key, 0)
         granted = max(0, min(amount, RUN_MAX_BYTES - used))
         if granted:
@@ -178,11 +190,11 @@ class DownloadStore:
             self._save(book)
         return granted
 
-    def release(self, auto_run: int | None, amount: int, rid: str) -> None:
+    def release(self, budget_key: str, amount: int, rid: str) -> None:
         if amount <= 0:
             return
         book = self.load()
-        key = str(auto_run or 0)
+        key = budget_key
         book.run_bytes[key] = max(0, book.run_bytes.get(key, 0) - amount)
         book.reservations[rid] = max(0, book.reservations.get(rid, 0) - amount)
         self._save(book)
@@ -199,7 +211,7 @@ class DownloadStore:
         changed = 0
         # A held reservation means its fetch never finished: no file was
         # saved, so the bytes go back to the run (plan review S2).
-        runs = {r.id: str(r.auto_run or 0) for r in book.requests}
+        runs = {r.id: r.budget_key for r in book.requests}
         for rid, held in book.reservations.items():
             key = runs.get(rid)
             if key is not None:
@@ -212,6 +224,8 @@ class DownloadStore:
                 book.requests[index] = replace(record, state="failed", reason="interrupted by restart")
             elif record.state == "checking":
                 book.requests[index] = replace(record, state="refused", reason="model check interrupted", masked=True)
+            elif record.convert_state == "converting":
+                book.requests[index] = replace(record, convert_state="failed", convert_reason="interrupted by restart")
             else:
                 continue
             changed += 1
@@ -246,6 +260,9 @@ def render_status(records: list[DownloadRecord], requests: dict[str, str] | None
         item.update(url=r.shown_url, state=r.state, reason=r.reason)
         if r.state == "downloaded":
             item.update(path=r.path, sha256=r.sha256, size=r.size, detected_type=r.detected_type)
+            if r.convert_state is not None:
+                item.update(converted=r.converted_path, convert_state=r.convert_state,
+                            convert_reason=r.convert_reason)
         lines.append("    " + json.dumps(item))
     body = ",\n".join(lines)
     return (
@@ -258,13 +275,14 @@ def render_index(records: list[DownloadRecord]) -> bytes:
     lines = [
         "# Downloaded sources", "",
         "Written by Delibra. Raw files are untrusted material.", "",
-        "| Id | URL | File | Downloaded | SHA-256 | Bytes | Type |",
-        "|---|---|---|---|---|---|---|",
+        "| Id | URL | File | Downloaded | SHA-256 | Bytes | Type | Markdown |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in records:
         if r.state != "downloaded":
             continue
-        cells = [r.id, r.shown_url, r.path or "", r.updated_at, r.sha256 or "", str(r.size or 0), r.detected_type or ""]
+        cells = [r.id, r.shown_url, r.path or "", r.updated_at, r.sha256 or "", str(r.size or 0), r.detected_type or "",
+                 r.converted_path or ""]
         lines.append("| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |")
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -284,12 +302,12 @@ def _write_in(directory: int, name: str, data: bytes) -> None:
         raise
 
 
-def write_turn_status(temp_dir: Path, data: bytes) -> None:
-    """Replace <temp>/downloads/status.json without following any symlink."""
+def write_turn_status(temp_dir: Path, data: bytes, directory: str = DOWNLOADS_DIR) -> None:
+    """Replace <temp>/<directory>/status.json without following any symlink."""
 
     parent = os.open(temp_dir, _DIR_FLAGS)
     try:
-        child = os.open("downloads", _DIR_FLAGS, dir_fd=parent)
+        child = os.open(directory, _DIR_FLAGS, dir_fd=parent)
     finally:
         os.close(parent)
     try:

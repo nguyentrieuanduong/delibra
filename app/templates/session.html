@@ -3,7 +3,7 @@
 {% block content %}
   <p><a href="{{ project_url(project.name) }}">{{ project.name }}</a></p>
   <h1>{{ session.name }}</h1>
-  <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
+  <p>{{ session.agent }} · {{ session.model|model_label }} · {{ session.effort }} · {{ session.status }}</p>
   <form
     hx-post="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/run') }}"
     hx-target=".rounds"

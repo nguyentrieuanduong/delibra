@@ -8,7 +8,7 @@
   {% set c_agent = c.get('agent', 'claude') %}
   <details{% if c %} open{% endif %}>
     <summary>Create session</summary>
-    <form method="post" action="{{ project_url(project.name, '/sessions') }}" data-session-config-form data-agent="{{ c_agent }}">
+    <form method="post" action="{{ project_url(project.name, '/sessions') }}" data-session-config-form data-agent="{{ c_agent }}" data-agent-defaults="{{ agent_defaults_json() }}">
       <input type="hidden" name="return_to" value="settings">
       <label>Name
         <input name="name" maxlength="200" value="{{ c.get('name', '') }}" required>
@@ -22,10 +22,10 @@
           <option value="codex"{% if c_agent == 'codex' %} selected{% endif %}>Codex</option>
         </select>
       </label>
-      <label>Model <input name="model" maxlength="200" value="{{ c.get('model', 'sonnet') }}" required></label>
+      <label>Model {% set c_default = agent_defaults()[c_agent] %}<input name="model" maxlength="200" value="{{ c.get('model', c_default.model) }}" placeholder="CLI default"{% if 'model' in c %} data-edited="true"{% endif %}></label>
       <label>Effort
-        <select name="effort" required data-effort-select>
-          {{ effort_options(effort_levels, c_agent, c.get('effort', 'high')) }}
+        <select name="effort" required data-effort-select{% if 'effort' in c %} data-edited="true"{% endif %}>
+          {{ effort_options(effort_levels, c_agent, c.get('effort', c_default.effort)) }}
         </select>
       </label>
       <label>Role instructions
@@ -45,7 +45,7 @@
         {% set e_agent = e.get('agent', session.agent) %}
         <article class="session-card">
           <h3><a href="{{ project_url(project.name, '/sessions/' ~ session.id) }}">{{ session.name }}</a></h3>
-          <p>{{ session.agent }} · {{ session.model }} · {{ session.effort }} · {{ session.status }}</p>
+          <p>{{ session.agent }} · {{ session.model|model_label }} · {{ session.effort }} · {{ session.status }}</p>
           <details{% if e %} open{% endif %}>
             <summary>Edit</summary>
             <form method="post" action="{{ project_url(project.name, '/sessions/' ~ session.id ~ '/edit') }}" data-session-config-form data-agent="{{ e_agent }}">
@@ -62,7 +62,7 @@
               {% else %}
                 <p>Agent: {{ session.agent }} (fixed after the first round)</p>
               {% endif %}
-                <label>Model <input name="model" maxlength="200" value="{{ e.get('model', session.model) }}" required></label>
+                <label>Model <input name="model" maxlength="200" value="{{ e.get('model', session.model) }}" placeholder="CLI default"></label>
                 <label>Effort
                   <select name="effort" required data-effort-select>
                     {{ effort_options(effort_levels, e_agent, e.get('effort', session.effort)) }}

@@ -1,0 +1,19 @@
+# Delibra's environment for conda: `scripts/setup_env.sh --tool conda`
+# (or `conda env create -p ./envs -f environment.yml`).
+#
+# Every Python package comes from pip and requirements.lock, the single source
+# of pins; conda only provides Python and pip. Do not add conda NumPy/SciPy here:
+# conda-forge's NumPy may use the OpenMP build of OpenBLAS, which loads conda's
+# libomp, while the pip PyTorch wheel (Docling) loads its own libomp. Two OpenMP
+# runtimes in one process abort the document converter with
+# "OMP: Error #15: Initializing libomp.dylib, but found libomp.dylib already
+# initialized". If another conda package pulls NumPy into an env, switch OpenBLAS
+# to its pthreads build: conda install -p ./envs "libopenblas=*=*pthreads*"
+name: delibra
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -r requirements.lock

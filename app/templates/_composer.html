@@ -17,7 +17,7 @@
       <label for="chat-composer-prompt">Message</label>
       {% if selected_session %}
         <span id="composer-agent" class="composer-agent-meta">
-          sending as {{ selected_session.name }} · {{ selected_session.agent }} · {{ selected_session.model }} · {{ selected_session.effort }}
+          sending as {{ selected_session.name }} · {{ selected_session.agent }} · {{ selected_session.model|model_label }} · {{ selected_session.effort }}
         </span>
       {% endif %}
     </div>

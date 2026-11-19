@@ -1,0 +1,18 @@
+{% from "_form_macros.html" import takes_effect %}
+<form method="post" action="/settings/agents" class="global-settings">
+  <section aria-labelledby="agent-defaults-heading">
+    <h2 id="agent-defaults-heading">Defaults for new agents</h2>
+    {{ takes_effect("now") }}
+    <p class="hint">The create-agent forms start from these for each agent type. An empty model means the CLI's own default model. Existing agents are not changed. The Delibra downloads model check has its own setting.</p>
+    {% for row in agent_rows %}
+      <fieldset class="agent-default">
+        <legend>{{ row.agent|title }}</legend>
+        <label>Model <input name="model_{{ row.agent }}" value="{{ row.model }}" maxlength="200" placeholder="CLI default"></label>
+        <label>Effort
+          <select name="effort_{{ row.agent }}">{% for level in row.levels %}<option value="{{ level }}"{% if level == row.effort %} selected{% endif %}>{{ level }}</option>{% endfor %}</select>
+        </label>
+      </fieldset>
+    {% endfor %}
+    <button type="submit">Save agent defaults</button>
+  </section>
+</form>

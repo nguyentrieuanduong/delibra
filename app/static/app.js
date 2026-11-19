@@ -160,7 +160,7 @@ function staleDownloadsList(target, responseText) {
     return false;
   }
   const incoming = /data-revision="(\d+)"/.exec(responseText || "");
-  const epoch = /data-epoch="([0-9a-f]*)"/.exec(responseText || "");
+  const epoch = /data-epoch="([0-9a-f.]*)"/.exec(responseText || "");  // downloads[.conversions]
   if (epoch && target.dataset.epoch !== undefined && epoch[1] !== target.dataset.epoch) {
     return false;
   }
@@ -304,6 +304,35 @@ function syncEffortOptions(form) {
       enabled.selected = true;
     }
   }
+}
+
+// New-agent forms carry each agent type's default model and effort
+// (Settings → Agents). Switching the type fills them in, except a field the
+// user already edited in this form. An empty model means the CLI default.
+function applyAgentDefaults(form, agent) {
+  let defaults;
+  try {
+    defaults = JSON.parse(form.dataset.agentDefaults || "")[agent];
+  } catch (_error) {
+    return false;
+  }
+  if (!defaults || typeof defaults !== "object") {
+    return false;
+  }
+  const model = form.querySelector('input[name="model"]');
+  if (model && model.dataset.edited !== "true") {
+    model.value = String(defaults.model || "");
+  }
+  const effort = form.querySelector("[data-effort-select]");
+  if (effort && effort.dataset.edited !== "true") {
+    const option = effort.querySelector(
+      `[data-effort-agent="${agent}"] option[value="${defaults.effort}"]`
+    );
+    if (option) {
+      option.selected = true;
+    }
+  }
+  return true;
 }
 
 function removeConversationEmptyState(timeline) {
@@ -1528,6 +1557,7 @@ function settingsFormsDirty(forms, snapshots, submitting) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    applyAgentDefaults,
     formSnapshot,
     settingsFormsDirty,
     alertDownloadsError,
@@ -1756,6 +1786,19 @@ if (typeof document !== "undefined") {
     }
     form.dataset.agent = agentSelect.value;
     syncEffortOptions(form);
+    applyAgentDefaults(form, agentSelect.value);
+  });
+
+  // A field typed in, or an effort picked, is the user's: defaults no longer replace it.
+  document.addEventListener("input", function (event) {
+    if (event.target.matches && event.target.matches('[data-agent-defaults] input[name="model"]')) {
+      event.target.dataset.edited = "true";
+    }
+  });
+  document.addEventListener("change", function (event) {
+    if (event.target.matches && event.target.matches("[data-agent-defaults] [data-effort-select]")) {
+      event.target.dataset.edited = "true";
+    }
   });
 
   document.addEventListener("htmx:sseMessage", function (event) {

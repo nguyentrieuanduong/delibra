@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from app.agents.claude import ClaudeAdapter
-from app.agents.codex import CodexAdapter
+from app.agent_defaults import EFFORT_LEVELS
 from app.models import (
     AutoParticipant,
     AutoRunRecord,
@@ -181,11 +181,8 @@ def auto_run_usage(store: ProjectStore, auto_id: str) -> TurnUsage:
     )
 
 
-def effort_levels() -> dict[str, list[str]]:
-    return {
-        "claude": ClaudeAdapter.EFFORT_LEVELS,
-        "codex": CodexAdapter.EFFORT_LEVELS,
-    }
+def effort_levels() -> Mapping[str, list[str]]:
+    return EFFORT_LEVELS
 
 
 def selected_session(
