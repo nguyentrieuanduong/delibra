@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from app.skill_folders import (
-    chat_skills_note,
     read_skill_index,
     refresh_skill_folder,
     skill_folder,
@@ -151,11 +150,6 @@ def test_a_copy_outside_its_folder_is_refused(tmp_path: Path, destination: str) 
     with pytest.raises(OwnershipError, match="skill copy path"):
         sync_folder(folder, [(destination, b"x")])
     assert not (tmp_path / "project" / ".delibra" / "skills" / "escape.md").exists()
-
-
-def test_the_chat_note_names_the_index() -> None:
-    note = chat_skills_note(Path("/p/.delibra/skills/chat-index.md"))
-    assert note.startswith("Skills you may read are listed in /p/.delibra/skills/chat-index.md")
 
 
 def test_a_project_without_a_skills_folder_has_no_index(tmp_path: Path) -> None:

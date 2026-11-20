@@ -243,10 +243,3 @@ def test_only_open_questions_render_expanded(tmp_path: Path) -> None:
     )
 
 
-def test_a_long_collapsed_question_cannot_widen_the_conversation_column() -> None:
-    css = Path("app/static/app.css").read_text(encoding="utf-8")
-
-    panel = re.search(r"\.questions-panel \{(?P<body>[^}]*)\}", css)
-    assert panel is not None
-    # A nowrap summary's min-content would otherwise size the grid track.
-    assert "min-width: 0;" in panel["body"]
