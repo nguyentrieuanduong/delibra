@@ -10,6 +10,7 @@ from playwright.sync_api import expect
 
 from app.questions import ProposedQuestion, QuestionStore
 from tests.browser.conftest import LiveServer
+from tests.browser.test_auto_timeline_swaps import _refresh_status, _start_auto
 
 
 def _ask(questions: QuestionStore, texts: list[str]) -> None:
@@ -57,11 +58,29 @@ def test_appended_questions_update_the_cap_warning_and_keep_a_draft(
     expect(draft).to_have_value("unsaved draft")
 
 
+# Counts the questions span's requests from page load: htmx fires
+# beforeRequest when a request is sent (a queued one fires it only once it
+# is sent) and afterRequest when it ends, whatever the outcome.
+COUNT_QUESTION_FETCHES = """
+window.questionFetches = 0;
+window.questionFetchesInFlight = 0;
+const isQuestionFetch = event => event.detail.elt.matches("[hx-get$='/questions/new']");
+document.addEventListener("htmx:beforeRequest", event => {
+  if (isQuestionFetch(event)) { window.questionFetches += 1; window.questionFetchesInFlight += 1; }
+});
+document.addEventListener("htmx:afterRequest", event => {
+  if (isQuestionFetch(event)) { window.questionFetchesInFlight -= 1; }
+});
+"""
+
 # A "questions" message on the run's own EventSource, delivered to the
-# listeners htmx registered there, exactly as a server-sent one would be.
+# listeners htmx registered there exactly as a server-sent one would be.
+# htmx sends (or queues) the fetch synchronously, so the count it returns
+# already includes a fetch this message sent.
 SSE_QUESTIONS = """() => {
   const stream = document.querySelector("#auto-status [sse-connect]");
   stream["htmx-internal-data"].sseEventSource.dispatchEvent(new MessageEvent("questions", {data: ""}));
+  return window.questionFetches;
 }"""
 
 
@@ -73,22 +92,17 @@ def test_a_status_swap_during_a_questions_fetch_cannot_add_the_question_twice(
 ) -> None:
     """The hidden SSE spans sit in the hx-preserve'd stream, so htmx processes
     them again when an #auto-status swap settles. While a span's own request
-    is in flight it carries the htmx-request class; htmx 1.9 then sees a new
-    attribute hash, re-initialises it and deletes its request lock, so the
-    next event sends a second fetch with the same cursor and both responses
-    insert Q1 (seen under parallel load, 2026-11-19). The spans now put that
+    is in flight it used to carry the htmx-request class; htmx 1.9 then saw a
+    new attribute hash, re-initialised it and deleted its request lock, so the
+    next event sent a second fetch with the same cursor and both responses
+    inserted Q1 (seen under parallel load, 2026-11-19). The spans now put that
     class on an indicator outside the preserved stream."""
 
     app = live_server(["sleep"], tmp_path)
-    page.goto(f"{app['base_url']}/projects/Verify/chat?auto_setup=1")
-    dialog = "[data-auto-setup-dialog]"
-    expect(page.locator(dialog)).to_be_visible(timeout=10_000)
-    page.fill(f"{dialog} [name=topic]", "Questions")
-    page.click(f"{dialog} form button[type=submit]")
+    page.add_init_script(COUNT_QUESTION_FETCHES)
+    _start_auto(page, app["base_url"], [app["session_ids"][0]], "Questions")
     expect(page.locator('#auto-status[data-auto-active="true"]')).to_have_count(1, timeout=10_000)
-    # Let the run's own start-up events and fetches finish first.
-    page.wait_for_timeout(1_000)
-    page.wait_for_function("() => !document.querySelector('.htmx-request')")
+    page.wait_for_function("() => window.questionFetchesInFlight === 0")
     _ask(QuestionStore(app["store"].root, 96 * 1024), ["Asked once?"])
 
     held: list[Any] = []
@@ -101,32 +115,22 @@ def test_a_status_swap_during_a_questions_fetch_cannot_add_the_question_twice(
             route.continue_()
 
     page.route("**/questions/new*", hold)
-    page.evaluate(SSE_QUESTIONS)
-    for _ in range(100):  # the first fetch reaches the route and is held there
-        if held:
-            break
-        page.wait_for_timeout(50)
-    assert len(held) == 1
-    # A status refresh, as sse:status sends, settles while the fetch is held.
-    page.evaluate(
-        """() => {
-          window.statusBeforeRefresh = document.getElementById("auto-status");
-          const refresh = document.querySelector("#auto-status span[hx-get][hx-target='#auto-status']");
-          htmx.ajax("GET", refresh.getAttribute("hx-get"), {target: "#auto-status", swap: "outerHTML"});
-        }"""
-    )
-    page.wait_for_function(
-        "() => document.getElementById('auto-status') !== window.statusBeforeRefresh"
-        " && !document.querySelector('.htmx-settling')"
-    )
-    page.evaluate(SSE_QUESTIONS)
-    page.wait_for_timeout(300)
-    in_flight = len(held)
+    # A fetch sent from now on is held. If one of the run's own events got in
+    # first, this message is queued behind it and is sent when that lands.
+    with page.expect_request(lambda request: "/questions/new" in request.url):
+        page.evaluate(SSE_QUESTIONS)
+    sent = page.evaluate("() => window.questionFetches")
+    _refresh_status(page)  # settles while that fetch is held in flight
+    # With its lock intact, htmx queues this one instead of sending it.
+    assert page.evaluate(SSE_QUESTIONS) == sent, "a second fetch went out while the first was in flight"
 
     holding[0] = False
     for route in held:
         route.continue_()
-    expect(page.locator("#questions-cursor")).to_have_value("1", timeout=10_000)
-    page.wait_for_timeout(500)  # a second, queued fetch has time to land
+    # The queued fetch goes out once the held one lands; wait for both to end.
+    page.wait_for_function(
+        "count => window.questionFetches > count && window.questionFetchesInFlight === 0",
+        arg=sent,
+    )
+    expect(page.locator("#questions-cursor")).to_have_value("1")
     expect(page.locator("#question-Q1")).to_have_count(1)
-    assert in_flight == 1, "a second fetch went out while the first was in flight"
