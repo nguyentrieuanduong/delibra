@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 import pytest
@@ -116,12 +117,15 @@ def test_a_status_swap_during_a_questions_fetch_cannot_add_the_question_twice(
             route.continue_()
 
     page.route("**/questions/new*", hold)
-    # Every fetch counted from here on is held, so one stays in flight. If one
+    # Every fetch sent from here on is held, so one stays in flight. If one
     # of the run's own fetches was still out, this message is queued behind
-    # it and goes out (and is held) once that lands.
-    before = page.evaluate("() => window.questionFetches")
+    # it and goes out (and is held) once that lands. Wait for a held request
+    # itself, polled here: route handlers run while Python waits on the page.
     page.evaluate(SSE_QUESTIONS)
-    page.wait_for_function("count => window.questionFetches > count", arg=before)
+    deadline = time.monotonic() + 10
+    while not held:
+        assert time.monotonic() < deadline, "no questions fetch reached the server"
+        page.wait_for_timeout(20)
     sent = page.evaluate("() => window.questionFetches")
     _refresh_status(page)  # settles while that fetch is held in flight
     # With its lock intact, htmx queues this one instead of sending it.

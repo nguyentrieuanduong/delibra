@@ -81,13 +81,18 @@ async def test_hung_health_probe_never_blocks_startup_and_is_reaped_on_shutdown(
             assert loop.time() - started < 0.5
             assert all(item.checking for item in app.state.health)
             # A poll, not a wait: it ends as soon as the probe has started. A
-            # 1 s budget was too short for a fork and exec under parallel load.
-            for _ in range(1_000):
-                if pid_file.is_file():
-                    pid = int(pid_file.read_text(encoding="utf-8").strip())
+            # 1 s budget was too short for a fork and exec under parallel load;
+            # the budget stays under the probe's own 5 s timeout, which would
+            # reap it before shutdown and leave nothing for this test to check.
+            for _ in range(450):
+                text = pid_file.read_text(encoding="utf-8").strip() if pid_file.is_file() else ""
+                if text:  # the shell may have created the file but not written it yet
+                    pid = int(text)
                     break
                 await asyncio.sleep(0.01)
             assert pid is not None
+            # Still in flight: shutdown, not the probe's timeout, must reap it.
+            assert all(item.checking for item in app.state.health)
         await asyncio.sleep(0)
     finally:
         loop.set_exception_handler(previous_handler)
