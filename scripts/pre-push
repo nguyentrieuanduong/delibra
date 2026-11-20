@@ -21,6 +21,11 @@ if ! envs/bin/python -c "import playwright" >/dev/null 2>&1; then
   echo "pre-push: playwright missing. Run: envs/bin/pip install -r requirements.lock" >&2
   exit 1
 fi
+# pytest.ini passes `-n auto`, which pytest rejects without the plugin.
+if ! envs/bin/python -c "import xdist" >/dev/null 2>&1; then
+  echo "pre-push: pytest-xdist missing. Run: envs/bin/pip install -r requirements.lock" >&2
+  exit 1
+fi
 # Launch and close a browser. `playwright install --dry-run` only prints
 # planned download locations and exits 0 whether or not Chromium is
 # present, so it cannot answer this question. Launching also catches a
