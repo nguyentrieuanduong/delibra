@@ -472,8 +472,10 @@ class DownloadManager:
         done = await self._run_conversion(job, turn.project_root, turn.store_root, record.path, started, reusable)
         if done.refusal is not None:
             return {"state": "refused", "reason": done.refusal}
+        root = f"{turn.policy.folder}/converted"
         if done.reused:
-            return {"state": "converted", "reason": "reused", "source_sha256": done.sha256, "output": output}
+            return {"state": "converted", "reason": "reused", "source_sha256": done.sha256, "output": output,
+                    "converted_root": root}
         if done.result.state == "unsupported":
             return {"state": "refused", "reason": done.result.reason}
         if done.result.state != "converted" or done.result.markdown is None:
@@ -483,7 +485,8 @@ class DownloadManager:
             write_project_file(turn.project_root, folder, leaf, done.result.markdown)
         except (OSError, StorageError) as exc:
             return {"state": "failed", "reason": f"could not save the Markdown: {exc}"}
-        return {"state": "converted", "reason": done.result.reason, "source_sha256": done.sha256, "output": output}
+        return {"state": "converted", "reason": done.result.reason, "source_sha256": done.sha256, "output": output,
+                "converted_root": root}
 
     def _conversion_changed(self, turn: DownloadTurn, record: ConversionRecord) -> None:
         # The live turn that owns it, which may be a later one: an ended turn's

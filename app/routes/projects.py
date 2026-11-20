@@ -449,7 +449,7 @@ async def _refresh_local_excludes(project: Project, policy: CodingPolicy) -> Non
 
     try:
         try:
-            used_folders = written_folders(ProjectStore(project).root)
+            used_folders = written_folders(ProjectStore(project).root, policy.downloads.folder)
         except StorageError:
             # Only `git status` noise: build commits fail closed on their own.
             used_folders = set()

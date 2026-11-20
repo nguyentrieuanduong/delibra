@@ -218,3 +218,45 @@ def test_project_excludes_cover_where_conversions_write(tmp_path: Path) -> None:
 
     (store.root / "downloads" / "conversions.json").write_text("{")
     assert project_download_excludes(store) is None  # unknown: build commits fail closed
+
+
+def _conversions_project(tmp_path: Path, folder: str, *, convert: bool = False):
+    from app.convert_store import ConversionStore
+
+    project_dir = tmp_path / "project"; project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("P", project_dir)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=False, folder=folder, convert=convert)
+    store.replace_coding_policy(policy)
+    return store, ConversionStore(store.root)
+
+
+def _converted(conversions, output, **extra):
+    record = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
+    return conversions.update(record.id, state="converted", output=output, **extra)
+
+
+def test_a_folder_with_converted_in_its_name_is_excluded_exactly(tmp_path: Path) -> None:
+    store, conversions = _conversions_project(tmp_path, "a/converted/b")
+    _converted(conversions, "a/converted/b/converted/docs/x.pdf.md")  # an older record: no root stored
+    assert project_download_excludes(store) == ("a/converted/b/converted",)
+
+
+def test_new_records_name_their_converted_folder(tmp_path: Path) -> None:
+    store, conversions = _conversions_project(tmp_path, "now")
+    _converted(conversions, "x/converted/y/converted/z.pdf.md", converted_root="x/converted/y/converted")
+    assert project_download_excludes(store) == ("x/converted/y/converted",)
+
+
+@pytest.mark.parametrize("output, extra", [
+    (5, {}),
+    ("raw/converted/a\nb.md", {}),
+    ("/converted/x.md", {}),
+    ("raw/converted/x.md", {"converted_root": "../converted"}),
+    ("raw/converted/x.md", {"converted_root": "other/converted"}),  # does not hold the output
+])
+def test_a_malformed_conversion_output_turns_build_commits_off(tmp_path: Path, output, extra) -> None:
+    store, conversions = _conversions_project(tmp_path, "raw")
+    _converted(conversions, output, **extra)
+    assert project_download_excludes(store) is None

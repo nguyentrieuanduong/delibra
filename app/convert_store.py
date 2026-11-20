@@ -31,6 +31,8 @@ class ConversionRecord:
     updated_at: str
     source_sha256: str | None = None
     output: str | None = None
+    # `<download folder>/converted`, where `output` is; older records do not have it.
+    converted_root: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ConversionRecord":

@@ -235,19 +235,36 @@ class DownloadStore:
         return changed
 
 
-CONVERTED_DIR = "/converted/"
+def _converted_root(output: object, stored: object, known: list[str]) -> str:
+    """The `converted` folder a conversion's Markdown went to, checked as a safe
+    project folder that holds the output. Raises StorageError when it cannot be told."""
+
+    if not isinstance(output, str):
+        raise StorageError("conversion records name an output that is not a path")
+    writable_root_parts(output)  # control characters, escapes, .delibra: all refused
+    if stored is not None:
+        root = stored
+    else:  # records from before the root was stored: the longest known folder that holds it
+        root = next((f"{folder}/converted" for folder in known if output.startswith(f"{folder}/converted/")),
+                    None)
+        if root is None and "/converted/" in output:
+            # A folder no setting or download names any more: the first match can only be
+            # wider than the real folder, never narrower.
+            root = output[: output.index("/converted/")] + "/converted"
+    if not isinstance(root, str) or not output.startswith(root + "/"):
+        raise StorageError("conversion records name an output outside its converted folder")
+    return "/".join(writable_root_parts(root))
 
 
-def written_folders(root: Path) -> set[str]:
+def written_folders(root: Path, current_folder: str) -> set[str]:
     """Every folder Delibra has written into: download folders, and the `converted`
     folder of each requested conversion's Markdown. Raises StorageError if unknown."""
 
     folders = DownloadStore(root).used_folders()
+    known = sorted({current_folder, *folders}, key=len, reverse=True)
     for record in ConversionStore(root).load():
-        if record.output is not None and CONVERTED_DIR in record.output:
-            # Output is <folder>/converted/<path>.md; the first match can only be wider
-            # than the real folder (a folder named "converted"), never narrower.
-            folders.add(record.output[: record.output.index(CONVERTED_DIR) + len(CONVERTED_DIR) - 1])
+        if record.output is not None:
+            folders.add(_converted_root(record.output, record.converted_root, known))
     return folders
 
 
@@ -255,10 +272,11 @@ def project_download_excludes(store: ProjectStore) -> tuple[str, ...] | None:
     """Folders Delibra's build commits exclude; None when they cannot be known (B5)."""
 
     try:
-        used = written_folders(store.root)
+        policy = store.coding_policy()
+        used = written_folders(store.root, policy.downloads.folder)
     except StorageError:
         return None
-    return download_excludes(store.coding_policy(), used)
+    return download_excludes(policy, used)
 
 
 def render_status(records: list[DownloadRecord], requests: dict[str, str] | None = None) -> bytes:
