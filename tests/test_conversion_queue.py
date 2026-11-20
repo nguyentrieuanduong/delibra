@@ -117,3 +117,74 @@ async def test_every_change_and_the_limit_raise_the_revision() -> None:
     with pytest.raises(ConversionCancelled):
         await task
     assert changes == sorted(changes) and len(changes) >= 4 and len(set(changes)) == len(changes)
+
+
+@pytest.mark.asyncio
+async def test_positions_follow_the_order_jobs_reach_the_slot() -> None:
+    queue = ConversionQueue(asyncio.Semaphore(1))
+    running = queue.enqueue(("root", "C1"), "p1")
+    release, started = asyncio.Event(), asyncio.Event()
+    first = asyncio.create_task(_hold(queue, running, started, release))
+    await started.wait()
+    request = queue.enqueue(("root", "C2"), "p1")  # registered, its task not run yet
+    download = queue.enqueue(("root", "D1"), "p1")
+    later = asyncio.create_task(_hold(queue, download, asyncio.Event(), release))
+    await asyncio.sleep(0)  # the download now waits for the slot, ahead of the request
+
+    view = queue.snapshot()
+    assert (view[("root", "D1")].position, view[("root", "C2")].position) == (1, 2)
+
+    order: list[str] = []
+
+    async def note(job, name):
+        async with queue.turn(job):
+            order.append(name)
+
+    last = asyncio.create_task(note(request, "C2"))
+    await asyncio.sleep(0)
+    assert (queue.snapshot()[("root", "D1")].position, queue.snapshot()[("root", "C2")].position) == (1, 2)
+    release.set()
+    await asyncio.gather(first, later, last)
+    assert order == ["C2"]  # it ran, after D1 (D1's _hold returned first)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_running_job_shows_as_cancelling_until_it_ends() -> None:
+    queue = ConversionQueue(asyncio.Semaphore(1))
+    job = queue.enqueue(("root", "C1"), "p1")
+    started = asyncio.Event()
+    task = asyncio.create_task(_hold(queue, job, started, asyncio.Event()))
+    await started.wait()
+    queue.cancel(("root", "C1"))
+    assert queue.snapshot()[("root", "C1")].cancelling is True
+    with pytest.raises(ConversionCancelled):
+        await task
+    assert queue.snapshot() == {}
+
+
+@pytest.mark.asyncio
+async def test_the_queue_says_when_something_else_holds_the_slot() -> None:
+    slot = asyncio.Semaphore(1)
+    queue = ConversionQueue(slot)
+    assert queue.slot_busy_elsewhere() is False
+    async with slot:  # a converter models action
+        assert queue.slot_busy_elsewhere() is True
+        job = queue.enqueue(("root", "C1"), "p1")
+        started = asyncio.Event()
+        task = asyncio.create_task(_hold(queue, job, started, asyncio.Event()))
+        await asyncio.sleep(0)
+        assert queue.slot_busy_elsewhere() is True
+    await started.wait()
+    assert queue.slot_busy_elsewhere() is False  # a conversion holds it now
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_models_action_holds_the_slot_and_tells_the_panel() -> None:
+    changes: list[int] = []
+    queue = ConversionQueue(asyncio.Semaphore(1), on_change=lambda: changes.append(queue.revision))
+    async with queue.outside_use():
+        assert queue.slot_busy_elsewhere() is True
+        assert len(changes) == 1
+    assert queue.slot_busy_elsewhere() is False and len(changes) == 2

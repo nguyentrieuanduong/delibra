@@ -948,7 +948,8 @@ def test_downloads_hold_the_conversion_slot_for_the_self_test(tmp_path, monkeypa
     seen = []
 
     async def fake_download(home, revisions=None, *, slot=None):
-        seen.append(slot() is app.state.download_manager._convert_slot)
+        async with slot():
+            seen.append(app.state.download_manager.converting())
 
     monkeypatch.setattr("app.routes.settings.download_models", fake_download)
     app = make_app(tmp_path)

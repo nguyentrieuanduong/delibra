@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from functools import partial
 import logging
@@ -619,23 +620,52 @@ class DownloadManager:
         self._refresh(project_id, project_root, store, record)
         if record.state == "downloaded" and record.convert:
             # Outside the download slots: a long conversion never holds up other downloads.
-            record = store.update(rid, convert_state="queued", convert_reason=None)
-            job = self._queue.enqueue(_job_key(store.root, rid), project_id)
+            record, job = self._queue_download_conversion(project_id, store, rid)
+            await self._converted_download(project_id, project_root, store, record, job)
+
+    def _queue_download_conversion(
+        self, project_id: str, store: DownloadStore, rid: str
+    ) -> tuple[DownloadRecord, QueueJob]:
+        """Mark a download's conversion queued and register its job, at once."""
+
+        record = store.update(rid, convert_state="queued", convert_reason=None)
+        return record, self._queue.enqueue(_job_key(store.root, rid), project_id)
+
+    async def _converted_download(
+        self, project_id: str, project_root: Path, store: DownloadStore, record: DownloadRecord, job: QueueJob
+    ) -> None:
+        rid = record.id
+        try:
+            self._refresh(project_id, project_root, store, record)
+
+            def started() -> None:
+                self._refresh(project_id, project_root, store, store.update(rid, convert_state="converting"))
+
             try:
-                self._refresh(project_id, project_root, store, record)
+                record = await self._convert_download(project_root, store, record, job, started)
+            except Exception:
+                LOGGER.exception("conversion of download %s failed unexpectedly", rid)  # review B1
+                record = store.update(rid, convert_state="failed", convert_reason=UNEXPECTED)
+            self._refresh(project_id, project_root, store, record)
+        finally:
+            self._queue.discard(job)
+            job.settled.set()
 
-                def started() -> None:
-                    self._refresh(project_id, project_root, store, store.update(rid, convert_state="converting"))
+    def retry_conversion(
+        self, project_root: Path, store_root: Path, rid: str, project_id: str | None = None
+    ) -> DownloadRecord:
+        """Convert a download again after its conversion was cancelled or failed."""
 
-                try:
-                    record = await self._convert_download(project_root, store, record, job, started)
-                except Exception:
-                    LOGGER.exception("conversion of download %s failed unexpectedly", rid)  # review B1
-                    record = store.update(rid, convert_state="failed", convert_reason=UNEXPECTED)
-                self._refresh(project_id, project_root, store, record)
-            finally:
-                self._queue.discard(job)
-                job.settled.set()
+        store = DownloadStore(store_root)
+        record = store.get(rid)
+        if record.state != "downloaded" or record.convert_state not in ("cancelled", "failed"):
+            raise StorageError(f"{rid} has no cancelled or failed conversion to retry")
+        pid = project_id or self._project_id(store_root)
+        record, job = self._queue_download_conversion(pid, store, rid)
+        if not self._start(self._converted_download(pid, project_root, store, record, job)):
+            self._queue.discard(job)
+        self._refresh(pid, project_root, store, record)
+        return record
 
     async def _convert_download(
         self, project_root: Path, store: DownloadStore, record: DownloadRecord, job: QueueJob,
@@ -667,10 +697,15 @@ class DownloadManager:
             converted_path=f"{record.path}.md",
         )
 
-    def conversion_slot(self) -> asyncio.Semaphore:
-        """The one conversion slot, for a models self-test and swap to hold."""
+    def conversion_slot(self) -> AbstractAsyncContextManager[None]:
+        """The one conversion slot, for a models self-test, swap or removal to hold."""
 
-        return self._convert_slot
+        return self._queue.outside_use()
+
+    def conversion_slot_busy_elsewhere(self) -> bool:
+        """A converter models action holds the slot: queued conversions wait for it."""
+
+        return self._queue.slot_busy_elsewhere()
 
     def converting(self) -> bool:
         """A conversion holds the server's one slot right now."""
@@ -788,14 +823,20 @@ def _job_key(store_root: Path, rid: str) -> JobKey:
     return (str(store_root), rid)
 
 
+def conversion_state(store_root: Path, cid: str) -> str | None:
+    """The state of conversion `cid` (C…: a requested file, D…: a download's conversion);
+    None when there is no such conversion. Raises StorageError for unreadable records."""
+
+    if cid.startswith("D"):
+        return next((r.convert_state for r in DownloadStore(store_root).load().requests if r.id == cid), None)
+    return next((r.state for r in ConversionStore(store_root).load() if r.id == cid), None)
+
+
 def _ended_state(store_root: Path, cid: str) -> str:
-    """": it is <state>" for a known record, else nothing."""
+    """": it is <state>" for a known conversion, else nothing."""
 
     try:
-        if cid.startswith("D"):
-            state = DownloadStore(store_root).get(cid).convert_state
-        else:
-            state = next((r.state for r in ConversionStore(store_root).load() if r.id == cid), None)
+        state = conversion_state(store_root, cid)
     except StorageError:
         return ""
     return f": it is {state}" if state else ""

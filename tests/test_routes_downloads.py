@@ -199,8 +199,9 @@ class GatedConverter:
         return ConvertResult("converted", None, b"# md\n", "pdf")
 
 
-def start_conversions(client, app, project, tmp_path: Path, *names: str) -> GatedConverter:
-    """Request `names` in a chat turn, in the server's loop; returns once the first converts."""
+def start_conversions(client, app, project, tmp_path: Path, *names: str, wait: bool = True) -> GatedConverter:
+    """Request `names` in a chat turn, in the server's loop; returns once the first
+    converts (or at once, `wait=False`)."""
 
     manager = app.state.download_manager
     converter = GatedConverter()
@@ -222,7 +223,8 @@ def start_conversions(client, app, project, tmp_path: Path, *names: str) -> Gate
         for index, name in enumerate(names, start=1):
             (turn.convert_spool / f"c{index}.json").write_text(json.dumps({"path": name}))
         manager.harvest(turn, final=True)
-        await converter.started.wait()
+        if wait:
+            await converter.started.wait()
         await manager.stop_watch(turn)
         manager.end_turn(turn)
 
@@ -299,3 +301,78 @@ def test_the_downloads_panel_sits_in_the_right_column_above_the_files(tmp_path):
     files = page.index('class="workspace-files"')
     assert files < page.index('id="downloads-panel"') < page.index('id="file-browser-host"')
 
+
+
+def test_shown_paths_lose_control_characters():
+    from app.routes.conversions import plain_text
+
+    assert plain_text("a\nb\tc\x1b[2J‮d.pdf") == "a b c [2J d.pdf"
+
+
+def test_a_project_cannot_cancel_another_projects_conversion_with_the_same_id(tmp_path):
+    from app.convert_store import ConversionStore
+
+    app, project, store = downloads_app(tmp_path)
+    other_dir = tmp_path / "other"; other_dir.mkdir()
+    other = RegistryStore(tmp_path / "home").register("Other", other_dir)
+    for name in ("x.pdf", "y.pdf"):  # its own C1 and C2 (startup recovery fails them: nothing runs)
+        ConversionStore(ProjectStore(other).root).add(name, request="c.json", auto_run=0, round_n=1, agent="b" * 32)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        converter = start_conversions(client, app, project, tmp_path, "a.pdf", "b.pdf")
+        response = client.post(f"{base(other)}/conversions/C2/cancel")
+        states = [r.state for r in ConversionStore(store.root).load()]
+        client.portal.call(converter.release.set)
+        client.portal.call(app.state.download_manager.idle)
+    assert response.status_code == 409 and "C2 has nothing to cancel: it is failed" in response.text
+    assert states == ["converting", "queued"]  # project A's C2 still waits
+
+
+def test_queued_conversions_say_when_a_models_action_holds_the_converter(tmp_path):
+    app, project, _store = downloads_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        manager = app.state.download_manager
+        released, held = asyncio.Event(), asyncio.Event()
+
+        async def models_action() -> None:
+            async with manager.conversion_slot():
+                held.set()
+                await released.wait()
+
+        client.portal.start_task_soon(models_action)
+        client.portal.call(held.wait)
+        converter = start_conversions(client, app, project, tmp_path, "a.pdf", wait=False)
+        busy = client.get(f"{base(project)}/conversions/list").text
+        client.portal.call(released.set)
+        client.portal.call(converter.started.wait)
+        running = client.get(f"{base(project)}/conversions/list").text
+        client.portal.call(converter.release.set)
+        client.portal.call(manager.idle)
+    assert "busy with a converter model update" in busy
+    assert "busy with a converter model update" not in running
+
+
+def test_retry_converts_a_cancelled_download_again_from_this_machine_only(tmp_path):
+    app, project, store = downloads_app(tmp_path)
+    project_dir = ProjectStore(project).project_path
+    (project_dir / "raw").mkdir()
+    (project_dir / "raw" / "paper.pdf").write_bytes(b"%PDF-1.7 x")
+    record = add(store, "https://arxiv.org/pdf/1")
+    store.update(record.id, state="downloaded", path="raw/paper.pdf", convert=True,
+                 convert_state="cancelled", convert_reason="cancelled by the user")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        listing = client.get(f"{base(project)}/conversions/list").text
+        lan = TestClient(app, base_url="http://localhost", client=("192.168.1.9", 5000))
+        from_lan = lan.post(f"{base(project)}/conversions/D1/retry")
+        converter = GatedConverter()
+        converter.release.set()
+        app.state.download_manager.converter = converter
+        retried = client.post(f"{base(project)}/conversions/D1/retry")
+        client.portal.call(app.state.download_manager.idle)
+        again = client.post(f"{base(project)}/conversions/D1/retry")
+        malformed = client.post(f"{base(project)}/conversions/C1/retry")
+    assert '/conversions/D1/retry"' in listing
+    assert from_lan.status_code == 403
+    assert retried.status_code == 200 and 'id="conversion-D1"' in retried.text
+    assert store.get("D1").convert_state == "converted"
+    assert again.status_code == 409 and "no cancelled or failed conversion" in again.text
+    assert malformed.status_code == 404

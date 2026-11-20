@@ -31,6 +31,7 @@ class QueueJob:
     cancelled: bool = False
     started_at: float | None = None  # epoch seconds once it holds the slot
     limit: float | None = None  # seconds, once the converter knows the file type
+    waiting_since: int | None = None  # its place at the slot, once its task asks for it
     settled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -39,6 +40,7 @@ class JobView:
     position: int | None  # 1 is next; None while running
     started_at: float | None
     limit: float | None
+    cancelling: bool = False  # cancelled; its worker has not ended yet
 
 
 class ConversionQueue:
@@ -47,6 +49,7 @@ class ConversionQueue:
         self._jobs: dict[JobKey, QueueJob] = {}  # insertion order is the waiting order
         self._on_change = on_change
         self.revision = 0
+        self._arrivals = 0
         # Revisions restart with the server: a new epoch tells the page so.
         self.epoch = secrets.token_hex(4)
 
@@ -80,6 +83,9 @@ class ConversionQueue:
             if job.cancelled:
                 raise ConversionCancelled(job.key[1])
             job.task = asyncio.current_task()
+            # The Semaphore serves waiters in the order they ask: positions follow it.
+            self._arrivals += 1
+            job.waiting_since = self._arrivals
             try:
                 async with self._slot:  # FIFO: CPython's Semaphore wakes waiters in order
                     job.started_at = time.time()
@@ -94,6 +100,18 @@ class ConversionQueue:
                 raise
         finally:
             self.discard(job)
+
+    @asynccontextmanager
+    async def outside_use(self) -> AsyncIterator[None]:
+        """Hold the slot for something other than a conversion (a converter models
+        action); the panel is told, so it can say why queued conversions wait."""
+
+        async with self._slot:
+            self._changed()
+            try:
+                yield
+            finally:
+                self._changed()
 
     def cancel(self, key: JobKey) -> QueueJob | None:
         """Cancel a waiting or running job; None when there is no such job."""
@@ -113,13 +131,20 @@ class ConversionQueue:
 
     def snapshot(self) -> dict[JobKey, JobView]:
         views: dict[JobKey, JobView] = {}
-        position = 0
         for key, job in self._jobs.items():
-            if job.cancelled:
-                continue
             if job.started_at is not None:
-                views[key] = JobView(None, job.started_at, job.limit)
-            else:
-                position += 1
-                views[key] = JobView(position, None, None)
+                views[key] = JobView(None, job.started_at, job.limit, cancelling=job.cancelled)
+        # Waiting at the slot first, in the order they asked; jobs whose task has
+        # not asked yet come after them.
+        waiting = sorted(
+            (job for job in self._jobs.values() if job.started_at is None and not job.cancelled),
+            key=lambda job: (job.waiting_since is None, job.waiting_since or 0),
+        )
+        for position, job in enumerate(waiting, start=1):
+            views[job.key] = JobView(position, None, None)
         return views
+
+    def slot_busy_elsewhere(self) -> bool:
+        """Something other than a conversion holds the slot (a converter models action)."""
+
+        return self._slot.locked() and not any(job.started_at is not None for job in self._jobs.values())

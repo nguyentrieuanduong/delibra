@@ -136,17 +136,23 @@ function finishNoteEdit(form, detail, alertFn) {
   return "alerted";
 }
 
-// A refused Downloads or Conversions action pops up (the UI error pop-up standard).
-function alertDownloadsError(source, xhr, alertFn) {
-  if (
-    !source ||
-    typeof source.closest !== "function" ||
-    !(source.closest("#downloads-panel") || source.closest("#conversions-panel")) ||
-    !xhr
-  ) {
+// A refused Downloads or Conversions action pops up (the UI error pop-up
+// standard). Whether a request is such an action is decided when it is sent:
+// the list can re-render while it is in flight, and htmx's events on a
+// detached button never reach the document.
+function inLivePanel(source) {
+  return Boolean(
+    source &&
+      typeof source.closest === "function" &&
+      (source.closest("#downloads-panel") || source.closest("#conversions-panel"))
+  );
+}
+
+function alertLiveListError(xhr, alertFn) {
+  if (!xhr || !(xhr.status >= 400)) {
     return false;
   }
-  alertFn(chatErrorMessage(xhr.status || 0, xhr.responseText || ""));
+  alertFn(chatErrorMessage(xhr.status, xhr.responseText || ""));
   return true;
 }
 
@@ -158,7 +164,7 @@ const LIVE_LISTS = { downloads: "downloads-list", conversions: "conversions-list
 // revision never replaces a newer one (the last refresh is queued, so it
 // converges). Revisions only compare within one epoch: a recreated records
 // file (or a restarted server's queue) starts again at 1.
-function staleDownloadsList(target, responseText) {
+function staleLiveList(target, responseText) {
   if (!target || !Object.values(LIVE_LISTS).includes(target.id) || !target.dataset) {
     return false;
   }
@@ -174,7 +180,7 @@ function staleDownloadsList(target, responseText) {
 // Stream events carry the store revision: re-fetch only when it is newer
 // than the list shown, so connecting (whose first event is the current
 // revision) does not replace a list the user may be clicking in.
-function newerDownloadsRevision(shown, data, shownEpoch) {
+function newerLiveRevision(shown, data, shownEpoch) {
   let incoming = null;
   try {
     incoming = JSON.parse(data);
@@ -199,7 +205,7 @@ const PANEL_COUNTS = {
   "conversions-list": ["active", "#conversions-panel"],
 };
 
-function openDownloadsPanelForNew(list, responseText) {
+function openLivePanelForNew(list, responseText) {
   const counted = list && PANEL_COUNTS[list.id];
   if (!counted || !list.dataset) {
     return false;
@@ -220,7 +226,7 @@ function liveListEventIsNewer(event) {
   const list = document.getElementById(LIVE_LISTS[event && event.type]);
   const shown = list && list.dataset ? Number(list.dataset.revision) : Number.NaN;
   const epoch = list && list.dataset ? list.dataset.epoch : undefined;
-  return newerDownloadsRevision(shown, event && event.data, epoch);
+  return newerLiveRevision(shown, event && event.data, epoch);
 }
 
 // The running conversion's elapsed time ticks in the page. The server sends
@@ -1670,10 +1676,11 @@ if (typeof module !== "undefined" && module.exports) {
     applyAgentDefaults,
     formSnapshot,
     settingsFormsDirty,
-    alertDownloadsError,
-    newerDownloadsRevision,
-    openDownloadsPanelForNew,
-    staleDownloadsList,
+    alertLiveListError,
+    inLivePanel,
+    newerLiveRevision,
+    openLivePanelForNew,
+    staleLiveList,
     appendPickedPaths,
     goToLatestMessage,
     syncLatestButton,
@@ -2010,8 +2017,8 @@ if (typeof document !== "undefined") {
     ) {
       return; // afterRequest pops it up instead
     }
-    if (alertDownloadsError(editSource, event.detail && event.detail.xhr, window.alert.bind(window))) {
-      return;
+    if (inLivePanel(editSource)) {
+      return; // its own loadend listener pops it up (htmx:beforeRequest)
     }
     const region = document.getElementById("chat-errors");
     const xhr = event.detail && event.detail.xhr;
@@ -2023,6 +2030,12 @@ if (typeof document !== "undefined") {
 
   document.addEventListener("htmx:beforeRequest", function (event) {
     const source = (event.detail && event.detail.elt) || event.target;
+    const actionXhr = event.detail && event.detail.xhr;
+    if (actionXhr && inLivePanel(source)) {
+      actionXhr.addEventListener("loadend", function () {
+        alertLiveListError(actionXhr, window.alert.bind(window));
+      });
+    }
     const form =
       source && typeof source.closest === "function"
         ? source.closest("[data-timeout-extension-form]")
@@ -2212,10 +2225,10 @@ if (typeof document !== "undefined") {
     }
     const detail = event.detail || {};
     const responseText = detail.xhr && detail.xhr.responseText;
-    if (staleDownloadsList(detail.target, responseText)) {
+    if (staleLiveList(detail.target, responseText)) {
       detail.shouldSwap = false;
     } else if (detail.shouldSwap) {
-      openDownloadsPanelForNew(detail.target, responseText);
+      openLivePanelForNew(detail.target, responseText);
     }
   });
 

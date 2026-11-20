@@ -6,6 +6,9 @@
   {% if panel.downloads_unreadable %}
     <p class="warning">Download records are unreadable (<code>.delibra/downloads/requests.json</code>), so conversions of downloads are not listed.</p>
   {% endif %}
+  {% if panel.queued_count %}
+    <p class="hint">One conversion runs at a time for the whole server; the others wait their turn.{% if panel.slot_busy %} The converter is busy with a converter model update; queued conversions wait for it.{% endif %}</p>
+  {% endif %}
   {% if not panel.rows and not panel.requests_unreadable and not panel.downloads_unreadable %}
     <p class="hint">{% if panel.convert_enabled %}No conversions yet. Downloaded documents and project files agents ask for are listed here.{% else %}Document conversion is off for this project (Settings → General).{% endif %}</p>
   {% endif %}

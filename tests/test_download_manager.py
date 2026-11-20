@@ -944,3 +944,57 @@ async def test_an_unexpected_error_fails_a_download_conversion_and_keeps_the_dow
 
     saved = DownloadStore(tmp_path / "delibra").get(record.id)
     assert (saved.state, saved.convert_state, saved.convert_reason) == ("downloaded", "failed", "unexpected error")
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_download_conversion_can_be_retried(tmp_path) -> None:
+    from app.storage import StorageError
+
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=converter)
+    (tmp_path / "project").mkdir()
+    turn = chat_turn(tmp_path, session="q" * 32, round_n=1)
+    turn.policy = DownloadPolicy(enabled=True, folder="raw", approval="automatic", convert=True)
+    manager.begin_turn(turn)
+    write_request(turn.spool, "d1.json", "https://a.example/paper.pdf")
+    manager.harvest(turn, final=True)
+    await converter.started.wait()
+    await manager.cancel_conversion(turn.store_root, "D1")
+    store = DownloadStore(turn.store_root)
+
+    record = manager.retry_conversion(turn.project_root, turn.store_root, "D1")
+
+    assert (record.convert_state, record.convert_reason) == ("queued", None)
+    assert manager.conversion_jobs(turn.store_root)["D1"].position == 1
+    converter.release.set()
+    await manager.idle()
+    assert (store.get("D1").convert_state, store.get("D1").converted_path) == ("converted", "raw/paper.pdf.md")
+    with pytest.raises(StorageError, match="D1 has no cancelled or failed conversion to retry"):
+        manager.retry_conversion(turn.project_root, turn.store_root, "D1")
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_requested_file_can_simply_be_requested_again(tmp_path) -> None:
+    from app.convert_store import ConversionStore
+
+    convert_project(tmp_path, "a.pdf")
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=converter)
+    turn = chat_turn(tmp_path, session="r" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf")
+    manager.harvest(turn, final=True)
+    await converter.started.wait()
+    await manager.cancel_conversion(turn.store_root, "C1")
+    converter.release.set()
+    (turn.convert_spool / "again.json").write_text(json.dumps({"path": "a.pdf"}))
+    manager.harvest(turn, final=True)
+    await manager.idle()
+
+    assert [(r.id, r.state) for r in ConversionStore(turn.store_root).load()] == [
+        ("C1", "cancelled"), ("C2", "converted")
+    ]
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
