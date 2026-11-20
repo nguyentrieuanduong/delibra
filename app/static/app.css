@@ -312,7 +312,9 @@ textarea { min-height: 7rem; }
   padding: 0 .25rem;
 }
 .timeline-heading h2 { font-size: 1rem; margin: 0; }
+.timeline-heading-actions { align-items: baseline; display: flex; gap: .5rem; }
 .timeline-heading span { font-size: .8rem; opacity: .7; }
+.timeline-heading button { font-size: .8rem; }
 .round-header {
   align-items: center;
   display: flex;

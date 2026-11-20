@@ -494,12 +494,19 @@ function readDisclosureChoices(storage, key) {
 }
 
 function rememberDisclosureChoice(storage, key, id, open) {
+  return rememberDisclosureChoices(storage, key, [[id, open]]);
+}
+
+// [id, open] pairs in one write, in order: the last ones are kept longest.
+function rememberDisclosureChoices(storage, key, entries) {
   if (!storage) {
     return false;
   }
   const choices = readDisclosureChoices(storage, key);
-  delete choices[id];
-  choices[id] = Boolean(open);
+  entries.forEach(function (entry) {
+    delete choices[entry[0]];
+    choices[entry[0]] = Boolean(entry[1]);
+  });
   const ids = Object.keys(choices);
   ids.slice(0, Math.max(0, ids.length - DISCLOSURE_LIMIT)).forEach(function (old) {
     delete choices[old];
@@ -529,6 +536,47 @@ function syncConversationDisclosure(timeline, choices = {}) {
     newestOpen = newest && details.open;
   });
   return newestOpen;
+}
+
+// Collapse all (user, 2026-11-20): every message closes. Only the messages
+// that would open again are stored closed: the newest (open by default) and
+// any the reader had opened. The others are closed by default already, so
+// they take no room under DISCLOSURE_LIMIT, and a message that arrives later
+// still opens as the newest. Returns how many choices were stored.
+function collapseConversation(timeline, storage) {
+  const messages = Array.from(
+    timeline.querySelectorAll(".round, .live-round")
+  );
+  const choices = readDisclosureChoices(storage, MESSAGE_DISCLOSURE_KEY);
+  const closed = [];
+  messages.forEach(function (message, index) {
+    const details = message.querySelector(".round-details");
+    if (!details) {
+      return;
+    }
+    details.open = false;
+    const newest = index === messages.length - 1;
+    if (message.id && (newest || choices[message.id] === true)) {
+      closed.push([message.id, false]);
+    }
+  });
+  if (!closed.length) {
+    return 0;
+  }
+  return rememberDisclosureChoices(storage, MESSAGE_DISCLOSURE_KEY, closed)
+    ? closed.length
+    : 0;
+}
+
+// Collapse all shows only while there is a message to close; the first one
+// arrives without the heading being rendered again.
+function syncCollapseButton(timeline) {
+  const button = timeline.querySelector("[data-collapse-messages]");
+  if (!button) {
+    return false;
+  }
+  button.hidden = !latestMessage(timeline);
+  return !button.hidden;
 }
 
 // Agent information is closed unless the reader opened it.
@@ -1744,6 +1792,8 @@ if (typeof module !== "undefined" && module.exports) {
     streamRetryDelay,
     syncAutoOrderControls,
     syncConversationDisclosure,
+    collapseConversation,
+    syncCollapseButton,
     syncAgentDisclosure,
     browserStorage,
     readDisclosureChoices,
@@ -1824,6 +1874,7 @@ if (typeof document !== "undefined") {
   const bootTimeline = document.getElementById("chat-timeline");
   if (bootTimeline) {
     applyMessageChoices(bootTimeline);
+    syncCollapseButton(bootTimeline);
   }
   // After settle, not afterSwap: an outerHTML swap's event target is the
   // replaced element, and OOB swaps land elsewhere. One scan finds them all.
@@ -1860,6 +1911,15 @@ if (typeof document !== "undefined") {
   document.addEventListener("click", function (event) {
     if (event.target.closest && event.target.closest("[data-timeline-latest]")) {
       goToLatestMessage(document);
+    }
+  });
+  document.addEventListener("click", function (event) {
+    const button = event.target.closest
+      ? event.target.closest("[data-collapse-messages]")
+      : null;
+    const timeline = button ? button.closest("#chat-timeline") : null;
+    if (timeline) {
+      collapseConversation(timeline, disclosureStorage);
     }
   });
   // Scroll does not bubble; capture sees the timeline's own scrolling.
@@ -2087,6 +2147,7 @@ if (typeof document !== "undefined") {
     if (timeline) {
       removeConversationEmptyState(timeline);
       applyMessageChoices(timeline);
+      syncCollapseButton(timeline);
       const snapshot = detail.xhr
         ? conversationScrollSnapshots.get(detail.xhr)
         : null;
