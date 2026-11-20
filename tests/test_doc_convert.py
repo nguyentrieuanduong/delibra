@@ -703,3 +703,28 @@ async def test_the_workers_own_text_count_decides_the_no_text_warning(tmp_path) 
     result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch", worker=worker)
     assert (result.state, result.reason) == ("converted", "no text found; the file may be scanned images")
+
+
+@MAC
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stats", [
+    "[]", '"x"', '{"text_chars": -1}', '{"text_chars": true}', '{"text_chars": 0, "pad": "' + "x" * 300 + '"}', None,
+])
+async def test_a_bad_or_missing_text_count_falls_back_to_counting_the_markdown(tmp_path, stats) -> None:
+    write_stats = (
+        f"(pathlib.Path(output).parent / 'stats.json').write_text({stats!r})\n" if stats is not None else ""
+    )
+    worker = stub_worker(tmp_path, "import pathlib\n" + write_stats + "open(output, 'w').write('short')\n",
+                         label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    short = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                               scratch_root=tmp_path / "scratch", worker=worker)
+    assert short.reason == "no text found; the file may be scanned images"  # 5 characters of Markdown
+
+    long_worker = stub_worker(tmp_path / "long", "import pathlib\n" + write_stats
+                              + "open(output, 'w').write('plenty of real words in this converted output')\n",
+                              label="docx")
+    long = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                              scratch_root=tmp_path / "scratch", worker=long_worker)
+    assert long.reason is None  # a bad count never invents the warning either
