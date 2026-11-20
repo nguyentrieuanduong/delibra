@@ -153,3 +153,47 @@ def test_the_conversions_panel_sits_between_downloads_and_the_files(
     assert conversions["x"] + conversions["width"] <= files["x"] + files["width"] + 1
     assert downloads["y"] + downloads["height"] <= conversions["y"] + 1
     assert conversions["y"] + conversions["height"] <= browser["y"] + 1
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("rerender", [True, False])
+def test_a_refused_cancel_pops_up_once_and_only_as_a_pop_up(
+    live_server: LiveServer, page: Any, tmp_path: Path, rerender: bool
+) -> None:
+    """The pop-up comes from the request itself (loadend), so it survives a list
+    re-render that detaches the button; the page-level error handler skips panel
+    buttons, so an attached one is not also shown as a chat error."""
+
+    from app.convert_store import ConversionStore
+
+    app = live_server(["success"], tmp_path)
+    # Recorded after start-up recovery, with no job behind it: Cancel is refused (409).
+    ConversionStore(app["store"].root).add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="1" * 32)
+    dialogs: list[str] = []
+    page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+    held: list[Any] = []
+    page.route("**/conversions/C1/cancel", lambda route: held.append(route))
+    page.goto(f"{app['base_url']}/projects/Verify/chat")
+    expect(page.locator("#conversion-C1 .conversion-state")).to_have_text("queued", timeout=10_000)
+    settled(page)
+
+    page.locator("#conversion-C1").get_by_role("button", name="Cancel").click()
+    for _ in range(200):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "the Cancel request never left the page"
+    if rerender:
+        page.evaluate("() => { window.listSwaps = 0; document.addEventListener('htmx:afterSwap', e => {"
+                      " if (e.detail.target.id === 'conversions-list') window.listSwaps += 1; }); }")
+        page.evaluate("() => htmx.trigger(document.getElementById('conversions-refresh'), 'conversions-changed')")
+        page.wait_for_function("() => window.listSwaps > 0")  # the Cancel button is now detached
+    held[0].continue_()
+
+    for _ in range(200):
+        if dialogs:
+            break
+        page.wait_for_timeout(50)
+    page.wait_for_timeout(500)  # a second pop-up or a chat error would come within this
+    assert dialogs == ["C1 has nothing to cancel: it is queued"]
+    assert page.locator("#chat-errors").inner_text().strip() == ""
