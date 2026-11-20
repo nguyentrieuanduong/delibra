@@ -75,19 +75,16 @@
   </form>
 </section>
 <section aria-labelledby="downloads-heading">
-  <h2 id="downloads-heading">Downloads and documents</h2>
+  <h2 id="downloads-heading">Downloads</h2>
   {{ takes_effect("new_session") }}
   {% if not coding_local %}<p class="hint">Only this machine can change download settings.</p>{% endif %}
-  {# The fields the chat spool notes are written from: the switches, approval, folder. #}
-  <form method="post" action="{{ project_url(project.name, '/download-settings') }}"{{ confirm_ongoing_chats(ongoing_chats, "downloads_enabled downloads_convert downloads_approval downloads_folder", 'downloads_folder' in typed) }}>
+  {# The fields the chat spool notes are written from: the switch, approval, folder. #}
+  <form method="post" action="{{ project_url(project.name, '/download-settings') }}"{{ confirm_ongoing_chats(ongoing_chats, "downloads_enabled downloads_approval downloads_folder", 'downloads_folder' in typed) }}>
     {# A refused save shows what was sent (typed); otherwise the saved policy. #}
     {% set dl_enabled = typed.get('downloads_enabled') if 'downloads_enabled' in typed else coding.downloads.enabled %}
     {% set dl_model_check = typed.get('downloads_model_check') if 'downloads_model_check' in typed else coding.downloads.model_check %}
     {% set dl_approval = typed.get('downloads_approval', coding.downloads.approval) %}
-    {% set dl_convert = typed.get('downloads_convert') if 'downloads_convert' in typed else coding.downloads.convert %}
     {% set dl_provider = typed.get('downloads_check_provider', coding.downloads.check_provider) %}
-    <fieldset class="coding-downloads">
-      <legend>Downloads</legend>
       <label class="auto-choice"><input type="checkbox" name="downloads_enabled" value="true"{% if dl_enabled %} checked{% endif %}> Let Delibra download files agents request</label>
       <label>Download folder <input name="downloads_folder" value="{{ typed.get('downloads_folder', coding.downloads.folder) }}" maxlength="4096" required></label>
       <p class="hint">Inside the project. Delibra never commits this folder, even files already tracked there.</p>
@@ -98,6 +95,7 @@
         </select>
       </label>
       <label class="auto-choice"><input type="checkbox" name="downloads_model_check" value="true"{% if dl_model_check %} checked{% endif %}> Model check of each URL</label>
+      <p class="hint">Runs in both approval modes, before approval. A URL the model flags is refused, as is one the check could not judge; you can still allow it from the Downloads panel on this machine. A URL that passes waits for your approval (Manual) or downloads (Automatic).</p>
       <label>Model check provider
         <select name="downloads_check_provider">
           <option value="claude"{% if dl_provider == 'claude' %} selected{% endif %}>Claude</option>
@@ -106,11 +104,24 @@
       </label>
       <label>Model check model <input name="downloads_check_model" value="{{ typed.get('downloads_check_model', coding.downloads.check_model) }}" maxlength="200" required></label>
       <p class="hint">Delibra fetches from public addresses only. URLs with credentials, secrets, email addresses or encoded data are refused; you can allow them from the Downloads panel.</p>
-      <label class="auto-choice"><input type="checkbox" name="downloads_convert" value="true"{% if dl_convert %} checked{% endif %}> Convert documents to Markdown (PDF, Word, Excel, PowerPoint)</label>
-      <p class="hint">Downloaded documents get a Markdown copy beside them; agents can also ask for a project document. Conversion runs in a sandbox with no network. Chat replies, discussion turns and build turns all use these settings.</p>
-    </fieldset>
     <button type="submit"{% if not coding_local %} disabled{% endif %}>Save downloads</button>
   </form>
-  {% set models = converter_models %}
-  <p class="converter-models">Converter models: {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB{% elif models.status == "downloading" %}Downloading…{% elif models.status == "failed" %}Failed{% else %}Not downloaded{% endif %}{% if coding_local %} · <a href="/settings/converter">Settings → Converter</a>{% endif %}</p>
+</section>
+<section aria-labelledby="conversion-heading">
+  <h2 id="conversion-heading">Document conversion</h2>
+  {{ takes_effect("new_session") }}
+  {% if not coding_local %}<p class="hint">Only this machine can change document conversion.</p>{% endif %}
+  <form method="post" action="{{ project_url(project.name, '/conversion-settings') }}"{{ confirm_ongoing_chats(ongoing_chats, "downloads_convert", 'downloads_convert' in typed) }}>
+    {% set dl_convert = typed.get('downloads_convert') if 'downloads_convert' in typed else coding.downloads.convert %}
+    <label class="auto-choice"><input type="checkbox" name="downloads_convert" value="true"{% if dl_convert %} checked{% endif %}> Convert documents to Markdown</label>
+    <div class="hint conversion-note">
+      <p><strong>What:</strong> PDF, Word (.doc, .docx), Excel (.xls, .xlsx) and PowerPoint (.pptx) files. The type is read from the content (Magika), never from the file name. Text files and other content are not converted: a download's conversion is marked skipped, a requested file's is refused, each with the reason.</p>
+      <p><strong>When:</strong> automatically after each downloaded document, while Downloads above are on; and when an agent asks for a project file in a chat reply, an Auto discussion turn or an Auto build turn.</p>
+      <p><strong>Where:</strong> a download's Markdown copy goes beside it (<code>&lt;file&gt;.md</code>); a requested file's goes to <code>{{ coding.downloads.folder }}/converted/</code> under its project path, and a requested file that has not changed is not converted again.</p>
+      <p><strong>How:</strong> one at a time for the whole server (the others wait in the queue shown in the chat's Conversions panel, where this machine can cancel them), in a sandbox with no network. PDFs use the models from Settings → Converter; without them a PDF becomes plain text with pypdf. Word, Excel and PowerPoint files need no models.</p>
+    </div>
+    {% set models = converter_models %}
+    <p class="converter-models">Converter models: {% if models.status == "ready" %}Ready · {{ (models.size_bytes / 1048576)|round|int }} MB{% elif models.status == "downloading" %}Downloading…{% elif models.status == "failed" %}Failed{% else %}Not downloaded{% endif %}{% if coding_local %} · <a href="/settings/converter">Settings → Converter</a>{% endif %}</p>
+    <button type="submit"{% if not coding_local %} disabled{% endif %}>Save document conversion</button>
+  </form>
 </section>

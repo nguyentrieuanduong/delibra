@@ -76,7 +76,7 @@ def test_general_forms_ask_only_while_an_agent_of_the_project_has_a_native_chat(
     with_session = general_page(app, ongoing)
     without_session = general_page(app, fresh)
 
-    for action in ("/global-instruction", "/chat-skills", "/download-settings"):
+    for action in ("/global-instruction", "/chat-skills", "/download-settings", "/conversion-settings"):
         assert MARK in form_tag(with_session, action)
         assert MARK not in form_tag(without_session, action)
     # Settings that do not feed the system part never ask.

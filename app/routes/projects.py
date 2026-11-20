@@ -677,7 +677,6 @@ async def save_download_settings(
     downloads_folder: str = Form(...),
     downloads_enabled: bool = Form(False),
     downloads_model_check: bool = Form(False),
-    downloads_convert: bool = Form(False),
 ):
     require_loopback_client(request)
     sent = await request.form()
@@ -695,7 +694,7 @@ async def save_download_settings(
             "enabled": downloads_enabled,
             "folder": downloads_folder,
             "model_check": downloads_model_check,
-            "convert": downloads_convert,
+            "convert": saved["convert"],  # the Document conversion form's own setting
             "check_model": str(values["check_model"]).strip(),
             # What the form sends is a choice, never the old default (Task 2c).
             CHECK_MODEL_DEFAULT_KEY: CHECK_MODEL_DEFAULT_VERSION,
@@ -708,9 +707,29 @@ async def save_download_settings(
             "downloads_folder": downloads_folder,
             "downloads_enabled": "true" if downloads_enabled else "",
             "downloads_model_check": "true" if downloads_model_check else "",
-            "downloads_convert": "true" if downloads_convert else "",
         },
         refresh_excludes=True,
+        tab="general",
+    )
+
+
+@router.post("/projects/{project_id}/conversion-settings")
+async def save_conversion_settings(
+    request: Request,
+    project_id: str,
+    downloads_convert: bool = Form(False),
+):
+    """Document conversion has its own form; it changes nothing the Downloads form saves."""
+
+    require_loopback_client(request)
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        return replace(current, downloads=replace(current.downloads, convert=downloads_convert))
+
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={"downloads_convert": "true" if downloads_convert else ""},
+        refresh_excludes=False,
         tab="general",
     )
 
