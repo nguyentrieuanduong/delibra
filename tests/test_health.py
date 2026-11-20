@@ -80,7 +80,9 @@ async def test_hung_health_probe_never_blocks_startup_and_is_reaped_on_shutdown(
         async with app.router.lifespan_context(app):
             assert loop.time() - started < 0.5
             assert all(item.checking for item in app.state.health)
-            for _ in range(100):
+            # A poll, not a wait: it ends as soon as the probe has started. A
+            # 1 s budget was too short for a fork and exec under parallel load.
+            for _ in range(1_000):
                 if pid_file.is_file():
                     pid = int(pid_file.read_text(encoding="utf-8").strip())
                     break
