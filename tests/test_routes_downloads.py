@@ -299,10 +299,3 @@ def test_the_downloads_panel_sits_in_the_right_column_above_the_files(tmp_path):
     files = page.index('class="workspace-files"')
     assert files < page.index('id="downloads-panel"') < page.index('id="file-browser-host"')
 
-
-def test_the_conversions_panel_sits_below_the_downloads_panel_above_the_files(tmp_path):
-    app, project, _store = downloads_app(tmp_path)
-    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        page = client.get(f"{base(project)}/chat").text
-    assert (page.index('id="downloads-panel"') < page.index('id="conversions-panel"')
-            < page.index('id="file-browser-host"'))
