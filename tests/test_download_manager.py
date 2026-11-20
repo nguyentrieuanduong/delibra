@@ -889,3 +889,58 @@ async def test_cancelling_a_running_conversion_kills_its_worker(tmp_path) -> Non
     await manager.idle()
     await manager.stop_watch(turn)
     manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_a_convert_request_with_a_lone_surrogate_is_refused_at_the_spool(tmp_path) -> None:
+    from app.convert_store import ConversionStore
+
+    convert_project(tmp_path, "a.pdf")
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=GatedConverter())
+    turn = chat_turn(tmp_path, session="o" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    (turn.convert_spool / "c1.json").write_bytes(b'{"path": "x\\ud800.pdf"}')
+    manager.harvest(turn, final=True)
+    await manager.idle()
+
+    assert ConversionStore(turn.store_root).load() == []
+    assert convert_status(turn) == {}
+    assert manager.turn_warnings(turn) == ["convert request c1.json refused: path must be valid text"]
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_fails_a_requested_conversion_and_says_so(tmp_path, monkeypatch) -> None:
+    from app.convert_store import ConversionStore
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("boom /private/path")
+
+    monkeypatch.setattr("app.download_manager._stage", broken)
+    convert_project(tmp_path, "a.pdf")
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=GatedConverter())
+    turn = chat_turn(tmp_path, session="p" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf")
+    manager.harvest(turn, final=True)
+    await manager.idle()
+
+    assert [(r.state, r.reason) for r in ConversionStore(turn.store_root).load()] == [("failed", "unexpected error")]
+    assert (convert_status(turn)["C1"]["state"], convert_status(turn)["C1"]["reason"]) == ("failed", "unexpected error")
+    assert manager.conversion_jobs(turn.store_root) == {}
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_fails_a_download_conversion_and_keeps_the_download(tmp_path, monkeypatch) -> None:
+    async def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.download_manager._stage", broken)
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=GatedConverter())
+    record = await download_one(manager, tmp_path, convert=True)
+
+    saved = DownloadStore(tmp_path / "delibra").get(record.id)
+    assert (saved.state, saved.convert_state, saved.convert_reason) == ("downloaded", "failed", "unexpected error")

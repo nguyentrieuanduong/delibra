@@ -49,6 +49,7 @@ SETTLE_SECONDS = 75
 UNREADABLE_WARNING = "download records are unreadable; download requests were not read"
 NOT_CONVERTIBLE = "not a convertible project file"
 CANCELLED = "cancelled by the user"
+UNEXPECTED = "unexpected error"
 # A Cancel waits this long for the record to say so; the panel's stream shows a later end.
 CANCEL_WAIT_SECONDS = 10
 T = TypeVar("T")
@@ -427,13 +428,36 @@ class DownloadManager:
                     raise
                 except Exception:
                     LOGGER.exception("conversion of %s failed unexpectedly", path)
-                    result = ConvertResult("failed", "unexpected error")
+                    result = ConvertResult("failed", UNEXPECTED)
                 return _Conversion(sha256=source.sha256, result=result)
             finally:
                 shutil.rmtree(staged.parent, ignore_errors=True)
 
     async def _convert_request(self, turn: DownloadTurn, record: ConversionRecord, job: QueueJob) -> None:
         conversions = ConversionStore(turn.store_root)
+        try:
+            try:
+                changes = await self._request_outcome(turn, record, job, conversions)
+            except ConversionCancelled:
+                changes = {"state": "cancelled", "reason": CANCELLED}
+            except Exception:
+                # Whatever goes wrong, the record ends instead of staying active
+                # until a restart (review B1); the reason never carries the error text.
+                LOGGER.exception("conversion %s failed unexpectedly", record.id)
+                changes = {"state": "failed", "reason": UNEXPECTED}
+            conversions.update(record.id, **changes)
+        except StorageError:
+            LOGGER.exception("conversion %s could not be recorded", record.id)
+        finally:
+            self._queue.discard(job)  # an error before its turn began leaves it queued
+            self._conversion_changed(turn, record)
+            job.settled.set()
+
+    async def _request_outcome(
+        self, turn: DownloadTurn, record: ConversionRecord, job: QueueJob, conversions: ConversionStore
+    ) -> dict[str, Any]:
+        """Convert one requested file; returns the record's final fields."""
+
         output = converted_output(turn.policy.folder, record.path)
 
         def reusable(sha256: str) -> bool:
@@ -444,38 +468,21 @@ class DownloadManager:
             conversions.update(record.id, state="converting")
             self._conversion_changed(turn, record)
 
+        done = await self._run_conversion(job, turn.project_root, turn.store_root, record.path, started, reusable)
+        if done.refusal is not None:
+            return {"state": "refused", "reason": done.refusal}
+        if done.reused:
+            return {"state": "converted", "reason": "reused", "source_sha256": done.sha256, "output": output}
+        if done.result.state == "unsupported":
+            return {"state": "refused", "reason": done.result.reason}
+        if done.result.state != "converted" or done.result.markdown is None:
+            return {"state": "failed", "reason": done.result.reason}
+        folder, _, leaf = output.rpartition("/")
         try:
-            done = await self._run_conversion(
-                job, turn.project_root, turn.store_root, record.path, started, reusable
-            )
-            if done.refusal is not None:
-                conversions.update(record.id, state="refused", reason=done.refusal)
-            elif done.reused:
-                conversions.update(record.id, state="converted", reason="reused",
-                                   source_sha256=done.sha256, output=output)
-            elif done.result.state == "unsupported":
-                conversions.update(record.id, state="refused", reason=done.result.reason)
-            elif done.result.state != "converted" or done.result.markdown is None:
-                conversions.update(record.id, state="failed", reason=done.result.reason)
-            else:
-                folder, _, leaf = output.rpartition("/")
-                try:
-                    write_project_file(turn.project_root, folder, leaf, done.result.markdown)
-                except (OSError, StorageError) as exc:
-                    conversions.update(record.id, state="failed", reason=f"could not save the Markdown: {exc}")
-                else:
-                    conversions.update(record.id, state="converted", reason=done.result.reason,
-                                       source_sha256=done.sha256, output=output)
-        except ConversionCancelled:
-            try:
-                conversions.update(record.id, state="cancelled", reason=CANCELLED)
-            except StorageError:
-                LOGGER.exception("conversion %s could not be recorded", record.id)
-        except StorageError:
-            LOGGER.exception("conversion %s could not be recorded", record.id)
-        finally:
-            self._conversion_changed(turn, record)
-            job.settled.set()
+            write_project_file(turn.project_root, folder, leaf, done.result.markdown)
+        except (OSError, StorageError) as exc:
+            return {"state": "failed", "reason": f"could not save the Markdown: {exc}"}
+        return {"state": "converted", "reason": done.result.reason, "source_sha256": done.sha256, "output": output}
 
     def _conversion_changed(self, turn: DownloadTurn, record: ConversionRecord) -> None:
         # The live turn that owns it, which may be a later one: an ended turn's
@@ -620,9 +627,14 @@ class DownloadManager:
                 def started() -> None:
                     self._refresh(project_id, project_root, store, store.update(rid, convert_state="converting"))
 
-                record = await self._convert_download(project_root, store, record, job, started)
+                try:
+                    record = await self._convert_download(project_root, store, record, job, started)
+                except Exception:
+                    LOGGER.exception("conversion of download %s failed unexpectedly", rid)  # review B1
+                    record = store.update(rid, convert_state="failed", convert_reason=UNEXPECTED)
                 self._refresh(project_id, project_root, store, record)
             finally:
+                self._queue.discard(job)
                 job.settled.set()
 
     async def _convert_download(

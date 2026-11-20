@@ -262,3 +262,10 @@ def test_the_convert_wait_loop_ends_on_every_final_state(tmp_path, state) -> Non
     loop = re.search(r"until grep .*? done", note).group(0)
 
     subprocess.run(["/bin/sh", "-c", loop], check=True, timeout=10)  # never the 110 s bound
+
+
+def test_a_convert_path_with_a_lone_surrogate_is_refused() -> None:
+    from app.download_rules import RequestError, parse_convert_request
+
+    with pytest.raises(RequestError, match="path must be valid text"):
+        parse_convert_request(b'{"path": "x\\ud800.pdf"}')
