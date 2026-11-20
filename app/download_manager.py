@@ -6,6 +6,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
+from functools import partial
 import logging
 from pathlib import Path
 import shutil
@@ -16,6 +17,7 @@ from watchfiles import awatch
 
 from app.coding import DownloadPolicy
 from app.config import Settings
+from app.conversion_queue import ConversionCancelled, ConversionQueue, JobKey, JobView, QueueJob
 from app.converter_models import ready_models_dir
 from app.doc_convert import ConvertResult, convert_file, stage_source
 from app.download_fetch import FetchError, Fetcher
@@ -46,6 +48,9 @@ SETTLE_SECONDS = 75
 # (and Auto turns commits off on its own, plan review B5).
 UNREADABLE_WARNING = "download records are unreadable; download requests were not read"
 NOT_CONVERTIBLE = "not a convertible project file"
+CANCELLED = "cancelled by the user"
+# A Cancel waits this long for the record to say so; the panel's stream shows a later end.
+CANCEL_WAIT_SECONDS = 10
 T = TypeVar("T")
 
 
@@ -149,6 +154,8 @@ class DownloadManager:
         self.converter = converter or convert_file
         # One conversion at a time per server: Docling can use several GB (design).
         self._convert_slot = asyncio.Semaphore(1)
+        # Positions change in every project when one conversion ends: tell them all.
+        self._queue = ConversionQueue(self._convert_slot, on_change=self._publish_all)
         self._turns: dict[tuple[str, str], DownloadTurn] = {}
         self._budget_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._project_slots: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(PROJECT_CONCURRENCY))
@@ -167,6 +174,10 @@ class DownloadManager:
                 queue.put_nowait(self._revisions[project_id])
             except asyncio.QueueFull:
                 pass
+
+    def _publish_all(self) -> None:
+        for project_id in list(self._subscribers):
+            self._publish(project_id)
 
     def revision(self, project_id: str) -> int:
         return self._revisions[project_id]
@@ -368,7 +379,9 @@ class DownloadManager:
                 turn.warnings.append(f"convert request {name} was not recorded: records unreadable")
                 return
             turn.convert_files[record.id] = name
-            self._start(self._convert_request(turn, record))
+            job = self._queue.enqueue(_job_key(turn.store_root, record.id), turn.project_id)
+            if not self._start(self._convert_request(turn, record, job)):
+                self._queue.discard(job)
             added = True
         self._write_convert_status(turn)
         if added:
@@ -383,19 +396,21 @@ class DownloadManager:
             turn.warnings.append("convert status could not be written")
 
     async def _run_conversion(
-        self, project_root: Path, store_root: Path, path: str,
-        reusable: Callable[[str], bool] = lambda _sha256: False,
+        self, job: QueueJob, project_root: Path, store_root: Path, path: str,
+        started: Callable[[], None], reusable: Callable[[str], bool] = lambda _sha256: False,
     ) -> _Conversion:
         """Stage `path` and convert it, all inside the server's one conversion slot
-        (review round 1: staging 100 MiB per request outside it multiplied the cost)."""
+        (review round 1: staging 100 MiB per request outside it multiplied the cost).
+        `started` runs once the slot is held; raises ConversionCancelled on a Cancel."""
 
         scratch = store_root / DOWNLOADS_DIR / ".converting"
-        async with self._convert_slot:
+        async with self._queue.turn(job):
+            started()
             scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
             staged = Path(tempfile.mkdtemp(dir=scratch)) / "source"
             try:
                 try:
-                    source = await asyncio.to_thread(stage_source, project_root, path, staged)
+                    source = await _stage(project_root, path, staged)
                 except ValueError as exc:
                     return _Conversion(refusal=str(exc))
                 except (StorageError, OSError):  # StorageError covers every app.storage refusal
@@ -406,6 +421,7 @@ class DownloadManager:
                     result = await self.converter(
                         staged, display_path=path, source_sha256=source.sha256, scratch_root=scratch,
                         models_dir=ready_models_dir(self.settings.home),
+                        on_limit=partial(self._queue.set_limit, job),
                     )
                 except asyncio.CancelledError:
                     raise
@@ -416,7 +432,7 @@ class DownloadManager:
             finally:
                 shutil.rmtree(staged.parent, ignore_errors=True)
 
-    async def _convert_request(self, turn: DownloadTurn, record: ConversionRecord) -> None:
+    async def _convert_request(self, turn: DownloadTurn, record: ConversionRecord, job: QueueJob) -> None:
         conversions = ConversionStore(turn.store_root)
         output = converted_output(turn.policy.folder, record.path)
 
@@ -424,8 +440,14 @@ class DownloadManager:
             reused = conversions.latest_converted(record.path, sha256)
             return reused is not None and reused.output == output and (turn.project_root / output).is_file()
 
+        def started() -> None:
+            conversions.update(record.id, state="converting")
+            self._conversion_changed(turn, record)
+
         try:
-            done = await self._run_conversion(turn.project_root, turn.store_root, record.path, reusable)
+            done = await self._run_conversion(
+                job, turn.project_root, turn.store_root, record.path, started, reusable
+            )
             if done.refusal is not None:
                 conversions.update(record.id, state="refused", reason=done.refusal)
             elif done.reused:
@@ -444,15 +466,24 @@ class DownloadManager:
                 else:
                     conversions.update(record.id, state="converted", reason=done.result.reason,
                                        source_sha256=done.sha256, output=output)
+        except ConversionCancelled:
+            try:
+                conversions.update(record.id, state="cancelled", reason=CANCELLED)
+            except StorageError:
+                LOGGER.exception("conversion %s could not be recorded", record.id)
         except StorageError:
             LOGGER.exception("conversion %s could not be recorded", record.id)
         finally:
-            # The live turn that owns it, which may be a later one: an ended turn's
-            # request names must not overwrite the next turn's status file.
-            for live in list(self._turns.values()):
-                if live.convert and live.store_root == turn.store_root and self._turn_owns(live, record):
-                    self._write_convert_status(live)
-            self._publish(turn.project_id)
+            self._conversion_changed(turn, record)
+            job.settled.set()
+
+    def _conversion_changed(self, turn: DownloadTurn, record: ConversionRecord) -> None:
+        # The live turn that owns it, which may be a later one: an ended turn's
+        # request names must not overwrite the next turn's status file.
+        for live in list(self._turns.values()):
+            if live.convert and live.store_root == turn.store_root and self._turn_owns(live, record):
+                self._write_convert_status(live)
+        self._publish(turn.project_id)
 
     # ----- model check batching
     def _queue_check(self, turn: DownloadTurn, rid: str) -> None:
@@ -581,19 +612,31 @@ class DownloadManager:
         self._refresh(project_id, project_root, store, record)
         if record.state == "downloaded" and record.convert:
             # Outside the download slots: a long conversion never holds up other downloads.
-            record = store.update(rid, convert_state="converting")
-            self._refresh(project_id, project_root, store, record)
-            record = await self._convert_download(project_root, store, record)
-            self._refresh(project_id, project_root, store, record)
+            record = store.update(rid, convert_state="queued", convert_reason=None)
+            job = self._queue.enqueue(_job_key(store.root, rid), project_id)
+            try:
+                self._refresh(project_id, project_root, store, record)
+
+                def started() -> None:
+                    self._refresh(project_id, project_root, store, store.update(rid, convert_state="converting"))
+
+                record = await self._convert_download(project_root, store, record, job, started)
+                self._refresh(project_id, project_root, store, record)
+            finally:
+                job.settled.set()
 
     async def _convert_download(
-        self, project_root: Path, store: DownloadStore, record: DownloadRecord
+        self, project_root: Path, store: DownloadStore, record: DownloadRecord, job: QueueJob,
+        started: Callable[[], None],
     ) -> DownloadRecord:
         """Every finished download goes through the converter: Magika, not the saved
         name, decides whether it is a document (a PDF saved as raw/view still converts)."""
 
         assert record.path is not None
-        done = await self._run_conversion(project_root, store.root, record.path)
+        try:
+            done = await self._run_conversion(job, project_root, store.root, record.path, started)
+        except ConversionCancelled:
+            return store.update(record.id, convert_state="cancelled", convert_reason=CANCELLED)
         if done.refusal is not None:
             return store.update(record.id, convert_state="failed", convert_reason=done.refusal)
         result = done.result
@@ -621,6 +664,28 @@ class DownloadManager:
         """A conversion holds the server's one slot right now."""
 
         return self._convert_slot.locked()
+
+    def conversion_jobs(self, store_root: Path) -> dict[str, JobView]:
+        """This project's queued and running conversions, by record id."""
+
+        root = str(store_root)
+        return {rid: view for (job_root, rid), view in self._queue.snapshot().items() if job_root == root}
+
+    def conversion_queue_revision(self) -> tuple[int, str]:
+        """(revision, epoch) of the queue, for the Conversions panel's live refresh."""
+
+        return self._queue.revision, self._queue.epoch
+
+    async def cancel_conversion(self, store_root: Path, cid: str) -> None:
+        """Cancel a queued or running conversion (C…: a request, D…: a download's)."""
+
+        job = self._queue.cancel(_job_key(store_root, cid))
+        if job is None:
+            raise StorageError(f"{cid} has nothing to cancel{_ended_state(store_root, cid)}")
+        try:
+            await asyncio.wait_for(job.settled.wait(), CANCEL_WAIT_SECONDS)
+        except TimeoutError:
+            LOGGER.warning("conversion %s did not end within %s s of its cancel", cid, CANCEL_WAIT_SECONDS)
 
     async def idle(self) -> None:
         """Tests and shutdown: wait until no download task runs."""
@@ -705,3 +770,32 @@ class DownloadManager:
     async def shutdown(self) -> None:
         self.close()
         await asyncio.gather(*list(self._tasks), return_exceptions=True)
+
+
+def _job_key(store_root: Path, rid: str) -> JobKey:
+    return (str(store_root), rid)
+
+
+def _ended_state(store_root: Path, cid: str) -> str:
+    """": it is <state>" for a known record, else nothing."""
+
+    try:
+        if cid.startswith("D"):
+            state = DownloadStore(store_root).get(cid).convert_state
+        else:
+            state = next((r.state for r in ConversionStore(store_root).load() if r.id == cid), None)
+    except StorageError:
+        return ""
+    return f": it is {state}" if state else ""
+
+
+async def _stage(project_root: Path, path: str, staged: Path):
+    """stage_source in a thread. A Cancel cannot stop the copy, so it waits for the
+    thread to end before the caller removes the folder it writes into."""
+
+    copying = asyncio.ensure_future(asyncio.to_thread(stage_source, project_root, path, staged))
+    try:
+        return await asyncio.shield(copying)
+    except asyncio.CancelledError:
+        await asyncio.gather(copying, return_exceptions=True)
+        raise

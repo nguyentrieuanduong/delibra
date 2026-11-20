@@ -631,3 +631,261 @@ async def test_idle_returns_when_a_finished_task_is_not_yet_discarded(tmp_path, 
     monkeypatch.setattr(asyncio, "gather", bounded_gather)
     await manager.idle()
     assert not manager._tasks
+
+
+class GatedConverter:
+    """Converts once `release` is set; records each call and tells when one started."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+
+    async def __call__(self, staged, **kwargs):
+        self.calls.append(kwargs["display_path"])
+        self.started.set()
+        await self.release.wait()
+        return ConvertResult("converted", None, b"# md\n", "pdf")
+
+
+def convert_project(tmp_path: Path, *names: str) -> Path:
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    for name in names:
+        (project / name).write_bytes(b"%PDF-1.7 " + name.encode())
+    return project
+
+
+def request_conversions(turn: DownloadTurn, *names: str) -> None:
+    for index, name in enumerate(names, start=1):
+        (turn.convert_spool / f"c{index}.json").write_text(json.dumps({"path": name}))
+
+
+def convert_status(turn: DownloadTurn) -> dict[str, dict]:
+    lines = (turn.temp_dir / "convert" / "status.json").read_text()
+    return {item["id"]: item for item in json.loads(lines)["requests"]}
+
+
+async def until(condition, timeout: float = 10.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        assert loop.time() < deadline, "condition not reached"
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_is_queued_until_it_holds_the_slot(tmp_path) -> None:
+    from app.convert_store import ConversionStore
+
+    convert_project(tmp_path, "a.pdf", "b.pdf")
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=converter)
+    turn = chat_turn(tmp_path, session="g" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf", "b.pdf")
+    manager.harvest(turn, final=True)
+    await converter.started.wait()
+
+    states = {r.id: r.state for r in ConversionStore(turn.store_root).load()}
+    assert states == {"C1": "converting", "C2": "queued"}
+    assert convert_status(turn)["C2"]["state"] == "queued"
+    view = manager.conversion_jobs(turn.store_root)
+    assert view["C1"].position is None and view["C1"].started_at is not None
+    assert view["C2"].position == 1
+
+    converter.release.set()
+    await manager.idle()
+    assert {r.state for r in ConversionStore(turn.store_root).load()} == {"converted"}
+    assert manager.conversion_jobs(turn.store_root) == {}
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_a_download_waits_queued_behind_a_running_conversion(tmp_path) -> None:
+    convert_project(tmp_path, "a.pdf")
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=converter)
+    turn = chat_turn(tmp_path, session="h" * 32, round_n=1, convert=True)
+    turn.policy = DownloadPolicy(enabled=True, folder="raw", approval="automatic", convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf")
+    manager.harvest(turn, final=True)
+    await converter.started.wait()
+    write_request(turn.spool, "d1.json", "https://a.example/paper.pdf")
+    manager.harvest(turn, final=True)
+    store = DownloadStore(turn.store_root)
+    await until(lambda: store.get("D1").convert_state is not None)
+
+    assert (store.get("D1").state, store.get("D1").convert_state) == ("downloaded", "queued")
+    assert manager.conversion_jobs(turn.store_root)["D1"].position == 1
+
+    converter.release.set()
+    await manager.idle()
+    assert store.get("D1").convert_state == "converted"
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_queued_request_never_converts_it(tmp_path) -> None:
+    from app.convert_store import ConversionStore
+
+    convert_project(tmp_path, "a.pdf", "b.pdf")
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=converter)
+    turn = chat_turn(tmp_path, session="i" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf", "b.pdf")
+    manager.harvest(turn, final=True)
+    await converter.started.wait()
+
+    await manager.cancel_conversion(turn.store_root, "C2")
+
+    record = {r.id: r for r in ConversionStore(turn.store_root).load()}["C2"]
+    assert (record.state, record.reason) == ("cancelled", "cancelled by the user")
+    assert convert_status(turn)["C2"]["state"] == "cancelled"
+    assert convert_status(turn)["C2"]["reason"] == "cancelled by the user"
+    converter.release.set()
+    await manager.idle()
+    assert converter.calls == ["a.pdf"]
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_a_request_cancelled_before_its_task_ran_is_cancelled(tmp_path) -> None:
+    from app.convert_store import ConversionStore
+
+    convert_project(tmp_path, "a.pdf")
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=converter)
+    turn = chat_turn(tmp_path, session="j" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf")
+    manager.harvest(turn, final=True)  # its task has not run a single step yet
+
+    await manager.cancel_conversion(turn.store_root, "C1")
+
+    assert [r.state for r in ConversionStore(turn.store_root).load()] == ["cancelled"]
+    await manager.idle()
+    assert converter.calls == []
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_download_conversion_keeps_the_download(tmp_path) -> None:
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, fetcher=pdf_fetcher(), converter=converter)
+    (tmp_path / "project").mkdir()
+    turn = chat_turn(tmp_path, session="k" * 32, round_n=1)
+    turn.policy = DownloadPolicy(enabled=True, folder="raw", approval="automatic", convert=True)
+    manager.begin_turn(turn)
+    write_request(turn.spool, "d1.json", "https://a.example/paper.pdf")
+    manager.harvest(turn, final=True)
+    await converter.started.wait()
+    store = DownloadStore(turn.store_root)
+    assert store.get("D1").convert_state == "converting"
+
+    await manager.cancel_conversion(turn.store_root, "D1")
+
+    saved = store.get("D1")
+    assert (saved.state, saved.convert_state, saved.convert_reason) == (
+        "downloaded", "cancelled", "cancelled by the user"
+    )
+    assert status(turn)[0]["convert_state"] == "cancelled"
+    await manager.idle()
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_a_finished_or_unknown_conversion_cannot_be_cancelled(tmp_path) -> None:
+    from app.storage import StorageError
+
+    convert_project(tmp_path, "a.pdf")
+    converter = GatedConverter()
+    converter.release.set()
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=converter)
+    turn = chat_turn(tmp_path, session="l" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf")
+    manager.harvest(turn, final=True)
+    await manager.idle()
+
+    with pytest.raises(StorageError, match="C1 has nothing to cancel: it is converted"):
+        await manager.cancel_conversion(turn.store_root, "C1")
+    with pytest.raises(StorageError, match="C9 has nothing to cancel"):
+        await manager.cancel_conversion(turn.store_root, "C9")
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_leaves_queued_conversions_to_restart_recovery(tmp_path) -> None:
+    from app.convert_store import ConversionStore
+
+    convert_project(tmp_path, "a.pdf", "b.pdf")
+    converter = GatedConverter()
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=converter)
+    turn = chat_turn(tmp_path, session="m" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf", "b.pdf")
+    manager.harvest(turn, final=True)
+    await converter.started.wait()
+    await manager.stop_watch(turn)
+
+    await manager.shutdown()
+
+    conversions = ConversionStore(turn.store_root)
+    assert [r.state for r in conversions.load()] == ["converting", "queued"]
+    manager.recover(turn.store_root)
+    assert {(r.state, r.reason) for r in conversions.load()} == {("failed", "interrupted by restart")}
+
+
+@pytest.mark.skipif(not Path("/usr/bin/sandbox-exec").exists(), reason="macOS sandbox-exec")
+@pytest.mark.asyncio
+async def test_cancelling_a_running_conversion_kills_its_worker(tmp_path) -> None:
+    import os
+    from functools import partial
+    from app.convert_store import ConversionStore
+    from app.doc_convert import convert_file
+
+    worker = tmp_path / "stub_worker" / "worker.py"
+    worker.parent.mkdir()
+    worker.write_text(
+        "import json, os, pathlib, sys, time\n"
+        "source, output, kind = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+        "if kind == 'identify':\n"
+        "    open(output, 'w').write(json.dumps({'label': 'pdf', 'score': 0.99, 'pages': 2, 'is_text': False}))\n"
+        "    raise SystemExit(0)\n"
+        "out = pathlib.Path(output)\n"
+        "out.with_name('pid.tmp').write_text(str(os.getpid()))\n"
+        "out.with_name('pid.tmp').rename(out.with_name('pid'))\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    convert_project(tmp_path, "a.pdf")
+    manager = DownloadManager(settings_for(tmp_path), {}, converter=partial(convert_file, worker=worker))
+    turn = chat_turn(tmp_path, session="n" * 32, round_n=1, convert=True)
+    manager.begin_turn(turn)
+    request_conversions(turn, "a.pdf")
+    manager.harvest(turn, final=True)
+    scratch = turn.store_root / "downloads" / ".converting"
+    await until(lambda: any(scratch.glob("convert-*/pid")))
+    pid = int(next(scratch.glob("convert-*/pid")).read_text())
+    assert manager.conversion_jobs(turn.store_root)["C1"].limit == 60 + 300  # no models: pypdf only
+
+    await manager.cancel_conversion(turn.store_root, "C1")
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    assert [(r.state, r.reason) for r in ConversionStore(turn.store_root).load()] == [
+        ("cancelled", "cancelled by the user")
+    ]
+    assert list(scratch.iterdir()) == []
+    await manager.idle()
+    await manager.stop_watch(turn)
+    manager.end_turn(turn)

@@ -244,3 +244,21 @@ def test_macro_documents_and_source_code_stay_allowed(name) -> None:
 def test_disk_images_profiles_shortcuts_and_windows_launchers_are_refused(extension) -> None:
     with pytest.raises(RequestError, match=rf"executable file type refused \(\.{extension}\)"):
         parse_request(json.dumps({"url": f"https://a.org/thing.{extension}", "purpose": "p"}).encode())
+
+
+@pytest.mark.parametrize("state", ["converted", "failed", "refused", "cancelled"])
+def test_the_convert_wait_loop_ends_on_every_final_state(tmp_path, state) -> None:
+    import re
+    import subprocess
+
+    from app.convert_store import ConversionRecord, render_convert_status
+    from app.download_rules import convert_prompt
+
+    status = tmp_path / "status.json"
+    record = ConversionRecord(id="C1", path="a.pdf", request="c1.json", state=state, reason=None,
+                              auto_run=0, round_n=1, agent="a" * 32, created_at="", updated_at="")
+    status.write_bytes(render_convert_status([record], {"C1": "c1.json"}))
+    note = convert_prompt(status, tmp_path / "requests", "raw/converted", shell=True)
+    loop = re.search(r"until grep .*? done", note).group(0)
+
+    subprocess.run(["/bin/sh", "-c", loop], check=True, timeout=10)  # never the 110 s bound
