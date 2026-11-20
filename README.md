@@ -1361,8 +1361,11 @@ Delibra provides write isolation, not read confidentiality:
   workspace and writable roots. Codex may read any path permitted to the
   operating-system user. Do not use Delibra as a confidentiality sandbox.
 - The HTTP server is loopback-only by default, rejects non-loopback Host values and
-  cross-site mutation Origins, optionally restricts peer addresses to configured CIDR
-  ranges, and **has no remote-user authentication of any kind**.
+  cross-site state changes (a POST whose `Origin` is another origin or `null`, or
+  whose `Sec-Fetch-Site` is anything but `same-origin` or `none`; requests with
+  neither header, such as scripts, still work; there are no CSRF tokens),
+  optionally restricts peer addresses to configured CIDR ranges, and **has no
+  remote-user authentication of any kind**.
   Anyone who can reach the port can register a directory and spend your provider
   quota running agents that write to it, so exposing it is exposing code execution
   as your user. See "Reaching Delibra from another machine" before binding it
