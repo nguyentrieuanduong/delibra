@@ -101,7 +101,8 @@ def test_a_status_swap_during_a_questions_fetch_cannot_add_the_question_twice(
     app = live_server(["sleep"], tmp_path)
     page.add_init_script(COUNT_QUESTION_FETCHES)
     _start_auto(page, app["base_url"], [app["session_ids"][0]], "Questions")
-    expect(page.locator('#auto-status[data-auto-active="true"]')).to_have_count(1, timeout=10_000)
+    # The first turn has started: the run's start-up events are over.
+    expect(page.locator(f"section.live-round#round-{app['session_ids'][0]}-1")).to_be_visible(timeout=30_000)
     page.wait_for_function("() => window.questionFetchesInFlight === 0")
     _ask(QuestionStore(app["store"].root, 96 * 1024), ["Asked once?"])
 
@@ -115,10 +116,12 @@ def test_a_status_swap_during_a_questions_fetch_cannot_add_the_question_twice(
             route.continue_()
 
     page.route("**/questions/new*", hold)
-    # A fetch sent from now on is held. If one of the run's own events got in
-    # first, this message is queued behind it and is sent when that lands.
-    with page.expect_request(lambda request: "/questions/new" in request.url):
-        page.evaluate(SSE_QUESTIONS)
+    # Every fetch counted from here on is held, so one stays in flight. If one
+    # of the run's own fetches was still out, this message is queued behind
+    # it and goes out (and is held) once that lands.
+    before = page.evaluate("() => window.questionFetches")
+    page.evaluate(SSE_QUESTIONS)
+    page.wait_for_function("count => window.questionFetches > count", arg=before)
     sent = page.evaluate("() => window.questionFetches")
     _refresh_status(page)  # settles while that fetch is held in flight
     # With its lock intact, htmx queues this one instead of sending it.
