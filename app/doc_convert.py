@@ -260,10 +260,33 @@ def _command(run: _Run, staged: Path, output: Path, kind: str) -> tuple[Path, li
     return Path(run.python).resolve(), [run.python, "-I", "-B", str(run.worker), str(staged), str(output), kind]
 
 
-async def _step_bytes(
-    run: _Run, staged: Path, kind: str, limit: float, max_bytes: int
-) -> tuple[bytes | None, str | None]:
-    """Run one sandboxed step; returns (at most max_bytes of its output, None) or (None, reason)."""
+@dataclass(frozen=True)
+class _Output:
+    """One step's result: its output (None on failure), why it failed, and the
+    document's own text characters as the worker counted them (None if not given)."""
+
+    body: bytes | None
+    reason: str | None = None
+    text_chars: int | None = None
+
+
+STATS_MAX_BYTES = 256
+
+
+def _text_chars(stats: bytes | None) -> int | None:
+    """The worker's count from stats.json; None when absent or malformed."""
+
+    if stats is None:
+        return None
+    try:
+        value = json.loads(stats).get("text_chars")
+    except (ValueError, AttributeError):
+        return None
+    return value if type(value) is int and value >= 0 else None
+
+
+async def _step_bytes(run: _Run, staged: Path, kind: str, limit: float, max_bytes: int) -> _Output:
+    """Run one sandboxed step; at most max_bytes of its output, or why it failed."""
 
     run.scratch_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="convert-", dir=run.scratch_root)).resolve()
@@ -310,21 +333,22 @@ async def _step_bytes(
             _kill_group(process)
             await process.wait()
         if failure is not None:
-            return None, failure
+            return _Output(None, failure)
         try:
             if process.returncode != 0:
                 error = _read_scratch_file(scratch, "error.txt", ERROR_MAX_BYTES)
                 if error is not None:
-                    return None, _error_reason(error)
+                    return _Output(None, _error_reason(error))
                 if process.returncode < 0:  # e.g. an abort after a sandbox denial
-                    return None, f"converter error: stopped by signal {-process.returncode}"
-                return None, f"converter exited with {process.returncode}"
+                    return _Output(None, f"converter error: stopped by signal {-process.returncode}")
+                return _Output(None, f"converter exited with {process.returncode}")
             body = _read_scratch_file(scratch, output.name, max_bytes)
+            stats = _read_scratch_file(scratch, "stats.json", STATS_MAX_BYTES)
         except _NotRegularFile:
-            return None, NOT_REGULAR
+            return _Output(None, NOT_REGULAR)
         if body is None:
-            return None, "converter wrote no output"
-        return body, None
+            return _Output(None, "converter wrote no output")
+        return _Output(body, text_chars=_text_chars(stats))
     finally:
         if stdout is not None:
             os.close(stdout)
@@ -334,24 +358,32 @@ async def _step_bytes(
             shutil.rmtree(scratch, ignore_errors=True)
 
 
-async def _step(run: _Run, staged: Path, kind: str, limit: float) -> tuple[str | None, str | None]:
-    """Run one worker step; returns (Markdown text, None) or (None, reason)."""
-
-    body, reason = await _step_bytes(run, staged, kind, limit, OUTPUT_MAX_BYTES + 1)
-    if body is None:
-        return None, reason
-    text = body[:OUTPUT_MAX_BYTES].decode("utf-8", errors="replace")
-    return (text + TRUNCATED if len(body) > OUTPUT_MAX_BYTES else text), None
+@dataclass(frozen=True)
+class _Text:
+    text: str | None  # Markdown, or None on failure
+    reason: str | None = None
+    text_chars: int | None = None
 
 
-async def _doc_step(run: _Run, staged: Path, limit: float) -> tuple[str | None, str | None]:
+async def _step(run: _Run, staged: Path, kind: str, limit: float) -> _Text:
+    """Run one worker step: its Markdown text, or why it failed."""
+
+    out = await _step_bytes(run, staged, kind, limit, OUTPUT_MAX_BYTES + 1)
+    if out.body is None:
+        return _Text(None, out.reason)
+    text = out.body[:OUTPUT_MAX_BYTES].decode("utf-8", errors="replace")
+    return _Text(text + TRUNCATED if len(out.body) > OUTPUT_MAX_BYTES else text, text_chars=out.text_chars)
+
+
+async def _doc_step(run: _Run, staged: Path, limit: float) -> _Text:
     """.doc: textutil turns it into .docx in its own sandboxed step, then Docling."""
 
-    docx, reason = await _step_bytes(run, staged, "textutil", limit, INPUT_MAX_BYTES + 1)
+    out = await _step_bytes(run, staged, "textutil", limit, INPUT_MAX_BYTES + 1)
+    docx = out.body
     if docx is None:
-        return None, reason
+        return _Text(None, out.reason)
     if len(docx) > INPUT_MAX_BYTES:
-        return None, "larger than 100 MiB after textutil"
+        return _Text(None, "larger than 100 MiB after textutil")
     staged_docx = staged.with_name(staged.name + ".docx")
     descriptor = os.open(staged_docx, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
@@ -447,13 +479,14 @@ def _with_note(result: ConvertResult, note: str | None) -> ConvertResult:
     return replace(result, reason=f"{note}; {result.reason}" if result.reason else note)
 
 
-def _result(text: str, display_path: str, source_sha256: str, kind: str) -> ConvertResult:
-    reason = (
-        "no text found; the file may be scanned images"
-        if sum(not ch.isspace() for ch in text) < 20
-        else None
-    )
-    markdown = HEADER.format(path=display_path, digest=source_sha256) + text
+def _result(step: _Text, display_path: str, source_sha256: str, kind: str) -> ConvertResult:
+    """The converted file. The no-text warning counts the document's own text, as the
+    worker reported it, not the Markdown it added (page markers, table rules; review B3)."""
+
+    assert step.text is not None
+    chars = step.text_chars if step.text_chars is not None else sum(not ch.isspace() for ch in step.text)
+    reason = "no text found; the file may be scanned images" if chars < 20 else None
+    markdown = HEADER.format(path=display_path, digest=source_sha256) + step.text
     return ConvertResult("converted", reason, markdown.encode("utf-8"), kind)
 
 
@@ -484,21 +517,22 @@ async def _convert(
 ) -> ConvertResult:
     limit = _step_limit(kind, pages, timeout)
     if kind != "pdf":
-        text, reason = await (_doc_step(run, staged, limit) if kind == "doc" else _step(run, staged, kind, limit))
-        if text is None:
-            return ConvertResult("failed", reason, kind=kind)
-        return _result(text, display_path, source_sha256, kind)
+        step = await (_doc_step(run, staged, limit) if kind == "doc" else _step(run, staged, kind, limit))
+        if step.text is None:
+            return ConvertResult("failed", step.reason, kind=kind)
+        return _result(step, display_path, source_sha256, kind)
     if run.models_dir is None:
         docling_reason = NO_MODELS
     else:
-        text, docling_reason = await _step(run, staged, "pdf", limit)
-        if text is not None:
-            return _result(text, display_path, source_sha256, kind)
-    text, fallback_reason = await _step(run, staged, "pdf-text", FALLBACK_SECONDS)
-    if text is None:
-        return ConvertResult("failed", f"{docling_reason}; pypdf fallback: {fallback_reason}", kind=kind)
+        step = await _step(run, staged, "pdf", limit)
+        if step.text is not None:
+            return _result(step, display_path, source_sha256, kind)
+        docling_reason = step.reason
+    fallback = await _step(run, staged, "pdf-text", FALLBACK_SECONDS)
+    if fallback.text is None:
+        return ConvertResult("failed", f"{docling_reason}; pypdf fallback: {fallback.reason}", kind=kind)
     note = f"structure lost; converted with pypdf (Docling: {docling_reason})"
-    return _with_note(_result(text, display_path, source_sha256, kind), note)
+    return _with_note(_result(fallback, display_path, source_sha256, kind), note)
 
 
 async def convert_file(
@@ -522,10 +556,10 @@ async def convert_file(
         return ConvertResult("unsupported", "conversion needs macOS sandbox-exec")  # design Non-goals: skipped
     run = _Run(sandbox, python, worker, scratch_root, models_dir,
                private_root or Path.home(), file_limit, scratch_limit, poll)
-    identity, reason = await _step(run, staged, "identify", IDENTIFY_SECONDS)
-    if identity is None:
-        return ConvertResult("failed", f"could not identify the file type: {reason}")
-    kind, pages, is_text = _identity(identity)
+    identify = await _step(run, staged, "identify", IDENTIFY_SECONDS)
+    if identify.text is None:
+        return ConvertResult("failed", f"could not identify the file type: {identify.reason}")
+    kind, pages, is_text = _identity(identify.text)
     if kind is None:
         return ConvertResult("failed", "could not identify the file type")
     if kind not in SUPPORTED_KINDS:

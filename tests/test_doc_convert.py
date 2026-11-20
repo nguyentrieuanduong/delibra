@@ -201,7 +201,7 @@ async def test_the_real_engine_converts_a_small_docx(tmp_path) -> None:
     staged.write_bytes(fixture.read_bytes())
     result = await convert_file(staged, display_path="small.docx", source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch")
-    assert (result.state, result.kind) == ("converted", "docx")
+    assert (result.state, result.kind, result.reason) == ("converted", "docx", None)  # its text counts
     assert b"Delibra converter fixture" in result.markdown
 
 
@@ -389,7 +389,7 @@ async def test_the_real_engine_converts_legacy_office_files(tmp_path, name, kind
     staged.write_bytes(fixture.read_bytes())
     result = await convert_file(staged, display_path=name, source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch")
-    assert (result.state, result.kind) == ("converted", kind), result.reason
+    assert (result.state, result.kind, result.reason) == ("converted", kind, None)  # its text counts
     assert b"Delibra converter fixture" in result.markdown
 
 
@@ -660,3 +660,46 @@ async def test_no_time_limit_is_reported_for_a_file_that_is_not_converted(tmp_pa
     await convert_file(staged_pdf(tmp_path), display_path="a.txt", source_sha256="a" * 64,
                        scratch_root=tmp_path / "scratch", worker=worker, on_limit=limits.append)
     assert limits == []
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_a_blank_scanned_pdf_says_no_text_was_found_through_the_pypdf_fallback(tmp_path) -> None:
+    needs("magika")
+    needs("pypdf")
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(3):  # pages with no text layer, as a scan without OCR has
+        writer.add_blank_page(width=612, height=792)
+    buffer = BytesIO()
+    writer.write(buffer)
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(buffer.getvalue())
+
+    result = await convert_file(staged, display_path="scan.pdf", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", models_dir=None)
+
+    assert result.state == "converted"
+    assert result.reason == (
+        "structure lost; converted with pypdf (Docling: Docling models are not downloaded); "
+        "no text found; the file may be scanned images"
+    )
+    assert b"<!-- page 3 -->" in result.markdown  # the page markers stay in the output
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_workers_own_text_count_decides_the_no_text_warning(tmp_path) -> None:
+    worker = stub_worker(tmp_path, (
+        "import json, pathlib\n"
+        "open(output, 'w').write('| a | b |\\n| --- | --- |\\n<!-- image --> markup only, no document text')\n"
+        "(pathlib.Path(output).parent / 'stats.json').write_text(json.dumps({'text_chars': 0}))\n"
+    ), label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker)
+    assert (result.state, result.reason) == ("converted", "no text found; the file may be scanned images")
