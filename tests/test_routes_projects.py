@@ -3476,8 +3476,48 @@ def test_download_settings_live_on_general_and_save_there(tmp_path, monkeypatch)
     assert 'name="downloads_folder"' not in coding
     assert (saved.status_code, saved.headers["location"]) == (303, f"{prefix}/settings")
     policy = ProjectStore(project).coding_policy().downloads
-    assert (policy.enabled, policy.folder, policy.convert, policy.check_model) == (True, "raw", False, "sonnet")
+    # Conversion has its own form: the Downloads form leaves it as saved (on by default).
+    assert (policy.enabled, policy.folder, policy.convert, policy.check_model) == (True, "raw", True, "sonnet")
     assert old.status_code in (404, 405)
+
+
+def test_the_conversion_form_changes_only_conversion(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=True, folder="raw", approval="automatic", model_check=True)
+    store.replace_coding_policy(policy)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        off = client.post(f"{prefix}/conversion-settings", data={}, follow_redirects=False)
+        saved_off = store.coding_policy().downloads
+        on = client.post(f"{prefix}/conversion-settings", data={"downloads_convert": "true"},
+                         follow_redirects=False)
+    assert (off.status_code, off.headers["location"]) == (303, f"{prefix}/settings")
+    assert saved_off == DownloadPolicy(enabled=True, folder="raw", approval="automatic", model_check=True,
+                                       convert=False)
+    assert on.status_code == 303 and store.coding_policy().downloads.convert is True
+
+
+def test_the_download_form_keeps_a_switched_off_conversion(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(convert=False)
+    store.replace_coding_policy(policy)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/download-settings", data={
+            "downloads_folder": "raw", "downloads_enabled": "true",
+        }, follow_redirects=False)
+    downloads = store.coding_policy().downloads
+    assert (downloads.enabled, downloads.convert) == (True, False)
+
+
+def test_conversion_settings_save_from_this_machine_only(tmp_path, monkeypatch) -> None:
+    app, project, _dir, prefix = coding_project(tmp_path, monkeypatch)
+    with TestClient(app, base_url="http://localhost", client=LAN) as client:
+        response = client.post(f"{prefix}/conversion-settings", data={})
+    assert response.status_code == 403
+    assert ProjectStore(project).coding_policy().downloads.convert is True
 
 
 def test_a_refused_download_save_stays_on_general_with_the_alert(tmp_path, monkeypatch) -> None:
@@ -3523,3 +3563,20 @@ def test_lan_clients_get_no_link_to_the_converter_tab(tmp_path, monkeypatch) -> 
         general = client.get(f"{prefix}/settings").text
     assert "Converter models: Not downloaded" in general
     assert 'href="/settings/converter"' not in general
+
+
+def test_saving_the_conversion_form_keeps_the_exclude_file_in_step(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
+    exclude = project_dir / ".git" / "info" / "exclude"
+    store = ProjectStore(project)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
+        wait_env(project, "ready")
+        client.post(f"{prefix}/conversion-settings", data={}, follow_redirects=False)
+        off = exclude.read_text()
+        client.post(f"{prefix}/conversion-settings", data={"downloads_convert": "true"}, follow_redirects=False)
+        on = exclude.read_text()
+    folder = store.coding_policy().downloads.folder
+    assert f"/{folder}/converted/\n" not in off
+    assert f"/{folder}/converted/\n" in on

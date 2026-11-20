@@ -44,3 +44,12 @@ def utc_stamp_range(start: object, finish: object) -> str:
     if begun.date() == ended.date():
         return f"{begun:%Y-%m-%d %H:%M:%S} – {ended:%H:%M:%S} +00"
     return f"{utc_stamp(start)} – {utc_stamp(finish)}"
+
+
+def clock_duration(seconds: float) -> str:
+    """``m:ss`` or ``h:mm:ss``, as app.js's formatRemainingSeconds writes it."""
+
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"

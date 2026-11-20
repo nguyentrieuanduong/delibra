@@ -13,6 +13,7 @@ import uuid
 
 from app.build_git import DOWNLOADS_UNREADABLE  # noqa: F401  (re-exported; defined there to avoid a cycle)
 from app.coding import download_excludes
+from app.convert_store import ACTIVE as ACTIVE_CONVERSIONS, ConversionStore
 from app.download_rules import DOWNLOADS_DIR, MASKED_URL, url_host
 from app.storage import (
     ProjectStore, StorageError, atomic_write_bytes, ensure_project_subdirectory,
@@ -56,7 +57,7 @@ class DownloadRecord:
     check_note: str | None = None  # the model check's free text; never rendered (B3)
     convert: bool = False  # convert to Markdown once downloaded (the turn's setting)
     converted_path: str | None = None
-    convert_state: str | None = None  # converting | converted | failed | skipped
+    convert_state: str | None = None  # queued | converting | converted | failed | skipped | cancelled
     convert_reason: str | None = None
 
     @property
@@ -224,7 +225,7 @@ class DownloadStore:
                 book.requests[index] = replace(record, state="failed", reason="interrupted by restart")
             elif record.state == "checking":
                 book.requests[index] = replace(record, state="refused", reason="model check interrupted", masked=True)
-            elif record.convert_state == "converting":
+            elif record.convert_state in ACTIVE_CONVERSIONS:
                 book.requests[index] = replace(record, convert_state="failed", convert_reason="interrupted by restart")
             else:
                 continue
@@ -234,14 +235,48 @@ class DownloadStore:
         return changed
 
 
+def _converted_root(output: object, stored: object, known: list[str]) -> str:
+    """The `converted` folder a conversion's Markdown went to, checked as a safe
+    project folder that holds the output. Raises StorageError when it cannot be told."""
+
+    if not isinstance(output, str):
+        raise StorageError("conversion records name an output that is not a path")
+    writable_root_parts(output)  # control characters, escapes, .delibra: all refused
+    if stored is not None:
+        root = stored
+    else:  # records from before the root was stored: the longest known folder that holds it
+        root = next((f"{folder}/converted" for folder in known if output.startswith(f"{folder}/converted/")),
+                    None)
+        if root is None and "/converted/" in output:
+            # A folder no setting or download names any more: the first match can only be
+            # wider than the real folder, never narrower.
+            root = output[: output.index("/converted/")] + "/converted"
+    if not isinstance(root, str) or not output.startswith(root + "/"):
+        raise StorageError("conversion records name an output outside its converted folder")
+    return "/".join(writable_root_parts(root))
+
+
+def written_folders(root: Path, current_folder: str) -> set[str]:
+    """Every folder Delibra has written into: download folders, and the `converted`
+    folder of each requested conversion's Markdown. Raises StorageError if unknown."""
+
+    folders = DownloadStore(root).used_folders()
+    known = sorted({current_folder, *folders}, key=len, reverse=True)
+    for record in ConversionStore(root).load():
+        if record.output is not None:
+            folders.add(_converted_root(record.output, record.converted_root, known))
+    return folders
+
+
 def project_download_excludes(store: ProjectStore) -> tuple[str, ...] | None:
     """Folders Delibra's build commits exclude; None when they cannot be known (B5)."""
 
     try:
-        used = DownloadStore(store.root).used_folders()
+        policy = store.coding_policy()
+        used = written_folders(store.root, policy.downloads.folder)
     except StorageError:
         return None
-    return download_excludes(store.coding_policy(), used)
+    return download_excludes(policy, used)
 
 
 def render_status(records: list[DownloadRecord], requests: dict[str, str] | None = None) -> bytes:

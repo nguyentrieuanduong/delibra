@@ -112,7 +112,7 @@ async def test_without_models_a_pdf_uses_pypdf_and_says_why(tmp_path) -> None:
                                 models_dir=None, worker=worker)
 
     assert result.reason == (
-        "structure lost; converted with pypdf (Docling: Docling models are not downloaded)"
+        "structure lost; converted with pypdf (Docling models are not downloaded)"
     )
 
 
@@ -201,7 +201,7 @@ async def test_the_real_engine_converts_a_small_docx(tmp_path) -> None:
     staged.write_bytes(fixture.read_bytes())
     result = await convert_file(staged, display_path="small.docx", source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch")
-    assert (result.state, result.kind) == ("converted", "docx")
+    assert (result.state, result.kind, result.reason) == ("converted", "docx", None)  # its text counts
     assert b"Delibra converter fixture" in result.markdown
 
 
@@ -389,7 +389,7 @@ async def test_the_real_engine_converts_legacy_office_files(tmp_path, name, kind
     staged.write_bytes(fixture.read_bytes())
     result = await convert_file(staged, display_path=name, source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch")
-    assert (result.state, result.kind) == ("converted", kind), result.reason
+    assert (result.state, result.kind, result.reason) == ("converted", kind, None)  # its text counts
     assert b"Delibra converter fixture" in result.markdown
 
 
@@ -625,3 +625,106 @@ async def test_an_aborted_worker_is_a_normal_converter_error(tmp_path) -> None:
     result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch", worker=worker)
     assert (result.state, result.reason) == ("failed", "converter error: stopped by signal 6")
+
+
+@MAC
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label, pages, models, expected", [
+    ("pdf", 3, True, 60 + 126 + 300),  # identify + Docling (120 s + 2 s/page) + pypdf fallback
+    ("pdf", 3, False, 60 + 300),  # no models: identify + pypdf only
+    ("pdf", 5000, True, 60 + 1800 + 300),  # the Docling step's cap
+    ("docx", None, True, 60 + 300),
+    ("doc", None, True, 60 + 300 + 300),  # textutil, then Docling
+])
+async def test_the_converter_reports_the_whole_conversions_time_limit(
+    tmp_path, label, pages, models, expected
+) -> None:
+    worker = stub_worker(tmp_path, "open(output, 'w').write('enough words in this output for the check')\n",
+                         label=label, pages=pages)
+    staged = tmp_path / "in.bin"
+    staged.write_bytes({"pdf": b"%PDF-1.7", "docx": b"PK\x03\x04", "doc": doc_convert.OLE_MAGIC}[label])
+    limits: list[float] = []
+
+    await convert_file(staged, display_path=f"a.{label}", source_sha256="a" * 64,
+                       scratch_root=tmp_path / "scratch", models_dir=tmp_path if models else None,
+                       worker=worker, on_limit=limits.append)
+
+    assert limits == [expected]
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_no_time_limit_is_reported_for_a_file_that_is_not_converted(tmp_path) -> None:
+    worker = stub_worker(tmp_path, "raise SystemExit(9)\n", label="txt", pages=None, is_text=True)
+    limits: list[float] = []
+    await convert_file(staged_pdf(tmp_path), display_path="a.txt", source_sha256="a" * 64,
+                       scratch_root=tmp_path / "scratch", worker=worker, on_limit=limits.append)
+    assert limits == []
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_a_blank_scanned_pdf_says_no_text_was_found_through_the_pypdf_fallback(tmp_path) -> None:
+    needs("magika")
+    needs("pypdf")
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(3):  # pages with no text layer, as a scan without OCR has
+        writer.add_blank_page(width=612, height=792)
+    buffer = BytesIO()
+    writer.write(buffer)
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(buffer.getvalue())
+
+    result = await convert_file(staged, display_path="scan.pdf", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", models_dir=None)
+
+    assert result.state == "converted"
+    assert result.reason == (
+        "structure lost; converted with pypdf (Docling models are not downloaded); "
+        "no text found; the file may be scanned images"
+    )
+    assert b"<!-- page 3 -->" in result.markdown  # the page markers stay in the output
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_the_workers_own_text_count_decides_the_no_text_warning(tmp_path) -> None:
+    worker = stub_worker(tmp_path, (
+        "import json, pathlib\n"
+        "open(output, 'w').write('| a | b |\\n| --- | --- |\\n<!-- image --> markup only, no document text')\n"
+        "(pathlib.Path(output).parent / 'stats.json').write_text(json.dumps({'text_chars': 0}))\n"
+    ), label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                                scratch_root=tmp_path / "scratch", worker=worker)
+    assert (result.state, result.reason) == ("converted", "no text found; the file may be scanned images")
+
+
+@MAC
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stats", [
+    "[]", '"x"', '{"text_chars": -1}', '{"text_chars": true}', '{"text_chars": 0, "pad": "' + "x" * 300 + '"}', None,
+])
+async def test_a_bad_or_missing_text_count_falls_back_to_counting_the_markdown(tmp_path, stats) -> None:
+    write_stats = (
+        f"(pathlib.Path(output).parent / 'stats.json').write_text({stats!r})\n" if stats is not None else ""
+    )
+    worker = stub_worker(tmp_path, "import pathlib\n" + write_stats + "open(output, 'w').write('short')\n",
+                         label="docx")
+    staged = tmp_path / "in.bin"
+    staged.write_bytes(b"PK\x03\x04")
+    short = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                               scratch_root=tmp_path / "scratch", worker=worker)
+    assert short.reason == "no text found; the file may be scanned images"  # 5 characters of Markdown
+
+    long_worker = stub_worker(tmp_path / "long", "import pathlib\n" + write_stats
+                              + "open(output, 'w').write('plenty of real words in this converted output')\n",
+                              label="docx")
+    long = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
+                              scratch_root=tmp_path / "scratch", worker=long_worker)
+    assert long.reason is None  # a bad count never invents the warning either

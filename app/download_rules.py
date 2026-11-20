@@ -337,6 +337,10 @@ def parse_convert_request(data: bytes) -> str:
     path = value["path"]
     if not isinstance(path, str) or not path.strip() or len(path) > 1024:
         raise RequestError("path must be a non-empty project-relative path")
+    try:
+        path.encode("utf-8")  # a JSON escape can decode to a lone surrogate (review B1)
+    except UnicodeEncodeError as exc:
+        raise RequestError("path must be valid text") from exc
     return path
 
 

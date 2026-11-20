@@ -31,16 +31,17 @@ def test_coding_and_docker_checkboxes_share_a_line_with_their_text(
             boxMiddle: (box.top + box.bottom) / 2,
           };
         })"""
-    # Coding and Docker are on the Coding tab; the other two on General.
+    # Coding and Docker are on the Coding tab; the others on General.
     page.goto(f"{app['base_url']}/projects/Verify/settings/coding")
     rows = page.evaluate(measure, ["/coding", "/coding/docker"])
     page.goto(f"{app['base_url']}/projects/Verify/settings")
-    rows += page.evaluate(measure, ["/global-instruction", "/writable-roots"])
+    rows += page.evaluate(measure, ["/global-instruction", "/writable-roots", "/conversion-settings"])
     assert [row["text"] for row in rows] == [
         "Enable coding (Auto build runs)",
         "Let build agents use Docker (a Lima VM per project)",
         "Use the global instruction in this project",
         "Create directories that don't exist",
+        "Convert documents to Markdown",
     ], rows
     for row in rows:
         # The text starts right of the checkbox, on the checkbox's line.

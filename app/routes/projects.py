@@ -34,7 +34,7 @@ from app.converter_models import models_state
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
-from app.download_store import DownloadStore
+from app.download_store import written_folders
 from app.global_instruction import GlobalInstructionError, read_global_instruction
 from app.models import Project, holds_native_chat
 from app.notes import NoteStore, chat_note_store
@@ -449,7 +449,7 @@ async def _refresh_local_excludes(project: Project, policy: CodingPolicy) -> Non
 
     try:
         try:
-            used_folders = DownloadStore(ProjectStore(project).root).used_folders()
+            used_folders = written_folders(ProjectStore(project).root, policy.downloads.folder)
         except StorageError:
             # Only `git status` noise: build commits fail closed on their own.
             used_folders = set()
@@ -677,7 +677,6 @@ async def save_download_settings(
     downloads_folder: str = Form(...),
     downloads_enabled: bool = Form(False),
     downloads_model_check: bool = Form(False),
-    downloads_convert: bool = Form(False),
 ):
     require_loopback_client(request)
     sent = await request.form()
@@ -695,7 +694,7 @@ async def save_download_settings(
             "enabled": downloads_enabled,
             "folder": downloads_folder,
             "model_check": downloads_model_check,
-            "convert": downloads_convert,
+            "convert": saved["convert"],  # the Document conversion form's own setting
             "check_model": str(values["check_model"]).strip(),
             # What the form sends is a choice, never the old default (Task 2c).
             CHECK_MODEL_DEFAULT_KEY: CHECK_MODEL_DEFAULT_VERSION,
@@ -708,9 +707,29 @@ async def save_download_settings(
             "downloads_folder": downloads_folder,
             "downloads_enabled": "true" if downloads_enabled else "",
             "downloads_model_check": "true" if downloads_model_check else "",
-            "downloads_convert": "true" if downloads_convert else "",
         },
         refresh_excludes=True,
+        tab="general",
+    )
+
+
+@router.post("/projects/{project_id}/conversion-settings")
+async def save_conversion_settings(
+    request: Request,
+    project_id: str,
+    downloads_convert: bool = Form(False),
+):
+    """Document conversion has its own form; it changes nothing the Downloads form saves."""
+
+    require_loopback_client(request)
+
+    def change(current: CodingPolicy) -> CodingPolicy:
+        return replace(current, downloads=replace(current.downloads, convert=downloads_convert))
+
+    return await _save_coding_part(
+        request, project_id, change, locked=False,
+        typed={"downloads_convert": "true" if downloads_convert else ""},
+        refresh_excludes=True,  # the converted folder is excluded while conversion is on
         tab="general",
     )
 

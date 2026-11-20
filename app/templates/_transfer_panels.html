@@ -1,0 +1,7 @@
+{# Downloads and Conversions are independent panels sharing one stream: a second stream per tab would crowd the browser's six connections per host. Each event names its list ("downloads" or "conversions") and carries that list's revision; app.js re-fetches a list only when it is newer than the one shown (plan review S1). #}
+<div id="transfer-panels" class="transfer-panels" hx-ext="sse" sse-connect="{{ project_url(project.name, '/downloads/stream') }}">
+  {% with downloads=downloads_panel.downloads, awaiting_count=downloads_panel.awaiting_count, downloads_enabled=downloads_panel.downloads_enabled, revision=downloads_panel.revision, epoch=downloads_panel.epoch, unreadable=downloads_panel.unreadable %}
+    {% include "_downloads_panel.html" %}
+  {% endwith %}
+  {% include "_conversions_panel.html" %}
+</div>

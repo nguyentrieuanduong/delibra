@@ -19,6 +19,12 @@ def _open(page: Any, base: str, path: str) -> None:
         f"{base}/projects/Verify/files/view?path={path}",
     )
     expect(page.locator("#file-reader .file-view")).to_be_visible(timeout=10_000)
+    # htmx 1.9.12 activates swapped content (its hx-* buttons) in a settle step
+    # about 20 ms after the swap: a click before then does nothing.
+    page.wait_for_function(
+        "() => !document.querySelector("
+        "'#file-reader.htmx-settling, #file-reader .htmx-added, #file-reader .htmx-settling')"
+    )
 
 
 def _box(page: Any, selector: str) -> dict[str, float]:

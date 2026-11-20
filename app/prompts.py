@@ -158,7 +158,7 @@ CONVERT_REQUEST_FILE = (
 )
 CONVERT_WAIT_LOOP = (
     "To wait for a request, poll its own line with a bounded loop, for example for c1.json: "
-    "until grep -Eq '\"request\": \"c1.json\".*\"state\": \"(converted|failed|refused)\"' {status} "
+    "until grep -Eq '\"request\": \"c1.json\".*\"state\": \"(converted|failed|refused|cancelled)\"' {status} "
     "|| [ $SECONDS -ge 110 ]; do sleep 2; done — never a bare sleep."
 )
 ANSWER_FORMAT = (

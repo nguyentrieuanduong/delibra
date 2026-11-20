@@ -78,9 +78,7 @@
       aria-label="Project files"
     >
       {# The main column keeps its width for reading (user request 2026-11-18). #}
-      {% with downloads=downloads_panel.downloads, conversions=downloads_panel.conversions, conversions_unreadable=downloads_panel.conversions_unreadable, awaiting_count=downloads_panel.awaiting_count, downloads_enabled=downloads_panel.downloads_enabled, revision=downloads_panel.revision, epoch=downloads_panel.epoch, unreadable=downloads_panel.unreadable %}
-        {% include "_downloads_panel.html" %}
-      {% endwith %}
+      {% include "_transfer_panels.html" %}
       <div
         id="file-browser-host"
         hx-get="{{ project_url(project.name, '/files') }}"

@@ -494,3 +494,29 @@ def test_html_pages_are_not_stored_so_back_navigation_refetches(tmp_path) -> Non
     assert page.headers["cache-control"] == "no-store"
     assert script.status_code == 200
     assert "cache-control" not in script.headers
+
+
+def test_fetch_metadata_refuses_cross_site_state_changes_without_origin(tmp_path) -> None:
+    with app_client(tmp_path) as client:
+        statuses = {
+            site: client.post("/__test/echo", content=b"ok", headers={"sec-fetch-site": site}).status_code
+            for site in ("cross-site", "same-site", "same-origin", "none")
+        }
+        null_origin = client.post("/__test/echo", content=b"ok", headers={"origin": "null"})
+        same_origin_both = client.post(
+            "/__test/echo", content=b"ok",
+            headers={"origin": "http://localhost", "sec-fetch-site": "same-origin"},
+        )
+        cross_site_with_good_origin = client.post(
+            "/__test/echo", content=b"ok",
+            headers={"origin": "http://localhost", "sec-fetch-site": "cross-site"},
+        )
+        neither = client.post("/__test/echo", content=b"ok")  # curl, scripts, tests
+        cross_site_read = client.get("/", headers={"sec-fetch-site": "cross-site"})
+    # same-site is another origin on this site (another port or subdomain): refused too.
+    assert statuses == {"cross-site": 403, "same-site": 403, "same-origin": 200, "none": 200}
+    assert null_origin.status_code == 403
+    assert same_origin_both.status_code == 200
+    assert cross_site_with_good_origin.status_code == 403
+    assert neither.status_code == 200
+    assert cross_site_read.status_code == 200  # reads are not state changes

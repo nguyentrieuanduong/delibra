@@ -12,7 +12,9 @@ from app.storage import StorageError, atomic_write_bytes, utc_now
 
 FORMAT = "delibra-conversions/1"
 STATUS_FORMAT = "delibra-conversions-status/1"
-STATES = frozenset({"converting", "converted", "failed", "refused"})
+# queued: waiting for the server's one conversion slot; converting: holding it.
+STATES = frozenset({"queued", "converting", "converted", "failed", "refused", "cancelled"})
+ACTIVE = frozenset({"queued", "converting"})
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,8 @@ class ConversionRecord:
     updated_at: str
     source_sha256: str | None = None
     output: str | None = None
+    # `<download folder>/converted`, where `output` is; older records do not have it.
+    converted_root: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ConversionRecord":
@@ -98,7 +102,7 @@ class ConversionStore:
         next_id, records = self._load()
         now = utc_now()
         record = ConversionRecord(
-            id=f"C{next_id}", path=path, request=request, state="converting", reason=None,
+            id=f"C{next_id}", path=path, request=request, state="queued", reason=None,
             auto_run=auto_run, round_n=round_n, agent=agent, created_at=now, updated_at=now,
         )
         self._save(next_id + 1, [*records, record])
@@ -114,10 +118,10 @@ class ConversionStore:
         raise StorageError(f"Unknown conversion {cid}")
 
     def recover(self) -> int:
-        """Startup: a conversion that was running when the server stopped did not finish."""
+        """Startup: a conversion queued or running when the server stopped did not finish."""
 
         next_id, records = self._load()
-        stopped = [i for i, r in enumerate(records) if r.state == "converting"]
+        stopped = [i for i, r in enumerate(records) if r.state in ACTIVE]
         for index in stopped:
             records[index] = replace(records[index], state="failed", reason="interrupted by restart",
                                      updated_at=utc_now())

@@ -1,0 +1,31 @@
+<li id="conversion-{{ row.id }}" class="download conversion conversion-{{ row.state }}">
+  <p><strong>{{ row.id }}</strong> · {% if row.origin == "download" %}Downloaded file{% else %}Requested file{% endif %}
+     · <span class="conversion-state">{{ row.state }}</span></p>
+  <p class="download-url"><code>{{ row.shown_path }}</code></p>
+  {% if row.cancelling %}
+    <p class="conversion-progress">Cancelling…</p>
+  {% elif row.state == "converting" %}
+    <p class="conversion-progress">Converting…
+      {%- if row.started_at is not none %} <span data-elapsed="{{ row.elapsed }}">{{ row.elapsed|clock }}</span> elapsed ·{% endif %}
+      {% if row.limit %}time limit {{ row.limit|clock }}{% else %}time limit set once the file type is known{% endif %}</p>
+  {% elif row.state == "queued" %}
+    <p class="conversion-progress">{% if row.position %}Position {{ row.position }} in the queue{% else %}Waiting to start{% endif %}</p>
+  {% endif %}
+  {% if row.reason %}<p class="download-reason">{{ row.reason }}</p>{% endif %}
+  {% if row.state == "converted" and row.output %}
+    <p><a href="{{ project_url(project.name, '/files/view?' ~ {'path': row.output}|urlencode) }}">{{ row.output }}</a></p>
+  {% endif %}
+  {% set url = project_url(project.name, '/conversions/' ~ row.id) %}
+  {% if row.state in ("queued", "converting") and not row.cancelling %}
+    <div class="download-actions">
+      <button type="button" hx-post="{{ url }}/cancel" hx-target="#conversions-list" hx-swap="outerHTML"
+              hx-disabled-elt="this" aria-label="Cancel {{ row.id }} ({{ row.shown_path }})"
+              {%- if row.state == "converting" %} hx-confirm="Stop converting {{ row.shown_path }}? The work done so far is lost."{% endif %}>Cancel</button>
+    </div>
+  {% elif row.origin == "download" and row.state in panel.retryable and panel.convert_enabled %}
+    <div class="download-actions">
+      <button type="button" hx-post="{{ url }}/retry" hx-target="#conversions-list" hx-swap="outerHTML"
+              hx-disabled-elt="this" aria-label="Retry {{ row.id }} ({{ row.shown_path }})">Retry</button>
+    </div>
+  {% endif %}
+</li>

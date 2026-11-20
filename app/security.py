@@ -334,6 +334,14 @@ class LocalSecurityMiddleware:
             return
 
         if scope.get("method", "GET").upper() not in {"GET", "HEAD", "OPTIONS"}:
+            # Fetch Metadata (review B4, chosen over per-form CSRF tokens): a
+            # browser names where a request came from; only this page itself
+            # ("same-origin") or the user ("none": typed, bookmarked) may change
+            # state. Browsers send this or Origin; scripts and tests send neither.
+            site = _header(scope, b"sec-fetch-site")
+            if site is not None and site.lower() not in {"same-origin", "none"}:
+                await _plain_response(send, HTTPStatus.FORBIDDEN, "Forbidden Fetch Site")
+                return
             origin = _header(scope, b"origin")
             if origin is not None and not _same_origin(
                 origin,

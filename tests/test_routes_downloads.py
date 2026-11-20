@@ -1,7 +1,13 @@
+import asyncio
+import json
 from pathlib import Path
 from urllib.parse import quote
 from fastapi.testclient import TestClient
+from app.coding import DownloadPolicy
 from app.config import Settings
+from app.doc_convert import ConvertResult
+from app.download_manager import DownloadTurn
+from app.questions import prepare_spool
 from app.download_store import DownloadStore
 from app.main import create_app
 from app.storage import ProjectStore, RegistryStore
@@ -118,7 +124,7 @@ def test_the_empty_panel_points_to_the_general_tab(tmp_path):
     assert "Delibra downloads are off for this project (Settings → General)." in listing
 
 
-def test_the_panel_lists_conversions_with_a_link_to_the_markdown(tmp_path):
+def test_the_conversions_list_links_the_markdown_and_the_downloads_list_does_not_list_it(tmp_path):
     from app.convert_store import ConversionStore
 
     app, project, store = downloads_app(tmp_path)
@@ -126,13 +132,28 @@ def test_the_panel_lists_conversions_with_a_link_to_the_markdown(tmp_path):
     record = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
     conversions.update(record.id, state="converted", output="raw/converted/a.pdf.md", source_sha256="f" * 64)
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        pages = [client.get(f"{base(project)}/{path}").text for path in ("downloads/list", "downloads", "chat")]
-    for page in pages:  # the list, the panel and the chat page that embeds it
-        assert "Conversions" in page and "C1" in page and "<code>a.pdf</code>" in page
+        pages = [client.get(f"{base(project)}/{path}").text for path in ("conversions/list", "chat")]
+        downloads = client.get(f"{base(project)}/downloads/list").text
+    for page in pages:  # the list and the chat page that embeds it
+        assert 'id="conversion-C1"' in page and "<code>a.pdf</code>" in page
         assert "/files/view?path=raw%2Fconverted%2Fa.pdf.md" in page
+    assert "conversion-C1" not in downloads
 
 
-def test_a_conversion_change_makes_the_panel_revision_newer(tmp_path):
+def test_download_conversions_are_listed_with_the_requested_files(tmp_path):
+    app, project, store = downloads_app(tmp_path)
+    record = add(store, "https://arxiv.org/pdf/1")
+    store.update(record.id, state="downloaded", path="raw/arxiv.org/1.pdf", convert=True,
+                 convert_state="converted", converted_path="raw/arxiv.org/1.pdf.md")
+    add(store, "https://arxiv.org/pdf/2", state="downloaded")  # conversion off: not listed
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        listing = client.get(f"{base(project)}/conversions/list").text
+    assert 'id="conversion-D1"' in listing and "<code>raw/arxiv.org/1.pdf</code>" in listing
+    assert "/files/view?path=raw%2Farxiv.org%2F1.pdf.md" in listing
+    assert 'id="conversion-D2"' not in listing
+
+
+def test_a_conversion_change_makes_the_conversions_revision_newer(tmp_path):
     import re
     from app.convert_store import ConversionStore
 
@@ -140,29 +161,138 @@ def test_a_conversion_change_makes_the_panel_revision_newer(tmp_path):
     add(store, "https://arxiv.org/pdf/1")
     conversions = ConversionStore(store.root)
 
-    def shown(client):
-        text = client.get(f"{base(project)}/downloads/list").text
+    def shown(client, path="conversions/list"):
+        text = client.get(f"{base(project)}/{path}").text
         return int(re.search(r'data-revision="(\d+)"', text).group(1)), re.search(r'data-epoch="([^"]*)"', text).group(1)
 
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
         before, epoch = shown(client)
+        downloads_before = shown(client, "downloads/list")
         record = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
         added, epoch_added = shown(client)
         conversions.update(record.id, state="failed", reason="x")
         updated, epoch_updated = shown(client)
+        downloads_after = shown(client, "downloads/list")
     assert before < added < updated
     assert epoch_added == epoch_updated
+    assert downloads_before == downloads_after  # the Downloads list does not refresh for it
 
 
-def test_unreadable_conversion_records_are_named_in_the_panel(tmp_path):
+def test_unreadable_conversion_records_are_named_in_the_conversions_panel(tmp_path):
     app, project, store = downloads_app(tmp_path)
     (store.root / "downloads").mkdir(parents=True, exist_ok=True)
     (store.root / "downloads" / "conversions.json").write_text("{")
     with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
-        pages = [client.get(f"{base(project)}/{path}").text for path in ("downloads/list", "chat")]
+        pages = [client.get(f"{base(project)}/{path}").text for path in ("conversions/list", "chat")]
     for page in pages:
         assert "Conversion records are unreadable (<code>.delibra/downloads/conversions.json</code>)" in page
 
+
+class GatedConverter:
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+
+    async def __call__(self, staged, **kwargs):
+        self.started.set()
+        await self.release.wait()
+        return ConvertResult("converted", None, b"# md\n", "pdf")
+
+
+def start_conversions(client, app, project, tmp_path: Path, *names: str, wait: bool = True,
+                      converter: GatedConverter | None = None) -> GatedConverter:
+    """Request `names` in a chat turn, in the server's loop; returns once the first
+    converts (or at once, `wait=False`)."""
+
+    manager = app.state.download_manager
+    converter = converter or GatedConverter()
+    project_dir = ProjectStore(project).project_path
+    for name in names:
+        (project_dir / name).write_bytes(b"%PDF-1.7 " + name.encode())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    async def start() -> None:
+        manager.converter = converter
+        prepare_spool(workspace, "convert", "requests", extra_names=("status.json",))
+        turn = DownloadTurn(
+            project_id=project.id, project_root=project_dir, store_root=ProjectStore(project).root,
+            temp_dir=workspace, auto_run=0, cycle=None, round_n=1, agent="a" * 32, agent_name="Alpha",
+            session_id="a" * 32, policy=DownloadPolicy(convert=True), convert=True,
+        )
+        manager.begin_turn(turn)
+        for index, name in enumerate(names, start=1):
+            (turn.convert_spool / f"c{index}.json").write_text(json.dumps({"path": name}))
+        manager.harvest(turn, final=True)
+        if wait:
+            await converter.started.wait()
+        await manager.stop_watch(turn)
+        manager.end_turn(turn)
+
+    client.portal.call(start)
+    return converter
+
+
+def test_the_conversions_list_shows_the_queue(tmp_path):
+    app, project, _store = downloads_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        converter = start_conversions(client, app, project, tmp_path, "a.pdf", "b.pdf")
+        listing = client.get(f"{base(project)}/conversions/list").text
+        client.portal.call(converter.release.set)
+        client.portal.call(app.state.download_manager.idle)
+        done = client.get(f"{base(project)}/conversions/list").text
+    running = listing[listing.index('id="conversion-C1"'):listing.index('id="conversion-C2"')]
+    queued = listing[listing.index('id="conversion-C2"'):]
+    assert "data-elapsed=" in running and "Converting" in running
+    assert "Position 1" in queued and "data-elapsed=" not in queued
+    assert listing.count('/cancel"') == 2
+    assert "/cancel" not in done and "Converting" not in done
+
+
+def test_cancel_ends_a_queued_conversion(tmp_path):
+    from app.convert_store import ConversionStore
+
+    app, project, store = downloads_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        converter = start_conversions(client, app, project, tmp_path, "a.pdf", "b.pdf")
+        response = client.post(f"{base(project)}/conversions/C2/cancel")
+        states = {r.id: (r.state, r.reason) for r in ConversionStore(store.root).load()}
+        client.portal.call(converter.release.set)
+        client.portal.call(app.state.download_manager.idle)
+    assert response.status_code == 200 and 'id="conversions-list"' in response.text
+    assert states == {"C1": ("converting", None), "C2": ("cancelled", "cancelled by the user")}
+
+
+def test_cancel_needs_this_machine_and_the_same_origin(tmp_path):
+    from app.convert_store import ConversionStore
+
+    app, project, store = downloads_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        converter = start_conversions(client, app, project, tmp_path, "a.pdf", "b.pdf")
+        lan = TestClient(app, base_url="http://localhost", client=("192.168.1.9", 5000))
+        from_lan = lan.post(f"{base(project)}/conversions/C2/cancel")
+        cross_site = client.post(f"{base(project)}/conversions/C2/cancel",
+                                 headers={"Origin": "http://evil.example"})
+        states = [r.state for r in ConversionStore(store.root).load()]
+        client.portal.call(converter.release.set)
+        client.portal.call(app.state.download_manager.idle)
+    assert (from_lan.status_code, cross_site.status_code) == (403, 403)
+    assert states == ["converting", "queued"]
+
+
+def test_cancel_refuses_unknown_malformed_and_finished_conversions(tmp_path):
+    from app.convert_store import ConversionStore
+
+    app, project, store = downloads_app(tmp_path)
+    conversions = ConversionStore(store.root)
+    done = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
+    conversions.update(done.id, state="converted", output="raw/converted/a.pdf.md")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        finished = client.post(f"{base(project)}/conversions/C1/cancel")
+        unknown = [client.post(f"{base(project)}/conversions/{cid}/cancel").status_code
+                   for cid in ("C9", "D9", "X1", "C0", "c1")]
+    assert finished.status_code == 409 and "C1 has nothing to cancel: it is converted" in finished.text
+    assert unknown == [404] * 5
 
 
 def test_the_downloads_panel_sits_in_the_right_column_above_the_files(tmp_path):
@@ -171,3 +301,127 @@ def test_the_downloads_panel_sits_in_the_right_column_above_the_files(tmp_path):
         page = client.get(f"{base(project)}/chat").text
     files = page.index('class="workspace-files"')
     assert files < page.index('id="downloads-panel"') < page.index('id="file-browser-host"')
+
+
+
+def test_shown_paths_lose_control_characters():
+    from app.routes.conversions import plain_text
+
+    assert plain_text("a\nb\tc\x1b[2J‮d.pdf") == "a b c [2J d.pdf"
+
+
+def test_a_project_cannot_cancel_another_projects_conversion_with_the_same_id(tmp_path):
+    from app.convert_store import ConversionStore
+
+    app, project, store = downloads_app(tmp_path)
+    other_dir = tmp_path / "other"; other_dir.mkdir()
+    other = RegistryStore(tmp_path / "home").register("Other", other_dir)
+    for name in ("x.pdf", "y.pdf"):  # its own C1 and C2 (startup recovery fails them: nothing runs)
+        ConversionStore(ProjectStore(other).root).add(name, request="c.json", auto_run=0, round_n=1, agent="b" * 32)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        converter = start_conversions(client, app, project, tmp_path, "a.pdf", "b.pdf")
+        response = client.post(f"{base(other)}/conversions/C2/cancel")
+        states = [r.state for r in ConversionStore(store.root).load()]
+        client.portal.call(converter.release.set)
+        client.portal.call(app.state.download_manager.idle)
+    assert response.status_code == 409 and "C2 has nothing to cancel: it is failed" in response.text
+    assert states == ["converting", "queued"]  # project A's C2 still waits
+
+
+def test_queued_conversions_say_when_a_models_action_holds_the_converter(tmp_path):
+    app, project, _store = downloads_app(tmp_path)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        manager = app.state.download_manager
+        released, held = asyncio.Event(), asyncio.Event()
+
+        async def models_action() -> None:
+            async with manager.conversion_slot():
+                held.set()
+                await released.wait()
+
+        client.portal.start_task_soon(models_action)
+        client.portal.call(held.wait)
+        converter = start_conversions(client, app, project, tmp_path, "a.pdf", wait=False)
+        busy = client.get(f"{base(project)}/conversions/list").text
+        client.portal.call(released.set)
+        client.portal.call(converter.started.wait)
+        running = client.get(f"{base(project)}/conversions/list").text
+        client.portal.call(converter.release.set)
+        client.portal.call(manager.idle)
+    assert "busy with a converter model update" in busy
+    assert "busy with a converter model update" not in running
+
+
+def test_retry_converts_a_cancelled_download_again_from_this_machine_only(tmp_path):
+    app, project, store = downloads_app(tmp_path)
+    project_dir = ProjectStore(project).project_path
+    (project_dir / "raw").mkdir()
+    (project_dir / "raw" / "paper.pdf").write_bytes(b"%PDF-1.7 x")
+    record = add(store, "https://arxiv.org/pdf/1")
+    store.update(record.id, state="downloaded", path="raw/paper.pdf", convert=True,
+                 convert_state="cancelled", convert_reason="cancelled by the user")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        listing = client.get(f"{base(project)}/conversions/list").text
+        lan = TestClient(app, base_url="http://localhost", client=("192.168.1.9", 5000))
+        from_lan = lan.post(f"{base(project)}/conversions/D1/retry")
+        converter = GatedConverter()
+        converter.release.set()
+        app.state.download_manager.converter = converter
+        retried = client.post(f"{base(project)}/conversions/D1/retry")
+        client.portal.call(app.state.download_manager.idle)
+        again = client.post(f"{base(project)}/conversions/D1/retry")
+        malformed = client.post(f"{base(project)}/conversions/C1/retry")
+    assert '/conversions/D1/retry"' in listing
+    assert from_lan.status_code == 403
+    assert retried.status_code == 200 and 'id="conversion-D1"' in retried.text
+    assert store.get("D1").convert_state == "converted"
+    assert again.status_code == 409 and "no cancelled or failed conversion" in again.text
+    assert malformed.status_code == 404
+
+
+def test_a_cancelled_running_conversion_shows_cancelling_until_it_ends(tmp_path):
+    app, project, _store = downloads_app(tmp_path)
+    finish = asyncio.Event()
+
+    class SlowToStop(GatedConverter):
+        async def __call__(self, staged, **kwargs):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await finish.wait()  # the worker takes a while to end
+                raise
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        manager = app.state.download_manager
+        start_conversions(client, app, project, tmp_path, "a.pdf", converter=SlowToStop())
+        client.portal.start_task_soon(manager.cancel_conversion, ProjectStore(project).root, "C1")
+        for _ in range(500):  # the cancel task's first step marks the job
+            cancelling = client.get(f"{base(project)}/conversions/list").text
+            if "Cancelling" in cancelling:
+                break
+        client.portal.call(finish.set)
+        client.portal.call(manager.idle)
+        ended = client.get(f"{base(project)}/conversions/list").text
+    row = cancelling[cancelling.index('id="conversion-C1"'):]
+    assert "Cancelling…" in row and "/cancel" not in row
+    assert "Cancelling…" not in ended and 'conversion-cancelled' in ended
+
+
+def test_retry_is_refused_while_document_conversion_is_off(tmp_path):
+    from app.coding import DownloadPolicy as Policy
+
+    app, project, store = downloads_app(tmp_path)
+    project_store = ProjectStore(project)
+    policy = project_store.coding_policy()
+    policy.downloads = Policy(enabled=True, folder="raw", convert=False)
+    project_store.replace_coding_policy(policy)
+    record = add(store, "https://arxiv.org/pdf/1")
+    store.update(record.id, state="downloaded", path="raw/paper.pdf", convert=True,
+                 convert_state="cancelled", convert_reason="cancelled by the user")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        listing = client.get(f"{base(project)}/conversions/list").text
+        response = client.post(f"{base(project)}/conversions/D1/retry")
+    assert 'id="conversion-D1"' in listing and "/retry" not in listing
+    assert response.status_code == 409 and "Document conversion is off for this project" in response.text
+    assert store.get("D1").convert_state == "cancelled"

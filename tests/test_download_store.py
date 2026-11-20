@@ -65,12 +65,13 @@ def test_project_excludes_fail_closed_on_unreadable_records(tmp_path: Path) -> N
     project_dir = tmp_path / "project"; project_dir.mkdir()
     project = RegistryStore(tmp_path / "home").register("P", project_dir)
     store = ProjectStore(project)
-    assert project_download_excludes(store) == ()
+    # Conversion is on by default: requested files' Markdown has its folder excluded.
+    assert project_download_excludes(store) == ("docs/source/raw/converted",)
     policy = store.coding_policy()
     policy.downloads = DownloadPolicy(enabled=True, folder="raw")
     store.replace_coding_policy(policy)
     add(DownloadStore(store.root), folder="old")
-    assert project_download_excludes(store) == ("old", "raw")
+    assert project_download_excludes(store) == ("old", "raw", "raw/converted")
     (store.root / "downloads" / "requests.json").write_text("{")
     assert project_download_excludes(store) is None
 
@@ -171,10 +172,11 @@ def test_budget_keys_separate_auto_runs_from_each_chat_reply(tmp_path) -> None:
     assert store.load().run_bytes == {f"chat-{'t' * 32}-5": 100}
 
 
-def test_an_interrupted_conversion_is_marked_failed_at_startup(tmp_path: Path) -> None:
+@pytest.mark.parametrize("convert_state", ["queued", "converting"])
+def test_an_interrupted_conversion_is_marked_failed_at_startup(tmp_path: Path, convert_state: str) -> None:
     store = DownloadStore(tmp_path)
     record = add(store, convert=True)
-    store.update(record.id, state="downloaded", path="raw/a.org/x.pdf", convert_state="converting")
+    store.update(record.id, state="downloaded", path="raw/a.org/x.pdf", convert_state=convert_state)
 
     store.recover()
 
@@ -194,3 +196,67 @@ def test_status_and_index_show_the_markdown_copy(tmp_path: Path) -> None:
     assert '"converted": "raw/a.org/x.pdf.md"' in status and '"convert_state": "converted"' in status
     assert "structure lost" in status
     assert "| Markdown |" in index and "raw/a.org/x.pdf.md" in index
+
+
+def test_project_excludes_cover_where_conversions_write(tmp_path: Path) -> None:
+    from app.convert_store import ConversionStore
+
+    project_dir = tmp_path / "project"; project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("P", project_dir)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=False, folder="raw", convert=True)
+    store.replace_coding_policy(policy)
+    assert project_download_excludes(store) == ("raw/converted",)
+
+    conversions = ConversionStore(store.root)  # an earlier folder's Markdown stays excluded
+    done = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
+    conversions.update(done.id, state="converted", output="old/src/converted/docs/a.pdf.md")
+    policy.downloads = DownloadPolicy(enabled=False, folder="raw", convert=False)
+    store.replace_coding_policy(policy)
+    assert project_download_excludes(store) == ("old/src/converted",)
+
+    (store.root / "downloads" / "conversions.json").write_text("{")
+    assert project_download_excludes(store) is None  # unknown: build commits fail closed
+
+
+def _conversions_project(tmp_path: Path, folder: str, *, convert: bool = False):
+    from app.convert_store import ConversionStore
+
+    project_dir = tmp_path / "project"; project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("P", project_dir)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=False, folder=folder, convert=convert)
+    store.replace_coding_policy(policy)
+    return store, ConversionStore(store.root)
+
+
+def _converted(conversions, output, **extra):
+    record = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
+    return conversions.update(record.id, state="converted", output=output, **extra)
+
+
+def test_a_folder_with_converted_in_its_name_is_excluded_exactly(tmp_path: Path) -> None:
+    store, conversions = _conversions_project(tmp_path, "a/converted/b")
+    _converted(conversions, "a/converted/b/converted/docs/x.pdf.md")  # an older record: no root stored
+    assert project_download_excludes(store) == ("a/converted/b/converted",)
+
+
+def test_new_records_name_their_converted_folder(tmp_path: Path) -> None:
+    store, conversions = _conversions_project(tmp_path, "now")
+    _converted(conversions, "x/converted/y/converted/z.pdf.md", converted_root="x/converted/y/converted")
+    assert project_download_excludes(store) == ("x/converted/y/converted",)
+
+
+@pytest.mark.parametrize("output, extra", [
+    (5, {}),
+    ("raw/converted/a\nb.md", {}),
+    ("/converted/x.md", {}),
+    ("raw/converted/x.md", {"converted_root": "../converted"}),
+    ("raw/converted/x.md", {"converted_root": "other/converted"}),  # does not hold the output
+])
+def test_a_malformed_conversion_output_turns_build_commits_off(tmp_path: Path, output, extra) -> None:
+    store, conversions = _conversions_project(tmp_path, "raw")
+    _converted(conversions, output, **extra)
+    assert project_download_excludes(store) is None

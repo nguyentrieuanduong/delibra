@@ -1,0 +1,7 @@
+{% set panel = conversions_panel %}
+<summary id="conversions-summary"{% if oob_summary|default(false) %} hx-swap-oob="true"{% endif %}>Conversions
+  {%- if panel.converting_count or panel.queued_count %} (
+    {%- if panel.converting_count %}{{ panel.converting_count }} converting{% endif %}
+    {%- if panel.converting_count and panel.queued_count %}, {% endif %}
+    {%- if panel.queued_count %}{{ panel.queued_count }} queued{% endif %})
+  {%- endif %}</summary>
