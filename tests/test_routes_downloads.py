@@ -199,12 +199,13 @@ class GatedConverter:
         return ConvertResult("converted", None, b"# md\n", "pdf")
 
 
-def start_conversions(client, app, project, tmp_path: Path, *names: str, wait: bool = True) -> GatedConverter:
+def start_conversions(client, app, project, tmp_path: Path, *names: str, wait: bool = True,
+                      converter: GatedConverter | None = None) -> GatedConverter:
     """Request `names` in a chat turn, in the server's loop; returns once the first
     converts (or at once, `wait=False`)."""
 
     manager = app.state.download_manager
-    converter = GatedConverter()
+    converter = converter or GatedConverter()
     project_dir = ProjectStore(project).project_path
     for name in names:
         (project_dir / name).write_bytes(b"%PDF-1.7 " + name.encode())
@@ -376,3 +377,32 @@ def test_retry_converts_a_cancelled_download_again_from_this_machine_only(tmp_pa
     assert store.get("D1").convert_state == "converted"
     assert again.status_code == 409 and "no cancelled or failed conversion" in again.text
     assert malformed.status_code == 404
+
+
+def test_a_cancelled_running_conversion_shows_cancelling_until_it_ends(tmp_path):
+    app, project, _store = downloads_app(tmp_path)
+    finish = asyncio.Event()
+
+    class SlowToStop(GatedConverter):
+        async def __call__(self, staged, **kwargs):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await finish.wait()  # the worker takes a while to end
+                raise
+
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        manager = app.state.download_manager
+        start_conversions(client, app, project, tmp_path, "a.pdf", converter=SlowToStop())
+        client.portal.start_task_soon(manager.cancel_conversion, ProjectStore(project).root, "C1")
+        for _ in range(500):  # the cancel task's first step marks the job
+            cancelling = client.get(f"{base(project)}/conversions/list").text
+            if "Cancelling" in cancelling:
+                break
+        client.portal.call(finish.set)
+        client.portal.call(manager.idle)
+        ended = client.get(f"{base(project)}/conversions/list").text
+    row = cancelling[cancelling.index('id="conversion-C1"'):]
+    assert "Cancelling…" in row and "/cancel" not in row
+    assert "Cancelling…" not in ended and 'conversion-cancelled' in ended

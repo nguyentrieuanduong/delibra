@@ -3563,3 +3563,20 @@ def test_lan_clients_get_no_link_to_the_converter_tab(tmp_path, monkeypatch) -> 
         general = client.get(f"{prefix}/settings").text
     assert "Converter models: Not downloaded" in general
     assert 'href="/settings/converter"' not in general
+
+
+def test_saving_the_conversion_form_keeps_the_exclude_file_in_step(tmp_path, monkeypatch) -> None:
+    app, project, project_dir, prefix = coding_project(tmp_path, monkeypatch)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(project_dir)], check=True)
+    exclude = project_dir / ".git" / "info" / "exclude"
+    store = ProjectStore(project)
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        client.post(f"{prefix}/coding", data={"enabled": "true"}, follow_redirects=False)
+        wait_env(project, "ready")
+        client.post(f"{prefix}/conversion-settings", data={}, follow_redirects=False)
+        off = exclude.read_text()
+        client.post(f"{prefix}/conversion-settings", data={"downloads_convert": "true"}, follow_redirects=False)
+        on = exclude.read_text()
+    folder = store.coding_policy().downloads.folder
+    assert f"/{folder}/converted/\n" not in off
+    assert f"/{folder}/converted/\n" in on
