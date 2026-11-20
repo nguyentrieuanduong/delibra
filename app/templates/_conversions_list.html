@@ -1,0 +1,14 @@
+{% set panel = conversions_panel %}
+<div id="conversions-list" data-revision="{{ panel.revision }}" data-epoch="{{ panel.epoch }}" data-active="{{ panel.converting_count + panel.queued_count }}">
+  {% if panel.requests_unreadable %}
+    <p class="warning">Conversion records are unreadable (<code>.delibra/downloads/conversions.json</code>). Conversion requests are not recorded until the file is repaired.</p>
+  {% endif %}
+  {% if panel.downloads_unreadable %}
+    <p class="warning">Download records are unreadable (<code>.delibra/downloads/requests.json</code>), so conversions of downloads are not listed.</p>
+  {% endif %}
+  {% if not panel.rows and not panel.requests_unreadable and not panel.downloads_unreadable %}
+    <p class="hint">{% if panel.convert_enabled %}No conversions yet. Downloaded documents and project files agents ask for are listed here.{% else %}Document conversion is off for this project (Settings → General).{% endif %}</p>
+  {% endif %}
+  <ol class="conversions">{% for row in panel.rows %}{% include "_conversion_item.html" %}{% endfor %}</ol>
+</div>
+{% if oob_summary|default(false) %}{% include "_conversions_summary.html" %}{% endif %}

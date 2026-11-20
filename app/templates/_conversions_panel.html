@@ -1,0 +1,10 @@
+{% set panel = conversions_panel %}
+<details id="conversions-panel" class="downloads-panel conversions-panel"{% if panel.converting_count or panel.queued_count %} open{% endif %}>
+  {% include "_conversions_summary.html" %}
+  <span hidden sse-swap="conversions" data-live-signal="conversions-list"></span>
+  {# queue last: a change during a refresh still gets a refresh after it. #}
+  <span hidden id="conversions-refresh" hx-get="{{ project_url(project.name, '/conversions/list') }}"
+        hx-trigger="conversions-changed" hx-sync="this:queue last"
+        hx-target="#conversions-list" hx-swap="outerHTML"></span>
+  {% include "_conversions_list.html" %}
+</details>

@@ -136,12 +136,12 @@ function finishNoteEdit(form, detail, alertFn) {
   return "alerted";
 }
 
-// A refused Downloads action pops up (the UI error pop-up standard).
+// A refused Downloads or Conversions action pops up (the UI error pop-up standard).
 function alertDownloadsError(source, xhr, alertFn) {
   if (
     !source ||
     typeof source.closest !== "function" ||
-    !source.closest("#downloads-panel") ||
+    !(source.closest("#downloads-panel") || source.closest("#conversions-panel")) ||
     !xhr
   ) {
     return false;
@@ -150,17 +150,20 @@ function alertDownloadsError(source, xhr, alertFn) {
   return true;
 }
 
-// The Downloads list is re-fetched on every stream event and replaced by
-// every action; responses can land out of order, so an older store revision
-// never replaces a newer one (the last refresh is queued, so it converges).
-// Revisions only compare within one epoch: a recreated records file starts
-// again at 1.
+// The two live lists of the right column, by the stream event that refreshes each.
+const LIVE_LISTS = { downloads: "downloads-list", conversions: "conversions-list" };
+
+// The Downloads and Conversions lists are re-fetched on stream events and
+// replaced by every action; responses can land out of order, so an older
+// revision never replaces a newer one (the last refresh is queued, so it
+// converges). Revisions only compare within one epoch: a recreated records
+// file (or a restarted server's queue) starts again at 1.
 function staleDownloadsList(target, responseText) {
-  if (!target || target.id !== "downloads-list" || !target.dataset) {
+  if (!target || !Object.values(LIVE_LISTS).includes(target.id) || !target.dataset) {
     return false;
   }
   const incoming = /data-revision="(\d+)"/.exec(responseText || "");
-  const epoch = /data-epoch="([0-9a-f.]*)"/.exec(responseText || "");  // downloads[.conversions]
+  const epoch = /data-epoch="([0-9a-f.]*)"/.exec(responseText || "");
   if (epoch && target.dataset.epoch !== undefined && epoch[1] !== target.dataset.epoch) {
     return false;
   }
@@ -188,27 +191,48 @@ function newerDownloadsRevision(shown, data, shownEpoch) {
   return !Number.isFinite(shown) || typeof revision !== "number" || revision > shown;
 }
 
-// Like a live question: a request that starts waiting for approval opens
-// the collapsed panel; one the user closed stays closed otherwise.
+// Like a live question: a request that starts waiting for approval (or a
+// conversion that is queued or running) opens the collapsed panel; one the
+// user closed stays closed otherwise.
+const PANEL_COUNTS = {
+  "downloads-list": ["awaiting", "#downloads-panel"],
+  "conversions-list": ["active", "#conversions-panel"],
+};
+
 function openDownloadsPanelForNew(list, responseText) {
-  if (!list || list.id !== "downloads-list" || !list.dataset) {
+  const counted = list && PANEL_COUNTS[list.id];
+  if (!counted || !list.dataset) {
     return false;
   }
-  const incoming = /data-awaiting="(\d+)"/.exec(responseText || "");
-  const panel = typeof list.closest === "function" ? list.closest("#downloads-panel") : null;
-  if (!incoming || !panel || panel.open || Number(incoming[1]) <= Number(list.dataset.awaiting || 0)) {
+  const [name, panelSelector] = counted;
+  const incoming = new RegExp(`data-${name}="(\\d+)"`).exec(responseText || "");
+  const panel = typeof list.closest === "function" ? list.closest(panelSelector) : null;
+  if (!incoming || !panel || panel.open || Number(incoming[1]) <= Number(list.dataset[name] || 0)) {
     return false;
   }
   panel.open = true;
   return true;
 }
 
-// `event` is the stream's message (htmx:sseBeforeMessage's detail).
-function downloadsEventIsNewer(event) {
-  const list = document.getElementById("downloads-list");
+// `event` is the stream's message (htmx:sseBeforeMessage's detail); its type
+// names the list it is about.
+function liveListEventIsNewer(event) {
+  const list = document.getElementById(LIVE_LISTS[event && event.type]);
   const shown = list && list.dataset ? Number(list.dataset.revision) : Number.NaN;
   const epoch = list && list.dataset ? list.dataset.epoch : undefined;
   return newerDownloadsRevision(shown, event && event.data, epoch);
+}
+
+// The running conversion's elapsed time ticks in the page. The server sends
+// the seconds elapsed when it rendered, so the server's and the reader's
+// clocks never need to agree; the first tick that sees a clock fixes its base.
+function tickElapsedClocks(doc, now) {
+  doc.querySelectorAll("[data-elapsed]").forEach(function (clock) {
+    if (!clock.dataset.elapsedBase) {
+      clock.dataset.elapsedBase = String(now - Number(clock.dataset.elapsed) * 1000);
+    }
+    clock.textContent = formatRemainingSeconds((now - Number(clock.dataset.elapsedBase)) / 1000);
+  });
 }
 
 let focusDialogTrigger = null;
@@ -1672,6 +1696,7 @@ if (typeof module !== "undefined" && module.exports) {
     formatLocalStamp,
     formatOffset,
     formatRemainingSeconds,
+    tickElapsedClocks,
     freshStreamElement,
     handleFocusDialogCancel,
     handleFocusDialogClosed,
@@ -1737,6 +1762,12 @@ if (typeof document !== "undefined") {
   const streamRetries = new WeakMap();
 
   initializeDynamicPresentation(document);
+  if (document.querySelector("#conversions-panel")) {
+    tickElapsedClocks(document, Date.now());
+    setInterval(function () {
+      tickElapsedClocks(document, Date.now());
+    }, 1000);
+  }
 
   // Capture phase: a cancelled save must be prevented before the unsaved-changes
   // bookkeeping below reads defaultPrevented. Only plain settings forms are marked.
@@ -1793,6 +1824,7 @@ if (typeof document !== "undefined") {
     renderMermaidBlocks(document);
     localizeTimes(document);
     applyAgentChoices();
+    tickElapsedClocks(document, Date.now());  // a re-rendered clock starts from the server's value now
   });
   // A click on the summary itself is the reader's choice; it runs before the
   // toggle, so the new state is the opposite of the current one.
@@ -2162,14 +2194,15 @@ if (typeof document !== "undefined") {
   });
 
   document.addEventListener("htmx:sseBeforeMessage", function (event) {
-    const panel = event.target;
-    if (!panel || panel.id !== "downloads-panel") {
+    const panels = event.target;
+    if (!panels || panels.id !== "transfer-panels") {
       return;
     }
     event.preventDefault(); // the data is only a revision; nothing to swap in
-    const refresh = document.getElementById("downloads-refresh");
-    if (refresh && downloadsEventIsNewer(event.detail)) {
-      htmx.trigger(refresh, "downloads-changed");
+    const name = event.detail && event.detail.type;
+    const refresh = LIVE_LISTS[name] ? document.getElementById(`${name}-refresh`) : null;
+    if (refresh && liveListEventIsNewer(event.detail)) {
+      htmx.trigger(refresh, `${name}-changed`);
     }
   });
 

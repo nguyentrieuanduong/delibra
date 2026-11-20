@@ -29,3 +29,12 @@ def test_a_range_without_a_readable_finish_is_its_start() -> None:
     assert utc_stamp_range("2026-11-13T07:05:09Z", None) == "2026-11-13 07:05:09 +00"
     assert utc_stamp_range("2026-11-13T07:05:09Z", "later") == "2026-11-13 07:05:09 +00"
     assert utc_stamp_range("soon", "2026-11-13T07:05:09Z") == "soon"
+
+
+def test_clock_duration_matches_the_pages_countdown_format() -> None:
+    from app.timefmt import clock_duration
+
+    # The same text app.js's formatRemainingSeconds writes as it ticks.
+    assert [clock_duration(value) for value in (0, 9, 75, 3599, 3600, 3725, 486.7, -3)] == [
+        "0:00", "0:09", "1:15", "59:59", "1:00:00", "1:02:05", "8:06", "0:00",
+    ]

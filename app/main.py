@@ -35,6 +35,7 @@ from app.routes.projects import router as projects_router
 from app.routes.notes import router as notes_router
 from app.routes.picker import router as picker_router
 from app.routes.settings import router as settings_router
+from app.routes.conversions import router as conversions_router
 from app.routes.downloads import router as downloads_router
 from app.routes.questions import router as questions_router
 from app.routes.runs import router as runs_router
@@ -56,7 +57,7 @@ from app.storage import (
     StorageError,
     utc_now,
 )
-from app.timefmt import utc_stamp, utc_stamp_range
+from app.timefmt import clock_duration, utc_stamp, utc_stamp_range
 from app.urls import project_url, static_url
 from app.usage import UsageMonitor
 from app.views import project_card
@@ -162,6 +163,7 @@ def create_app(
     templates.env.filters["md"] = render_markdown
     templates.env.filters["utc_stamp"] = utc_stamp
     templates.env.filters["utc_stamp_range"] = utc_stamp_range
+    templates.env.filters["clock"] = clock_duration
     templates.env.globals["project_url"] = project_url
     # New agents start from their type's default (Settings → Agents); empty = CLI default.
     templates.env.globals["agent_defaults"] = lambda: read_agent_defaults(app_settings.home)
@@ -341,6 +343,7 @@ def create_app(
     app.include_router(usage_router)
     app.include_router(questions_router)
     app.include_router(downloads_router)
+    app.include_router(conversions_router)
     app.include_router(notes_router)
     app.include_router(settings_router)
     app.include_router(picker_router)

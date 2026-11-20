@@ -90,3 +90,39 @@ test("a store reset with a dotted downloads.conversions epoch is never shown as 
   assert.equal(staleDownloadsList(shown, '<div id="downloads-list" data-revision="5" data-epoch="ab12.cd34">'), true);
   assert.equal(staleDownloadsList(shown, '<div id="downloads-list" data-revision="1" data-epoch="ab12.ef56">'), false);
 });
+
+test("a conversions list follows the same staleness rule", function () {
+  const target = { id: "conversions-list", dataset: { revision: "9", epoch: "a.b.c" } };
+  assert.equal(staleDownloadsList(target, '<div id="conversions-list" data-revision="8" data-epoch="a.b.c">'), true);
+  assert.equal(staleDownloadsList(target, '<div id="conversions-list" data-revision="3" data-epoch="a.b.d">'), false);
+});
+
+test("a newly queued conversion opens the collapsed Conversions panel", function () {
+  const panel = { open: false };
+  const list = { id: "conversions-list", dataset: { active: "0" }, closest: (s) => (s === "#conversions-panel" ? panel : null) };
+  assert.equal(openDownloadsPanelForNew(list, '<div id="conversions-list" data-active="1">'), true);
+  assert.equal(panel.open, true);
+  const closed = { open: false };
+  const same = { id: "conversions-list", dataset: { active: "1" }, closest: () => closed };
+  assert.equal(openDownloadsPanelForNew(same, '<div id="conversions-list" data-active="1">'), false);
+  assert.equal(closed.open, false);
+});
+
+test("a refused Cancel in the Conversions panel pops up too", function () {
+  const shown = [];
+  const source = { closest: (s) => (s === "#conversions-panel" ? {} : null) };
+  const xhr = { status: 409, responseText: JSON.stringify({ detail: "C1 has nothing to cancel: it is converted" }) };
+  assert.equal(alertDownloadsError(source, xhr, (text) => shown.push(text)), true);
+  assert.deepEqual(shown, ["C1 has nothing to cancel: it is converted"]);
+});
+
+const { tickElapsedClocks } = require("../../app/static/app.js");
+
+test("the elapsed clock counts on from the seconds the server rendered", function () {
+  const clock = { dataset: { elapsed: "125" }, textContent: "2:05" };
+  const doc = { querySelectorAll: () => [clock] };
+  tickElapsedClocks(doc, 1_000_000);
+  assert.equal(clock.textContent, "2:05");
+  tickElapsedClocks(doc, 1_000_000 + 3_600_000);
+  assert.equal(clock.textContent, "1:02:05");
+});

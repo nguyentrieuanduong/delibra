@@ -77,13 +77,19 @@ textarea { min-height: 7rem; }
   display: grid;
   gap: .75rem;
   grid-area: files;
-  /* Downloads (capped, scrolls), then the file browser and the reader. */
+  /* Downloads and Conversions (each capped, scrolls), then the file browser and the reader. */
   grid-template-rows: auto minmax(10rem, 2fr) minmax(12rem, 3fr);
   min-height: 0;
   min-width: 0;
 }
 #file-browser-host, #file-reader { min-height: 0; overflow: auto; }
-.workspace-files > .downloads-panel { margin: 0; max-height: 35vh; overflow: auto; overflow-wrap: anywhere; }
+.transfer-panels { display: grid; gap: .5rem; min-height: 0; min-width: 0; }
+.transfer-panels > .downloads-panel { margin: 0; max-height: 30vh; overflow: auto; overflow-wrap: anywhere; padding-top: 0; }
+/* The title stays put while the panel's list scrolls under it (user request 2026-11-20).
+   The panel's top padding moves into the title so nothing shows above it. */
+.transfer-panels > .downloads-panel > summary { background: Canvas; padding-top: .5rem; position: sticky; top: 0; z-index: 1; }
+/* One scroll box per panel: the panel itself, not also its list. */
+.transfer-panels .downloads { max-height: none; overflow: visible; }
 .file-reader-empty { opacity: .55; }
 /* Keeps the large bold `header` text, but not its 2rem bottom margin. */
 .file-view-header {
@@ -405,6 +411,9 @@ textarea { min-height: 7rem; }
 .download p { margin: 0 0 .35rem; }
 .download-url code { word-break: break-all; }
 .download-reason { color: #b47b20; }
+/* Only the panel scrolls (30vh): no second, nested scroll box as the Downloads list has. */
+.conversions { list-style: none; margin: 0; padding: 0; }
+.conversion-progress { font-variant-numeric: tabular-nums; }
 .download-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; }
 .question-collapsed[open] .question-preview { display: none; }
 
