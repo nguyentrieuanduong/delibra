@@ -56,7 +56,7 @@ class DownloadRecord:
     check_note: str | None = None  # the model check's free text; never rendered (B3)
     convert: bool = False  # convert to Markdown once downloaded (the turn's setting)
     converted_path: str | None = None
-    convert_state: str | None = None  # converting | converted | failed | skipped
+    convert_state: str | None = None  # queued | converting | converted | failed | skipped | cancelled
     convert_reason: str | None = None
 
     @property
@@ -224,7 +224,7 @@ class DownloadStore:
                 book.requests[index] = replace(record, state="failed", reason="interrupted by restart")
             elif record.state == "checking":
                 book.requests[index] = replace(record, state="refused", reason="model check interrupted", masked=True)
-            elif record.convert_state == "converting":
+            elif record.convert_state in ("queued", "converting"):
                 book.requests[index] = replace(record, convert_state="failed", convert_reason="interrupted by restart")
             else:
                 continue

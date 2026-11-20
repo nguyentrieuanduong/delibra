@@ -171,10 +171,11 @@ def test_budget_keys_separate_auto_runs_from_each_chat_reply(tmp_path) -> None:
     assert store.load().run_bytes == {f"chat-{'t' * 32}-5": 100}
 
 
-def test_an_interrupted_conversion_is_marked_failed_at_startup(tmp_path: Path) -> None:
+@pytest.mark.parametrize("convert_state", ["queued", "converting"])
+def test_an_interrupted_conversion_is_marked_failed_at_startup(tmp_path: Path, convert_state: str) -> None:
     store = DownloadStore(tmp_path)
     record = add(store, convert=True)
-    store.update(record.id, state="downloaded", path="raw/a.org/x.pdf", convert_state="converting")
+    store.update(record.id, state="downloaded", path="raw/a.org/x.pdf", convert_state=convert_state)
 
     store.recover()
 

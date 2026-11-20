@@ -12,6 +12,7 @@ converts; pypdf is the PDF fallback; xlrd reads legacy .xls.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
@@ -456,17 +457,37 @@ def _result(text: str, display_path: str, source_sha256: str, kind: str) -> Conv
     return ConvertResult("converted", reason, markdown.encode("utf-8"), kind)
 
 
+def _step_limit(kind: str, pages: int, timeout: float | None) -> float:
+    """The main conversion step's time limit."""
+
+    if timeout:
+        return timeout
+    if kind != "pdf":
+        return OFFICE_SECONDS
+    return min(PDF_BASE_SECONDS + PDF_SECONDS_PER_PAGE * pages, MAX_SECONDS)
+
+
+def total_limit(kind: str, pages: int, timeout: float | None, models: bool) -> float:
+    """The longest the whole conversion can take: identify, then every step it may run."""
+
+    step = _step_limit(kind, pages, timeout)
+    if kind == "doc":
+        return IDENTIFY_SECONDS + 2 * step  # textutil, then Docling
+    if kind != "pdf":
+        return IDENTIFY_SECONDS + step
+    return IDENTIFY_SECONDS + (step if models else 0) + FALLBACK_SECONDS
+
+
 async def _convert(
     run: _Run, staged: Path, kind: str, pages: int, display_path: str, source_sha256: str,
     timeout: float | None,
 ) -> ConvertResult:
+    limit = _step_limit(kind, pages, timeout)
     if kind != "pdf":
-        limit = timeout or OFFICE_SECONDS
         text, reason = await (_doc_step(run, staged, limit) if kind == "doc" else _step(run, staged, kind, limit))
         if text is None:
             return ConvertResult("failed", reason, kind=kind)
         return _result(text, display_path, source_sha256, kind)
-    limit = timeout or min(PDF_BASE_SECONDS + PDF_SECONDS_PER_PAGE * pages, MAX_SECONDS)
     if run.models_dir is None:
         docling_reason = NO_MODELS
     else:
@@ -495,6 +516,7 @@ async def convert_file(
     file_limit: int = FILE_MAX_BYTES,
     scratch_limit: int = SCRATCH_MAX_BYTES,
     poll: float = SCRATCH_POLL_SECONDS,
+    on_limit: Callable[[float], None] | None = None,
 ) -> ConvertResult:
     if not Path(sandbox).is_file():
         return ConvertResult("unsupported", "conversion needs macOS sandbox-exec")  # design Non-goals: skipped
@@ -514,5 +536,7 @@ async def convert_file(
         return ConvertResult(
             "failed", f"file type checks disagree (Magika: {kind}, bytes: {found})", kind=kind
         )
+    if on_limit is not None:
+        on_limit(total_limit(kind, pages, timeout, run.models_dir is not None))
     result = await _convert(run, staged, kind, pages, display_path, source_sha256, timeout)
     return _with_note(result, _name_note(display_path, kind))

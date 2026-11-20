@@ -625,3 +625,38 @@ async def test_an_aborted_worker_is_a_normal_converter_error(tmp_path) -> None:
     result = await convert_file(staged, display_path="a.docx", source_sha256="a" * 64,
                                 scratch_root=tmp_path / "scratch", worker=worker)
     assert (result.state, result.reason) == ("failed", "converter error: stopped by signal 6")
+
+
+@MAC
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label, pages, models, expected", [
+    ("pdf", 3, True, 60 + 126 + 300),  # identify + Docling (120 s + 2 s/page) + pypdf fallback
+    ("pdf", 3, False, 60 + 300),  # no models: identify + pypdf only
+    ("pdf", 5000, True, 60 + 1800 + 300),  # the Docling step's cap
+    ("docx", None, True, 60 + 300),
+    ("doc", None, True, 60 + 300 + 300),  # textutil, then Docling
+])
+async def test_the_converter_reports_the_whole_conversions_time_limit(
+    tmp_path, label, pages, models, expected
+) -> None:
+    worker = stub_worker(tmp_path, "open(output, 'w').write('enough words in this output for the check')\n",
+                         label=label, pages=pages)
+    staged = tmp_path / "in.bin"
+    staged.write_bytes({"pdf": b"%PDF-1.7", "docx": b"PK\x03\x04", "doc": doc_convert.OLE_MAGIC}[label])
+    limits: list[float] = []
+
+    await convert_file(staged, display_path=f"a.{label}", source_sha256="a" * 64,
+                       scratch_root=tmp_path / "scratch", models_dir=tmp_path if models else None,
+                       worker=worker, on_limit=limits.append)
+
+    assert limits == [expected]
+
+
+@MAC
+@pytest.mark.asyncio
+async def test_no_time_limit_is_reported_for_a_file_that_is_not_converted(tmp_path) -> None:
+    worker = stub_worker(tmp_path, "raise SystemExit(9)\n", label="txt", pages=None, is_text=True)
+    limits: list[float] = []
+    await convert_file(staged_pdf(tmp_path), display_path="a.txt", source_sha256="a" * 64,
+                       scratch_root=tmp_path / "scratch", worker=worker, on_limit=limits.append)
+    assert limits == []
