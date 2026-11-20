@@ -1,6 +1,10 @@
 <section class="chat-timeline" id="chat-timeline" aria-label="Conversation">
   <div class="timeline-heading">
-    <h2>Conversation</h2><span>Oldest → newest</span>
+    <h2>Conversation</h2>
+    <div class="timeline-heading-actions">
+      <span>Oldest → newest</span>
+      <button type="button" data-collapse-messages aria-label="Collapse all messages"{% if not timeline %} hidden{% endif %}>Collapse all</button>
+    </div>
   </div>
   {% set chat_view = true %}
   {% for item in timeline %}

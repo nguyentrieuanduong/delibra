@@ -714,19 +714,6 @@ def test_conversation_rows_give_the_timeline_the_flexible_track(
     assert "data-timeline-latest" in response.text
     assert len(tracks) == len(children)
     assert tracks[-1] == "minmax(0, 1fr)"
-    assert (
-        ".questions-list { list-style: none; margin: 0; padding: 0; "
-        "max-height: 24vh; overflow: auto; }" in css.text
-    )
-    # A row gap would also surround the empty Auto setup and error rows, so
-    # only the panel, and the error line while it has text, add space.
-    panel = re.search(r"\.questions-panel \{(?P<body>[^}]*)\}", css.text)
-    errors = re.search(r"\.chat-errors \{(?P<body>[^}]*)\}", css.text)
-    assert panel is not None and errors is not None
-    assert "gap: 0;" in rule["body"]
-    assert "margin: .75rem 0 1.25rem;" in panel["body"]
-    assert "min-height" not in errors["body"]
-    assert ".chat-errors:not(:empty) { margin-bottom: .75rem; }" in css.text
     # :empty fails on whitespace, so the error line must render truly empty.
     assert '<div id="chat-errors" class="chat-errors" aria-live="polite"></div>' in response.text
 

@@ -916,7 +916,9 @@ discussion runs the other agents stand in, as in build runs. Build runs never
 read this list, and chat never reads the build list. A project whose path has
 characters Claude's read rules cannot express cannot save a chat list.
 
-## Coding mode and build runs
+## Coding mode and build runs (experimental)
+
+Delibra is research-first; coding mode and build runs are experimental.
 
 Each project has a **Coding** tab in its settings. Coding mode is off by default,
 and only this machine (a loopback client) can change it. While it is off, every
@@ -1351,11 +1353,12 @@ Delibra provides write isolation, not read confidentiality:
 - Agent cwd is the session `workspace/`, with private temp at `workspace/.tmp/`.
   Write access starts there and may include the explicitly granted writable
   project directories described above.
-  Build turns (see "Coding mode and build runs") are the exception: they run from
-  the project root, write the project except `.delibra/` and `.git/`, and get a
-  sandboxed shell with allowlisted command network. With Docker on, their
-  containers run in a VM with the risks listed under "Docker in build runs":
-  on Lima 2.2.x and on local Docker, a container can reach Delibra's port.
+  Build turns (see "Coding mode and build runs (experimental)") are the
+  exception: they run from the project root, write the project except
+  `.delibra/` and `.git/`, and get a sandboxed shell with allowlisted command
+  network. With Docker on, their containers run in a VM with the risks listed
+  under "Docker in build runs": on Lima 2.2.x and on local Docker, a container
+  can reach Delibra's port.
 - Claude receives only Read/Write/Edit/Glob/Grep and native web tools under the
   verified safe command. Codex runs in `workspace-write`, with shell network disabled
   and native web search enabled.

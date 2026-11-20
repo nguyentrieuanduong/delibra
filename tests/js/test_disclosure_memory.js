@@ -8,7 +8,10 @@ const {
   rememberDisclosureChoice,
   syncConversationDisclosure,
   syncAgentDisclosure,
+  collapseConversation,
+  syncCollapseButton,
   DISCLOSURE_LIMIT,
+  MESSAGE_DISCLOSURE_KEY,
 } = require("../../app/static/app.js");
 
 function memoryStorage(initial = {}) {
@@ -148,4 +151,91 @@ test("Agent information opens only where the reader opened it", () => {
   assert.equal(gamma.details.open, false);
   assert.equal(syncAgentDisclosure(root, {}), 0);
   assert.equal(alpha.details.open, false);
+});
+
+function openMessages(ids) {
+  return ids.map((id) => {
+    const item = message(id);
+    item.details.open = true;
+    return item;
+  });
+}
+
+test("Collapse all closes every message and stores only what would reopen", () => {
+  const key = MESSAGE_DISCLOSURE_KEY;
+  const storage = memoryStorage({
+    [key]: JSON.stringify({ "other-project-round": true, "round-a-1": true, "round-a-2": false }),
+  });
+  const messages = openMessages(["round-a-1", "round-a-2", "round-a-3", "round-a-4"]);
+  messages.push(message("round-a-5", false));
+  const newest = message("round-a-6");
+  newest.details.open = true;
+  messages.push(newest);
+
+  assert.equal(collapseConversation(timelineOf(messages), storage), 2);
+  assert.deepEqual(
+    messages.filter((item) => item.details).map((item) => item.details.open),
+    [false, false, false, false, false]
+  );
+  // The opened older message and the newest are stored closed; the rest keep
+  // the default (closed) without an entry, and other entries are untouched.
+  assert.deepEqual(readDisclosureChoices(storage, key), {
+    "other-project-round": true,
+    "round-a-2": false,
+    "round-a-1": false,
+    "round-a-6": false,
+  });
+
+  // After a reload or swap everything stays closed; a new message still opens.
+  const later = message("round-a-7");
+  const again = [...messages, later];
+  assert.equal(syncConversationDisclosure(timelineOf(again), readDisclosureChoices(storage, key)), true);
+  assert.deepEqual(
+    again.filter((item) => item.details).map((item) => item.details.open),
+    [false, false, false, false, false, true]
+  );
+});
+
+test("Collapse all with a full store keeps every message closed", () => {
+  const key = MESSAGE_DISCLOSURE_KEY;
+  const stored = {};
+  for (let i = 0; i < DISCLOSURE_LIMIT; i += 1) {
+    stored[`round-a-${i}`] = true;
+  }
+  const storage = memoryStorage({ [key]: JSON.stringify(stored) });
+  const ids = Array.from({ length: DISCLOSURE_LIMIT + 50 }, (_, i) => `round-a-${i}`);
+  const messages = openMessages(ids);
+
+  assert.equal(collapseConversation(timelineOf(messages), storage), DISCLOSURE_LIMIT + 1);
+  const choices = readDisclosureChoices(storage, key);
+  assert.equal(Object.keys(choices).length, DISCLOSURE_LIMIT);
+  assert.equal(choices[ids[ids.length - 1]], false);
+  assert.ok(Object.values(choices).every((open) => open === false));
+
+  const reloaded = ids.map((id) => message(id));
+  syncConversationDisclosure(timelineOf(reloaded), choices);
+  assert.ok(reloaded.every((item) => item.details.open === false));
+});
+
+test("Collapse all without storage still closes every message", () => {
+  const messages = openMessages(["round-a-1", "round-a-2"]);
+  assert.equal(collapseConversation(timelineOf(messages), null), 0);
+  assert.deepEqual(messages.map((item) => item.details.open), [false, false]);
+  assert.equal(collapseConversation(timelineOf([]), throwingStorage()), 0);
+});
+
+test("Collapse all shows only while the conversation has a message", () => {
+  const button = { hidden: false };
+  const timeline = (messages) => ({
+    querySelector(selector) {
+      assert.equal(selector, "[data-collapse-messages]");
+      return button;
+    },
+    querySelectorAll: () => messages,
+  });
+  assert.equal(syncCollapseButton(timeline([])), false);
+  assert.equal(button.hidden, true);
+  assert.equal(syncCollapseButton(timeline([message("round-a-1")])), true);
+  assert.equal(button.hidden, false);
+  assert.equal(syncCollapseButton({ querySelector: () => null, querySelectorAll: () => [] }), false);
 });

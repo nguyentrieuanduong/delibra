@@ -2,7 +2,19 @@
 body { max-width: 960px; margin: 0 auto; padding: 1rem; line-height: 1.5; }
 body.chat-page { max-width: none; min-width: 900px; }
 body.chat-page { padding-top: .5rem; }
-body.chat-page > header { margin-bottom: .5rem; }
+/* The site header sits over the agents column only, so the conversation and
+   files columns start at the top of the page (user request 2026-11-20). It
+   keeps a fixed height, which the agents column reserves above its content. */
+body.chat-page { --chat-header-height: 1.875rem; }
+body.chat-page > header {
+  height: var(--chat-header-height);
+  left: 1rem;
+  line-height: var(--chat-header-height);
+  margin: 0;
+  position: absolute;
+  top: .5rem;
+  white-space: nowrap;
+}
 header { font-size: 1.25rem; font-weight: 700; margin-bottom: 2rem; }
 footer { border-top: 1px solid #8885; display: flex; gap: 1rem; margin-top: 3rem; padding-top: 1rem; }
 .round { border: 1px solid #8885; border-radius: .5rem; margin: 1rem 0; padding: 1rem; }
@@ -64,7 +76,7 @@ textarea { min-height: 7rem; }
   gap: .65rem;
   grid-template-areas: "agents conversation files";
   grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) minmax(12rem, .7fr);
-  grid-template-rows: minmax(32rem, calc(100vh - 4rem));
+  grid-template-rows: minmax(32rem, calc(100vh - 1rem));
 }
 .workspace-topic {
   align-items: stretch;
@@ -283,6 +295,7 @@ textarea { min-height: 7rem; }
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  padding-top: calc(var(--chat-header-height, 0rem) + .5rem);
 }
 #agent-sidebar { min-height: 0; overflow: auto; }
 .workspace-agents :is(input, select, textarea, button) { font: inherit; }
@@ -305,14 +318,24 @@ textarea { min-height: 7rem; }
 .agent-role h4, .agent-role p { margin: .25rem 0; }
 .role-instructions { white-space: pre-wrap; }
 .immutability-hint { font-size: .85rem; opacity: .75; }
+/* Stays put while the messages scroll under it, as the Downloads and
+   Conversions titles do (user request 2026-11-20). Its bottom padding is the
+   space above the first message: half the former 1rem. */
 .timeline-heading {
   align-items: baseline;
+  background: Canvas;
   display: flex;
   justify-content: space-between;
-  padding: 0 .25rem;
+  padding: 0 .25rem .5rem;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
+.timeline-heading + :is(.round, .live-round) { margin-top: 0; }
 .timeline-heading h2 { font-size: 1rem; margin: 0; }
+.timeline-heading-actions { align-items: baseline; display: flex; gap: .5rem; }
 .timeline-heading span { font-size: .8rem; opacity: .7; }
+.timeline-heading button { font-size: .8rem; }
 .round-header {
   align-items: center;
   display: flex;
@@ -381,9 +404,10 @@ textarea { min-height: 7rem; }
 .agent-preview.empty { opacity: .7; }
 .chat-errors { color: #c43b2f; }
 .chat-errors:not(:empty) { margin-bottom: .75rem; }
-@media (max-width: 720px) { .chat-layout { grid-template-columns: 1fr; } }
 
-.questions-panel { border: 1px solid #8885; border-radius: .5rem; margin: .75rem 0 1.25rem; min-width: 0; padding: .5rem 1rem; }
+/* .5rem above (was .75rem); .625rem below, the space above the Conversation
+   heading (was 1.25rem; user request 2026-11-20). */
+.questions-panel { border: 1px solid #8885; border-radius: .5rem; margin: .5rem 0 .625rem; min-width: 0; padding: .5rem 1rem; }
 .questions-list { list-style: none; margin: 0; padding: 0; max-height: 24vh; overflow: auto; }
 .question { border-top: 1px solid #8885; padding: .75rem 0; }
 .question-meta { margin-top: 0; }

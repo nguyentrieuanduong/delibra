@@ -128,3 +128,33 @@ def test_blocked_storage_keeps_the_rendered_state(
     expect(page.locator(f"#agent-select-{beta}[aria-current=true]")).to_be_visible()
     assert not _info_open(page, alpha)
     assert errors == []
+
+
+@pytest.mark.browser
+def test_collapse_all_closes_every_message_until_a_new_one_arrives(
+    live_server: LiveServer, page: Any, tmp_path: Path
+) -> None:
+    app = live_server(["success"], tmp_path)
+    alpha = app["session_ids"][0]
+    page.goto(f"{app['base_url']}/projects/Verify/chat?agent={alpha}")
+    expect(page.locator(PROMPT)).to_be_enabled(timeout=10_000)
+    rounds = [f"round-{alpha}-{n}" for n in (1, 2, 3, 4)]
+    collapse = page.get_by_role("button", name="Collapse all messages")
+    expect(collapse).to_be_hidden()
+    for n, round_id in enumerate(rounds[:3], start=1):
+        _send(page, f"Message {n}", round_id)
+    page.click(f"#{rounds[0]} .round-details > summary")
+    assert [_message_open(page, r) for r in rounds[:3]] == [True, False, True]
+
+    expect(collapse).to_be_visible()
+    collapse.click()
+    assert [_message_open(page, r) for r in rounds[:3]] == [False, False, False]
+
+    page.reload()
+    expect(page.locator(PROMPT)).to_be_enabled(timeout=10_000)
+    assert [_message_open(page, r) for r in rounds[:3]] == [False, False, False]
+
+    # A new message follows the default: the newest opens, the rest stay closed.
+    _send(page, "Message 4", rounds[3])
+    expect(page.locator(f"#{rounds[3]} .round-details[open]")).to_have_count(1)
+    assert [_message_open(page, r) for r in rounds] == [False, False, False, True]

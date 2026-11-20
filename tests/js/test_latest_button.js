@@ -4,11 +4,17 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { goToLatestMessage, syncLatestButton } = require("../../app/static/app.js");
 
-function fakeDocument({ messages, viewTop = 100, viewBottom = 500, reduced = false }) {
+function fakeDocument({ messages, viewTop = 100, viewBottom = 500, reduced = false, headingBottom = null }) {
   const scrolls = [];
+  const heading =
+    headingBottom === null ? null : { getBoundingClientRect: () => ({ bottom: headingBottom }) };
   const timeline = {
     scrollTop: 40,
     getBoundingClientRect: () => ({ top: viewTop, bottom: viewBottom }),
+    querySelector: (selector) => {
+      assert.equal(selector, ".timeline-heading");
+      return heading;
+    },
     querySelectorAll: (selector) => {
       assert.equal(selector, ".round, .live-round");
       return messages;
@@ -54,4 +60,23 @@ test("scrolls the last message's top to the panel top and opens it", function ()
   goToLatestMessage(reduced);
   assert.equal(reduced.scrolls[0].behavior, "auto");
   assert.equal(goToLatestMessage(fakeDocument({ messages: [] })), false);
+});
+
+test("the sticky Conversation heading covers the top of the panel", function () {
+  // The last message starts under the heading: out of view, so the button shows.
+  const covered = fakeDocument({ messages: [message(120)], headingBottom: 132 });
+  assert.equal(syncLatestButton(covered), true);
+  const below = fakeDocument({ messages: [message(140)], headingBottom: 132 });
+  assert.equal(syncLatestButton(below), false);
+  // Sub-pixel rounding after Latest: a fraction above the heading is in view.
+  const rounded = fakeDocument({ messages: [message(131.7)], headingBottom: 132 });
+  assert.equal(syncLatestButton(rounded), false);
+  assert.equal(rounded.button.hidden, true);
+  // A start within 1px of the panel's bottom shows nothing of the message.
+  const atBottom = fakeDocument({ messages: [message(499.7)], headingBottom: 132 });
+  assert.equal(syncLatestButton(atBottom), true);
+  // Latest lands just below the heading, not under it.
+  const page = fakeDocument({ messages: [message(900)], headingBottom: 132 });
+  goToLatestMessage(page);
+  assert.deepEqual(page.scrolls, [{ top: 40 + 900 - 132, behavior: "smooth" }]);
 });
