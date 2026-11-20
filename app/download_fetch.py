@@ -70,13 +70,15 @@ QUARANTINE = "com.apple.quarantine"
 
 def _quarantine(descriptor: int) -> None:
     """Mark a download as from the internet, so Gatekeeper asks before it runs or
-    opens as an app (review round 1). Best effort: a failure is only logged."""
+    opens as an app (review round 1). Fails closed: a file that cannot carry the
+    mark is not saved (review B2). Not macOS: nothing to set."""
 
     if _LIBC is None:
         return
     value = f"0081;{int(time.time()):08x};Delibra;".encode()
     if _LIBC.fsetxattr(descriptor, QUARANTINE.encode(), value, len(value), 0, 0) != 0:
         LOGGER.warning("could not set %s on a download: errno %d", QUARANTINE, ctypes.get_errno())
+        raise FetchError("could not mark the file as downloaded from the internet (quarantine)")
 
 
 class _PartFile:
@@ -101,7 +103,11 @@ class _PartFile:
         except FileNotFoundError:
             pass
         self.descriptor = os.open(self.part, _CREATE, 0o644, dir_fd=self.directory)
-        _quarantine(self.descriptor)
+        try:
+            _quarantine(self.descriptor)
+        except FetchError:
+            self.__exit__(None, None, None)  # a with-statement never exits a failed __enter__
+            raise
         return self
 
     def write(self, data: bytes) -> None:

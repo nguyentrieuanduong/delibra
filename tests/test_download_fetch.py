@@ -227,3 +227,17 @@ async def test_downloads_are_quarantined_for_gatekeeper(project):
     shown = subprocess.run(["/usr/bin/xattr", "-p", "com.apple.quarantine", str(project / result.path)],
                            capture_output=True, text=True)
     assert shown.returncode == 0 and shown.stdout.startswith("0081;") and ";Delibra;" in shown.stdout
+
+
+@pytest.mark.asyncio
+async def test_a_download_that_cannot_be_quarantined_is_not_saved(project, monkeypatch):
+    class NoXattrs:  # a volume that refuses extended attributes
+        def fsetxattr(self, *args):
+            return -1
+
+    monkeypatch.setattr("app.download_fetch._LIBC", NoXattrs())
+    server = Server({"/p": (200, {}, b"%PDF-1.7 hello")})
+    fetcher = Fetcher(resolve=server.resolve({"files.test": "127.0.0.1"}), address_allowed=lambda a: True)
+    with pytest.raises(FetchError, match=r"could not mark the file as downloaded from the internet \(quarantine\)"):
+        await fetch(fetcher, project, "http://files.test/p", name="paper.pdf")
+    assert [p for p in project.rglob("*") if p.is_file()] == []  # neither the file nor its .part
