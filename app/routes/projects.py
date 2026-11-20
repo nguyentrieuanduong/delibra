@@ -34,7 +34,7 @@ from app.converter_models import models_state
 from app.build_git import default_git_exclude, ensure_local_excludes
 from app.coding_env import ENV_DIRNAME, prepare_env, server_environment
 from app.docker_backend import DockerUnavailable
-from app.download_store import DownloadStore
+from app.download_store import written_folders
 from app.global_instruction import GlobalInstructionError, read_global_instruction
 from app.models import Project, holds_native_chat
 from app.notes import NoteStore, chat_note_store
@@ -449,7 +449,7 @@ async def _refresh_local_excludes(project: Project, policy: CodingPolicy) -> Non
 
     try:
         try:
-            used_folders = DownloadStore(ProjectStore(project).root).used_folders()
+            used_folders = written_folders(ProjectStore(project).root)
         except StorageError:
             # Only `git status` noise: build commits fail closed on their own.
             used_folders = set()
@@ -729,7 +729,7 @@ async def save_conversion_settings(
     return await _save_coding_part(
         request, project_id, change, locked=False,
         typed={"downloads_convert": "true" if downloads_convert else ""},
-        refresh_excludes=False,
+        refresh_excludes=True,  # the converted folder is excluded while conversion is on
         tab="general",
     )
 

@@ -87,7 +87,7 @@
     {% set dl_provider = typed.get('downloads_check_provider', coding.downloads.check_provider) %}
       <label class="auto-choice"><input type="checkbox" name="downloads_enabled" value="true"{% if dl_enabled %} checked{% endif %}> Let Delibra download files agents request</label>
       <label>Download folder <input name="downloads_folder" value="{{ typed.get('downloads_folder', coding.downloads.folder) }}" maxlength="4096" required></label>
-      <p class="hint">Inside the project. Delibra never commits this folder, even files already tracked there.</p>
+      <p class="hint">Inside the project. Delibra never commits this folder while downloads are on, nor its <code>converted/</code> folder while document conversion is on, even files already tracked there. Folders it has written to before stay excluded after you switch a setting off or change the folder.</p>
       <label>Approval
         <select name="downloads_approval">
           <option value="manual"{% if dl_approval == 'manual' %} selected{% endif %}>Manual: I approve each download</option>

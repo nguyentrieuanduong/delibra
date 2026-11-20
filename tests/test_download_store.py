@@ -65,12 +65,13 @@ def test_project_excludes_fail_closed_on_unreadable_records(tmp_path: Path) -> N
     project_dir = tmp_path / "project"; project_dir.mkdir()
     project = RegistryStore(tmp_path / "home").register("P", project_dir)
     store = ProjectStore(project)
-    assert project_download_excludes(store) == ()
+    # Conversion is on by default: requested files' Markdown has its folder excluded.
+    assert project_download_excludes(store) == ("docs/source/raw/converted",)
     policy = store.coding_policy()
     policy.downloads = DownloadPolicy(enabled=True, folder="raw")
     store.replace_coding_policy(policy)
     add(DownloadStore(store.root), folder="old")
-    assert project_download_excludes(store) == ("old", "raw")
+    assert project_download_excludes(store) == ("old", "raw", "raw/converted")
     (store.root / "downloads" / "requests.json").write_text("{")
     assert project_download_excludes(store) is None
 
@@ -195,3 +196,25 @@ def test_status_and_index_show_the_markdown_copy(tmp_path: Path) -> None:
     assert '"converted": "raw/a.org/x.pdf.md"' in status and '"convert_state": "converted"' in status
     assert "structure lost" in status
     assert "| Markdown |" in index and "raw/a.org/x.pdf.md" in index
+
+
+def test_project_excludes_cover_where_conversions_write(tmp_path: Path) -> None:
+    from app.convert_store import ConversionStore
+
+    project_dir = tmp_path / "project"; project_dir.mkdir()
+    project = RegistryStore(tmp_path / "home").register("P", project_dir)
+    store = ProjectStore(project)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=False, folder="raw", convert=True)
+    store.replace_coding_policy(policy)
+    assert project_download_excludes(store) == ("raw/converted",)
+
+    conversions = ConversionStore(store.root)  # an earlier folder's Markdown stays excluded
+    done = conversions.add("a.pdf", request="c1.json", auto_run=0, round_n=1, agent="a" * 32)
+    conversions.update(done.id, state="converted", output="old/src/converted/docs/a.pdf.md")
+    policy.downloads = DownloadPolicy(enabled=False, folder="raw", convert=False)
+    store.replace_coding_policy(policy)
+    assert project_download_excludes(store) == ("old/src/converted",)
+
+    (store.root / "downloads" / "conversions.json").write_text("{")
+    assert project_download_excludes(store) is None  # unknown: build commits fail closed

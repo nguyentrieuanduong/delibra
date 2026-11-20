@@ -7068,6 +7068,40 @@ async def test_build_commits_exclude_the_download_folder(tmp_path, monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_build_commits_exclude_converted_markdown_with_downloads_off(tmp_path, monkeypatch) -> None:
+    manager, factory, project_id, session_ids, store = auto_manager_fixture(
+        tmp_path, [PlannedOutput("A", "agree"), PlannedOutput("B", "agree")]
+    )
+    root = store.project_path
+    initial = init_git_project(root, monkeypatch)
+    enable_build(store, monkeypatch)
+    policy = store.coding_policy()
+    policy.downloads = DownloadPolicy(enabled=False, folder="raw", convert=True)  # requests only
+    store.replace_coding_policy(policy)
+    manager.downloads = DownloadManager(manager.settings, {}, fetcher=StubFetcher())
+    original = manager.runner.adapter_factory
+
+    def editing(config):
+        adapter = original(config)
+        (root / "raw" / "converted" / "docs").mkdir(parents=True, exist_ok=True)
+        (root / "raw" / "converted" / "docs" / f"a{factory.created}.pdf.md").write_text("# converted\n")
+        (root / "raw" / f"mine{factory.created}.txt").write_text("the user's own file\n")
+        (root / f"notes{factory.created}.md").write_text("x\n")
+        return adapter
+
+    manager.runner.adapter_factory = editing
+    created = await start_build(manager, project_id, session_ids)
+    await wait_for_auto_terminal(manager, project_id, created.id)
+    changed = subprocess.run(
+        ["git", "-C", str(root), "log", "--name-only", "--format=", f"{initial}..HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.split()
+    assert any(name.startswith("notes") for name in changed)
+    assert any(name.startswith("raw/mine") for name in changed)  # downloads are off: raw/ is the user's
+    assert not any(name.startswith("raw/converted/") for name in changed)
+
+
+@pytest.mark.asyncio
 async def test_unreadable_download_records_turn_build_commits_off(tmp_path, monkeypatch) -> None:
     # Plan review B5: earlier download folders are unknown, so nothing is committed.
     manager, _factory, project_id, session_ids, store = auto_manager_fixture(

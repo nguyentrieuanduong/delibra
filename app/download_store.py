@@ -13,6 +13,7 @@ import uuid
 
 from app.build_git import DOWNLOADS_UNREADABLE  # noqa: F401  (re-exported; defined there to avoid a cycle)
 from app.coding import download_excludes
+from app.convert_store import ACTIVE as ACTIVE_CONVERSIONS, ConversionStore
 from app.download_rules import DOWNLOADS_DIR, MASKED_URL, url_host
 from app.storage import (
     ProjectStore, StorageError, atomic_write_bytes, ensure_project_subdirectory,
@@ -224,7 +225,7 @@ class DownloadStore:
                 book.requests[index] = replace(record, state="failed", reason="interrupted by restart")
             elif record.state == "checking":
                 book.requests[index] = replace(record, state="refused", reason="model check interrupted", masked=True)
-            elif record.convert_state in ("queued", "converting"):
+            elif record.convert_state in ACTIVE_CONVERSIONS:
                 book.requests[index] = replace(record, convert_state="failed", convert_reason="interrupted by restart")
             else:
                 continue
@@ -234,11 +235,27 @@ class DownloadStore:
         return changed
 
 
+CONVERTED_DIR = "/converted/"
+
+
+def written_folders(root: Path) -> set[str]:
+    """Every folder Delibra has written into: download folders, and the `converted`
+    folder of each requested conversion's Markdown. Raises StorageError if unknown."""
+
+    folders = DownloadStore(root).used_folders()
+    for record in ConversionStore(root).load():
+        if record.output is not None and CONVERTED_DIR in record.output:
+            # Output is <folder>/converted/<path>.md; the first match can only be wider
+            # than the real folder (a folder named "converted"), never narrower.
+            folders.add(record.output[: record.output.index(CONVERTED_DIR) + len(CONVERTED_DIR) - 1])
+    return folders
+
+
 def project_download_excludes(store: ProjectStore) -> tuple[str, ...] | None:
     """Folders Delibra's build commits exclude; None when they cannot be known (B5)."""
 
     try:
-        used = DownloadStore(store.root).used_folders()
+        used = written_folders(store.root)
     except StorageError:
         return None
     return download_excludes(store.coding_policy(), used)

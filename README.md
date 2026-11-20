@@ -1212,11 +1212,14 @@ kept.
   numeric suffix is added), and `<folder>/index.md` lists every download with
   its sha256. Treat downloaded files as untrusted material.
 - **Never committed.** Build commits and the clean-tree check exclude the
-  download folder, and every folder used before, by pathspec, so even tracked
-  files there are never committed and no ignore negation brings them back.
-  The folder is also the last line of the managed `.git/info/exclude` block.
-  If Delibra's download records (`.delibra/downloads/requests.json`) are
-  unreadable, build commits turn off until they are repaired.
+  download folder (while downloads are on), its `converted/` folder (while
+  document conversion is on, even with downloads off, since requested files'
+  Markdown goes there), and every such folder used before, by pathspec, so even
+  tracked files there are never committed and no ignore negation brings them
+  back. The folders are also the last lines of the managed `.git/info/exclude`
+  block. If Delibra's download or conversion records
+  (`.delibra/downloads/requests.json`, `conversions.json`) are unreadable,
+  build commits turn off until they are repaired.
 - **Restart.** Queued or running downloads become retryable `failed`
   (**Retry**), and their unused budget is returned; requests still under
   model check are refused.
