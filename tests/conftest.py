@@ -29,6 +29,7 @@ from app.storage import ProjectStore  # noqa: E402
 # Browser tests run in this many xdist groups: at most this many Chromium
 # pages at once (measured 2026-11-19: 1 group ~91 s wall, 2 ~59 s, 3 ~60 s).
 BROWSER_GROUPS = 2
+BROWSER_DIR = Path(__file__).resolve().parent / "browser"
 
 
 @pytest.hookimpl(tryfirst=True)  # before xdist reads the groups off the items
@@ -45,7 +46,13 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     at a time, to a single worker. No effect without xdist.
     """
 
-    browser = [item for item in items if item.get_closest_marker("browser") is not None]
+    # By folder as well as by marker, so a browser test that forgets the
+    # marker is still grouped.
+    browser = [
+        item
+        for item in items
+        if BROWSER_DIR in item.path.parents or item.get_closest_marker("browser") is not None
+    ]
     files = sorted({item.path for item in browser})
     for item in browser:
         group = files.index(item.path) % BROWSER_GROUPS
