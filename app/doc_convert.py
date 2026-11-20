@@ -531,7 +531,8 @@ async def _convert(
     fallback = await _step(run, staged, "pdf-text", FALLBACK_SECONDS)
     if fallback.text is None:
         return ConvertResult("failed", f"{docling_reason}; pypdf fallback: {fallback.reason}", kind=kind)
-    note = f"structure lost; converted with pypdf (Docling: {docling_reason})"
+    why = NO_MODELS if docling_reason == NO_MODELS else f"Docling: {docling_reason}"
+    note = f"structure lost; converted with pypdf ({why})"
     return _with_note(_result(fallback, display_path, source_sha256, kind), note)
 
 

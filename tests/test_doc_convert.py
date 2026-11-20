@@ -112,7 +112,7 @@ async def test_without_models_a_pdf_uses_pypdf_and_says_why(tmp_path) -> None:
                                 models_dir=None, worker=worker)
 
     assert result.reason == (
-        "structure lost; converted with pypdf (Docling: Docling models are not downloaded)"
+        "structure lost; converted with pypdf (Docling models are not downloaded)"
     )
 
 
@@ -684,7 +684,7 @@ async def test_a_blank_scanned_pdf_says_no_text_was_found_through_the_pypdf_fall
 
     assert result.state == "converted"
     assert result.reason == (
-        "structure lost; converted with pypdf (Docling: Docling models are not downloaded); "
+        "structure lost; converted with pypdf (Docling models are not downloaded); "
         "no text found; the file may be scanned images"
     )
     assert b"<!-- page 3 -->" in result.markdown  # the page markers stay in the output

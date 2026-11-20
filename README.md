@@ -1314,7 +1314,7 @@ Delibra converts documents to Markdown itself, so agents without a shell
   shared by every project in `$DELIBRA_HOME/models/docling`; each project's
   General tab shows a one-line status with a link there. Until they are
   downloaded PDFs are converted to plain text with pypdf (`structure lost;
-  converted with pypdf (Docling: Docling models are not downloaded)`); Office
+  converted with pypdf (Docling models are not downloaded)`); Office
   files need no models. The tab shows each model's repository, version (ref
   and short commit), download date and size, and offers:
   - **Check for updates**: lists each repository's branches, tags and 20 newest
