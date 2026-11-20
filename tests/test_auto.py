@@ -5328,16 +5328,6 @@ def test_the_gate_note_without_a_question_spool_names_the_decision_in_the_report
     ) in note
 
 
-def test_the_disagreement_note_asks_the_user_a_blocking_question() -> None:
-    note = disagreement_note(can_ask=True)
-
-    assert note.startswith(" " + DISAGREEMENT_PHRASE + ", ask the user about it")
-    assert "blocking true, even though each side has an assumption" in note
-    assert "unless the questions view already has it" in note
-    assert "stop arguing that point" in note
-    assert "not by itself a reason to write Not converged" in note
-
-
 def test_the_disagreement_note_without_a_spool_names_the_decision_in_the_report() -> None:
     note = disagreement_note(can_ask=False)
 

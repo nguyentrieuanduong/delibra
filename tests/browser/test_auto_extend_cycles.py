@@ -9,25 +9,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.browser.conftest import LiveServer
-from tests.browser.test_auto_timeline_swaps import _start_auto
-
-
-def _refresh_status(page: Any) -> None:
-    """The same GET and swap an sse:status event triggers."""
-
-    page.evaluate(
-        """() => {
-          window.statusBeforeRefresh = document.getElementById("auto-status");
-          const refresh = document.querySelector("#auto-status [hx-target='#auto-status']");
-          htmx.ajax("GET", refresh.getAttribute("hx-get"), {
-            target: "#auto-status",
-            swap: "outerHTML",
-          });
-        }"""
-    )
-    page.wait_for_function(
-        "() => document.getElementById('auto-status') !== window.statusBeforeRefresh"
-    )
+from tests.browser.test_auto_timeline_swaps import _refresh_status, _start_auto
 
 
 @pytest.mark.browser

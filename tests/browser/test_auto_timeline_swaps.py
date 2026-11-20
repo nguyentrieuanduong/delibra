@@ -42,6 +42,32 @@ def _start_auto(page: Any, base: str, session_ids: list[str], topic: str) -> Non
     page.click(f"{AUTO_DIALOG} form button[type=submit]")
 
 
+def _refresh_status(page: Any) -> None:
+    """The GET and #auto-status swap an sse:status event triggers, waited to settle.
+
+    It must be the SSE refresher span: the first [hx-target] in #auto-status
+    is a form (Add cycles, Stop) with no hx-get, and htmx.ajax with a null
+    path fetches the whole page into #auto-status.
+    """
+
+    page.evaluate(
+        """() => {
+          window.statusBeforeRefresh = document.getElementById("auto-status");
+          const refresh = document.querySelector(
+            "#auto-status span[hx-get][hx-target='#auto-status']"
+          );
+          htmx.ajax("GET", refresh.getAttribute("hx-get"), {
+            target: "#auto-status",
+            swap: "outerHTML",
+          });
+        }"""
+    )
+    page.wait_for_function(
+        "() => document.getElementById('auto-status') !== window.statusBeforeRefresh"
+        " && !document.querySelector('.htmx-settling')"
+    )
+
+
 @pytest.mark.browser
 def test_the_auto_form_selectors_resolve(
     live_server: LiveServer,
@@ -437,21 +463,7 @@ def test_a_status_refresh_keeps_the_open_stop_disclosure_open(
     stop_controls = page.locator("#auto-status details.auto-stop")
     stop_controls.locator("summary").click()
     expect(stop_controls).to_have_attribute("open", "")
-    page.evaluate(
-        """() => {
-          window.statusBeforeRefresh = document.getElementById("auto-status");
-          const refresh = document.querySelector(
-            "#auto-status [hx-target='#auto-status']"
-          );
-          htmx.ajax("GET", refresh.getAttribute("hx-get"), {
-            target: "#auto-status",
-            swap: "outerHTML",
-          });
-        }"""
-    )
-    page.wait_for_function(
-        "() => document.getElementById('auto-status') !== window.statusBeforeRefresh"
-    )
+    _refresh_status(page)
 
     expect(stop_controls).to_have_attribute("open", "")
     expect(

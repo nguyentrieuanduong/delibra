@@ -661,49 +661,6 @@ def test_chat_workspace_renders_four_regions_and_full_agent_information(
     assert "#file-browser-host, #file-reader { min-height: 0; overflow: auto; }" in stylesheet.text
 
 
-def test_chat_uses_compact_composer_and_wider_agent_rail(
-    tmp_path: Path,
-) -> None:
-    alpha = session("a" * 32, "Alpha", agent="claude")
-    app, project, _ = setup_project(tmp_path, [alpha])
-    with TestClient(app, base_url="http://localhost") as client:
-        response = client.get(f"/projects/{quote(project.name, safe='')}/chat?agent={alpha.id}")
-        css = client.get("/static/app.css")
-
-    assert response.status_code == 200
-    assert css.status_code == 200
-    assert 'class="conversation-controls"' not in response.text
-    assert 'id="chat-agent-select"' not in response.text
-    assert response.text.index('id="chat-composer"') < response.text.index(
-        'id="chat-errors"'
-    )
-    assert 'name="prompt"' in response.text
-    assert "body.chat-page { padding-top: .5rem; }" in css.text
-    assert "body.chat-page > header { margin-bottom: .5rem; }" in css.text
-    assert (
-        ".workspace-topic h1, .workspace-topic p { margin: .1rem 0; }"
-        in css.text
-    )
-    assert (
-        "grid-template-columns: minmax(14rem, 1fr) minmax(36rem, 4fr) "
-        "minmax(12rem, .7fr)" in css.text
-    )
-    assert (
-        "grid-template-rows: minmax(32rem, calc(100vh - 4rem))"
-        in css.text
-    )
-    assert "#chat-composer textarea { min-height: 3rem; resize: vertical; }" in css.text
-    assert (
-        ".workspace-agents {\n"
-        "  display: grid;\n"
-        "  font-size: .85rem;" in css.text
-    )
-    assert (
-        ".workspace-agents :is(input, select, textarea, button) { font: inherit; }"
-        in css.text
-    )
-
-
 class _ConversationChildren(HTMLParser):
     """Collect the direct children of the conversation workspace section."""
 

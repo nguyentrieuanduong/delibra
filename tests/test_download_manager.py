@@ -78,7 +78,8 @@ async def test_bad_spool_files_warn_and_create_nothing(tmp_path):
     assert len(manager.turn_warnings(turn)) == 2
 
 @pytest.mark.asyncio
-async def test_model_check_flags_and_fails_closed(tmp_path):
+async def test_model_check_flags_and_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.download_manager.BATCH_WINDOW_SECONDS", 0)  # batching is not under test
     async def check(provider, executable, model, items, work_root, prompts=None):
         return {rid: ("flag", "looks encoded") for rid, _ in items}
     manager, turn = setup(tmp_path, approval="automatic", model_check=True, check=check)
@@ -94,7 +95,8 @@ async def test_model_check_flags_and_fails_closed(tmp_path):
     assert status(turn2)[0]["reason"] == "model check unavailable: timed out"
 
 @pytest.mark.asyncio
-async def test_each_model_check_reads_the_prompts_and_fails_closed_on_an_invalid_one(tmp_path):
+async def test_each_model_check_reads_the_prompts_and_fails_closed_on_an_invalid_one(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.download_manager.BATCH_WINDOW_SECONDS", 0)  # batching is not under test
     from app.prompts import PromptError, Prompts
 
     seen = []
@@ -600,3 +602,32 @@ def test_turn_notes_follow_the_one_shell_rule(tmp_path, agent, build, shell) -> 
     assert f"{(workspace / 'convert' / 'requests').as_posix()}/ named like c1.json" in notes
     # Discussion and chat turns get fresh spools here; build turns get them from the runner.
     assert (workspace / "convert" / "requests").is_dir() is not build
+
+
+@pytest.mark.asyncio
+async def test_idle_returns_when_a_finished_task_is_not_yet_discarded(tmp_path, monkeypatch):
+    # Python 3.12's gather completes at once, without yielding, when every task
+    # is already done. A task that finished but whose discard callback is still
+    # queued then kept idle() spinning forever at 100% CPU (seen in the suite).
+    manager = DownloadManager(settings_for(tmp_path), {})
+
+    async def nothing():
+        return None
+
+    task = asyncio.create_task(nothing())
+    manager._tasks.add(task)
+    task.add_done_callback(manager._tasks.discard)
+    await asyncio.sleep(0)  # the task finishes; its discard callback is only queued
+    assert task.done() and task in manager._tasks
+
+    real_gather, calls = asyncio.gather, []
+
+    def bounded_gather(*args, **kwargs):
+        calls.append(1)
+        if len(calls) > 50:  # fail instead of hanging the suite
+            raise AssertionError("idle() never let the finished task be discarded")
+        return real_gather(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "gather", bounded_gather)
+    await manager.idle()
+    assert not manager._tasks

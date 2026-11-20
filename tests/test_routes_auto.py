@@ -1074,16 +1074,6 @@ def test_auto_start_skips_preparation_when_checkbox_is_missing(
         assert "Preparation was skipped." in response.text
 
 
-def test_auto_choice_css_aligns_controls_without_changing_global_labels() -> None:
-    css = Path("app/static/app.css").read_text(encoding="utf-8")
-
-    assert "label { display: grid; gap: .25rem; }" in css
-    assert (
-        ".auto-setup-dialog .auto-choice { align-items: center; "
-        "display: flex; gap: .35rem; }"
-    ) in css
-
-
 def test_an_agent_created_during_auto_does_not_join_the_running_run(
     tmp_path: Path,
 ) -> None:

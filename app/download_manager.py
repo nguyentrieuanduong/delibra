@@ -627,6 +627,10 @@ class DownloadManager:
 
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            # Python 3.12's gather returns without yielding when every task is
+            # already done, so a finished task whose discard callback was only
+            # queued would keep this loop spinning forever. One loop pass runs it.
+            await asyncio.sleep(0)
 
     def _action(self, project_root: Path, store_root: Path, rid: str, allowed: tuple[str, ...]):
         store = DownloadStore(store_root)
