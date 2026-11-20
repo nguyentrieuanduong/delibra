@@ -1292,8 +1292,12 @@ Delibra converts documents to Markdown itself, so agents without a shell
   fallback). **Cancel** (this machine only, like every Downloads action) removes
   a queued conversion or kills a running one's worker process group; the
   record becomes `cancelled` with `cancelled by the user`, which agents read in
-  `status.json` (the convert wait loop ends on it). After a restart, queued and
-  converting records become `failed` with `interrupted by restart`.
+  `status.json` (the convert wait loop ends on it). **Retry** (this machine
+  only) converts a download again after its conversion was cancelled or
+  failed; an agent simply requests a project file again. While a converter
+  model action (self-test, update, removal) holds the slot, queued rows say so.
+  After a restart, queued and converting records become `failed` with
+  `interrupted by restart`.
 - **Limits.** One conversion at a time per server; input at most 100 MB (also
   while copying); output at most 20 MB (longer output is cut with a marker);
   any one file the worker writes at most 64 MB, everything one step writes at
