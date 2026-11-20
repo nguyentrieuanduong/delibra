@@ -602,8 +602,20 @@ function latestMessage(timeline) {
   return messages.length ? messages[messages.length - 1] : null;
 }
 
+// The sticky Conversation heading covers the top of the panel, so the
+// readable view starts below it.
+function timelineViewTop(timeline) {
+  const top = timeline.getBoundingClientRect().top;
+  const heading = timeline.querySelector(".timeline-heading");
+  return heading ? Math.max(top, heading.getBoundingClientRect().bottom) : top;
+}
+
 // "↓ Latest" shows only while the start of the last message is outside the
-// panel. New rounds never move the reader; this is the way down.
+// panel. New rounds never move the reader; this is the way down. Edges have
+// 1px of tolerance: sub-pixel rounding leaves a message Latest just scrolled
+// to a fraction above the heading.
+const LATEST_EDGE_TOLERANCE = 1;
+
 function syncLatestButton(documentRoot) {
   if (!documentRoot || typeof documentRoot.querySelector !== "function") {
     return false;
@@ -620,7 +632,9 @@ function syncLatestButton(documentRoot) {
   }
   const view = timeline.getBoundingClientRect();
   const top = latest.getBoundingClientRect().top;
-  const away = top < view.top || top >= view.bottom;
+  const away =
+    top < timelineViewTop(timeline) - LATEST_EDGE_TOLERANCE ||
+    top >= view.bottom - LATEST_EDGE_TOLERANCE;
   button.hidden = !away;
   return away;
 }
@@ -643,7 +657,7 @@ function goToLatestMessage(documentRoot) {
     top:
       timeline.scrollTop +
       latest.getBoundingClientRect().top -
-      timeline.getBoundingClientRect().top,
+      timelineViewTop(timeline),
     behavior: reduced ? "auto" : "smooth",
   });
   return true;

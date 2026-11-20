@@ -43,11 +43,12 @@ def test_latest_jumps_to_the_start_of_the_last_message(
     page.evaluate("document.getElementById('chat-timeline').scrollTop = 0")
     expect(page.locator(LATEST)).to_be_visible()
     page.click(LATEST)
+    # Just below the sticky Conversation heading, which covers the panel's top.
     page.wait_for_function(
         """(id) => {
-          const t = document.getElementById('chat-timeline');
+          const h = document.querySelector('#chat-timeline .timeline-heading');
           const m = document.getElementById(id);
-          return Math.abs(m.getBoundingClientRect().top - t.getBoundingClientRect().top) <= 2;
+          return Math.abs(m.getBoundingClientRect().top - h.getBoundingClientRect().bottom) <= 2;
         }""",
         arg=f"round-{alpha}-3",
     )
