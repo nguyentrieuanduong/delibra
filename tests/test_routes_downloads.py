@@ -406,3 +406,22 @@ def test_a_cancelled_running_conversion_shows_cancelling_until_it_ends(tmp_path)
     row = cancelling[cancelling.index('id="conversion-C1"'):]
     assert "Cancelling…" in row and "/cancel" not in row
     assert "Cancelling…" not in ended and 'conversion-cancelled' in ended
+
+
+def test_retry_is_refused_while_document_conversion_is_off(tmp_path):
+    from app.coding import DownloadPolicy as Policy
+
+    app, project, store = downloads_app(tmp_path)
+    project_store = ProjectStore(project)
+    policy = project_store.coding_policy()
+    policy.downloads = Policy(enabled=True, folder="raw", convert=False)
+    project_store.replace_coding_policy(policy)
+    record = add(store, "https://arxiv.org/pdf/1")
+    store.update(record.id, state="downloaded", path="raw/paper.pdf", convert=True,
+                 convert_state="cancelled", convert_reason="cancelled by the user")
+    with TestClient(app, base_url="http://localhost", client=LOCAL) as client:
+        listing = client.get(f"{base(project)}/conversions/list").text
+        response = client.post(f"{base(project)}/conversions/D1/retry")
+    assert 'id="conversion-D1"' in listing and "/retry" not in listing
+    assert response.status_code == 409 and "Document conversion is off for this project" in response.text
+    assert store.get("D1").convert_state == "cancelled"

@@ -172,6 +172,8 @@ async def retry_conversion(request: Request, project_id: str, rid: str):
     try:
         if not rid.startswith("D") or not _known(store, rid):
             raise NotFoundError("conversion not found")
+        if not store.coding_policy().downloads.convert:
+            raise StorageError("Document conversion is off for this project (Settings → General)")
         request.app.state.download_manager.retry_conversion(store.project_path, store.root, rid, project.id)
     except NotFoundError:
         raise
