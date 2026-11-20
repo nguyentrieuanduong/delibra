@@ -1480,8 +1480,12 @@ Run the suite with `envs/bin/python -m pytest -q`.
 The suite runs in parallel by default: `pytest.ini` adds
 `-n auto --dist loadgroup` (pytest-xdist, one worker per CPU). On a 10-core
 Mac that is about a minute instead of about five serially. Every test runs in
-both modes; each test keeps its state in its own `tmp_path`, and an autouse
-fixture points `DELIBRA_HOME` there, so nothing touches `~/.delibra`. The
+both modes; each test keeps its state in its own `tmp_path`. The suite never
+reads or writes `~/.delibra`: before anything imports `app`, `tests/conftest.py`
+points `DELIBRA_HOME` at an empty folder under the git-ignored
+`tmp/pytest-home/`, one per pytest process and removed when it exits (importing
+`app.main` builds the app, which reads `config.json`), and an autouse fixture
+then gives each test its own. The
 browser tests run in two xdist groups (`BROWSER_GROUPS` in `tests/conftest.py`),
 one test at a time per group, because with a Chromium per worker their timing
 races fail under load.

@@ -1,12 +1,29 @@
 from __future__ import annotations
 
+import atexit
 from hashlib import sha256
+import os
 from pathlib import Path
+import shutil
+import tempfile
 
-import pytest
+# Before any `app` import. app/main.py builds `app = create_app()` at import,
+# which reads $DELIBRA_HOME/config.json (default ~/.delibra), and about twenty
+# test modules import it while pytest collects -- before any fixture runs. So
+# each pytest process (the controller and every xdist worker loads this file)
+# gets its own empty home under the repo's git-ignored tmp/, never /tmp and
+# never the operator's, removed when that process exits. Tests that need a
+# home still get their own: see _private_delibra_home below.
+_IMPORT_HOME_ROOT = Path(__file__).resolve().parents[1] / "tmp" / "pytest-home"
+_IMPORT_HOME_ROOT.mkdir(parents=True, exist_ok=True)
+_IMPORT_HOME = tempfile.mkdtemp(prefix="import-", dir=_IMPORT_HOME_ROOT)
+os.environ["DELIBRA_HOME"] = _IMPORT_HOME
+atexit.register(shutil.rmtree, _IMPORT_HOME, ignore_errors=True)
 
-from app.models import AutoArtifact, AutoParticipant, AutoRunRecord
-from app.storage import ProjectStore
+import pytest  # noqa: E402
+
+from app.models import AutoArtifact, AutoParticipant, AutoRunRecord  # noqa: E402
+from app.storage import ProjectStore  # noqa: E402
 
 
 # Browser tests run in this many xdist groups: at most this many Chromium
